@@ -1,0 +1,91 @@
+"""Resume file parsing: byte extraction (PDF/DOCX) + LLM structuring.
+
+Ported from hr-ai-nterviewer-saas (``services/resume_service.py``). File text
+extraction lives here (infrastructure); the LLM call returns a validated
+``ParsedProfile``.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+
+import pdfplumber
+from docx import Document as DocxDocument
+from pydantic import ValidationError
+
+from app.core.logging import get_logger
+from app.domain.resume.prompts import RESUME_EXTRACTION_PROMPT
+from app.domain.resume.schemas import ParsedProfile
+from app.infrastructure.llm_client import llm_chat_completion
+from app.infrastructure.llm_utils import strip_code_fences
+
+logger = get_logger("resume_parser")
+
+SUPPORTED_EXTENSIONS = {"pdf", "docx"}
+# Defence-in-depth size cap (handlers also enforce this at the boundary).
+MAX_RESUME_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def extract_text_from_bytes(content: bytes, filename: str) -> str:
+    """Extract text from resume bytes. Supports PDF and DOCX.
+
+    Raises ``ValueError`` if the format is unsupported or no text is extracted.
+    """
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext == "pdf":
+        return _extract_pdf(content)
+    if ext == "docx":
+        return _extract_docx(content)
+    raise ValueError(f"Unsupported file type '.{ext}'. Accepted: PDF, DOCX")
+
+
+def _extract_pdf(content: bytes) -> str:
+    pages: list[str] = []
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text)
+    if not pages:
+        raise ValueError("No text could be extracted from PDF. Is this a scanned/image PDF?")
+    return "\n\n".join(pages)
+
+
+def _extract_docx(content: bytes) -> str:
+    document = DocxDocument(io.BytesIO(content))
+    paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+    if not paragraphs:
+        raise ValueError("No text could be extracted from DOCX. Is the document empty?")
+    return "\n\n".join(paragraphs)
+
+
+async def parse_resume_text(resume_text: str) -> ParsedProfile:
+    """Send resume text to the LLM and return a validated ``ParsedProfile``.
+
+    Raises ``ValueError`` when the LLM output is not valid JSON or fails schema
+    validation (normalized so callers handle a single exception type).
+    """
+    prompt = RESUME_EXTRACTION_PROMPT.format(resume_text=resume_text)
+    response, model = await llm_chat_completion(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        json_mode=True,
+    )
+    raw = response.choices[0].message.content or ""
+    cleaned = strip_code_fences(raw)
+
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        logger.warning("resume_parse_invalid_json", model=model, error=str(exc))
+        raise ValueError("LLM did not return valid JSON for resume data") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("LLM did not return a JSON object for resume data")
+
+    try:
+        return ParsedProfile.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning("resume_parse_validation_failed", model=model, error=str(exc))
+        raise ValueError(f"Resume data failed validation: {exc}") from exc
