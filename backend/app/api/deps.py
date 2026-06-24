@@ -1,27 +1,34 @@
 """Shared FastAPI dependencies.
 
-``get_current_user`` is the single-user MVP shim: it returns the seeded user
-without any token check. Swapping in real auth later is a one-line change here.
-Every domain table already carries a ``user_id`` FK so nothing else changes.
+``get_current_user`` authenticates the request from a JWT access token sent as
+``Authorization: Bearer <token>``. Every domain table carries a ``user_id`` FK,
+so the resolved user scopes all queries to that account.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, HTTPException
-from sqlalchemy import select
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
+from app.core.security import TokenError, decode_token
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.service import ApplicationService
+from app.domain.auth.exceptions import InvalidTokenError
+from app.domain.auth.repository import UserRepository
+from app.domain.auth.service import AuthService
 from app.domain.cover_letters.repository import CoverLetterRepository
 from app.domain.cover_letters.service import CoverLetterService
+from app.domain.interview.repository import InterviewRepository
+from app.domain.interview.service import InterviewService
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
+from app.domain.preferences.repository import PreferenceRepository
+from app.domain.preferences.service import PreferenceService
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.service import ResumeService
 from app.infrastructure.database import get_db
@@ -32,16 +39,42 @@ from app.models.user import User
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
-async def get_current_user(db: DbSession) -> User:
-    """Return the seeded single user. Replace with token auth post-MVP."""
+def get_app_settings() -> Settings:
+    return get_settings()
+
+
+SettingsDep = Annotated[Settings, Depends(get_app_settings)]
+
+
+def get_auth_service(db: DbSession) -> AuthService:
+    return AuthService(UserRepository(db), get_settings())
+
+
+AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+
+
+def _extract_bearer_token(request: Request) -> str:
+    header = request.headers.get("Authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise InvalidTokenError
+    return token.strip()
+
+
+async def get_current_user(request: Request, db: DbSession) -> User:
+    """Resolve the authenticated user from the access-token Bearer header."""
+    token = _extract_bearer_token(request)
     settings = get_settings()
-    result = await db.execute(
-        select(User).where(User.email == settings.seed_user_email)
-    )
-    user = result.scalar_one_or_none()
-    if user is None:
-        # Seeded on startup; missing means a misconfigured deployment.
-        raise HTTPException(status_code=500, detail="Seed user not provisioned")
+    try:
+        user_id = decode_token(
+            settings=settings, token=token, expected_type="access"
+        )
+    except TokenError as exc:
+        raise InvalidTokenError from exc
+
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise InvalidTokenError
     return user
 
 
@@ -67,6 +100,27 @@ def get_match_service(db: DbSession) -> MatchingService:
 
 
 MatchServiceDep = Annotated[MatchingService, Depends(get_match_service)]
+
+
+def get_preference_service(db: DbSession) -> PreferenceService:
+    settings = get_settings()
+    return PreferenceService(
+        PreferenceRepository(db),
+        allowed_sources=settings.enabled_job_sources,
+        refresh_cooldown_minutes=settings.job_refresh_cooldown_minutes,
+    )
+
+
+PreferenceServiceDep = Annotated[
+    PreferenceService, Depends(get_preference_service)
+]
+
+
+def get_interview_service(db: DbSession) -> InterviewService:
+    return InterviewService(InterviewRepository(db))
+
+
+InterviewServiceDep = Annotated[InterviewService, Depends(get_interview_service)]
 
 
 def get_cover_letter_service(db: DbSession) -> CoverLetterService:

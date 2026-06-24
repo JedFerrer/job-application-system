@@ -45,7 +45,29 @@ class Settings(BaseSettings):
     # --- CORS ---
     allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
-    # --- Single seeded user (no auth in MVP) ---
+    # --- Authentication (JWT + Google OAuth) ---
+    # HS256 is acceptable for the MVP; rotate to RS256 in production. The
+    # default value is intentionally insecure so a startup warning fires when
+    # it has not been overridden via the environment.
+    jwt_secret: SecretStr = SecretStr("insecure-dev-secret-change-me")
+    jwt_algorithm: str = "HS256"
+    jwt_issuer: str = "job-application-api"
+    jwt_audience: str = "job-application-web"
+    access_token_expire_minutes: int = 15
+    refresh_token_expire_days: int = 7
+    # Refresh-token cookie. ``secure`` must be True in production (HTTPS only).
+    # Path is "/" because the browser reaches the API through the Next.js rewrite
+    # proxy (/api/backend/* -> /api/v1/*); a backend-relative path like
+    # "/api/v1/auth" would never match the browser-facing URL, so the cookie
+    # would not be sent on refresh. httpOnly + SameSite still protect it.
+    refresh_cookie_name: str = "refresh_token"
+    refresh_cookie_secure: bool = False
+    refresh_cookie_samesite: Literal["strict", "lax", "none"] = "strict"
+    refresh_cookie_path: str = "/"
+    # Google OAuth — only the client ID is needed to verify ID tokens.
+    google_client_id: str = ""
+
+    # --- Single seeded user (legacy; unused once auth is enabled) ---
     seed_user_email: str = "me@example.com"
     seed_user_name: str = "Me"
 
@@ -65,10 +87,25 @@ class Settings(BaseSettings):
     enable_jsearch: bool = False
 
     # --- Job ingestion (Phase 2) ---
-    enabled_job_sources: list[str] = Field(default_factory=lambda: ["indeed"])
+    enabled_job_sources: list[str] = Field(
+        default_factory=lambda: ["indeed", "linkedin", "glassdoor", "zip_recruiter"]
+    )
     job_search_country: str = "USA"
     job_results_wanted: int = 50
     proxy_list: list[str] = Field(default_factory=list)
+
+    # --- Preference-driven scraping & maintenance (Phase 2) ---
+    # Minimum gap between on-demand "refresh" scrapes for one user. The
+    # /preferences/refresh endpoint returns 429 until this many minutes have
+    # passed since ``last_scraped_at``.
+    job_refresh_cooldown_minutes: int = 120
+    # Jobs whose ``posted_at`` (or ``created_at`` when posted_at is NULL) is
+    # older than this are archived by the nightly maintenance task.
+    job_archive_after_days: int = 30
+    # Celery Beat cron expressions (minute hour day month day-of-week).
+    scrape_schedule_cron: str = "0 6,13,20 * * *"
+    archive_schedule_cron: str = "0 2 * * *"
+    match_ranking_schedule_cron: str = "30 6,13,20 * * *"
 
     # --- Shift detection ---
     # IANA timezone name for the job seeker.  Used to convert employer-side
@@ -94,6 +131,10 @@ class Settings(BaseSettings):
     def sync_database_url(self) -> str:
         """Synchronous DSN for Alembic (psycopg)."""
         return self.database_url.replace("+asyncpg", "+psycopg")
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
 
     def _api_key_for(self, provider: str) -> str:
         keys = {

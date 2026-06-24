@@ -7,11 +7,17 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.domain.applications.exceptions import ApplicationNotFoundError
+from app.domain.auth.exceptions import (
+    EmailAlreadyRegisteredError,
+    GoogleAuthError,
+    InactiveUserError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+)
 from app.infrastructure.redis_client import close_redis, init_redis
 from app.domain.cover_letters.exceptions import (
     CoverLetterGenerationError,
@@ -22,35 +28,25 @@ from app.domain.matching.exceptions import (
     MatchNotFoundError,
     NoActiveProfileError,
 )
+from app.domain.preferences.exceptions import (
+    PreferenceNotFoundError,
+    PreferenceValidationError,
+    RefreshCooldownError,
+)
+from app.domain.interview.exceptions import InterviewGenerationError
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeParseError,
     UnsupportedResumeFormatError,
 )
-from app.infrastructure.database import async_session_factory
-from app.models.user import User
 
 logger = get_logger("lifespan")
-
-
-async def _seed_user() -> None:
-    """Ensure the single MVP user exists (idempotent)."""
-    settings = get_settings()
-    async with async_session_factory() as session:
-        result = await session.execute(
-            select(User).where(User.email == settings.seed_user_email)
-        )
-        if result.scalar_one_or_none() is None:
-            session.add(User(email=settings.seed_user_email, name=settings.seed_user_name))
-            await session.commit()
-            logger.info("seed_user_created", email=settings.seed_user_email)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     await init_redis(settings.redis_url)
-    await _seed_user()
     yield
     await close_redis()
 
@@ -128,3 +124,73 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=404,
             content={"detail": f"Application {exc.application_id} not found"},
         )
+
+    @app.exception_handler(PreferenceNotFoundError)
+    async def _preference_not_found(
+        request: Request, exc: PreferenceNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=404, content={"detail": "No job preferences saved"}
+        )
+
+    @app.exception_handler(PreferenceValidationError)
+    async def _preference_invalid(
+        request: Request, exc: PreferenceValidationError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"detail": exc.message})
+
+    @app.exception_handler(RefreshCooldownError)
+    async def _refresh_cooldown(
+        request: Request, exc: RefreshCooldownError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": "Refresh is on cooldown",
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+
+    @app.exception_handler(InterviewGenerationError)
+    async def _interview_generation_failed(
+        request: Request, exc: InterviewGenerationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "Failed to generate interview prep"},
+        )
+
+    @app.exception_handler(InvalidTokenError)
+    async def _invalid_token(
+        request: Request, exc: InvalidTokenError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Not authenticated"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @app.exception_handler(InvalidCredentialsError)
+    async def _invalid_credentials(
+        request: Request, exc: InvalidCredentialsError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    @app.exception_handler(InactiveUserError)
+    async def _inactive_user(
+        request: Request, exc: InactiveUserError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @app.exception_handler(EmailAlreadyRegisteredError)
+    async def _email_taken(
+        request: Request, exc: EmailAlreadyRegisteredError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(GoogleAuthError)
+    async def _google_auth_failed(
+        request: Request, exc: GoogleAuthError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=401, content={"detail": exc.detail})
