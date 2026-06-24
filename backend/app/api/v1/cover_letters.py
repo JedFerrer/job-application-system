@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, status
+from fastapi.responses import JSONResponse
 
 from app.api.deps import CoverLetterServiceDep, CurrentUser
 from app.domain.cover_letters.schemas import (
@@ -12,6 +13,19 @@ from app.domain.cover_letters.schemas import (
 )
 
 router = APIRouter(prefix="/cover-letters", tags=["cover-letters"])
+
+
+@router.get("/by-job/{job_id}", response_model=CoverLetterResponse)
+async def get_cover_letter_by_job(
+    job_id: int,
+    current_user: CurrentUser,
+    service: CoverLetterServiceDep,
+) -> CoverLetterResponse | JSONResponse:
+    """Return the most recent cover letter for a job, or 404 if none exists."""
+    result = await service.get_for_job(user_id=current_user.id, job_id=job_id)
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": "No cover letter for this job"})
+    return result
 
 
 @router.post(

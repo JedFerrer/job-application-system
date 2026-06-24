@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from sqlalchemy import select
+
 from app.core.logging import get_logger
 from app.domain.cover_letters.exceptions import (
     CoverLetterGenerationError,
@@ -18,6 +20,9 @@ from app.domain.resume.exceptions import ProfileNotFoundError
 from app.domain.resume.repository import ResumeRepository
 from app.infrastructure.llm_client import LLMUnavailableError, llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
+from app.models.application import Application
+from app.models.application import Application
+from sqlalchemy import select
 
 logger = get_logger("cover_letter_service")
 
@@ -60,12 +65,27 @@ class CoverLetterService:
             tone=tone,
             model=model,
         )
+        # Auto-link to the application for this job if one exists.
+        await self._link_cover_letter_to_application(
+            user_id=user_id, job_id=job_id, cover_letter_id=cover_letter.id
+        )
         logger.info(
             "cover_letter.generated",
             user_id=user_id,
             job_id=job_id,
             cover_letter_id=cover_letter.id,
         )
+        return CoverLetterResponse.model_validate(cover_letter)
+
+    async def get_for_job(
+        self, *, user_id: int, job_id: int
+    ) -> CoverLetterResponse | None:
+        """Return the most recent cover letter for a job, or None if absent."""
+        cover_letter = await self._repo.get_for_job(
+            user_id=user_id, job_id=job_id
+        )
+        if cover_letter is None:
+            return None
         return CoverLetterResponse.model_validate(cover_letter)
 
     async def get(
@@ -90,6 +110,21 @@ class CoverLetterService:
             cover_letter=cover_letter, content=content
         )
         return CoverLetterResponse.model_validate(updated)
+
+    async def _link_cover_letter_to_application(
+        self, *, user_id: int, job_id: int, cover_letter_id: int
+    ) -> None:
+        """If an application exists for this (user, job), set its cover_letter_id."""
+        result = await self._repo._session.execute(
+            select(Application).where(
+                Application.user_id == user_id,
+                Application.job_id == job_id,
+            )
+        )
+        application = result.scalar_one_or_none()
+        if application is not None:
+            application.cover_letter_id = cover_letter_id
+            await self._repo._session.flush()
 
     async def _generate_with_llm(
         self,

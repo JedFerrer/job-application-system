@@ -42,6 +42,21 @@ class CoverLetterRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_for_job(
+        self, *, user_id: int, job_id: int
+    ) -> CoverLetter | None:
+        """Return the most recently updated cover letter for a (user, job) pair."""
+        result = await self._session.execute(
+            select(CoverLetter)
+            .where(
+                CoverLetter.user_id == user_id,
+                CoverLetter.job_id == job_id,
+            )
+            .order_by(CoverLetter.updated_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def update_content(
         self, *, cover_letter: CoverLetter, content: str
     ) -> CoverLetter:
