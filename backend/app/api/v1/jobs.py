@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 # Background task
 # ---------------------------------------------------------------------------
 
-async def _run_ingest_bg(task_id: str, request: IngestRequest) -> None:
+async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> None:
     """Runs after 202 is returned: scrapes sources, upserts, embeds."""
     store = TaskStore(get_redis())
     settings = get_settings()
@@ -49,6 +49,7 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest) -> None:
                     default_results=settings.job_results_wanted,
                     proxies=settings.proxy_list or None,
                     progress=_progress,
+                    user_id=user_id,
                 )
                 await db.commit()
             except Exception:
@@ -92,7 +93,7 @@ async def ingest_jobs(
 ) -> dict[str, str]:
     """Queue a job-scraping run.  Poll ``GET /jobs/tasks/{task_id}`` for progress."""
     task_id = await task_store.create("ingest")
-    background_tasks.add_task(_run_ingest_bg, task_id, payload)
+    background_tasks.add_task(_run_ingest_bg, task_id, payload, current_user.id)
     return {"task_id": task_id}
 
 
@@ -123,6 +124,7 @@ async def list_jobs(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> JobListResponse:
     return await service.list_jobs(
+        user_id=current_user.id,
         source=source,
         is_remote=is_remote,
         min_salary=min_salary,

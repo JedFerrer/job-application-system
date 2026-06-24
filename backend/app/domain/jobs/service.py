@@ -49,6 +49,8 @@ class JobService:
         default_results: int,
         proxies: list[str] | None,
         progress: ProgressFn | None = None,
+        user_id: int | None = None,
+        preference_id: int | None = None,
     ) -> IngestResponse:
         async def _emit(**kw: Any) -> None:
             if progress is not None:
@@ -71,6 +73,9 @@ class JobService:
         updated = 0
         embedded = 0
         used_sources: set[str] = set()
+        # Every job touched this run (new or refreshed) is linked to the user
+        # so it appears in their scoped feed.
+        linked_job_ids: set[int] = set()
 
         for source in sources:
             # Human-friendly name for progress messages (one site per adapter).
@@ -107,6 +112,7 @@ class JobService:
                 used_sources.add(post.source)
                 shift_type = self._shift.detect_regex(post.title, post.description)
                 job_id, was_inserted = await self._upsert(post, shift_type=shift_type)
+                linked_job_ids.add(job_id)
                 if was_inserted:
                     inserted += 1
                     if post.description:
@@ -134,6 +140,11 @@ class JobService:
                 llm_shift = await classify_shift_llm(title, description)
                 if llm_shift and llm_shift != "unknown":
                     await self._repo.set_shift_type(job_id, llm_shift)
+
+        if user_id is not None:
+            await self._repo.link_user_jobs(
+                user_id, list(linked_job_ids), preference_id=preference_id
+            )
 
         logger.info(
             "jobs.ingest.done",
@@ -183,6 +194,7 @@ class JobService:
     async def list_jobs(
         self,
         *,
+        user_id: int,
         source: str | None,
         is_remote: bool | None,
         min_salary: float | None,
@@ -193,6 +205,7 @@ class JobService:
         offset: int,
     ) -> JobListResponse:
         rows, total = await self._repo.list_jobs(
+            user_id=user_id,
             source=source,
             is_remote=is_remote,
             min_salary=min_salary,

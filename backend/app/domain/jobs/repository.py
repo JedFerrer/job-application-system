@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job
+from app.models.user_job import UserJob
 
 
 class JobRepository:
@@ -63,6 +64,30 @@ class JobRepository:
         row = result.one()
         return int(row.id), bool(row.inserted)
 
+    async def link_user_jobs(
+        self,
+        user_id: int,
+        job_ids: list[int],
+        *,
+        preference_id: int | None = None,
+    ) -> None:
+        """Link globally-deduplicated jobs to a single user's feed.
+
+        Idempotent: re-linking an existing ``(user_id, job_id)`` pair is a
+        no-op via ``ON CONFLICT DO NOTHING``, so repeated scrapes never
+        duplicate rows.
+        """
+        if not job_ids:
+            return
+        rows = [
+            {"user_id": user_id, "job_id": job_id, "preference_id": preference_id}
+            for job_id in job_ids
+        ]
+        stmt = pg_insert(UserJob).values(rows).on_conflict_do_nothing(
+            index_elements=[UserJob.user_id, UserJob.job_id]
+        )
+        await self._session.execute(stmt)
+
     async def set_embedding(self, job_id: int, embedding: list[float]) -> None:
         await self._session.execute(
             update(Job)
@@ -83,12 +108,30 @@ class JobRepository:
         )
         return await self._session.get(Job, job_id)
 
+    async def archive_older_than(self, cutoff: datetime) -> int:
+        """Archive non-archived jobs older than ``cutoff``.
+
+        Recency uses ``posted_at`` when present, falling back to ``fetched_at``
+        for sources that don't supply a posting date. Returns the row count.
+        """
+        result = await self._session.execute(
+            update(Job)
+            .where(
+                Job.is_archived.is_(False),
+                func.coalesce(Job.posted_at, Job.fetched_at) < cutoff,
+            )
+            .values(is_archived=True)
+        )
+        return int(result.rowcount or 0)
+
+
     async def get_by_id(self, job_id: int) -> Job | None:
         return await self._session.get(Job, job_id)
 
     async def list_jobs(
         self,
         *,
+        user_id: int,
         source: str | None = None,
         is_remote: bool | None = None,
         min_salary: float | None = None,
@@ -98,7 +141,9 @@ class JobRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Job], int]:
-        filters = []
+        # Only jobs linked to this user (scraped for their preferences) are
+        # visible. The junction keeps the jobs table globally deduplicated.
+        filters = [UserJob.user_id == user_id]
         if source is not None:
             filters.append(Job.source == source)
         if is_remote is not None:
@@ -112,13 +157,19 @@ class JobRepository:
         if not include_archived:
             filters.append(Job.is_archived.is_(False))
 
-        count_stmt = select(func.count()).select_from(Job).where(*filters)
+        count_stmt = (
+            select(func.count())
+            .select_from(Job)
+            .join(UserJob, UserJob.job_id == Job.id)
+            .where(*filters)
+        )
         total = int((await self._session.execute(count_stmt)).scalar_one())
 
         list_stmt = (
             select(Job)
+            .join(UserJob, UserJob.job_id == Job.id)
             .where(*filters)
-            .order_by(Job.fetched_at.desc())
+            .order_by(Job.fetched_at.desc(), Job.id.desc())
             .limit(limit)
             .offset(offset)
         )
