@@ -84,7 +84,7 @@ class MatchingRepository:
         )
         total = int((await self._session.execute(count_stmt)).scalar_one())
         list_stmt = (
-            base.order_by(UserJobMatch.vector_score.desc())
+            base.order_by(UserJobMatch.vector_score.desc(), Job.id.desc())
             .limit(limit)
             .offset(offset)
         )
@@ -104,6 +104,46 @@ class MatchingRepository:
 
     async def get_job(self, job_id: int) -> Job | None:
         return await self._session.get(Job, job_id)
+
+    async def aggregate_missing_keywords(
+        self, *, user_id: int, top_n: int
+    ) -> list[tuple[str, int]]:
+        """Return the most frequent missing keywords across the user's matches.
+
+        Unnests the ``missing_keywords`` JSONB arrays and counts occurrences,
+        normalising case so "React" and "react" collapse to one bucket.
+        """
+        keyword = func.lower(
+            func.jsonb_array_elements_text(UserJobMatch.missing_keywords)
+        ).label("keyword")
+        subquery = (
+            select(keyword)
+            .where(
+                UserJobMatch.user_id == user_id,
+                UserJobMatch.missing_keywords.isnot(None),
+            )
+            .subquery()
+        )
+        stmt = (
+            select(subquery.c.keyword, func.count().label("frequency"))
+            .group_by(subquery.c.keyword)
+            .order_by(func.count().desc())
+            .limit(top_n)
+        )
+        result = await self._session.execute(stmt)
+        return [(str(row.keyword), int(row.frequency)) for row in result.all()]
+
+    async def count_matches_with_gaps(self, user_id: int) -> int:
+        """Count the user's matches that carry an explained missing-keywords list."""
+        stmt = (
+            select(func.count())
+            .select_from(UserJobMatch)
+            .where(
+                UserJobMatch.user_id == user_id,
+                UserJobMatch.missing_keywords.isnot(None),
+            )
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
 
     async def save_explanation(
         self,

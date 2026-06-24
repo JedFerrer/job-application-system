@@ -52,3 +52,17 @@ class MatchExplanation(BaseModel):
     explanation: str | None
     matched_skills: list[str]
     missing_keywords: list[str]
+
+
+class SkillGapItem(BaseModel):
+    """One missing skill and how many of the user's matched jobs require it."""
+
+    keyword: str
+    frequency: int
+
+
+class SkillsGapSummary(BaseModel):
+    """Top recurring skill gaps across all of a user's matched jobs."""
+
+    items: list[SkillGapItem]
+    total_matches_considered: int

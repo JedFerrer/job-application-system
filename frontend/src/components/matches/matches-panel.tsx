@@ -1,15 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { FileText, Loader2, Plus, RefreshCw } from "lucide-react";
+import { FileText, Loader2, MessagesSquare, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, matchesApi } from "@/lib/api";
 import type { MatchItem } from "@/lib/types";
+
+const PAGE_SIZE = 20;
+
+/** Guard against duplicate rows across pages (offset pagination can overlap). */
+function dedupeByJobId(matches: MatchItem[]): MatchItem[] {
+  const seen = new Set<number>();
+  return matches.filter((m) => {
+    if (seen.has(m.job_id)) return false;
+    seen.add(m.job_id);
+    return true;
+  });
+}
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -27,6 +40,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
+import { InterviewPrepDialog } from "@/components/interview/interview-prep-dialog";
+import { SkillsGapSummary } from "@/components/matches/skills-gap-summary";
 
 const CONFIDENCE_VARIANT: Record<
   string,
@@ -42,11 +57,62 @@ export function MatchesPanel() {
   const queryClient = useQueryClient();
   const [explainJob, setExplainJob] = useState<MatchItem | null>(null);
   const [coverJob, setCoverJob] = useState<MatchItem | null>(null);
+  const [prepJob, setPrepJob] = useState<MatchItem | null>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
-  const matchesQuery = useQuery({
+  // Refs keep the latest query state readable inside the observer callback
+  // without ever recreating the observer (which would cause it to re-fire
+  // immediately on creation and cascade-fetch every remaining page).
+  const hasNextPageRef = useRef(false);
+  const isFetchingNextPageRef = useRef(false);
+  const fetchNextPageRef = useRef<() => void>(() => {});
+
+  const matchesQuery = useInfiniteQuery({
     queryKey: ["matches"],
-    queryFn: () => matchesApi.list({ limit: 100 }),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      matchesApi.list({ limit: PAGE_SIZE, offset: (pageParam as number) * PAGE_SIZE }),
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
+      return loaded < lastPage.total ? allPages.length : undefined;
+    },
   });
+
+  const allMatches = dedupeByJobId(
+    matchesQuery.data?.pages.flatMap((p) => p.items) ?? [],
+  );
+  const total = matchesQuery.data?.pages[0]?.total ?? 0;
+
+  // Keep refs in sync with the latest query state on every render.
+  hasNextPageRef.current = matchesQuery.hasNextPage;
+  isFetchingNextPageRef.current = matchesQuery.isFetchingNextPage;
+  fetchNextPageRef.current = matchesQuery.fetchNextPage;
+
+  // Infinite scroll sentinel — created ONCE (empty dep array).
+  // The observer reads hasNextPage / isFetchingNextPage / fetchNextPage
+  // through refs so it never needs to be recreated when those values change.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    // rootMargin "0px 0px 300px 0px" fires the callback when the sentinel is
+    // 300 px below the visible viewport — i.e. before the user reaches it.
+    // New items are therefore inserted while the sentinel is still offscreen,
+    // so the viewport never needs to shift and the scroll position stays put.
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (
+          entry.isIntersecting &&
+          hasNextPageRef.current &&
+          !isFetchingNextPageRef.current
+        ) {
+          fetchNextPageRef.current();
+        }
+      },
+      { rootMargin: "0px 0px 300px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rankMutation = useMutation({
     mutationFn: () => matchesApi.rank(100),
@@ -70,10 +136,11 @@ export function MatchesPanel() {
 
   return (
     <div className="flex flex-col gap-6">
+      <SkillsGapSummary />
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
           {matchesQuery.data
-            ? `${matchesQuery.data.total} ranked jobs`
+            ? `${total} ranked jobs`
             : "Rank your active profile against the job feed."}
         </p>
         <Button
@@ -93,17 +160,17 @@ export function MatchesPanel() {
         <p className="text-sm text-muted-foreground">Loading matches…</p>
       )}
 
-      {matchesQuery.data && matchesQuery.data.items.length === 0 && (
+      {matchesQuery.data && allMatches.length === 0 && (
         <Card>
           <CardContent className="py-8 text-center text-sm text-muted-foreground">
             No matches yet. Make sure you have an active profile and ingested
-            jobs, then click “Rank matches”.
+            jobs, then click "Rank matches".
           </CardContent>
         </Card>
       )}
 
       <div className="flex flex-col gap-3">
-        {matchesQuery.data?.items.map((match) => (
+        {allMatches.map((match) => (
           <Card key={match.job_id}>
             <CardHeader className="pb-2">
               <div className="flex items-start justify-between gap-3">
@@ -157,6 +224,14 @@ export function MatchesPanel() {
               </Button>
               <Button
                 size="sm"
+                variant="outline"
+                onClick={() => setPrepJob(match)}
+              >
+                <MessagesSquare className="h-4 w-4" />
+                Interview prep
+              </Button>
+              <Button
+                size="sm"
                 variant="ghost"
                 onClick={() => saveAppMutation.mutate(match.job_id)}
                 disabled={saveAppMutation.isPending}
@@ -169,6 +244,23 @@ export function MatchesPanel() {
         ))}
       </div>
 
+      {/* Sentinel — IntersectionObserver watches this to trigger next page.
+          overflow-anchor:none prevents the browser from scrolling the viewport
+          down to keep this element in view when new items are inserted above it. */}
+      <div ref={sentinelRef} className="h-4" style={{ overflowAnchor: "none" }} />
+
+      {matchesQuery.isFetchingNextPage && (
+        <div className="flex justify-center py-4">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      )}
+
+      {!matchesQuery.hasNextPage && allMatches.length > 0 && (
+        <p className="py-2 text-center text-xs text-muted-foreground">
+          All {total} matches loaded
+        </p>
+      )}
+
       <ExplainDialog
         job={explainJob}
         onOpenChange={(open) => !open && setExplainJob(null)}
@@ -178,6 +270,12 @@ export function MatchesPanel() {
         jobTitle={coverJob?.title}
         open={coverJob !== null}
         onOpenChange={(open) => !open && setCoverJob(null)}
+      />
+      <InterviewPrepDialog
+        jobId={prepJob?.job_id ?? null}
+        jobTitle={prepJob?.title}
+        open={prepJob !== null}
+        onOpenChange={(open) => !open && setPrepJob(null)}
       />
     </div>
   );

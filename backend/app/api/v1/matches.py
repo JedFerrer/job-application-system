@@ -12,6 +12,7 @@ from app.domain.matching.schemas import (
     MatchListResponse,
     RankRequest,
     RankResponse,
+    SkillsGapSummary,
 )
 
 router = APIRouter(prefix="/matches", tags=["matches"])
@@ -36,6 +37,16 @@ async def list_matches(
     return await service.list_matches(
         user_id=current_user.id, limit=limit, offset=offset
     )
+
+
+@router.get("/skills-gap-summary", response_model=SkillsGapSummary)
+async def skills_gap_summary(
+    current_user: CurrentUser,
+    service: MatchServiceDep,
+    top_n: Annotated[int, Query(ge=1, le=20)] = 5,
+) -> SkillsGapSummary:
+    """Top recurring skill gaps across the user's matched jobs."""
+    return await service.skills_gap_summary(user_id=current_user.id, top_n=top_n)
 
 
 @router.get("/{job_id}/explain", response_model=MatchExplanation)

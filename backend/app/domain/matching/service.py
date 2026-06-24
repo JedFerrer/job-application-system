@@ -23,6 +23,8 @@ from app.domain.matching.schemas import (
     MatchItem,
     MatchListResponse,
     RankResponse,
+    SkillGapItem,
+    SkillsGapSummary,
 )
 from app.domain.matching.skill_matcher import (
     compute_skill_match,
@@ -92,6 +94,22 @@ class MatchingService:
         ]
         return MatchListResponse(
             items=items, total=total, limit=limit, offset=offset
+        )
+
+    async def skills_gap_summary(
+        self, *, user_id: int, top_n: int = 5
+    ) -> SkillsGapSummary:
+        """Aggregate the most common missing skills across the user's matches."""
+        pairs = await self._repo.aggregate_missing_keywords(
+            user_id=user_id, top_n=top_n
+        )
+        total = await self._repo.count_matches_with_gaps(user_id)
+        return SkillsGapSummary(
+            items=[
+                SkillGapItem(keyword=keyword, frequency=frequency)
+                for keyword, frequency in pairs
+            ],
+            total_matches_considered=total,
         )
 
     async def explain_match(self, *, user_id: int, job_id: int) -> MatchExplanation:
