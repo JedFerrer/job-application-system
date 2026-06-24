@@ -1,8 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { FileText } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi } from "@/lib/api";
+import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
+import { Button } from "@/components/ui/button";
 import {
   APPLICATION_STATUSES,
   type ApplicationListItem,
@@ -16,6 +20,10 @@ import {
 
 export function ApplicationsPanel() {
   const queryClient = useQueryClient();
+  const [coverLetterJob, setCoverLetterJob] = useState<{
+    jobId: number;
+    jobTitle: string;
+  } | null>(null);
 
   const appsQuery = useQuery({
     queryKey: ["applications"],
@@ -70,42 +78,61 @@ export function ApplicationsPanel() {
   }
 
   return (
-    <Card>
-      <CardContent className="p-0">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-3 font-medium">Job</th>
-                <th className="px-4 py-3 font-medium">Company</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Cover letter</th>
-              </tr>
-            </thead>
-            <tbody>
-              {appsQuery.data?.items.map((app) => (
-                <ApplicationRow
-                  key={app.id}
-                  app={app}
-                  onStatusChange={(status) =>
-                    statusMutation.mutate({ id: app.id, status })
-                  }
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </CardContent>
-    </Card>
+    <>
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-muted-foreground">
+                  <th className="px-4 py-3 font-medium">Job</th>
+                  <th className="px-4 py-3 font-medium">Company</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3 font-medium">Cover letter</th>
+                </tr>
+              </thead>
+              <tbody>
+                {appsQuery.data?.items.map((app) => (
+                  <ApplicationRow
+                    key={app.id}
+                    app={app}
+                    onStatusChange={(status) =>
+                      statusMutation.mutate({ id: app.id, status })
+                    }
+                    onCoverLetterClick={() =>
+                      setCoverLetterJob({
+                        jobId: app.job_id,
+                        jobTitle: app.job_title,
+                      })
+                    }
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <CoverLetterDialog
+        jobId={coverLetterJob?.jobId ?? null}
+        jobTitle={coverLetterJob?.jobTitle}
+        open={coverLetterJob != null}
+        onOpenChange={(open) => {
+          if (!open) setCoverLetterJob(null);
+        }}
+      />
+    </>
   );
 }
 
 function ApplicationRow({
   app,
   onStatusChange,
+  onCoverLetterClick,
 }: {
   app: ApplicationListItem;
   onStatusChange: (status: ApplicationStatus) => void;
+  onCoverLetterClick: () => void;
 }) {
   return (
     <tr className="border-b last:border-0">
@@ -138,9 +165,18 @@ function ApplicationRow({
           ))}
         </select>
       </td>
-      <td className="px-4 py-3 text-muted-foreground">
-        {app.cover_letter_id != null ? `#${app.cover_letter_id}` : "—"}
+      <td className="px-4 py-3">
+        <Button
+          variant={app.cover_letter_id != null ? "secondary" : "outline"}
+          size="sm"
+          onClick={onCoverLetterClick}
+          className="gap-1.5"
+        >
+          <FileText className="h-3.5 w-3.5" />
+          {app.cover_letter_id != null ? "View / Edit" : "Create"}
+        </Button>
       </td>
     </tr>
   );
 }
+

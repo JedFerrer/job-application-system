@@ -1,34 +1,25 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Loader2, MapPin, Search, X } from "lucide-react";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";import { Archive, ArchiveRestore, Loader2, MapPin, X } from "lucide-react";
 import { toast } from "sonner";
-import { ApiError, jobsApi } from "@/lib/api";
-import { useJobsTask } from "@/context/jobs-task-context";
-import { JOB_SOURCES, ingestSchema, type IngestForm } from "@/lib/validators";
+import { jobsApi } from "@/lib/api";
 import type { Job } from "@/lib/types";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 
-const JOB_TYPES = [
-  { label: "Full-time", value: "fulltime" },
-  { label: "Part-time", value: "parttime" },
-  { label: "Contract", value: "contract" },
-  { label: "Temporary", value: "temporary" },
-  { label: "Internship", value: "internship" },
-];
+const PAGE_SIZE = 25;
+
+/** Guard against duplicate rows across pages (offset pagination can overlap). */
+function dedupeById(jobs: Job[]): Job[] {
+  const seen = new Set<number>();
+  return jobs.filter((job) => {
+    if (seen.has(job.id)) return false;
+    seen.add(job.id);
+    return true;
+  });
+}
 
 const JOB_SOURCE_LABELS: Record<string, string> = {
   indeed: "Indeed",
@@ -44,19 +35,75 @@ export function JobsPanel() {
   const [filterJobType, setFilterJobType] = useState("");
   const [filterLocation, setFilterLocation] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
-  const jobsQuery = useQuery({
+  // Refs keep the latest query state readable inside the observer callback
+  // without ever recreating the observer (which would cause it to re-fire
+  // immediately on creation and cascade-fetch every remaining page).
+  const hasNextPageRef = useRef(false);
+  const isFetchingNextPageRef = useRef(false);
+  const fetchNextPageRef = useRef<() => void>(() => {});
+
+  const jobsQuery = useInfiniteQuery({
     queryKey: ["jobs", filterSource, filterJobType, filterLocation, showArchived],
-    queryFn: () =>
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
       jobsApi.list({
-        limit: 100,
+        limit: PAGE_SIZE,
+        offset: (pageParam as number) * PAGE_SIZE,
         source: filterSource || undefined,
         jobType: filterJobType || undefined,
         location: filterLocation || undefined,
         includeArchived: showArchived,
       }),
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
+      return loaded < lastPage.total ? allPages.length : undefined;
+    },
     refetchOnMount: "always",
   });
+
+  // Keep refs in sync with the latest query state on every render.
+  // This lets the stable observer callback read up-to-date values without
+  // being a dependency of the effect that creates the observer.
+  hasNextPageRef.current = jobsQuery.hasNextPage;
+  isFetchingNextPageRef.current = jobsQuery.isFetchingNextPage;
+  fetchNextPageRef.current = jobsQuery.fetchNextPage;
+
+  const allJobs = dedupeById(
+    jobsQuery.data?.pages.flatMap((p) => p.items) ?? [],
+  );
+  const total = jobsQuery.data?.pages[0]?.total ?? 0;
+
+  // Infinite scroll sentinel — created ONCE (empty dep array).
+  // The observer reads hasNextPage / isFetchingNextPage / fetchNextPage
+  // through refs so it never needs to be recreated when those values change.
+  // Recreating the observer on each state change was the bug: a new observer
+  // fires its callback immediately for the current intersection state, so
+  // every page-load completion triggered the next fetch without waiting for
+  // the user to actually scroll — loading all remaining pages in one burst.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    // rootMargin "0px 0px 300px 0px" fires the callback when the sentinel is
+    // 300 px below the visible viewport — i.e. before the user reaches it.
+    // New items are therefore inserted while the sentinel is still offscreen,
+    // so the viewport never needs to shift and the scroll position stays put.
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (
+          entry.isIntersecting &&
+          hasNextPageRef.current &&
+          !isFetchingNextPageRef.current
+        ) {
+          fetchNextPageRef.current();
+        }
+      },
+      { rootMargin: "0px 0px 300px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const archiveMutation = useMutation({
     mutationFn: ({ jobId, archived }: { jobId: number; archived: boolean }) =>
@@ -68,195 +115,8 @@ export function JobsPanel() {
     onError: () => toast.error("Failed to update job"),
   });
 
-  const {
-    register,
-    handleSubmit,
-    watch,
-    setValue,
-    formState: { errors, isSubmitting },
-  } = useForm<IngestForm>({
-    resolver: zodResolver(ingestSchema),
-    defaultValues: {
-      search_term: "",
-      location: "",
-      country: "USA",
-      is_remote: false,
-      hours_old: 504,
-      results_wanted: 25,
-      sources: ["indeed"],
-    },
-  });
-
-  const selectedSources = watch("sources");
-
-  // Sources that only work with residential proxies when running on a server.
-  const PROXY_REQUIRED_SOURCES = new Set(["google"]);
-
-  // ---- Ingest task state managed globally so polling survives navigation ----
-  const { setTask, isRunning, progressMsg } = useJobsTask();
-
-  const ingestMutation = useMutation({
-    mutationFn: (data: IngestForm) =>
-      jobsApi.ingest({
-        search_term: data.search_term,
-        location: data.location || null,
-        country: data.country || null,
-        is_remote: data.is_remote ?? null,
-        hours_old: data.hours_old ?? 504,
-        results_wanted: data.results_wanted ?? null,
-        sources: data.sources,
-      }),
-    onSuccess: (res, variables) => setTask(res.task_id, variables.sources),
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : "Ingestion failed"),
-  });
-
-  const elapsed = useElapsed(isRunning);
-
-  const toggleSource = (source: (typeof JOB_SOURCES)[number]) => {
-    const next = selectedSources.includes(source)
-      ? selectedSources.filter((s) => s !== source)
-      : [...selectedSources, source];
-    setValue("sources", next, { shouldValidate: true });
-  };
-
   return (
     <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Ingest jobs</CardTitle>
-          <CardDescription>
-            Scrape and embed postings. Requires the scraping extra installed on
-            the backend (LinkedIn needs proxies).
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form
-            onSubmit={handleSubmit((d) => ingestMutation.mutate(d))}
-            className="flex flex-col gap-4"
-          >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="search_term">Search term</Label>
-                <Input
-                  id="search_term"
-                  placeholder="python engineer"
-                  {...register("search_term")}
-                />
-                {errors.search_term && (
-                  <p className="text-sm text-destructive">
-                    {errors.search_term.message}
-                  </p>
-                )}
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="location">Location</Label>
-                <Input
-                  id="location"
-                  placeholder="Remote"
-                  {...register("location")}
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="country">Country (Indeed/Glassdoor)</Label>
-                <Input id="country" placeholder="USA" {...register("country")} />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="results_wanted">Results wanted</Label>
-                <Input
-                  id="results_wanted"
-                  type="number"
-                  min={1}
-                  max={200}
-                  {...register("results_wanted", { valueAsNumber: true })}
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="hours_old">Posted within</Label>
-                <select
-                  id="hours_old"
-                  className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                  {...register("hours_old", { valueAsNumber: true })}
-                >
-                  <option value={24}>Last 24 hours</option>
-                  <option value={72}>Last 3 days</option>
-                  <option value={168}>Last week</option>
-                  <option value={336}>Last 2 weeks</option>
-                  <option value={504}>Last 3 weeks</option>
-                  <option value={720}>Last 30 days</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <input
-                id="is_remote"
-                type="checkbox"
-                className="h-4 w-4"
-                {...register("is_remote")}
-              />
-              <Label htmlFor="is_remote">Remote only</Label>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label>Sources</Label>
-              <div className="flex flex-wrap gap-2">
-                {JOB_SOURCES.map((source) => {
-                  const active = selectedSources.includes(source);
-                  const needsProxy = PROXY_REQUIRED_SOURCES.has(source);
-                  return (
-                    <button
-                      key={source}
-                      type="button"
-                      onClick={() => toggleSource(source)}
-                      title={needsProxy ? "Requires residential proxies on a server — will return 0 results without them" : undefined}
-                      className={`flex flex-col items-start rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                        active
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "border-input hover:bg-secondary"
-                      }`}
-                    >
-                      <span>{source}</span>
-                      {needsProxy && (
-                        <span className={`text-[10px] leading-none ${
-                          active ? "text-primary-foreground/70" : "text-muted-foreground"
-                        }`}>
-                          needs proxies
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-              {errors.sources && (
-                <p className="text-sm text-destructive">
-                  {errors.sources.message}
-                </p>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Button type="submit" disabled={isSubmitting || isRunning}>
-                {isRunning ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Search className="h-4 w-4" />
-                )}
-                {isRunning
-                  ? `${progressMsg} (${elapsed}s)`
-                  : "Ingest jobs"}
-              </Button>
-              {isRunning && (
-                <p className="text-xs text-muted-foreground">
-                  Running in the background — you can navigate away and come
-                  back; results will appear in the list below when done.
-                </p>
-              )}
-            </div>
-          </form>
-        </CardContent>
-      </Card>
-
       <section className="flex flex-col gap-3">
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
@@ -264,7 +124,7 @@ export function JobsPanel() {
               Jobs{" "}
               {jobsQuery.data ? (
                 <span className="text-muted-foreground">
-                  ({jobsQuery.data.total})
+                  ({total})
                 </span>
               ) : null}
             </h2>
@@ -317,9 +177,11 @@ export function JobsPanel() {
               className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <option value="">All job types</option>
-              {JOB_TYPES.map(({ label, value }) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
+              <option value="fulltime">Full-time</option>
+              <option value="parttime">Part-time</option>
+              <option value="contract">Contract</option>
+              <option value="temporary">Temporary</option>
+              <option value="internship">Internship</option>
             </select>
 
             <Input
@@ -333,15 +195,19 @@ export function JobsPanel() {
         {jobsQuery.isLoading && (
           <p className="text-sm text-muted-foreground">Loading jobs…</p>
         )}
-        {jobsQuery.data && jobsQuery.data.items.length === 0 && (
+        {jobsQuery.data && allJobs.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No jobs yet. Run an ingestion above.
+              No jobs yet.{" "}
+              <a href="/dashboard/settings/preferences" className="underline hover:text-foreground">
+                Save your preferences
+              </a>{" "}
+              and click <strong>Refresh now</strong> to pull the first batch.
             </CardContent>
           </Card>
         )}
         <div className="flex flex-col gap-3">
-          {jobsQuery.data?.items.map((job) => (
+          {allJobs.map((job) => (
             <JobCard
               key={job.id}
               job={job}
@@ -351,29 +217,27 @@ export function JobsPanel() {
             />
           ))}
         </div>
+
+        {/* Infinite scroll sentinel — overflow-anchor:none prevents the browser
+            from scrolling the viewport to keep this element in view when new
+            items are inserted above it, which would skip past the new content. */}
+        <div ref={sentinelRef} className="h-4" style={{ overflowAnchor: "none" }} />
+        {jobsQuery.isFetchingNextPage && (
+          <div className="flex justify-center py-4">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        )}
+        {!jobsQuery.hasNextPage && allJobs.length > 0 && (
+          <p className="py-2 text-center text-xs text-muted-foreground">
+            All {total} jobs loaded
+          </p>
+        )}
       </section>
     </div>
   );
 }
 
 // ---- Helpers -----------------------------------------------------------------
-
-function useElapsed(active: boolean): number {
-  const [elapsed, setElapsed] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    if (active) {
-      setElapsed(0);
-      timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [active]);
-  return elapsed;
-}
 
 function JobCard({ job, onArchive }: { job: Job; onArchive: (archived: boolean) => void }) {
   return (
