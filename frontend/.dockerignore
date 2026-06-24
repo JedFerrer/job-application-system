@@ -1,0 +1,7 @@
+# Optional .dockerignore for the standalone build image.
+node_modules
+.next
+.git
+.env*
+npm-debug.log*
+README.md
