@@ -21,13 +21,34 @@ async function proxy(req: NextRequest, path: string[]) {
       ? await req.arrayBuffer()
       : undefined;
 
-  const response = await fetch(url, {
-    method: req.method,
-    headers,
-    body: body ?? null,
-    // @ts-expect-error -- Node.js fetch signal for abort
-    signal: AbortSignal.timeout(115_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: req.method,
+      headers,
+      body: body ?? null,
+      signal: AbortSignal.timeout(115_000),
+    });
+  } catch (err) {
+    // AbortSignal.timeout throws a DOMException("TimeoutError") after 115 s.
+    // Other fetch failures (ECONNREFUSED, ECONNRESET, etc.) land here too.
+    // We must NOT let them propagate unhandled — Node's DOMException has a
+    // read-only `message` property that Next.js tries to set, causing:
+    // "TypeError: Cannot set property message ... which has only a getter"
+    const isTimeout =
+      err instanceof DOMException && err.name === "TimeoutError";
+    return new NextResponse(
+      JSON.stringify({
+        detail: isTimeout
+          ? "Backend request timed out"
+          : "Backend unavailable",
+      }),
+      {
+        status: isTimeout ? 504 : 502,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
 
   const resHeaders = new Headers(response.headers);
   resHeaders.delete("transfer-encoding");

@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "sonner";
+import { AuthProvider } from "@/context/auth-context";
 import { ResumeTaskProvider } from "@/context/resume-task-context";
 import { JobsTaskProvider } from "@/context/jobs-task-context";
 
@@ -37,11 +38,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-        <JobsTaskProvider>
-          <ResumeTaskProvider>
-            {children}
-          </ResumeTaskProvider>
-        </JobsTaskProvider>
+        <AuthProvider>
+          <JobsTaskProvider>
+            <ResumeTaskProvider>
+              {children}
+            </ResumeTaskProvider>
+          </JobsTaskProvider>
+        </AuthProvider>
         <Toaster richColors position="top-right" />
       </ThemeProvider>
     </QueryClientProvider>

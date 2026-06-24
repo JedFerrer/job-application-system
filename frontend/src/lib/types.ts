@@ -1,6 +1,22 @@
 // Shared API types mirroring the FastAPI Pydantic schemas (backend/app/domain/*).
 // Keep these in sync with the backend response_models.
 
+// ---- Auth ------------------------------------------------------------------
+export interface AuthUser {
+  id: number;
+  email: string;
+  name: string;
+  avatar_url: string | null;
+  created_at: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  user: AuthUser;
+}
+
 // ---- Async task (background jobs) ------------------------------------------
 export interface TaskQueued {
   task_id: string;
@@ -203,4 +219,85 @@ export interface ApplicationListItem {
 export interface ApplicationListResponse {
   items: ApplicationListItem[];
   total: number;
+}
+
+// ---- Job preferences (Phase 2) ----------------------------------------------
+export type RemotePreference = "remote" | "onsite" | "hybrid" | "any";
+
+export interface PreferenceResponse {
+  id: number;
+  user_id: number;
+  job_titles: string[];
+  keywords: string[];
+  excluded_keywords: string[];
+  locations: string[];
+  job_types: string[];
+  enabled_sources: string[];
+  remote_preference: RemotePreference;
+  salary_min: number | null;
+  results_per_source: number;
+  hours_old: number;
+  is_active: boolean;
+  last_scraped_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PreferenceUpdate {
+  job_titles?: string[];
+  keywords?: string[];
+  excluded_keywords?: string[];
+  locations?: string[];
+  job_types?: string[];
+  enabled_sources?: string[];
+  remote_preference?: RemotePreference;
+  salary_min?: number | null;
+  results_per_source?: number;
+  hours_old?: number;
+  is_active?: boolean;
+}
+
+export interface RefreshResponse {
+  task_id: string;
+  dispatched_at: string;
+}
+
+// ---- Skills gap (Phase 2) ---------------------------------------------------
+export interface SkillGapItem {
+  keyword: string;
+  frequency: number;
+}
+
+export interface SkillsGapSummary {
+  items: SkillGapItem[];
+  total_matches_considered: number;
+}
+
+// ---- Interview prep (Phase 2) -----------------------------------------------
+export type QuestionCategory =
+  | "technical"
+  | "behavioral"
+  | "system_design"
+  | "role_specific"
+  | "culture_fit";
+
+export interface InterviewQuestion {
+  question: string;
+  category: QuestionCategory;
+  why_it_matters: string;
+  suggested_angle: string;
+}
+
+export interface InterviewPrepRequest {
+  focus_areas?: string[];
+  question_count?: number;
+}
+
+export interface InterviewPrepResponse {
+  job_id: number;
+  questions: InterviewQuestion[];
+  focus_areas: string[];
+  model: string;
+  cached: boolean;
+  created_at: string;
 }

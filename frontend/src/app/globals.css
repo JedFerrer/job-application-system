@@ -133,6 +133,16 @@
 
 html {
   transition: color-scheme 0.3s;
+  /* Reserve the vertical scrollbar gutter so short pages (no scrollbar) and
+     tall pages (scrollbar) keep the same content width — prevents the
+     horizontal "jump" when navigating between pages of differing height. */
+  scrollbar-gutter: stable;
+  /* Disable scroll anchoring so the browser never adjusts the scroll position
+     when new items are inserted at the bottom of an infinite-scroll list.
+     Putting this only on the sentinel element is not sufficient because the
+     browser will fall back to selecting any other in-viewport element as the
+     anchor. Disabling it on the scroll container (html) is the authoritative fix. */
+  overflow-anchor: none;
 }
 
 html.dark {

@@ -2,25 +2,55 @@ import type {
   Application,
   ApplicationListResponse,
   ApplicationStatus,
+  AuthUser,
   CoverLetter,
   IngestRequest,
   IngestResponse,
+  InterviewPrepRequest,
+  InterviewPrepResponse,
   Job,
   JobListResponse,
   MatchExplanation,
   MatchListResponse,
   ParsedProfile,
+  PreferenceResponse,
+  PreferenceUpdate,
   ProfileResponse,
   RankResponse,
+  RefreshResponse,
   ResumeResponse,
+  SkillsGapSummary,
   TaskQueued,
   TaskStatus,
+  TokenResponse,
 } from "./types";
 
 // All browser calls go through the Next.js rewrite proxy (see next.config.ts),
 // which forwards `/api/backend/*` to the FastAPI `/api/v1/*` routes. Same-origin
-// from the browser's perspective: no CORS, ready for cookie auth later.
+// from the browser's perspective: no CORS, and the httpOnly refresh cookie is
+// forwarded transparently.
 export const API_URL = "/api/backend";
+
+// ---- Access token (in-memory) ----------------------------------------------
+// The short-lived access token lives only in memory (never localStorage) to
+// minimise XSS exposure. The long-lived refresh token is an httpOnly cookie the
+// browser sends automatically. On a full page reload the in-memory token is
+// lost, so the session provider silently calls `/auth/refresh` on mount.
+let accessToken: string | null = null;
+let onAuthExpired: (() => void) | null = null;
+
+export function setAccessToken(token: string | null): void {
+  accessToken = token;
+}
+
+export function getAccessToken(): string | null {
+  return accessToken;
+}
+
+/** Register a callback fired when refresh fails (session truly expired). */
+export function setAuthExpiredHandler(handler: (() => void) | null): void {
+  onAuthExpired = handler;
+}
 
 /** Render a FastAPI/pydantic error payload into a human-readable string. */
 function formatApiError(detail: unknown, status: number): string {
@@ -63,29 +93,46 @@ export class ApiError extends Error {
   }
 }
 
-async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function apiRequest<T>(
+  path: string,
+  options: RequestInit & { skipAuth?: boolean; _retried?: boolean } = {},
+): Promise<T> {
+  const { skipAuth = false, _retried = false, ...init } = options;
   const headers: Record<string, string> = {};
 
   // Don't set Content-Type for FormData (browser sets boundary itself).
-  if (!(options.body instanceof FormData)) {
+  if (!(init.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
-  // CSRF-style guard for cookie auth later; harmless now.
+  // CSRF-style guard for cookie auth; harmless for token auth.
   headers["X-Requested-With"] = "XMLHttpRequest";
 
-  if (options.headers) {
+  if (!skipAuth && accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
+  if (init.headers) {
     const incoming =
-      options.headers instanceof Headers
-        ? Object.fromEntries(options.headers.entries())
-        : (options.headers as Record<string, string>);
+      init.headers instanceof Headers
+        ? Object.fromEntries(init.headers.entries())
+        : (init.headers as Record<string, string>);
     Object.assign(headers, incoming);
   }
 
   const response = await fetch(`${API_URL}${path}`, {
-    ...options,
+    ...init,
     headers,
     credentials: "include",
   });
+
+  // Transparent single-shot refresh on an expired access token.
+  if (response.status === 401 && !skipAuth && !_retried) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      return apiRequest<T>(path, { ...options, _retried: true });
+    }
+    onAuthExpired?.();
+  }
 
   if (!response.ok) {
     const error = await response
@@ -100,6 +147,25 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
 
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+/** Attempt a silent refresh. Returns true on success. De-duped across calls. */
+let refreshInFlight: Promise<boolean> | null = null;
+function tryRefresh(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const res = await authApi.refresh();
+      setAccessToken(res.access_token);
+      return true;
+    } catch {
+      setAccessToken(null);
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
 }
 
 // ---- Resume -----------------------------------------------------------------
@@ -173,6 +239,38 @@ export const matchesApi = {
   },
   explain: (jobId: number) =>
     apiRequest<MatchExplanation>(`/matches/${jobId}/explain`),
+  skillsGapSummary: (topN = 5) =>
+    apiRequest<SkillsGapSummary>(`/matches/skills-gap-summary?top_n=${topN}`),
+};
+
+// ---- Preferences (Phase 2) --------------------------------------------------
+export const preferencesApi = {
+  get: () => apiRequest<PreferenceResponse>("/preferences"),
+  upsert: (payload: PreferenceUpdate) =>
+    apiRequest<PreferenceResponse>("/preferences", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  patch: (payload: PreferenceUpdate) =>
+    apiRequest<PreferenceResponse>("/preferences", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  refresh: () =>
+    apiRequest<RefreshResponse>("/preferences/refresh", { method: "POST" }),
+};
+
+// ---- Interview prep (Phase 2) -----------------------------------------------
+export const interviewApi = {
+  generate: (
+    jobId: number,
+    payload: InterviewPrepRequest = {},
+    forceRefresh = false,
+  ) =>
+    apiRequest<InterviewPrepResponse>(
+      `/interview-prep/${jobId}?force_refresh=${forceRefresh}`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
 };
 
 // ---- Cover letters ----------------------------------------------------------
@@ -183,6 +281,8 @@ export const coverLettersApi = {
       body: JSON.stringify({ job_id: jobId, tone: tone ?? null }),
     }),
   get: (id: number) => apiRequest<CoverLetter>(`/cover-letters/${id}`),
+  getByJobId: (jobId: number) =>
+    apiRequest<CoverLetter>(`/cover-letters/by-job/${jobId}`),
   update: (id: number, content: string) =>
     apiRequest<CoverLetter>(`/cover-letters/${id}`, {
       method: "PATCH",
@@ -211,3 +311,35 @@ export const applicationsApi = {
       body: JSON.stringify(payload),
     }),
 };
+
+// ---- Auth -------------------------------------------------------------------
+export const authApi = {
+  register: (payload: { email: string; name: string; password: string }) =>
+    apiRequest<TokenResponse>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      skipAuth: true,
+    }),
+  login: (payload: { email: string; password: string }) =>
+    apiRequest<TokenResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      skipAuth: true,
+    }),
+  google: (idToken: string) =>
+    apiRequest<TokenResponse>("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ id_token: idToken }),
+      skipAuth: true,
+    }),
+  /** Exchange the httpOnly refresh cookie for a fresh access token. */
+  refresh: () =>
+    apiRequest<TokenResponse>("/auth/refresh", {
+      method: "POST",
+      skipAuth: true,
+    }),
+  logout: () =>
+    apiRequest<void>("/auth/logout", { method: "POST", skipAuth: true }),
+  me: () => apiRequest<AuthUser>("/auth/me"),
+};
+
