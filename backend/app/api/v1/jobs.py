@@ -1,0 +1,156 @@
+"""Job endpoints: ingest (async 202 + polling) + list + detail."""
+
+from __future__ import annotations
+
+from typing import Annotated, Any
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+
+from app.api.deps import CurrentUser, JobServiceDep, TaskStoreDep
+from app.core.config import get_settings
+from app.core.logging import get_logger
+from app.domain.jobs.repository import JobRepository
+from app.domain.jobs.schemas import (
+    IngestRequest,
+    IngestResponse,
+    JobListResponse,
+    JobResponse,
+)
+from app.infrastructure.database import async_session_factory
+from app.infrastructure.redis_client import get_redis
+from app.infrastructure.task_store import TaskStore
+
+router = APIRouter(prefix="/jobs", tags=["jobs"])
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Background task
+# ---------------------------------------------------------------------------
+
+async def _run_ingest_bg(task_id: str, request: IngestRequest) -> None:
+    """Runs after 202 is returned: scrapes sources, upserts, embeds."""
+    store = TaskStore(get_redis())
+    settings = get_settings()
+
+    async def _progress(**kw: Any) -> None:
+        await store.update(task_id, **kw)
+
+    try:
+        async with async_session_factory() as db:
+            try:
+                from app.domain.jobs.service import JobService  # local to avoid module-level cycle  # noqa: PLC0415
+
+                service = JobService(JobRepository(db), user_timezone=settings.user_timezone)
+                result = await service.ingest(
+                    request,
+                    default_sources=settings.enabled_job_sources,
+                    default_country=settings.job_search_country,
+                    default_results=settings.job_results_wanted,
+                    proxies=settings.proxy_list or None,
+                    progress=_progress,
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+
+        await store.update(
+            task_id,
+            status="done",
+            message=(
+                f"Done — {result.fetched} fetched, "
+                f"{result.inserted} new, {result.embedded} embedded"
+            ),
+            fetched=result.fetched,
+            inserted=result.inserted,
+            updated=result.updated,
+            embedded=result.embedded,
+            sources=result.sources,
+            result=result.model_dump(),
+        )
+    except Exception as exc:
+        logger.exception("bg_ingest.failed", task_id=task_id)
+        await store.update(
+            task_id,
+            status="failed",
+            error=str(exc),
+            message=f"Failed: {exc}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_jobs(
+    payload: IngestRequest,
+    current_user: CurrentUser,
+    task_store: TaskStoreDep,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    """Queue a job-scraping run.  Poll ``GET /jobs/tasks/{task_id}`` for progress."""
+    task_id = await task_store.create("ingest")
+    background_tasks.add_task(_run_ingest_bg, task_id, payload)
+    return {"task_id": task_id}
+
+
+@router.get("/tasks/{task_id}")
+async def get_ingest_task(
+    task_id: str,
+    current_user: CurrentUser,
+    task_store: TaskStoreDep,
+) -> dict[str, Any]:
+    """Poll ingest task progress.  Expires after 1 hour."""
+    task = await task_store.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found or expired")
+    return task
+
+
+@router.get("", response_model=JobListResponse)
+async def list_jobs(
+    current_user: CurrentUser,
+    service: JobServiceDep,
+    source: str | None = None,
+    is_remote: bool | None = None,
+    job_type: str | None = None,
+    location: str | None = None,
+    min_salary: float | None = Query(default=None, ge=0),
+    include_archived: bool = False,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> JobListResponse:
+    return await service.list_jobs(
+        source=source,
+        is_remote=is_remote,
+        min_salary=min_salary,
+        job_type=job_type,
+        location_contains=location,
+        include_archived=include_archived,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/{job_id}", response_model=JobResponse)
+async def get_job(
+    job_id: int,
+    current_user: CurrentUser,
+    service: JobServiceDep,
+) -> JobResponse:
+    return await service.get_job(job_id)
+
+
+@router.patch("/{job_id}/archive", response_model=JobResponse)
+async def archive_job(
+    job_id: int,
+    current_user: CurrentUser,
+    service: JobServiceDep,
+    archived: bool = True,
+) -> JobResponse:
+    """Archive (or un-archive) a job.  Archived jobs are hidden from the default list."""
+    return await service.archive_job(job_id, archived=archived)
+    return await service.get_job(job_id)
+
