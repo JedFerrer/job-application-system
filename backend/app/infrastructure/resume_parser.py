@@ -84,8 +84,30 @@ async def parse_resume_text(resume_text: str) -> ParsedProfile:
     if not isinstance(payload, dict):
         raise ValueError("LLM did not return a JSON object for resume data")
 
+    # Log work history highlights for debugging.
+    wh = payload.get("work_history") or payload.get("experience") or []
+    for i, role in enumerate(wh if isinstance(wh, list) else []):
+        if isinstance(role, dict):
+            h = role.get("highlights", [])
+            logger.debug(
+                "resume_parse.role_highlights",
+                role_index=i,
+                title=role.get("title"),
+                highlights_count=len(h) if isinstance(h, list) else "not_list",
+                highlights_sample=str(h)[:200],
+            )
+
     try:
-        return ParsedProfile.model_validate(payload)
+        profile = ParsedProfile.model_validate(payload)
+        # Log what actually got validated.
+        for i, item in enumerate(profile.work_history):
+            logger.debug(
+                "resume_parse.validated_highlights",
+                role_index=i,
+                title=item.title,
+                highlights_count=len(item.highlights),
+            )
+        return profile
     except ValidationError as exc:
         logger.warning("resume_parse_validation_failed", model=model, error=str(exc))
         raise ValueError(f"Resume data failed validation: {exc}") from exc

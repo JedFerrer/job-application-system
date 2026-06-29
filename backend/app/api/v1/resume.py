@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile, status
 
-from app.api.deps import CurrentUser, ResumeServiceDep, TaskStoreDep
+from app.api.deps import CurrentUser, JobRepositoryDep, ResumeServiceDep, TaskStoreDep
 from app.core.logging import get_logger
 from app.domain.resume.exceptions import (
     ResumeParseError,
@@ -17,6 +17,7 @@ from app.domain.resume.schemas import (
     ProfileResponse,
     ProfileUpdate,
     ResumeResponse,
+    TailoredResume,
 )
 from app.infrastructure.database import async_session_factory
 from app.infrastructure.redis_client import get_redis
@@ -157,5 +158,24 @@ async def update_profile(
 ) -> ProfileResponse:
     return await service.update_profile(
         user_id=current_user.id, profile=payload.profile
+    )
+
+
+@router.get("/tailor/{job_id}", response_model=TailoredResume)
+async def tailor_resume(
+    job_id: int,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+    job_repo: JobRepositoryDep,
+) -> TailoredResume:
+    """Tailor the user's work history for a specific job posting.
+
+    Rewrites highlights to emphasize JD-relevant experience. Never invents
+    skills — only rephrases what the user's profile already contains.
+    """
+    return await service.tailor_for_job(
+        user_id=current_user.id,
+        job_id=job_id,
+        job_repository=job_repo,
     )
 

@@ -32,7 +32,12 @@ class WorkItem(BaseModel):
     )
     start: str | None = None
     end: str | None = None
-    highlights: list[str] = Field(default_factory=list)
+    highlights: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices(
+            "highlights", "bullets", "achievements", "responsibilities", "details",
+        ),
+    )
 
 
 class EducationItem(BaseModel):
@@ -115,3 +120,34 @@ class ProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: ParsedProfile
+
+
+# ---- Resume tailoring (Phase 2) ---------------------------------------------
+
+
+class TailoredWorkItem(BaseModel):
+    """A single work-history entry after tailoring for a specific job."""
+
+    company: str | None = None
+    title: str | None = None
+    start: str | None = None
+    end: str | None = None
+    original_highlights: list[str] = Field(default_factory=list)
+    tailored_highlights: list[str] = Field(default_factory=list)
+
+
+class TailoredResume(BaseModel):
+    """A profile rewritten to emphasize relevance for a specific job posting."""
+
+    job_id: int
+    professional_summary: str | None = None
+    full_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    headline: str | None = None
+    work_history: list[TailoredWorkItem] = Field(default_factory=list)
+    education: list[EducationItem] = Field(default_factory=list)
+    certifications: list[str] = Field(default_factory=list)
+    matched_skills: list[str] = Field(default_factory=list)
+    other_skills: list[str] = Field(default_factory=list)
+    missing_keywords: list[str] = Field(default_factory=list)
