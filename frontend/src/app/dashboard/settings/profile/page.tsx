@@ -1,4 +1,4 @@
-import { ResumePanel } from "@/components/resume/resume-panel";
+import { ProfilePanel } from "@/components/profile/profile-panel";
 
 export default function SettingsProfilePage() {
   return (
@@ -6,10 +6,10 @@ export default function SettingsProfilePage() {
       <div>
         <h2 className="text-lg font-semibold">Profile</h2>
         <p className="text-sm text-muted-foreground">
-          Upload and review the profile that powers matching and cover letters.
+          Your professional profile powers job matching and cover letter generation.
         </p>
       </div>
-      <ResumePanel />
+      <ProfilePanel />
     </div>
   );
 }
