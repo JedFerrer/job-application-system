@@ -95,6 +95,13 @@ def get_job_service(db: DbSession) -> JobService:
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 
 
+def get_job_repository(db: DbSession) -> JobRepository:
+    return JobRepository(db)
+
+
+JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
+
+
 def get_match_service(db: DbSession) -> MatchingService:
     return MatchingService(MatchingRepository(db))
 

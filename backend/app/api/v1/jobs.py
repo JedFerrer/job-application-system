@@ -13,6 +13,7 @@ from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import (
     IngestRequest,
     IngestResponse,
+    JobImportRequest,
     JobListResponse,
     JobResponse,
 )
@@ -136,6 +137,16 @@ async def list_jobs(
     )
 
 
+@router.post("/import", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
+async def import_job(
+    payload: JobImportRequest,
+    current_user: CurrentUser,
+    service: JobServiceDep,
+) -> JobResponse:
+    """Manually import a single job posting from a URL."""
+    return await service.import_job(payload, user_id=current_user.id)
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(
     job_id: int,
@@ -154,5 +165,4 @@ async def archive_job(
 ) -> JobResponse:
     """Archive (or un-archive) a job.  Archived jobs are hidden from the default list."""
     return await service.archive_job(job_id, archived=archived)
-    return await service.get_job(job_id)
 

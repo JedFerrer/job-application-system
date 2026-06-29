@@ -65,3 +65,14 @@ class JobListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class JobImportRequest(BaseModel):
+    """Body for ``POST /jobs/import`` — manually add a single job posting."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: str = Field(..., min_length=1, max_length=2048)
+    title: str = Field(..., min_length=1, max_length=500)
+    company: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=20000)

@@ -21,6 +21,7 @@ from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import (
     IngestRequest,
     IngestResponse,
+    JobImportRequest,
     JobListResponse,
     JobResponse,
 )
@@ -224,6 +225,33 @@ class JobService:
 
     async def archive_job(self, job_id: int, *, archived: bool) -> JobResponse:
         job = await self._repo.set_archived(job_id, archived=archived)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        return JobResponse.model_validate(job)
+
+    async def import_job(
+        self, payload: JobImportRequest, *, user_id: int
+    ) -> JobResponse:
+        """Manually import a single job posting from a URL.
+
+        Creates a fingerprint, upserts with ``source="manual"``, embeds the
+        description, and links the job to the user's feed.
+        """
+        fingerprint = job_fingerprint(payload.company, payload.title, None)
+        values: dict[str, object] = {
+            "fingerprint": fingerprint,
+            "title": payload.title,
+            "company": payload.company,
+            "description": payload.description,
+            "source": "manual",
+            "source_url": payload.url,
+            "raw_response": {"imported_from": payload.url},
+        }
+        job_id, was_inserted = await self._repo.upsert_job(values)
+        if was_inserted and payload.description:
+            await self._embed_job(job_id, payload.description)
+        await self._repo.link_user_jobs(user_id, [job_id])
+        job = await self._repo.get_by_id(job_id)
         if job is None:
             raise JobNotFoundError(job_id)
         return JobResponse.model_validate(job)
