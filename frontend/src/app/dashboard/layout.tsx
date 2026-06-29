@@ -9,8 +9,8 @@ export default function DashboardLayout({
   return (
     <AuthGuard>
       <div className="flex min-h-screen">
-        <aside className="hidden w-60 shrink-0 border-r bg-sidebar-background md:block">
-          <div className="flex h-14 items-center border-b px-5">
+        <aside className="sticky top-0 hidden h-screen w-60 shrink-0 border-r bg-sidebar-background md:flex md:flex-col">
+          <div className="flex h-14 shrink-0 items-center border-b px-5">
             <span className="text-sm font-semibold tracking-tight">
               Job Application CRM
             </span>
@@ -18,7 +18,7 @@ export default function DashboardLayout({
           <DashboardNav />
         </aside>
         <main className="flex-1 overflow-x-hidden">
-          <div className="mx-auto w-full max-w-5xl px-4 py-8 md:px-8">
+          <div className="mx-auto w-full max-w-7xl px-4 py-8 md:px-8">
             {children}
           </div>
         </main>

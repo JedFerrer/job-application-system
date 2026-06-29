@@ -335,28 +335,58 @@ export function PreferencesForm() {
             </div>
           </div>
         </CardContent>
-        <CardFooter className="flex flex-row justify-between gap-4">
-          <Button type="submit" disabled={!canSave || saveMutation.isPending}>
-            {saveMutation.isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Save className="size-4" />
-            )}
-            Save preferences
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!hasSavedPreference || refreshMutation.isPending}
-            onClick={() => refreshMutation.mutate()}
-          >
-            {refreshMutation.isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <RefreshCw className="size-4" />
-            )}
-            Refresh now
-          </Button>
+        <CardFooter className="flex flex-col gap-4 sm:flex-row sm:justify-between">
+          <div className="flex items-center gap-3">
+            <Label htmlFor="is-active" className="text-sm font-normal cursor-pointer">
+              Auto-scrape new jobs
+            </Label>
+            <button
+              id="is-active"
+              type="button"
+              role="switch"
+              aria-checked={form.isActive}
+              onClick={() =>
+                setForm((p) => ({ ...p, isActive: !p.isActive }))
+              }
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                form.isActive ? "bg-primary" : "bg-muted"
+              }`}
+            >
+              <span
+                className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-sm ring-0 transition-transform ${
+                  form.isActive ? "translate-x-4" : "translate-x-0"
+                }`}
+              />
+            </button>
+            <span className="text-xs text-muted-foreground">
+              {form.isActive
+                ? "Scheduled scraping is on"
+                : "Only manual refresh will pull jobs"}
+            </span>
+          </div>
+          <div className="flex flex-row gap-4">
+            <Button type="submit" disabled={!canSave || saveMutation.isPending}>
+              {saveMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Save className="size-4" />
+              )}
+              Save preferences
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!hasSavedPreference || refreshMutation.isPending}
+              onClick={() => refreshMutation.mutate()}
+            >
+              {refreshMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <RefreshCw className="size-4" />
+              )}
+              Refresh now
+            </Button>
+          </div>
         </CardFooter>
       </Card>
     </form>

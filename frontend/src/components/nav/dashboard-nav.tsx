@@ -30,7 +30,7 @@ export function DashboardNav() {
   const { user, logout } = useAuth();
 
   return (
-    <nav className="flex h-[calc(100%-3.5rem)] flex-col gap-1 p-3">
+    <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
       {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
         const isActive = pathname === href || pathname.startsWith(`${href}/`);
         return (

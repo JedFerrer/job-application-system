@@ -1,13 +1,25 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";import { Archive, ArchiveRestore, Loader2, MapPin, X } from "lucide-react";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Archive, ArchiveRestore, FileText, Link2, Loader2, MapPin, Plus, X } from "lucide-react";
 import { toast } from "sonner";
-import { jobsApi } from "@/lib/api";
+import { ApiError, applicationsApi, jobsApi } from "@/lib/api";
 import type { Job } from "@/lib/types";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
 
 const PAGE_SIZE = 25;
 
@@ -35,6 +47,7 @@ export function JobsPanel() {
   const [filterJobType, setFilterJobType] = useState("");
   const [filterLocation, setFilterLocation] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [coverJob, setCoverJob] = useState<Job | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Refs keep the latest query state readable inside the observer callback
@@ -115,6 +128,43 @@ export function JobsPanel() {
     onError: () => toast.error("Failed to update job"),
   });
 
+  const saveAppMutation = useMutation({
+    mutationFn: (jobId: number) => applicationsApi.create(jobId),
+    onSuccess: () => {
+      toast.success("Saved to applications");
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Save failed"),
+  });
+
+  const [showImport, setShowImport] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [importTitle, setImportTitle] = useState("");
+  const [importCompany, setImportCompany] = useState("");
+  const [importDescription, setImportDescription] = useState("");
+
+  const importMutation = useMutation({
+    mutationFn: () =>
+      jobsApi.importJob({
+        url: importUrl,
+        title: importTitle,
+        company: importCompany || undefined,
+        description: importDescription || undefined,
+      }),
+    onSuccess: () => {
+      toast.success("Job imported");
+      setShowImport(false);
+      setImportUrl("");
+      setImportTitle("");
+      setImportCompany("");
+      setImportDescription("");
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Import failed"),
+  });
+
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-col gap-3">
@@ -129,18 +179,14 @@ export function JobsPanel() {
               ) : null}
             </h2>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setShowArchived((v) => !v)}
-                className={`flex items-center gap-1 text-xs ${
-                  showArchived
-                    ? "text-foreground font-medium"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowImport(true)}
               >
-                <Archive className="h-3 w-3" />
-                {showArchived ? "Hide archived" : "Show archived"}
-              </button>
+                <Link2 className="h-4 w-4" />
+                Import job
+              </Button>
               {(filterSource || filterJobType || filterLocation) && (
                 <button
                   type="button"
@@ -158,8 +204,10 @@ export function JobsPanel() {
             </div>
           </div>
 
+          {/* Import job toggle */}
+
           {/* Filter bar */}
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <select
               value={filterSource}
               onChange={(e) => setFilterSource(e.target.value)}
@@ -190,6 +238,19 @@ export function JobsPanel() {
               placeholder="Filter by location / country…"
               className="h-8 w-56 text-sm"
             />
+
+            <button
+              type="button"
+              onClick={() => setShowArchived((v) => !v)}
+              className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs transition-colors ${
+                showArchived
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-input hover:bg-muted"
+              }`}
+            >
+              <Archive className="h-3 w-3" />
+              {showArchived ? "Archived" : "Show archived"}
+            </button>
           </div>
         </div>
         {jobsQuery.isLoading && (
@@ -214,6 +275,8 @@ export function JobsPanel() {
               onArchive={(archived) =>
                 archiveMutation.mutate({ jobId: job.id, archived })
               }
+              onSaveToApps={() => saveAppMutation.mutate(job.id)}
+              onCoverLetter={() => setCoverJob(job)}
             />
           ))}
         </div>
@@ -233,13 +296,93 @@ export function JobsPanel() {
           </p>
         )}
       </section>
+
+      <Dialog open={showImport} onOpenChange={setShowImport}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Import job</DialogTitle>
+            <DialogDescription>
+              Paste a job posting URL and fill in the details to add it to your feed.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="import-url">Job posting URL *</Label>
+              <Input
+                id="import-url"
+                placeholder="https://..."
+                value={importUrl}
+                onChange={(e) => setImportUrl(e.target.value)}
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="import-title">Job title *</Label>
+                <Input
+                  id="import-title"
+                  placeholder="e.g. Senior Frontend Engineer"
+                  value={importTitle}
+                  onChange={(e) => setImportTitle(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="import-company">Company</Label>
+                <Input
+                  id="import-company"
+                  placeholder="e.g. Acme Corp"
+                  value={importCompany}
+                  onChange={(e) => setImportCompany(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="import-description">Job description</Label>
+              <Textarea
+                id="import-description"
+                placeholder="Paste the job description text (optional)"
+                value={importDescription}
+                onChange={(e) => setImportDescription(e.target.value)}
+                rows={5}
+              />
+            </div>
+            <Button
+              disabled={!importUrl.trim() || !importTitle.trim() || importMutation.isPending}
+              onClick={() => importMutation.mutate()}
+            >
+              {importMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Link2 className="h-4 w-4" />
+              )}
+              Import job
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <CoverLetterDialog
+        jobId={coverJob?.id ?? null}
+        jobTitle={coverJob?.title}
+        open={coverJob !== null}
+        onOpenChange={(open) => !open && setCoverJob(null)}
+      />
     </div>
   );
 }
 
 // ---- Helpers -----------------------------------------------------------------
 
-function JobCard({ job, onArchive }: { job: Job; onArchive: (archived: boolean) => void }) {
+function JobCard({
+  job,
+  onArchive,
+  onSaveToApps,
+  onCoverLetter,
+}: {
+  job: Job;
+  onArchive: (archived: boolean) => void;
+  onSaveToApps: () => void;
+  onCoverLetter: () => void;
+}) {
   return (
     <Card className={job.is_archived ? "opacity-60" : undefined}>
       <CardContent className="flex flex-col gap-2 py-4">
@@ -300,6 +443,24 @@ function JobCard({ job, onArchive }: { job: Job; onArchive: (archived: boolean) 
               {job.salary_max != null ? `–${job.salary_max}` : ""}
             </span>
           )}
+        </div>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onCoverLetter}
+          >
+            <FileText className="h-4 w-4" />
+            Cover letter
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onSaveToApps}
+          >
+            <Plus className="h-4 w-4" />
+            Save to applications
+          </Button>
         </div>
       </CardContent>
     </Card>

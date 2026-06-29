@@ -7,7 +7,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { FileText, Loader2, MessagesSquare, Plus, RefreshCw } from "lucide-react";
+import { FilePenLine, FileText, Loader2, MessagesSquare, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, matchesApi } from "@/lib/api";
 import type { MatchItem } from "@/lib/types";
@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/dialog";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
 import { InterviewPrepDialog } from "@/components/interview/interview-prep-dialog";
+import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { SkillsGapSummary } from "@/components/matches/skills-gap-summary";
 
 const CONFIDENCE_VARIANT: Record<
@@ -58,6 +59,7 @@ export function MatchesPanel() {
   const [explainJob, setExplainJob] = useState<MatchItem | null>(null);
   const [coverJob, setCoverJob] = useState<MatchItem | null>(null);
   const [prepJob, setPrepJob] = useState<MatchItem | null>(null);
+  const [tailorJob, setTailorJob] = useState<MatchItem | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Refs keep the latest query state readable inside the observer callback
@@ -232,6 +234,14 @@ export function MatchesPanel() {
               </Button>
               <Button
                 size="sm"
+                variant="outline"
+                onClick={() => setTailorJob(match)}
+              >
+                <FilePenLine className="h-4 w-4" />
+                Tailor resume
+              </Button>
+              <Button
+                size="sm"
                 variant="ghost"
                 onClick={() => saveAppMutation.mutate(match.job_id)}
                 disabled={saveAppMutation.isPending}
@@ -276,6 +286,12 @@ export function MatchesPanel() {
         jobTitle={prepJob?.title}
         open={prepJob !== null}
         onOpenChange={(open) => !open && setPrepJob(null)}
+      />
+      <TailorResumeDialog
+        jobId={tailorJob?.job_id ?? null}
+        jobTitle={tailorJob?.title}
+        open={tailorJob !== null}
+        onOpenChange={(open) => !open && setTailorJob(null)}
       />
     </div>
   );

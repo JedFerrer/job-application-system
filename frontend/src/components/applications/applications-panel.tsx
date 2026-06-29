@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileText } from "lucide-react";
+import { FileText, X } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi } from "@/lib/api";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
@@ -17,6 +17,7 @@ import {
   Card,
   CardContent,
 } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 
 export function ApplicationsPanel() {
   const queryClient = useQueryClient();
@@ -24,11 +25,33 @@ export function ApplicationsPanel() {
     jobId: number;
     jobTitle: string;
   } | null>(null);
+  const [filterStatus, setFilterStatus] = useState<ApplicationStatus | null>(null);
 
   const appsQuery = useQuery({
     queryKey: ["applications"],
     queryFn: applicationsApi.list,
   });
+
+  const { filteredItems, statusCounts } = useMemo(() => {
+    const items = appsQuery.data?.items ?? [];
+    const counts: Record<ApplicationStatus, number> = {
+      saved: 0,
+      applied: 0,
+      interview: 0,
+      offer: 0,
+      rejected: 0,
+      closed: 0,
+    };
+    for (const item of items) {
+      counts[item.status] = (counts[item.status] ?? 0) + 1;
+    }
+    return {
+      filteredItems: filterStatus
+        ? items.filter((a) => a.status === filterStatus)
+        : items,
+      statusCounts: counts,
+    };
+  }, [appsQuery.data, filterStatus]);
 
   const statusMutation = useMutation({
     mutationFn: ({ id, status }: { id: number; status: ApplicationStatus }) =>
@@ -77,41 +100,95 @@ export function ApplicationsPanel() {
     );
   }
 
+  const STATUS_BADGE_VARIANT: Record<ApplicationStatus, "default" | "secondary" | "outline" | "destructive"> = {
+    saved: "secondary",
+    applied: "default",
+    interview: "default",
+    offer: "default",
+    rejected: "destructive",
+    closed: "outline",
+  };
+
   return (
     <>
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-muted-foreground">
-                  <th className="px-4 py-3 font-medium">Job</th>
-                  <th className="px-4 py-3 font-medium">Company</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Cover letter</th>
-                </tr>
-              </thead>
-              <tbody>
-                {appsQuery.data?.items.map((app) => (
-                  <ApplicationRow
-                    key={app.id}
-                    app={app}
-                    onStatusChange={(status) =>
-                      statusMutation.mutate({ id: app.id, status })
-                    }
-                    onCoverLetterClick={() =>
-                      setCoverLetterJob({
-                        jobId: app.job_id,
-                        jobTitle: app.job_title,
-                      })
-                    }
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Status filter bar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge
+          variant={filterStatus === null ? "default" : "outline"}
+          className="cursor-pointer"
+          onClick={() => setFilterStatus(null)}
+        >
+          All ({appsQuery.data?.total ?? 0})
+        </Badge>
+        {APPLICATION_STATUSES.map((status) => (
+          <Badge
+            key={status}
+            variant={
+              filterStatus === status
+                ? STATUS_BADGE_VARIANT[status]
+                : "outline"
+            }
+            className="cursor-pointer capitalize"
+            onClick={() =>
+              setFilterStatus(filterStatus === status ? null : status)
+            }
+          >
+            {status} ({statusCounts[status]})
+          </Badge>
+        ))}
+        {filterStatus && (
+          <button
+            type="button"
+            onClick={() => setFilterStatus(null)}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-3 w-3" />
+            Clear filter
+          </button>
+        )}
+      </div>
+
+      {filteredItems.length === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No applications match the selected filter.
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="px-4 py-3 font-medium">Job</th>
+                    <th className="px-4 py-3 font-medium">Company</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Cover letter</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredItems.map((app) => (
+                    <ApplicationRow
+                      key={app.id}
+                      app={app}
+                      onStatusChange={(status) =>
+                        statusMutation.mutate({ id: app.id, status })
+                      }
+                      onCoverLetterClick={() =>
+                        setCoverLetterJob({
+                          jobId: app.job_id,
+                          jobTitle: app.job_title,
+                        })
+                      }
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <CoverLetterDialog
         jobId={coverLetterJob?.jobId ?? null}
