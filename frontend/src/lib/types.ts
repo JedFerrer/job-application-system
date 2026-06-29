@@ -79,6 +79,30 @@ export interface ProfileResponse {
   profile: ParsedProfile;
 }
 
+export interface TailoredWorkItem {
+  company: string | null;
+  title: string | null;
+  start: string | null;
+  end: string | null;
+  original_highlights: string[];
+  tailored_highlights: string[];
+}
+
+export interface TailoredResume {
+  job_id: number;
+  professional_summary: string | null;
+  full_name: string | null;
+  email: string | null;
+  phone: string | null;
+  headline: string | null;
+  work_history: TailoredWorkItem[];
+  education: EducationItem[];
+  certifications: string[];
+  matched_skills: string[];
+  other_skills: string[];
+  missing_keywords: string[];
+}
+
 // ---- Jobs (Phase 2) ---------------------------------------------------------
 export interface IngestRequest {
   search_term: string;

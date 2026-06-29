@@ -20,6 +20,7 @@ import type {
   RefreshResponse,
   ResumeResponse,
   SkillsGapSummary,
+  TailoredResume,
   TaskQueued,
   TaskStatus,
   TokenResponse,
@@ -184,6 +185,8 @@ export const resumeApi = {
       method: "PUT",
       body: JSON.stringify({ profile }),
     }),
+  tailorResume: (jobId: number) =>
+    apiRequest<TailoredResume>(`/resume/tailor/${jobId}`),
 };
 
 // ---- Jobs -------------------------------------------------------------------
@@ -221,6 +224,11 @@ export const jobsApi = {
   },
   archive: (jobId: number, archived: boolean) =>
     apiRequest<Job>(`/jobs/${jobId}/archive?archived=${archived}`, { method: "PATCH" }),
+  importJob: (payload: { url: string; title: string; company?: string; description?: string }) =>
+    apiRequest<Job>("/jobs/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
 
 // ---- Matches ----------------------------------------------------------------
@@ -341,5 +349,17 @@ export const authApi = {
   logout: () =>
     apiRequest<void>("/auth/logout", { method: "POST", skipAuth: true }),
   me: () => apiRequest<AuthUser>("/auth/me"),
+  forgotPassword: (email: string) =>
+    apiRequest<{ message: string; reset_url?: string }>("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+      skipAuth: true,
+    }),
+  resetPassword: (token: string, password: string) =>
+    apiRequest<void>("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, password }),
+      skipAuth: true,
+    }),
 };
 
