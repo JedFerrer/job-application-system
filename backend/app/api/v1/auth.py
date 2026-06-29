@@ -17,9 +17,11 @@ from app.core.config import Settings
 from app.core.rate_limit import limiter
 from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.auth.schemas import (
+    ForgotPasswordRequest,
     GoogleAuthRequest,
     LoginRequest,
     RegisterRequest,
+    ResetPasswordRequest,
     TokenResponse,
     UserResponse,
 )
@@ -131,3 +133,32 @@ async def logout(response: Response, settings: SettingsDep) -> Response:
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: CurrentUser) -> UserResponse:
     return UserResponse.model_validate(current_user)
+
+
+@router.post("/forgot-password")
+@limiter.limit("3/minute")
+async def forgot_password(
+    request: Request,
+    payload: ForgotPasswordRequest,
+    service: AuthServiceDep,
+) -> dict[str, str]:
+    """Request a password-reset link. The token is returned in the response
+    for development; in production it would be sent via email."""
+    return await service.forgot_password(email=payload.email)
+
+
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("5/minute")
+async def reset_password(
+    request: Request,
+    payload: ResetPasswordRequest,
+    service: AuthServiceDep,
+) -> Response:
+    """Reset a password using a valid reset token."""
+    await service.reset_password(
+        token_str=payload.token,
+        new_password=payload.password.get_secret_value(),
+    )
+    response = Response()
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response

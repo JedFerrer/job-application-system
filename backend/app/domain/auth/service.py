@@ -153,3 +153,46 @@ class AuthService:
         if user is None or not user.is_active:
             raise InvalidTokenError
         return self._issue(user)
+
+    # -- password reset ----------------------------------------------------
+
+    async def forgot_password(self, *, email: str) -> dict[str, str]:
+        """Generate a password-reset token for ``email``.
+
+        Returns the reset URL (for dev environments). In production, the token
+        would be sent via email instead.
+        """
+        user = await self._repo.get_by_email(email)
+        if user is None or user.hashed_password is None:
+            # Don't reveal whether the email exists — always return success.
+            return {"message": "If the email is registered, a reset link has been sent."}
+
+        token = create_token(
+            settings=self._settings,
+            subject=user.id,
+            token_type="reset",
+        )
+        # In production, email this URL instead.
+        return {
+            "message": "If the email is registered, a reset link has been sent.",
+            "reset_url": f"/reset-password?token={token}",
+        }
+
+    async def reset_password(self, *, token_str: str, new_password: str) -> None:
+        """Validate a reset token and update the user's password."""
+        try:
+            user_id = decode_token(
+                settings=self._settings,
+                token=token_str,
+                expected_type="reset",
+            )
+        except TokenError as exc:
+            raise InvalidTokenError from exc
+
+        user = await self._repo.get_by_id(user_id)
+        if user is None or not user.is_active:
+            raise InvalidTokenError
+
+        await self._repo.update_password(
+            user, hashed_password=hash_password(new_password)
+        )

@@ -94,6 +94,14 @@ export default function SignInPage() {
                 disabled={submitting}
               />
             </div>
+            <div className="flex items-center justify-end">
+              <Link
+                href="/forgot-password"
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Forgot password?
+              </Link>
+            </div>
             <Button type="submit" disabled={submitting}>
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
               Sign in

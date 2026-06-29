@@ -49,3 +49,16 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: UserResponse
+
+
+class ForgotPasswordRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    token: str = Field(min_length=1)
+    password: SecretStr = Field(min_length=8, max_length=128)

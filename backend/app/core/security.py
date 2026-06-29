@@ -22,7 +22,7 @@ from app.core.config import Settings
 
 _hasher = PasswordHasher()
 
-TokenType = Literal["access", "refresh"]
+TokenType = Literal["access", "refresh", "reset"]
 
 
 class TokenError(Exception):
@@ -57,6 +57,8 @@ def create_token(
     now = datetime.now(UTC)
     if token_type == "access":
         expires = now + timedelta(minutes=settings.access_token_expire_minutes)
+    elif token_type == "reset":
+        expires = now + timedelta(minutes=15)
     else:
         expires = now + timedelta(days=settings.refresh_token_expire_days)
 
