@@ -248,6 +248,25 @@ def compute_skill_match(
     )
 
 
+def extract_jd_skills(job_description: str) -> list[str]:
+    """Extract skill keywords from a job description using known aliases.
+
+    Scans the JD text for any known skill alias and returns the canonical
+    names. Deterministic and free — no LLM call needed.
+    """
+    if not job_description:
+        return []
+    text_lower = job_description.lower()
+    found: set[str] = set()
+    for canonical, aliases in _SKILL_ALIASES.items():
+        for alias in aliases:
+            pattern = _alias_pattern(alias)
+            if pattern.search(text_lower):
+                found.add(canonical)
+                break
+    return sorted(found)
+
+
 def report_to_dict(report: SkillMatchReport) -> dict[str, object]:
     """JSON-serializable form (used by the LLM prompt + the UI breakdown)."""
     return {
