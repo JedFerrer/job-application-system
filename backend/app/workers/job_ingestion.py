@@ -126,16 +126,31 @@ def _search_dedup_key(request: IngestRequest, effective_sources: list[str]) -> s
 
 
 async def _dispatch_all_scrapes_async() -> dict[str, int]:
-    """Read all active preference user IDs and enqueue one task per user."""
+    """Read all active preference user IDs and enqueue one task per user.
+
+    Users whose preferences haven't been updated in 7 days are skipped to
+    avoid scraping for dormant accounts.
+    """
+    settings = get_settings()
+    cutoff = datetime.now(UTC) - timedelta(days=7)
+
     async with _worker_session_factory() as db:
         active_prefs = await PreferenceRepository(db).list_active()
-        user_ids = [p.user_id for p in active_prefs if p.is_active]
+        # Filter to users whose preferences have been touched recently.
+        user_ids = [
+            p.user_id
+            for p in active_prefs
+            if p.is_active and p.updated_at.replace(tzinfo=UTC) >= cutoff
+        ]
 
     for uid in user_ids:
         scrape_all_active_preferences.delay(uid)
 
-    logger.info("dispatch.done", users=len(user_ids))
-    return {"users": len(user_ids)}
+    skipped = len(active_prefs) - len(user_ids)
+    logger.info(
+        "dispatch.done", users=len(user_ids), skipped=skipped, cutoff=cutoff.isoformat()
+    )
+    return {"users": len(user_ids), "skipped": skipped}
 
 
 @celery_app.task(

@@ -103,9 +103,9 @@ class Settings(BaseSettings):
     # older than this are archived by the nightly maintenance task.
     job_archive_after_days: int = 30
     # Celery Beat cron expressions (minute hour day month day-of-week).
-    scrape_schedule_cron: str = "0 6,13,20 * * *"
+    scrape_schedule_cron: str = "0 6 * * *"
     archive_schedule_cron: str = "0 2 * * *"
-    match_ranking_schedule_cron: str = "30 6,13,20 * * *"
+    match_ranking_schedule_cron: str = "30 6 * * *"
 
     # --- Shift detection ---
     # IANA timezone name for the job seeker.  Used to convert employer-side
