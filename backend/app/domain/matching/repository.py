@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job
 from app.models.resume import CandidateProfile, Resume
+from app.models.user_job import UserJob
 from app.models.user_job_match import UserJobMatch
 
 
@@ -70,26 +71,34 @@ class MatchingRepository:
         await self._session.execute(stmt)
 
     async def list_matches(
-        self, *, user_id: int, limit: int, offset: int
+        self,
+        *,
+        user_id: int,
+        limit: int,
+        offset: int,
     ) -> tuple[list[tuple[Job, UserJobMatch]], int]:
-        base = (
-            select(Job, UserJobMatch)
-            .join(UserJobMatch, UserJobMatch.job_id == Job.id)
-            .where(UserJobMatch.user_id == user_id)
-        )
+        """Return ranked matches — only jobs with completed match analysis.
+
+        Imported jobs without match scores are excluded; they belong in
+        /imported, not /matches, until analysis completes.
+        """
         count_stmt = (
             select(func.count())
             .select_from(UserJobMatch)
             .where(UserJobMatch.user_id == user_id)
         )
         total = int((await self._session.execute(count_stmt)).scalar_one())
+
         list_stmt = (
-            base.order_by(UserJobMatch.vector_score.desc(), Job.id.desc())
+            select(Job, UserJobMatch)
+            .join(UserJobMatch, UserJobMatch.job_id == Job.id)
+            .where(UserJobMatch.user_id == user_id)
+            .order_by(UserJobMatch.vector_score.desc(), Job.id.desc())
             .limit(limit)
             .offset(offset)
         )
         rows = (await self._session.execute(list_stmt)).all()
-        return [(row[0], row[1]) for row in rows], total
+        return [(r[0], r[1]) for r in rows], total
 
     async def get_match(
         self, *, user_id: int, job_id: int

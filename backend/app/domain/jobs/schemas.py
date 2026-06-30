@@ -56,8 +56,15 @@ class JobResponse(BaseModel):
     source_url: str
     posted_at: datetime | None
     fetched_at: datetime
-    is_archived: bool
     shift_type: str | None
+    # Feed-separation fields
+    visibility: str
+    ingest_source: str
+    created_by_user_id: int | None
+    imported_at: datetime | None
+    # Match data (populated for /imported endpoint)
+    match_score: float | None = None
+    match_reason: dict[str, object] | None = None
 
 
 class JobListResponse(BaseModel):

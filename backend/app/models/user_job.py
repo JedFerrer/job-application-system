@@ -1,20 +1,16 @@
-"""``user_jobs`` junction — scopes the global, deduplicated jobs table per user.
+"""``user_jobs`` junction — per-user relationship with a global job.
 
-The ``jobs`` table is global and fingerprint-deduplicated: the same role from
-multiple sources collapses into one row, and its embedding is computed once.
-To give every user a feed limited to roles matching *their* preferences without
-breaking that dedup (or paying to embed the same job per user), the scraper
-records a link here after the global upsert.
-
-``list_jobs`` joins this table filtered by the current user, so each user only
-sees jobs that were ingested for them.
+Every row represents one user's connection to one job: how they found it
+(match / manual import / extension import), their status (new / viewed /
+saved / archived), and denormalised match metadata for fast listing.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database import Base
@@ -39,3 +35,32 @@ class UserJob(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    # ---- Feed-separation columns (Phase 4 migration) ----
+    relationship_source: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default="match"
+    )
+    """``match`` | ``manual`` | ``extension`` | ``saved`` | ``application``."""
+
+    import_method: Mapped[str | None] = mapped_column(String(50), default=None)
+    """``manual`` | ``extension`` | ``email`` — populated only for imported jobs."""
+
+    match_score: Mapped[float | None] = mapped_column(
+        Numeric, nullable=True, default=None
+    )
+    """Denormalised composite score from ``user_job_matches`` for fast listing."""
+
+    match_reason: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True, default=None
+    )
+    """Short UI-friendly summary from the full match analysis."""
+
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, server_default="new"
+    )
+    """Per-user relationship: ``new`` | ``viewed`` | ``saved`` | ``ignored`` |
+    ``imported`` | ``applied`` | ``archived``."""
+
+    viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ignored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

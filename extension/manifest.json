@@ -14,7 +14,7 @@
     "https://*.greenhouse.io/*",
     "https://jobs.lever.co/*",
     "https://*.workdayjobs.com/*",
-    "http://localhost:8000/*"
+    "http://localhost:8082/*"
   ],
   "background": {
     "service_worker": "service-worker.js",
