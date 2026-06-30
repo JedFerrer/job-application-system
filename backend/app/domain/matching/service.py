@@ -59,7 +59,7 @@ class MatchingService:
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
         embedding = list(profile.embedding)
-        ranked = await self._repo.rank_jobs_by_vector(embedding, limit)
+        ranked = await self._repo.rank_jobs_by_vector(embedding, limit, user_id=user_id)
         for job_id, similarity in ranked:
             await self._repo.upsert_match(
                 user_id=user_id,

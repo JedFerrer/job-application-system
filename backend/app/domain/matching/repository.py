@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,13 +33,23 @@ class MatchingRepository:
         return result.scalars().first()
 
     async def rank_jobs_by_vector(
-        self, embedding: list[float], limit: int
+        self, embedding: list[float], limit: int, *, user_id: int
     ) -> list[tuple[int, float]]:
-        """Return ``(job_id, similarity)`` ordered by cosine similarity desc."""
+        """Return ``(job_id, similarity)`` ordered by cosine similarity desc.
+
+        Only includes jobs the user is allowed to see: public jobs + their own
+        private imports.
+        """
         distance = Job.description_embedding.cosine_distance(embedding)
         stmt = (
             select(Job.id, (1 - distance).label("similarity"))
-            .where(Job.description_embedding.is_not(None))
+            .where(
+                Job.description_embedding.is_not(None),
+                or_(
+                    Job.visibility == "public",
+                    Job.created_by_user_id == user_id,
+                ),
+            )
             .order_by(distance)
             .limit(limit)
         )
