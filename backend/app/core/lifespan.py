@@ -39,6 +39,12 @@ from app.domain.resume.exceptions import (
     ResumeParseError,
     UnsupportedResumeFormatError,
 )
+from app.domain.extension.exceptions import (
+    ExtensionSessionNotFoundError,
+    ExtensionSessionRevokedError,
+    PairingCodeExpiredError,
+    PairingCodeInvalidError,
+)
 
 logger = get_logger("lifespan")
 
@@ -194,3 +200,37 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: GoogleAuthError
     ) -> JSONResponse:
         return JSONResponse(status_code=401, content={"detail": exc.detail})
+
+    # ── Extension exception handlers ─────────────────────────────────────
+
+    @app.exception_handler(PairingCodeInvalidError)
+    async def _pairing_code_invalid(
+        request: Request, exc: PairingCodeInvalidError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=401, content={"detail": "Invalid pairing code"}
+        )
+
+    @app.exception_handler(PairingCodeExpiredError)
+    async def _pairing_code_expired(
+        request: Request, exc: PairingCodeExpiredError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=410, content={"detail": "Pairing code has expired"}
+        )
+
+    @app.exception_handler(ExtensionSessionNotFoundError)
+    async def _extension_session_not_found(
+        request: Request, exc: ExtensionSessionNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=404, content={"detail": "Extension session not found"}
+        )
+
+    @app.exception_handler(ExtensionSessionRevokedError)
+    async def _extension_session_revoked(
+        request: Request, exc: ExtensionSessionRevokedError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=401, content={"detail": "Extension session has been revoked"}
+        )

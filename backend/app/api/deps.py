@@ -160,3 +160,62 @@ def get_task_store() -> TaskStore:
 
 
 TaskStoreDep = Annotated[TaskStore, Depends(get_task_store)]
+
+
+# ── Extension Services (Phase 5 — Browser Extension) ──────────────────────
+
+from app.domain.extension.repository import ExtensionRepository
+from app.domain.extension.extension_auth_service import ExtensionAuthService
+from app.domain.extension.extension_job_import_service import ExtensionJobImportService
+from app.domain.extension.application_event_service import ApplicationEventService
+from app.domain.extension.autofill_mapping_service import AutofillProfileService
+
+
+def get_extension_auth_service(db: DbSession) -> ExtensionAuthService:
+    return ExtensionAuthService(
+        repository=ExtensionRepository(db),
+        settings=get_settings(),
+        redis=get_redis(),
+    )
+
+
+ExtensionAuthServiceDep = Annotated[
+    ExtensionAuthService, Depends(get_extension_auth_service)
+]
+
+
+def get_extension_job_import_service(db: DbSession) -> ExtensionJobImportService:
+    return ExtensionJobImportService(
+        job_repository=JobRepository(db),
+        extension_repository=ExtensionRepository(db),
+    )
+
+
+ExtensionJobImportServiceDep = Annotated[
+    ExtensionJobImportService, Depends(get_extension_job_import_service)
+]
+
+
+def get_application_event_service(db: DbSession) -> ApplicationEventService:
+    return ApplicationEventService(
+        extension_repository=ExtensionRepository(db),
+        application_repository=ApplicationRepository(db),
+        job_repository=JobRepository(db),
+    )
+
+
+ApplicationEventServiceDep = Annotated[
+    ApplicationEventService, Depends(get_application_event_service)
+]
+
+
+def get_autofill_profile_service(db: DbSession) -> AutofillProfileService:
+    return AutofillProfileService(
+        resume_repository=ResumeRepository(db),
+        extension_repository=ExtensionRepository(db),
+    )
+
+
+AutofillProfileServiceDep = Annotated[
+    AutofillProfileService, Depends(get_autofill_profile_service)
+]
