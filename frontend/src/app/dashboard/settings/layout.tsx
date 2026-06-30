@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 const SETTINGS_TABS = [
   { href: "/dashboard/settings/profile", label: "Profile" },
   { href: "/dashboard/settings/preferences", label: "Preferences" },
+  { href: "/dashboard/settings/connected-apps", label: "Connected Apps" },
 ];
 
 export default function SettingsLayout({
