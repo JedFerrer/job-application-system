@@ -165,6 +165,17 @@ class JobService:
             sources=sorted(used_sources),
         )
 
+    async def link_recent_jobs_batch(
+        self, *, user_ids: list[int], since: datetime
+    ) -> int:
+        """Link all *user_ids* to jobs fetched since *since*.
+
+        Used after a shared scrape so every subscriber sees the results.
+        """
+        return await self._repo.link_recent_jobs_batch(
+            user_ids=user_ids, since=since
+        )
+
     async def _upsert(self, post: RawJobPost, shift_type: str | None = None) -> tuple[int, bool]:
         fingerprint = job_fingerprint(post.company, post.title, post.location)
         values: dict[str, object] = {

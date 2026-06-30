@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, func, literal_column, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job
@@ -101,6 +101,42 @@ class JobRepository:
         )
         await self._session.execute(stmt)
 
+    async def link_recent_jobs_batch(
+        self, *, user_ids: list[int], since: datetime
+    ) -> int:
+        """Link every user in *user_ids* to every job fetched since *since*.
+
+        Used after a shared scrape ingest so all subscribers see the results.
+        Returns the number of ``user_jobs`` rows inserted.
+        """
+        if not user_ids:
+            return 0
+
+        result = await self._session.execute(
+            select(Job.id).where(Job.fetched_at >= since)
+        )
+        job_ids = [row for row in result.scalars().all()]
+        if not job_ids:
+            return 0
+
+        total = 0
+        for uid in user_ids:
+            rows = [
+                {
+                    "user_id": uid,
+                    "job_id": jid,
+                    "relationship_source": "match",
+                    "status": "new",
+                }
+                for jid in job_ids
+            ]
+            stmt = pg_insert(UserJob).values(rows).on_conflict_do_nothing(
+                index_elements=[UserJob.user_id, UserJob.job_id]
+            )
+            r = await self._session.execute(stmt)
+            total += r.rowcount or 0
+        return total
+
     async def create_user_job_import(
         self,
         *,
@@ -143,6 +179,21 @@ class JobRepository:
             update(Job)
             .where(Job.id == job_id)
             .values(description_embedding=embedding)
+        )
+
+    async def set_embed_error(self, job_id: int, error: str) -> None:
+        """Mark a job whose embedding failed after all retries."""
+        await self._session.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .values(
+                status="unknown",
+                raw_response=func.jsonb_set(
+                    func.coalesce(Job.raw_response, func.cast("{}", JSONB)),
+                    "{embed_error}",
+                    func.cast(error, JSONB),
+                ),
+            )
         )
 
     async def set_shift_type(self, job_id: int, shift_type: str) -> None:

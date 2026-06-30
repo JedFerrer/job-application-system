@@ -20,9 +20,9 @@ router = APIRouter(prefix="/matches", tags=["matches"])
 
 @router.post("/rank", response_model=RankResponse)
 async def rank_matches(
-    payload: RankRequest,
     current_user: CurrentUser,
     service: MatchServiceDep,
+    payload: RankRequest = RankRequest(),
 ) -> RankResponse:
     return await service.rank_jobs(current_user.id, payload.limit)
 
