@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, FileText, Link2, Loader2, MapPin, Plus, X } from "lucide-react";
+import { Archive, Briefcase, FileText, Link2, Loader2, MapPin, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, jobsApi } from "@/lib/api";
 import type { Job } from "@/lib/types";
@@ -46,7 +46,7 @@ export function JobsPanel() {
   const [filterSource, setFilterSource] = useState("");
   const [filterJobType, setFilterJobType] = useState("");
   const [filterLocation, setFilterLocation] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
+  const [filterSourceType, setFilterSourceType] = useState("");
   const [coverJob, setCoverJob] = useState<Job | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -58,7 +58,7 @@ export function JobsPanel() {
   const fetchNextPageRef = useRef<() => void>(() => {});
 
   const jobsQuery = useInfiniteQuery({
-    queryKey: ["jobs", filterSource, filterJobType, filterLocation, showArchived],
+    queryKey: ["jobs", filterSource, filterJobType, filterLocation, filterSourceType],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       jobsApi.list({
@@ -67,7 +67,7 @@ export function JobsPanel() {
         source: filterSource || undefined,
         jobType: filterJobType || undefined,
         location: filterLocation || undefined,
-        includeArchived: showArchived,
+        sourceType: filterSourceType || undefined,
       }),
     getNextPageParam: (lastPage, allPages) => {
       const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
@@ -119,13 +119,12 @@ export function JobsPanel() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const archiveMutation = useMutation({
-    mutationFn: ({ jobId, archived }: { jobId: number; archived: boolean }) =>
-      jobsApi.archive(jobId, archived),
-    onSuccess: (_, { archived }) => {
-      toast.success(archived ? "Job archived" : "Job restored");
+    mutationFn: (jobId: number) => jobsApi.archive(jobId),
+    onSuccess: () => {
+      toast.success("Job archived");
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
-    onError: () => toast.error("Failed to update job"),
+    onError: () => toast.error("Failed to archive job"),
   });
 
   const saveAppMutation = useMutation({
@@ -142,7 +141,50 @@ export function JobsPanel() {
   const [importUrl, setImportUrl] = useState("");
   const [importTitle, setImportTitle] = useState("");
   const [importCompany, setImportCompany] = useState("");
+  const [importPlatform, setImportPlatform] = useState("");
+  const [importPlatformCustom, setImportPlatformCustom] = useState("");
   const [importDescription, setImportDescription] = useState("");
+
+  const effectivePlatform = importPlatform === "custom" ? importPlatformCustom : importPlatform;
+
+  // Auto-detect platform from URL
+  const detectedPlatform = (() => {
+    if (!importUrl) return "";
+    const u = importUrl.toLowerCase();
+    if (u.includes("linkedin.com/jobs")) return "linkedin";
+    if (u.includes("indeed.com")) return "indeed";
+    if (u.includes("greenhouse.io")) return "greenhouse";
+    if (u.includes("jobs.lever.co")) return "lever";
+    if (u.includes("workdayjobs.com") || u.includes("myworkdayjobs.com")) return "workday";
+    if (u.includes("ziprecruiter.com")) return "zip_recruiter";
+    if (u.includes("glassdoor.com")) return "glassdoor";
+    if (u.includes("wellfound.com")) return "wellfound";
+    if (u.includes("ashbyhq.com")) return "ashby";
+    if (u.includes("smartrecruiters.com")) return "smartrecruiters";
+    if (u.includes("bamboohr.com")) return "bamboohr";
+    if (u.includes("workable.com")) return "workable";
+    if (u.includes("jobstreet.com")) return "jobstreet";
+    if (u.includes("onlinejobs.ph")) return "onlinejobs_ph";
+    return "";
+  })();
+
+  const PLATFORM_LABELS: Record<string, string> = {
+    linkedin: "LinkedIn",
+    indeed: "Indeed",
+    greenhouse: "Greenhouse",
+    lever: "Lever",
+    workday: "Workday",
+    zip_recruiter: "ZipRecruiter",
+    glassdoor: "Glassdoor",
+    wellfound: "Wellfound",
+    ashby: "Ashby",
+    smartrecruiters: "SmartRecruiters",
+    bamboohr: "BambooHR",
+    workable: "Workable",
+    jobstreet: "JobStreet",
+    onlinejobs_ph: "OnlineJobs.ph",
+    custom: "Custom",
+  };
 
   const importMutation = useMutation({
     mutationFn: () =>
@@ -158,6 +200,8 @@ export function JobsPanel() {
       setImportUrl("");
       setImportTitle("");
       setImportCompany("");
+      setImportPlatform("");
+      setImportPlatformCustom("");
       setImportDescription("");
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
@@ -187,13 +231,14 @@ export function JobsPanel() {
                 <Link2 className="h-4 w-4" />
                 Import job
               </Button>
-              {(filterSource || filterJobType || filterLocation) && (
+              {(filterSource || filterJobType || filterLocation || filterSourceType) && (
                 <button
                   type="button"
                   onClick={() => {
                     setFilterSource("");
                     setFilterJobType("");
                     setFilterLocation("");
+                    setFilterSourceType("");
                   }}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                 >
@@ -239,18 +284,16 @@ export function JobsPanel() {
               className="h-8 w-56 text-sm"
             />
 
-            <button
-              type="button"
-              onClick={() => setShowArchived((v) => !v)}
-              className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs transition-colors ${
-                showArchived
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-input hover:bg-muted"
-              }`}
+            <select
+              value={filterSourceType}
+              onChange={(e) => setFilterSourceType(e.target.value)}
+              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
-              <Archive className="h-3 w-3" />
-              {showArchived ? "Archived" : "Show archived"}
-            </button>
+              <option value="">All jobs</option>
+              <option value="global">Global (scraped)</option>
+              <option value="manual">Manual imports</option>
+              <option value="extension">Extension imports</option>
+            </select>
           </div>
         </div>
         {jobsQuery.isLoading && (
@@ -258,12 +301,15 @@ export function JobsPanel() {
         )}
         {jobsQuery.data && allJobs.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No jobs yet.{" "}
-              <a href="/dashboard/settings/preferences" className="underline hover:text-foreground">
-                Save your preferences
-              </a>{" "}
-              and click <strong>Refresh now</strong> to pull the first batch.
+            <CardContent className="flex flex-col items-center gap-3 py-12 text-center text-sm text-muted-foreground">
+              <Briefcase className="h-10 w-10 text-blue-400" />
+              <p>
+                No jobs yet.{" "}
+                <a href="/dashboard/settings/preferences" className="underline hover:text-foreground">
+                  Save your preferences
+                </a>{" "}
+                and click <strong>Refresh now</strong> to pull the first batch.
+              </p>
             </CardContent>
           </Card>
         )}
@@ -272,9 +318,7 @@ export function JobsPanel() {
             <JobCard
               key={job.id}
               job={job}
-              onArchive={(archived) =>
-                archiveMutation.mutate({ jobId: job.id, archived })
-              }
+              onArchive={() => archiveMutation.mutate(job.id)}
               onSaveToApps={() => saveAppMutation.mutate(job.id)}
               onCoverLetter={() => setCoverJob(job)}
             />
@@ -298,7 +342,7 @@ export function JobsPanel() {
       </section>
 
       <Dialog open={showImport} onOpenChange={setShowImport}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Import job</DialogTitle>
             <DialogDescription>
@@ -315,8 +359,8 @@ export function JobsPanel() {
                 onChange={(e) => setImportUrl(e.target.value)}
               />
             </div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div className="flex flex-col gap-2 sm:col-span-2">
                 <Label htmlFor="import-title">Job title *</Label>
                 <Input
                   id="import-title"
@@ -326,14 +370,41 @@ export function JobsPanel() {
                 />
               </div>
               <div className="flex flex-col gap-2">
-                <Label htmlFor="import-company">Company</Label>
-                <Input
-                  id="import-company"
-                  placeholder="e.g. Acme Corp"
-                  value={importCompany}
-                  onChange={(e) => setImportCompany(e.target.value)}
-                />
+                <Label htmlFor="import-platform">Platform</Label>
+                <select
+                  id="import-platform"
+                  value={importPlatform}
+                  onChange={(e) => setImportPlatform(e.target.value)}
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="">Auto-detect</option>
+                  {Object.entries(PLATFORM_LABELS).map(([val, label]) => (
+                    <option key={val} value={val}>{label}</option>
+                  ))}
+                </select>
+                {importPlatform === "custom" && (
+                  <Input
+                    placeholder="e.g. Kalibrr, BossJob, company site"
+                    value={importPlatformCustom}
+                    onChange={(e) => setImportPlatformCustom(e.target.value)}
+                    className="mt-1"
+                  />
+                )}
+                {!importPlatform && detectedPlatform && (
+                  <p className="text-xs text-muted-foreground">
+                    Detected: {PLATFORM_LABELS[detectedPlatform] ?? detectedPlatform}
+                  </p>
+                )}
               </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="import-company">Company</Label>
+              <Input
+                id="import-company"
+                placeholder="e.g. Acme Corp"
+                value={importCompany}
+                onChange={(e) => setImportCompany(e.target.value)}
+              />
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="import-description">Job description</Label>
@@ -379,12 +450,21 @@ function JobCard({
   onCoverLetter,
 }: {
   job: Job;
-  onArchive: (archived: boolean) => void;
+  onArchive: () => void;
   onSaveToApps: () => void;
   onCoverLetter: () => void;
 }) {
+  const sourceLabel =
+    job.ingest_source === "manual"
+      ? "Manual Import"
+      : job.ingest_source === "extension"
+        ? "Extension Import"
+        : job.visibility === "public"
+          ? "Global"
+          : null;
+
   return (
-    <Card className={job.is_archived ? "opacity-60" : undefined}>
+    <Card>
       <CardContent className="flex flex-col gap-2 py-4">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -401,21 +481,17 @@ function JobCard({
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {job.is_archived && (
-              <Badge variant="secondary" className="text-xs">Archived</Badge>
+            {sourceLabel && (
+              <Badge variant="secondary" className="text-xs">{sourceLabel}</Badge>
             )}
             <Badge variant="outline">{job.source}</Badge>
             <button
               type="button"
-              onClick={() => onArchive(!job.is_archived)}
-              title={job.is_archived ? "Restore job" : "Archive job"}
+              onClick={onArchive}
+              title="Archive job"
               className="text-muted-foreground hover:text-foreground transition-colors"
             >
-              {job.is_archived ? (
-                <ArchiveRestore className="h-4 w-4" />
-              ) : (
-                <Archive className="h-4 w-4" />
-              )}
+              <Archive className="h-4 w-4" />
             </button>
           </div>
         </div>

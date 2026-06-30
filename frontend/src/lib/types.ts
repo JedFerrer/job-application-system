@@ -137,8 +137,14 @@ export interface Job {
   source_url: string;
   posted_at: string | null;
   fetched_at: string;
-  is_archived: boolean;
   shift_type: string | null;
+  // Feed-separation fields
+  visibility: "public" | "private";
+  ingest_source: "scraper" | "manual" | "extension";
+  created_by_user_id: number | null;
+  imported_at: string | null;
+  match_score?: number | null;
+  match_reason?: Record<string, unknown> | null;
 }
 
 export interface JobListResponse {
