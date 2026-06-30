@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "CareerOS Application Assistant",
+  "version": "0.1.0",
+  "description": "Import jobs, track applications, and autofill forms — with your review and approval.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.linkedin.com/jobs/*",
+    "https://*.indeed.com/*",
+    "https://*.greenhouse.io/*",
+    "https://jobs.lever.co/*",
+    "https://*.workdayjobs.com/*",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/jobs/*",
+        "https://*.indeed.com/*",
+        "https://*.greenhouse.io/*",
+        "https://jobs.lever.co/*",
+        "https://*.workdayjobs.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "CareerOS Assistant"
+  }
+}
