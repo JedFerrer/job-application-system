@@ -128,6 +128,13 @@ class JobRepository:
     async def get_by_id(self, job_id: int) -> Job | None:
         return await self._session.get(Job, job_id)
 
+    async def find_by_source_url(self, url: str) -> Job | None:
+        """Find a job by its source URL (exact match)."""
+        result = await self._session.execute(
+            select(Job).where(Job.source_url == url).limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_jobs(
         self,
         *,
