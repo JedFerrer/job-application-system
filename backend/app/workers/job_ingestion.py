@@ -1,37 +1,32 @@
-"""Scheduled scraping driven by saved user preferences (Phase 2).
+"""Scheduled scraping driven by shared scrape queries (Phase 5).
 
-Sync Celery entry points bridge to the existing async ``JobService.ingest``
-pipeline via ``asyncio.run`` — no parallel sync DB layer is needed.
+## Architecture
 
-## Scalability design (multi-user)
+User preferences are normalised into ``scrape_queries`` rows keyed by a
+canonical ``normalized_hash``.  Multiple users subscribe to the same query.
 
-Beat fires ``dispatch_all_scrapes`` once per schedule window.  That task reads
-all active preferences and fans out **one** ``scrape_all_active_preferences``
-task per user.  Celery distributes those tasks across all available workers so
-100 users scrape in parallel rather than sequentially.
+Beat fires ``dispatch_shared_scrape_queries`` which picks due queries and fans
+out one ``scrape_single_query`` task per query.  Each query is scraped ONCE;
+results are linked to all subscribed users and match-ranking follows.
 
-Two guards prevent redundant work:
+## Guards
 
-1. **Per-user Redis lock** — if a scrape for user X is already running (e.g.
-   from an on-demand refresh), the newly dispatched scheduled task exits
-   immediately instead of queuing a second identical run.
+1. **Per-query Redis lock** — prevents concurrent workers from scraping the
+   same query simultaneously.
 
-2. **Search-level deduplication** — a Redis key keyed on the canonical
-   (search_term, location, remote, sources, hours_old) tuple is set after each
-   successful jobspy call and expires with the cooldown TTL.  If two users share
-   an identical search the external API is only hit once; subsequent users skip
-   the fetch and rely on the jobs already upserted to the shared ``job_postings``
-   table.  ``force=True`` (on-demand refresh) bypasses both guards.
+2. **Search-level freshness** — a Redis key (``scrape:fresh:{hash}``) set after
+   each successful external API call prevents re-scraping within the source TTL
+   window.  ``force=True`` bypasses this guard.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from datetime import UTC, datetime, timedelta
 
 import redis as _sync_redis
 import redis.asyncio as aioredis
+from sqlalchemy import distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -40,8 +35,9 @@ from app.core.logging import get_logger
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import IngestRequest
 from app.domain.jobs.service import JobService
-from app.domain.preferences.repository import PreferenceRepository
-from app.models.user_job_preference import UserJobPreference
+from app.domain.scraping.repository import ScrapeQueryRepository, SubscriptionRepository
+from app.models.scrape_query import ScrapeQuery
+from app.models.user_scrape_query_subscription import UserScrapeQuerySubscription
 from app.workers.celery_app import celery_app
 
 
@@ -62,268 +58,259 @@ _worker_session_factory = _make_worker_session_factory()
 
 logger = get_logger(__name__)
 
-
-def _is_remote_for(remote_preference: str | None) -> bool | None:
-    match remote_preference:
-        case "remote":
-            return True
-        case "onsite":
-            return False
-        case _:
-            return None
-
-
-def _build_requests(
-    preference: UserJobPreference, *, default_results: int
-) -> list[IngestRequest]:
-    """Fan a preference out into one IngestRequest per (title x location)."""
-    locations: list[str | None] = list(preference.locations) or [None]
-    is_remote = _is_remote_for(preference.remote_preference)
-    results = preference.results_per_source or default_results
-    sources = list(preference.enabled_sources) or None
-
-    requests: list[IngestRequest] = []
-    for title in preference.job_titles:
-        clean_title = title.strip()
-        if not clean_title:
-            continue
-        for location in locations:
-            requests.append(
-                IngestRequest(
-                    search_term=clean_title,
-                    location=location,
-                    is_remote=is_remote,
-                    results_wanted=results,
-                    sources=sources,
-                    hours_old=preference.hours_old,
-                )
-            )
-    return requests
+# Per-source freshness TTL in seconds.  A query's next_scrape_at is computed
+# as last_scraped_at + max(TTL of its sources).
+_SOURCE_TTL_SECONDS: dict[str, int] = {
+    "indeed": 2 * 3600,
+    "linkedin": 6 * 3600,
+    "glassdoor": 6 * 3600,
+    "zip_recruiter": 2 * 3600,
+}
 
 
-def _search_dedup_key(request: IngestRequest, effective_sources: list[str]) -> str:
-    """Stable Redis key for a unique (term, location, remote, sources, hours_old) search.
+def _query_ttl_seconds(sources: list[str]) -> int:
+    """Return the longest freshness window across the query's sources."""
+    return max((_SOURCE_TTL_SECONDS.get(s, 3600) for s in sources), default=3600)
 
-    Two users whose preferences produce identical search parameters share the
-    same key, so the job board is only hit once within the cooldown window.
-    """
-    parts = ":".join(
-        [
-            request.search_term.lower().strip(),
-            (request.location or "").lower().strip(),
-            str(request.is_remote),
-            str(request.hours_old or ""),
-            ",".join(sorted(effective_sources)),
-        ]
+
+def _freshness_key(normalized_hash: str) -> str:
+    return f"scrape:fresh:{normalized_hash}"
+
+
+def _request_from_query(query: ScrapeQuery) -> IngestRequest:
+    """Build an ``IngestRequest`` from a ``ScrapeQuery`` row."""
+    return IngestRequest(
+        search_term=query.search_term,
+        location=query.location,
+        is_remote=query.is_remote,
+        hours_old=query.hours_old,
+        results_wanted=query.results_wanted,
+        sources=list(query.sources) or None,
     )
-    digest = hashlib.sha256(parts.encode()).hexdigest()[:16]
-    return f"scrape:dedup:{digest}"
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher (Beat entry-point for multi-user fan-out)
-#
-# TODO(shared-scrape-queries): Replace per-user fan-out with shared scrape
-# queries.  Each user preference should subscribe to normalized
-# ``scrape_queries`` rows.  See docs/job_scraper_scaling_feed_import_plan.md.
+# Dispatcher (Beat entry-point)
 # ---------------------------------------------------------------------------
 
 
-async def _dispatch_all_scrapes_async() -> dict[str, int]:
-    """Read all active preference user IDs and enqueue one task per user.
-
-    Users whose preferences haven't been updated in 7 days are skipped to
-    avoid scraping for dormant accounts.
-    """
-    settings = get_settings()
-    cutoff = datetime.now(UTC) - timedelta(days=7)
+async def _dispatch_shared_queries_async() -> dict[str, int]:
+    """Pick due ``ScrapeQuery`` rows and enqueue one task per query."""
+    now = datetime.now(UTC)
 
     async with _worker_session_factory() as db:
-        active_prefs = await PreferenceRepository(db).list_active()
-        # Filter to users whose preferences have been touched recently.
-        user_ids = [
-            p.user_id
-            for p in active_prefs
-            if p.is_active and p.updated_at.replace(tzinfo=UTC) >= cutoff
-        ]
+        repo = ScrapeQueryRepository(db)
+        due = await repo.get_due_queries(now=now, limit=50)
 
-    for uid in user_ids:
-        scrape_all_active_preferences.delay(uid)
+    for query in due:
+        scrape_single_query.delay(str(query.id))
 
-    skipped = len(active_prefs) - len(user_ids)
-    logger.info(
-        "dispatch.done", users=len(user_ids), skipped=skipped, cutoff=cutoff.isoformat()
-    )
-    return {"users": len(user_ids), "skipped": skipped}
+    logger.info("dispatch.done", queries=len(due))
+    return {"queries": len(due)}
 
 
 @celery_app.task(
-    name="dispatch_all_scrapes",
+    name="dispatch_shared_scrape_queries",
     soft_time_limit=60,
     time_limit=120,
 )
-def dispatch_all_scrapes() -> dict[str, int]:
-    """Fan out one scrape task per active user.  Called by Beat.
-
-    Each per-user task runs in parallel across available Celery workers,
-    so scrape time scales with worker count rather than user count.
-    """
-    return asyncio.run(_dispatch_all_scrapes_async())
+def dispatch_shared_scrape_queries() -> dict[str, int]:
+    """Fan out one scrape task per due shared query.  Called by Beat."""
+    return asyncio.run(_dispatch_shared_queries_async())
 
 
 # ---------------------------------------------------------------------------
-# Per-user scrape
+# Single-query scrape
 # ---------------------------------------------------------------------------
 
 
-async def _scrape_active_preferences_async(
-    user_id: int | None, *, force: bool
+async def _scrape_single_query_async(
+    query_id: str, *, force: bool = False
 ) -> dict[str, int]:
     settings = get_settings()
-    cooldown = timedelta(minutes=settings.job_refresh_cooldown_minutes)
-    # Dedup TTL mirrors the cooldown so keys expire exactly when a fresh scrape
-    # would be allowed anyway.
-    dedup_ttl = max(int(cooldown.total_seconds()), 60)
+    ttl_seconds: int = 3600
     now = datetime.now(UTC)
 
-    totals = {"preferences": 0, "requests": 0, "inserted": 0, "updated": 0}
+    totals = {"inserted": 0, "updated": 0, "subscribers": 0}
 
-    # Fresh Redis client per task execution — the shared async pool is bound to
-    # the API's event loop which is not running inside a Celery worker.
     redis: aioredis.Redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with _worker_session_factory() as db:
-            pref_repo = PreferenceRepository(db)
-            if user_id is not None:
-                one = await pref_repo.get_for_user(user_id)
-                preferences = [one] if one is not None else []
-            else:
-                preferences = await pref_repo.list_active()
+            query_repo = ScrapeQueryRepository(db)
+            sub_repo = SubscriptionRepository(db)
 
-            for preference in preferences:
-                if preference is None or not preference.is_active:
-                    continue
+            # Load the query row — it may have been deleted between dispatch
+            # and execution.
+            result = await db.execute(
+                select(ScrapeQuery).where(ScrapeQuery.id == query_id)
+            )
+            query = result.scalar_one_or_none()
+            if query is None or query.status != "active":
+                logger.info("scrape.query_gone", query_id=query_id)
+                return totals
 
-                # Respect the cooldown unless the user explicitly triggered a
-                # refresh (force=True).
-                if (
-                    not force
-                    and preference.last_scraped_at is not None
-                    and now - preference.last_scraped_at < cooldown
-                ):
-                    logger.info("scrape.skip_cooldown", user_id=preference.user_id)
-                    continue
-
-                requests = _build_requests(
-                    preference, default_results=settings.job_results_wanted
-                )
-                service = JobService(
-                    JobRepository(db), user_timezone=settings.user_timezone
-                )
-                totals["preferences"] += 1
-
-                for request in requests:
-                    totals["requests"] += 1
-                    effective_sources = list(
-                        request.sources or settings.enabled_job_sources
+            # Freshness guard: if another worker scraped this query recently
+            # and its freshness TTL hasn't expired, skip.
+            if not force and query.last_scraped_at is not None:
+                ttl_seconds = _query_ttl_seconds(list(query.sources))
+                expiry = query.last_scraped_at + timedelta(seconds=ttl_seconds)
+                if now < expiry:
+                    logger.info(
+                        "scrape.still_fresh",
+                        query_id=query_id,
+                        hash=query.normalized_hash,
                     )
+                    return totals
 
-                    # Skip the external API call if an identical search was
-                    # completed recently by any user.  Jobs are already in the
-                    # shared job_postings table; match ranking will surface them.
-                    if not force:
-                        dedup_key = _search_dedup_key(request, effective_sources)
-                        if await redis.exists(dedup_key):
-                            logger.info(
-                                "scrape.dedup_skip",
-                                search_term=request.search_term,
-                                location=request.location,
-                            )
-                            continue
+            request = _request_from_query(query)
+            effective_sources = list(
+                request.sources or settings.enabled_job_sources
+            )
 
-                    try:
-                        result = await service.ingest(
-                            request,
-                            default_sources=settings.enabled_job_sources,
-                            default_country=settings.job_search_country,
-                            default_results=settings.job_results_wanted,
-                            proxies=settings.proxy_list or None,
-                            user_id=preference.user_id,
-                            preference_id=preference.id,
-                        )
-                    except Exception:  # noqa: BLE001 - one bad search must not abort the user's batch
-                        logger.warning(
-                            "scrape.request_failed",
-                            user_id=preference.user_id,
-                            search_term=request.search_term,
-                            exc_info=True,
-                        )
-                        continue
+            service = JobService(
+                JobRepository(db), user_timezone=settings.user_timezone
+            )
 
-                    # Mark this search as fresh so duplicate cross-user calls
-                    # are skipped for the remainder of the cooldown window.
-                    if not force:
-                        dedup_key = _search_dedup_key(request, effective_sources)
-                        await redis.set(dedup_key, "1", ex=dedup_ttl)
+            # Record the moment before ingest so we can link subscribers to
+            # every job that was touched (inserted or updated) by this run.
+            scrape_start = datetime.now(UTC)
 
-                    totals["inserted"] += result.inserted
-                    totals["updated"] += result.updated
+            try:
+                result_obj = await service.ingest(
+                    request,
+                    default_sources=settings.enabled_job_sources,
+                    default_country=settings.job_search_country,
+                    default_results=settings.job_results_wanted,
+                    proxies=settings.proxy_list or None,
+                    # No user_id — we link subscribers after ingest.
+                    user_id=None,
+                    preference_id=None,
+                )
+            except Exception:
+                logger.warning(
+                    "scrape.request_failed",
+                    query_id=query_id,
+                    search_term=request.search_term,
+                    exc_info=True,
+                )
+                return totals
 
-                await pref_repo.mark_scraped(preference.user_id, scraped_at=now)
-                await db.commit()
+            totals["inserted"] += result_obj.inserted
+            totals["updated"] += result_obj.updated
+
+            # Link every subscriber to the jobs fetched in this run.
+            subscriber_ids = await sub_repo.get_subscribers(query_id)
+            if subscriber_ids:
+                link_count = await service.link_recent_jobs_batch(
+                    user_ids=subscriber_ids, since=scrape_start
+                )
+                totals["subscribers"] = link_count
+
+            # Mark the query as scraped with a fresh next_scrape_at.
+            ttl_seconds = _query_ttl_seconds(effective_sources)
+            next_at = now + timedelta(seconds=ttl_seconds)
+            await query_repo.mark_scraped(
+                query_id, scraped_at=now, next_scrape_at=next_at
+            )
+
+            # Set Redis freshness key to match the TTL.
+            if not force:
+                await redis.set(
+                    _freshness_key(query.normalized_hash), "1", ex=ttl_seconds
+                )
+
+            await db.commit()
     finally:
         await redis.aclose()
 
-    logger.info("scrape.done", **totals)
+    logger.info("scrape.done", query_id=query_id, **totals)
+
+    # Re-rank matches for every subscriber so new jobs surface immediately.
+    if totals["subscribers"] > 0:
+        from app.workers.match_ranking import run_match_ranking_for_all_users
+
+        async with _worker_session_factory() as db:
+            sub_repo = SubscriptionRepository(db)
+            subscriber_ids = await sub_repo.get_subscribers(query_id)
+        for uid in subscriber_ids:
+            run_match_ranking_for_all_users.delay(uid)
+
     return totals
 
 
 @celery_app.task(
-    name="scrape_all_active_preferences",
+    name="scrape_single_query",
     soft_time_limit=1500,
     time_limit=1800,
 )
-def scrape_all_active_preferences(
-    user_id: int | None = None, force: bool = False
-) -> dict[str, int]:
-    """Scrape jobs for one user's active preferences.
+def scrape_single_query(query_id: str, force: bool = False) -> dict[str, int]:
+    """Scrape one shared query and link results to all subscribers.
 
     Parameters
     ----------
-    user_id:
-        The user to scrape.  When dispatched by ``dispatch_all_scrapes`` this
-        is always set.  ``None`` retains backward-compatibility for any direct
-        calls that process all users in one pass.
+    query_id:
+        The ``ScrapeQuery.id`` to scrape.
     force:
-        ``True`` skips the cooldown check and search-level deduplication.
-        Set by the on-demand ``/preferences/refresh`` endpoint so the user
-        always gets a fresh batch regardless of the last scheduled run.
-        Scheduled runs dispatched by ``dispatch_all_scrapes`` always use the
-        default ``False``.
+        ``True`` skips the freshness guard.  Set by on-demand refresh so the
+        user always gets a fresh batch.  Scheduled runs always use ``False``.
 
-    A per-user Redis lock (TTL > soft_time_limit) prevents a concurrent
-    on-demand refresh from stacking on top of a scheduled run for the same user.
-    After scraping, match ranking is chained so new jobs surface immediately.
+    A per-query Redis lock prevents concurrent workers from scraping the same
+    query simultaneously.  After scraping, match ranking is chained per
+    subscriber.
     """
     settings = get_settings()
-    lock_key = f"lock:scrape_user:{user_id}"
+    lock_key = f"lock:scrape_query:{query_id}"
     r = _sync_redis.from_url(settings.redis_url, decode_responses=True)
 
-    # Atomic set-if-not-exists.  TTL is slightly above soft_time_limit so the
-    # lock auto-expires if the worker is killed before the finally block runs.
     acquired = r.set(lock_key, "1", nx=True, ex=1600)
     if not acquired:
-        logger.info("scrape.skip_already_running", user_id=user_id)
-        return {"preferences": 0, "requests": 0, "inserted": 0, "updated": 0}
+        logger.info("scrape.skip_already_running", query_id=query_id)
+        return {"inserted": 0, "updated": 0, "subscribers": 0}
 
     try:
-        totals = asyncio.run(_scrape_active_preferences_async(user_id, force=force))
+        totals = asyncio.run(_scrape_single_query_async(query_id, force=force))
     finally:
         r.delete(lock_key)
 
-    # Re-rank matches so freshly ingested jobs surface right away.
-    from app.workers.match_ranking import run_match_ranking_for_all_users
+    return totals
 
-    run_match_ranking_for_all_users.delay(user_id)
-    return totals
-    return totals
+
+# ---------------------------------------------------------------------------
+# On-demand refresh (backward-compat wrapper)
+# ---------------------------------------------------------------------------
+
+
+async def _scrape_user_on_demand_async(user_id: int) -> dict[str, int]:
+    """Scrape all queries a user is subscribed to (force mode).
+
+    Called by the on-demand refresh endpoint.  We find the user's
+    subscriptions and dispatch one forced scrape per subscribed query.
+    """
+    async with _worker_session_factory() as db:
+        sub_repo = SubscriptionRepository(db)
+        result = await db.execute(
+            select(distinct(UserScrapeQuerySubscription.scrape_query_id)).where(
+                UserScrapeQuerySubscription.user_id == user_id
+            )
+        )
+        query_ids = [str(row) for row in result.scalars().all()]
+
+    for qid in query_ids:
+        scrape_single_query.delay(qid, force=True)
+
+    logger.info("scrape.on_demand_dispatched", user_id=user_id, queries=len(query_ids))
+    return {"queries": len(query_ids)}
+
+
+@celery_app.task(
+    name="scrape_user_on_demand",
+    soft_time_limit=1500,
+    time_limit=1800,
+)
+def scrape_user_on_demand(user_id: int) -> dict[str, int]:
+    """Force-scrape all queries subscribed by *user_id*.
+
+    Replaces the old ``scrape_all_active_preferences(user_id, force=True)``
+    call from the on-demand refresh endpoint.
+    """
+    return asyncio.run(_scrape_user_on_demand_async(user_id))

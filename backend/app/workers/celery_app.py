@@ -59,10 +59,8 @@ def _crontab(expression: str) -> crontab:
 
 
 celery_app.conf.beat_schedule = {
-    "scrape-active-preferences": {
-        # dispatch_all_scrapes fans out one task per user so all users
-        # scrape in parallel rather than sequentially.
-        "task": "dispatch_all_scrapes",
+    "dispatch-shared-scrape-queries": {
+        "task": "dispatch_shared_scrape_queries",
         "schedule": _crontab(settings.scrape_schedule_cron),
     },
     "rank-matches-all-users": {
