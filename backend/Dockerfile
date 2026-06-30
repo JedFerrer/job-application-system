@@ -15,6 +15,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml ./
 RUN uv pip install --system --no-cache ".[scraping]"
 
+# Install dev deps in a separate layer so production builds can skip them
+ARG INSTALL_DEV=false
+RUN if [ "$INSTALL_DEV" = "true" ]; then \
+      uv pip install --system --no-cache pytest pytest-asyncio pytest-cov ruff mypy; \
+    fi
+
 COPY . .
 
 EXPOSE 8000
