@@ -139,6 +139,7 @@ class JobSpySource:
             hours_old=query.hours_old,
             is_remote=query.is_remote,
             linkedin_fetch_description=True,
+            description_format="markdown",
             proxies=self._proxies,
         )
         posts = [self._row_to_post(row) for _, row in df.iterrows()]

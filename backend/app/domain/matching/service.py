@@ -91,11 +91,18 @@ class MatchingService:
                     company=job.company,
                     location=job.location,
                     is_remote=job.is_remote,
+                    job_type=job.job_type,
+                    description=job.description,
+                    shift_type=job.shift_type,
+                    salary_min=job.salary_min,
+                    salary_max=job.salary_max,
+                    salary_currency=job.salary_currency,
                     source=job.source,
                     source_url=job.source_url,
                     vector_score=match.vector_score,
                     confidence=match.confidence,
                     llm_score=match.llm_score,
+                    matched_skills=match.matched_skills or None,
                     posted_at=job.posted_at,
                 )
             )
