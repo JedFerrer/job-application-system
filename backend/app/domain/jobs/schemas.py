@@ -71,7 +71,8 @@ class JobListResponse(BaseModel):
     items: list[JobResponse]
     total: int
     limit: int
-    offset: int
+    next_cursor: str | None = None
+    """Cursor for the next page (base64-encoded sort_key|id), or None if last page."""
 
 
 class JobImportRequest(BaseModel):

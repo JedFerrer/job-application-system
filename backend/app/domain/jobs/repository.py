@@ -11,12 +11,30 @@ Visibility rules:
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, func, literal_column, or_, select, update
+from sqlalchemy import and_, func, literal_column, or_, select, update, tuple_
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.job import Job
+from app.models.user_job import UserJob
+from app.models.user_job_import import UserJobImport
+
+
+def _encode_cursor(sort_ts: datetime, job_id: int) -> str:
+    """Base64-encode a cursor: ``sort_ts.isoformat()|job_id``."""
+    raw = f"{sort_ts.isoformat()}|{job_id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[datetime, int]:
+    """Decode a cursor back to ``(sort_ts, job_id)``."""
+    raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+    ts_str, id_str = raw.rsplit("|", 1)
+    return datetime.fromisoformat(ts_str).replace(tzinfo=UTC), int(id_str)
 
 from app.models.job import Job
 from app.models.user_job import UserJob
@@ -242,16 +260,19 @@ class JobRepository:
         self,
         *,
         user_id: int,
+        q: str | None = None,
         source: str | None = None,
         is_remote: bool | None = None,
         min_salary: float | None = None,
         job_type: str | None = None,
         location_contains: str | None = None,
+        company_contains: str | None = None,
+        shift_type: str | None = None,
         source_type: str | None = None,
         imported_only: bool = False,
+        cursor: str | None = None,
         limit: int = 50,
-        offset: int = 0,
-    ) -> tuple[list[Job], int]:
+    ) -> tuple[list[Job], int, str | None]:
         """List jobs visible to *user_id*.
 
         Visibility:
@@ -270,16 +291,29 @@ class JobRepository:
         )
         filters: list[Any] = [Job.status == "active", visibility_filter]
 
+        if q:
+            like = f"%{q}%"
+            filters.append(
+                or_(
+                    Job.title.ilike(like),
+                    Job.company.ilike(like),
+                    Job.description.ilike(like),
+                )
+            )
         if source is not None:
             filters.append(Job.source == source)
         if is_remote is not None:
             filters.append(Job.is_remote.is_(is_remote))
         if min_salary is not None:
             filters.append(Job.salary_max >= min_salary)
+        if shift_type is not None:
+            filters.append(Job.shift_type == shift_type)
         if job_type is not None:
             filters.append(func.lower(Job.job_type) == job_type.lower())
         if location_contains is not None:
             filters.append(Job.location.ilike(f"%{location_contains}%"))
+        if company_contains is not None:
+            filters.append(Job.company.ilike(f"%{company_contains}%"))
         if source_type == "global":
             filters.append(Job.visibility == "public")
         elif source_type == "imported":
@@ -313,20 +347,35 @@ class JobRepository:
         )
         total = int((await self._session.execute(count_stmt)).scalar_one())
 
+        # Cursor-based pagination using compound key (sort_ts, id)
+        sort_ts = func.coalesce(Job.last_seen_at, Job.scraped_at, Job.fetched_at)
+        if cursor:
+            cursor_ts, cursor_id = _decode_cursor(cursor)
+            filters.append(
+                tuple_(sort_ts, Job.id) < (cursor_ts, cursor_id)
+            )
+
         list_stmt = (
             select(Job)
             .where(*filters)
-            .order_by(
-                func.coalesce(
-                    Job.last_seen_at, Job.scraped_at, Job.fetched_at
-                ).desc(),
-                Job.id.desc(),
-            )
-            .limit(limit)
-            .offset(offset)
+            .order_by(sort_ts.desc(), Job.id.desc())
+            .limit(limit + 1)  # fetch one extra to know if there's a next page
         )
         rows = list((await self._session.execute(list_stmt)).scalars().all())
-        return rows, total
+
+        # Determine next_cursor
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+        next_cursor: str | None = None
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = _encode_cursor(
+                sort_ts=last.last_seen_at or last.scraped_at or last.fetched_at,
+                job_id=last.id,
+            )
+
+        return rows, total, next_cursor
 
     async def list_imported_jobs(
         self,

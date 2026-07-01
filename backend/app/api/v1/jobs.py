@@ -119,23 +119,29 @@ async def list_jobs(
     is_remote: bool | None = None,
     job_type: str | None = None,
     location: str | None = None,
+    company: str | None = Query(default=None, description="Company name filter (ILIKE)"),
+    q: str | None = Query(default=None, description="Free-text search across title, company, description"),
     min_salary: float | None = Query(default=None, ge=0),
+    shift_type: str | None = Query(default=None, description="day | night | mid | flexible"),
     source_type: str | None = Query(default=None, description="global | imported | manual | extension"),
     imported_only: bool = False,
+    cursor: str | None = Query(default=None, description="Cursor for next page"),
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> JobListResponse:
     return await service.list_jobs(
         user_id=current_user.id,
+        q=q,
         source=source,
         is_remote=is_remote,
         min_salary=min_salary,
         job_type=job_type,
         location_contains=location,
+        company_contains=company,
+        shift_type=shift_type,
         source_type=source_type,
         imported_only=imported_only,
+        cursor=cursor,
         limit=limit,
-        offset=offset,
     )
 
 
