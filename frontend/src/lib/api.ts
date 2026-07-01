@@ -201,27 +201,33 @@ export const jobsApi = {
     apiRequest<TaskStatus>(`/jobs/tasks/${taskId}`),
   list: (
     opts: {
+      q?: string;
       source?: string;
       isRemote?: boolean;
       jobType?: string;
       location?: string;
+      company?: string;
       minSalary?: number;
       sourceType?: string;
+      shiftType?: string;
       importedOnly?: boolean;
+      cursor?: string;
       limit?: number;
-      offset?: number;
     } = {},
   ) => {
     const qs = new URLSearchParams();
+    if (opts.q) qs.set("q", opts.q);
     if (opts.source) qs.set("source", opts.source);
     if (opts.isRemote !== undefined) qs.set("is_remote", String(opts.isRemote));
     if (opts.jobType) qs.set("job_type", opts.jobType);
     if (opts.location) qs.set("location", opts.location);
+    if (opts.company) qs.set("company", opts.company);
     if (opts.minSalary !== undefined) qs.set("min_salary", String(opts.minSalary));
     if (opts.sourceType) qs.set("source_type", opts.sourceType);
+    if (opts.shiftType) qs.set("shift_type", opts.shiftType);
     if (opts.importedOnly) qs.set("imported_only", "true");
+    if (opts.cursor) qs.set("cursor", opts.cursor);
     qs.set("limit", String(opts.limit ?? 50));
-    qs.set("offset", String(opts.offset ?? 0));
     return apiRequest<JobListResponse>(`/jobs?${qs.toString()}`);
   },
   /** Per-user archive (affects only the current user). */

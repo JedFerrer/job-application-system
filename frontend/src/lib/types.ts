@@ -151,7 +151,7 @@ export interface JobListResponse {
   items: Job[];
   total: number;
   limit: number;
-  offset: number;
+  next_cursor: string | null;
 }
 
 // ---- Matches (Phase 3) ------------------------------------------------------
@@ -161,11 +161,18 @@ export interface MatchItem {
   company: string | null;
   location: string | null;
   is_remote: boolean | null;
+  job_type: string | null;
+  description: string | null;
+  shift_type: string | null;
+  salary_min: number | null;
+  salary_max: number | null;
+  salary_currency: string | null;
   source: string;
   source_url: string;
   vector_score: number;
   confidence: string | null;
   llm_score: number | null;
+  matched_skills: string[] | null;
   posted_at: string | null;
 }
 
