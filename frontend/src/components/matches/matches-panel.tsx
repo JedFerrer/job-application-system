@@ -14,7 +14,6 @@ import type { MatchItem } from "@/lib/types";
 
 const PAGE_SIZE = 20;
 
-/** Guard against duplicate rows across pages (offset pagination can overlap). */
 function dedupeByJobId(matches: MatchItem[]): MatchItem[] {
   const seen = new Set<number>();
   return matches.filter((m) => {
@@ -24,13 +23,9 @@ function dedupeByJobId(matches: MatchItem[]): MatchItem[] {
   });
 }
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import {
   Dialog,
@@ -43,16 +38,7 @@ import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
 import { InterviewPrepDialog } from "@/components/interview/interview-prep-dialog";
 import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { SkillsGapSummary } from "@/components/matches/skills-gap-summary";
-
-const CONFIDENCE_VARIANT: Record<
-  string,
-  "default" | "secondary" | "outline" | "destructive"
-> = {
-  strong: "default",
-  moderate: "secondary",
-  stretch: "outline",
-  weak: "destructive",
-};
+import { JobCard, type JobCardData, type JobCardMatch } from "@/components/jobs/job-card";
 
 export function MatchesPanel() {
   const queryClient = useQueryClient();
@@ -175,43 +161,36 @@ export function MatchesPanel() {
       )}
 
       <div className="flex flex-col gap-3">
-        {allMatches.map((match) => (
-          <Card key={match.job_id}>
-            <CardHeader className="pb-2">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="text-base">
-                    <a
-                      href={match.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:underline"
-                    >
-                      {match.title}
-                    </a>
-                  </CardTitle>
-                  <CardDescription>
-                    {match.company ?? "Unknown company"}
-                    {match.location ? ` · ${match.location}` : ""}
-                  </CardDescription>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className="text-lg font-semibold">
-                    {Math.round(match.vector_score)}
-                  </span>
-                  {match.confidence && (
-                    <Badge
-                      variant={
-                        CONFIDENCE_VARIANT[match.confidence] ?? "outline"
-                      }
-                    >
-                      {match.confidence}
-                    </Badge>
-                  )}
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="flex flex-wrap gap-2 pt-0">
+        {allMatches.map((match) => {
+          const card: JobCardData = {
+            jobId: match.job_id,
+            title: match.title,
+            company: match.company,
+            location: match.location,
+            isRemote: match.is_remote,
+            jobType: match.job_type,
+            shiftType: match.shift_type,
+            salaryMin: match.salary_min,
+            salaryMax: match.salary_max,
+            salaryCurrency: match.salary_currency,
+            source: match.source,
+            sourceUrl: match.source_url,
+            description: match.description,
+            postedAt: match.posted_at,
+            importedAt: null,
+          };
+          const matchData: JobCardMatch = {
+            score: match.vector_score,
+            confidence: match.confidence,
+            matchedSkills: match.matched_skills,
+          };
+
+          return (
+            <JobCard
+              key={match.job_id}
+              job={card}
+              match={matchData}
+            >
               <Button
                 size="sm"
                 variant="outline"
@@ -252,9 +231,9 @@ export function MatchesPanel() {
                 <Plus className="h-4 w-4" />
                 Save to applications
               </Button>
-            </CardContent>
-          </Card>
-        ))}
+            </JobCard>
+          );
+        })}
       </div>
 
       {/* Sentinel — IntersectionObserver watches this to trigger next page.

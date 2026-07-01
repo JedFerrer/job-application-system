@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Archive, Briefcase, FileText, Link2, Loader2, MapPin, Plus, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bookmark, Briefcase, Link2, Loader2, Search } from "lucide-react";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, jobsApi } from "@/lib/api";
 import type { Job } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -19,19 +19,10 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
+import { JobCard, type JobCardData } from "@/components/jobs/job-card";
 
 const PAGE_SIZE = 25;
-
-/** Guard against duplicate rows across pages (offset pagination can overlap). */
-function dedupeById(jobs: Job[]): Job[] {
-  const seen = new Set<number>();
-  return jobs.filter((job) => {
-    if (seen.has(job.id)) return false;
-    seen.add(job.id);
-    return true;
-  });
-}
+const MAX_JOBS = 500; // UX cap — stop infinite scroll after this many loaded
 
 const JOB_SOURCE_LABELS: Record<string, string> = {
   indeed: "Indeed",
@@ -41,96 +32,130 @@ const JOB_SOURCE_LABELS: Record<string, string> = {
   zip_recruiter: "ZipRecruiter",
 };
 
+/** Debounce hook — returns debounced value after `delay` ms, plus a `flush(v)` to skip the delay. */
+function useDebounce<T>(value: T, delay: number): [T, (v: T) => void] {
+  const [debounced, setDebounced] = useState(value);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    timerRef.current = setTimeout(() => setDebounced(value), delay);
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [value, delay]);
+
+  const flush = (v: T) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setDebounced(v);
+  };
+
+  return [debounced, flush];
+}
+
 export function JobsPanel() {
   const queryClient = useQueryClient();
   const [filterSource, setFilterSource] = useState("");
   const [filterJobType, setFilterJobType] = useState("");
-  const [filterLocation, setFilterLocation] = useState("");
+  const [filterLocationInput, setFilterLocationInput] = useState("");
+  const [filterCompanyInput, setFilterCompanyInput] = useState("");
   const [filterSourceType, setFilterSourceType] = useState("");
-  const [coverJob, setCoverJob] = useState<Job | null>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const [filterShiftType, setFilterShiftType] = useState("");
+  const [filterRemote, setFilterRemote] = useState(false);
+  const [filterSearch, setFilterSearch] = useState("");
+  const [searchValue, setSearchValue] = useState("");
 
-  // Refs keep the latest query state readable inside the observer callback
-  // without ever recreating the observer (which would cause it to re-fire
-  // immediately on creation and cascade-fetch every remaining page).
-  const hasNextPageRef = useRef(false);
-  const isFetchingNextPageRef = useRef(false);
-  const fetchNextPageRef = useRef<() => void>(() => {});
+  // Debounced text filters (500ms delay)
+  const [filterLocation, flushLocation] = useDebounce(filterLocationInput, 500);
+  const [filterCompany, flushCompany] = useDebounce(filterCompanyInput, 500);
 
   const jobsQuery = useInfiniteQuery({
-    queryKey: ["jobs", filterSource, filterJobType, filterLocation, filterSourceType],
-    initialPageParam: 0,
+    queryKey: ["jobs", filterSearch, filterSource, filterJobType, filterLocation, filterCompany, filterSourceType, filterShiftType, filterRemote],
+    initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       jobsApi.list({
         limit: PAGE_SIZE,
-        offset: (pageParam as number) * PAGE_SIZE,
+        cursor: pageParam ?? undefined,
+        q: filterSearch || undefined,
         source: filterSource || undefined,
         jobType: filterJobType || undefined,
         location: filterLocation || undefined,
+        company: filterCompany || undefined,
         sourceType: filterSourceType || undefined,
+        shiftType: filterShiftType || undefined,
+        isRemote: filterRemote || undefined,
       }),
     getNextPageParam: (lastPage, allPages) => {
       const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
-      return loaded < lastPage.total ? allPages.length : undefined;
+      if (loaded >= MAX_JOBS) return undefined;
+      return lastPage.next_cursor ?? undefined;
     },
-    refetchOnMount: "always",
+    staleTime: 60_000,
   });
 
-  // Keep refs in sync with the latest query state on every render.
-  // This lets the stable observer callback read up-to-date values without
-  // being a dependency of the effect that creates the observer.
-  hasNextPageRef.current = jobsQuery.hasNextPage;
-  isFetchingNextPageRef.current = jobsQuery.isFetchingNextPage;
-  fetchNextPageRef.current = jobsQuery.fetchNextPage;
-
-  const allJobs = dedupeById(
-    jobsQuery.data?.pages.flatMap((p) => p.items) ?? [],
-  );
+  const allJobs = jobsQuery.data?.pages.flatMap((p) => p.items) ?? [];
   const total = jobsQuery.data?.pages[0]?.total ?? 0;
 
-  // Infinite scroll sentinel — created ONCE (empty dep array).
-  // The observer reads hasNextPage / isFetchingNextPage / fetchNextPage
-  // through refs so it never needs to be recreated when those values change.
-  // Recreating the observer on each state change was the bug: a new observer
-  // fires its callback immediately for the current intersection state, so
-  // every page-load completion triggered the next fetch without waiting for
-  // the user to actually scroll — loading all remaining pages in one burst.
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    // rootMargin "0px 0px 300px 0px" fires the callback when the sentinel is
-    // 300 px below the visible viewport — i.e. before the user reaches it.
-    // New items are therefore inserted while the sentinel is still offscreen,
-    // so the viewport never needs to shift and the scroll position stays put.
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (
-          entry.isIntersecting &&
-          hasNextPageRef.current &&
-          !isFetchingNextPageRef.current
-        ) {
-          fetchNextPageRef.current();
-        }
-      },
-      { rootMargin: "0px 0px 300px 0px" },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Pre-compute card data and source labels — avoids re-creating objects on every render
+  const jobCards = useMemo(
+    () =>
+      allJobs.map((job) => ({
+        card: toJobCardData(job),
+        sourceLabel: jobSourceLabel(job),
+      })),
+    [allJobs],
+  );
 
-  const archiveMutation = useMutation({
-    mutationFn: (jobId: number) => jobsApi.archive(jobId),
-    onSuccess: () => {
-      toast.success("Job archived");
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
-    onError: () => toast.error("Failed to archive job"),
+  // Virtualize using window/page scroll
+  const virtualizer = useWindowVirtualizer({
+    count: allJobs.length + (jobsQuery.hasNextPage ? 1 : 0),
+    estimateSize: () => 180,
+    overscan: 3,
   });
+
+  // Fetch next page when nearing the end — guard against double-fetches
+  const fetchingRef = useRef(false);
+  const virtualItems = virtualizer.getVirtualItems();
+  const lastVirtualIndex = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1].index : 0;
+  useEffect(() => {
+    if (
+      lastVirtualIndex >= allJobs.length - 5 &&
+      jobsQuery.hasNextPage &&
+      !jobsQuery.isFetchingNextPage &&
+      !fetchingRef.current
+    ) {
+      fetchingRef.current = true;
+      jobsQuery.fetchNextPage().finally(() => { fetchingRef.current = false; });
+    }
+  }, [lastVirtualIndex, allJobs.length, jobsQuery.hasNextPage, jobsQuery.isFetchingNextPage, jobsQuery.fetchNextPage]);
+
+  // Reset scroll to top when filters/search trigger a fresh query (allJobs resets to 0 then repopulates)
+  const prevJobCountRef = useRef(allJobs.length);
+  useEffect(() => {
+    if (allJobs.length > 0 && prevJobCountRef.current === 0) {
+      window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+    }
+    prevJobCountRef.current = allJobs.length;
+  }, [allJobs.length]);
+
+  const [savedJobIds, setSavedJobIds] = useState<Set<number>>(new Set());
+
+  // Fetch existing applications to know which jobs are already saved
+  const { data: appData } = useQuery({
+    queryKey: ["applications"],
+    queryFn: () => applicationsApi.list(),
+    staleTime: 30_000,
+  });
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (appData && !seededRef.current) {
+      setSavedJobIds(new Set(appData.items.map((a) => a.job_id)));
+      seededRef.current = true;
+    }
+  }, [appData]);
 
   const saveAppMutation = useMutation({
     mutationFn: (jobId: number) => applicationsApi.create(jobId),
-    onSuccess: () => {
+    onSuccess: (_data, jobId) => {
       toast.success("Saved to applications");
+      setSavedJobIds((prev) => new Set(prev).add(jobId));
       queryClient.invalidateQueries({ queryKey: ["applications"] });
     },
     onError: (err) =>
@@ -212,17 +237,160 @@ export function JobsPanel() {
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-col gap-3">
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">
-              Jobs{" "}
-              {jobsQuery.data ? (
-                <span className="text-muted-foreground">
-                  ({total})
-                </span>
-              ) : null}
-            </h2>
-            <div className="flex items-center gap-2">
+        {/* ── Full-width search bar ─────────────────────────── */}
+        <div className="flex gap-2 py-3 border-y border-border">
+          <Input
+            value={searchValue}
+            onChange={(e) => setSearchValue(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") setFilterSearch(searchValue); }}
+            placeholder="Search title, company, or description…"
+            className="h-9 text-sm flex-1"
+          />
+          <Button
+            size="sm"
+            onClick={() => setFilterSearch(searchValue)}
+          >
+            <Search className="h-4 w-4" />
+            Search
+          </Button>
+          {filterSearch && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => { setSearchValue(""); setFilterSearch(""); }}
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+
+        <div className="flex gap-6">
+          {/* ── Filter sidebar ──────────────────────────────── */}
+          <aside className="w-72 shrink-0 self-start rounded-lg border bg-card p-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium">Filters</h3>
+              {(filterSource || filterJobType || filterLocationInput || filterCompanyInput || filterSourceType || filterShiftType || filterRemote || filterSearch || searchValue) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFilterSource("");
+                    setFilterJobType("");
+                    setFilterLocationInput("");
+                    setFilterCompanyInput("");
+                    flushLocation("");
+                    flushCompany("");
+                    setFilterSourceType("");
+                    setFilterShiftType("");
+                    setFilterRemote(false);
+                    setFilterSearch("");
+                    setSearchValue("");
+                  }}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Source</label>
+              <select
+                value={filterSource}
+                onChange={(e) => setFilterSource(e.target.value)}
+                className="rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="">All sources</option>
+                {Object.entries(JOB_SOURCE_LABELS).map(([val, label]) => (
+                  <option key={val} value={val}>{label}</option>
+                ))}
+              </select>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={filterRemote}
+                onChange={(e) => setFilterRemote(e.target.checked)}
+                className="rounded border-input"
+              />
+              <span>Remote only</span>
+            </label>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Job type</label>
+              <select
+                value={filterJobType}
+                onChange={(e) => setFilterJobType(e.target.value)}
+                className="rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="">All types</option>
+                <option value="fulltime">Full-time</option>
+                <option value="parttime">Part-time</option>
+                <option value="contract">Contract</option>
+                <option value="temporary">Temporary</option>
+                <option value="internship">Internship</option>
+              </select>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Shift</label>
+              <select
+                value={filterShiftType}
+                onChange={(e) => setFilterShiftType(e.target.value)}
+                className="rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="">Any</option>
+                <option value="day">Day shift</option>
+                <option value="night">Night shift</option>
+                <option value="mid">Mid shift</option>
+                <option value="flexible">Flexible</option>
+              </select>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Location</label>
+              <Input
+                value={filterLocationInput}
+                onChange={(e) => setFilterLocationInput(e.target.value)}
+                placeholder="City or country…"
+                className="h-8 text-sm"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Company</label>
+              <Input
+                value={filterCompanyInput}
+                onChange={(e) => setFilterCompanyInput(e.target.value)}
+                placeholder="Company name…"
+                className="h-8 text-sm"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Origin</label>
+              <select
+                value={filterSourceType}
+                onChange={(e) => setFilterSourceType(e.target.value)}
+                className="rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="">All</option>
+                <option value="global">Global (scraped)</option>
+                <option value="manual">Manual imports</option>
+                <option value="extension">Extension imports</option>
+              </select>
+            </div>
+          </aside>
+
+          {/* ── Job list ─────────────────────────────────────── */}
+          <div className="flex-1 min-w-0 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">
+                Jobs{" "}
+                {jobsQuery.data ? (
+                  <span className="text-muted-foreground">({total})</span>
+                ) : null}
+              </h2>
               <Button
                 size="sm"
                 variant="outline"
@@ -231,71 +399,7 @@ export function JobsPanel() {
                 <Link2 className="h-4 w-4" />
                 Import job
               </Button>
-              {(filterSource || filterJobType || filterLocation || filterSourceType) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFilterSource("");
-                    setFilterJobType("");
-                    setFilterLocation("");
-                    setFilterSourceType("");
-                  }}
-                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-3 w-3" />
-                  Clear filters
-                </button>
-              )}
             </div>
-          </div>
-
-          {/* Import job toggle */}
-
-          {/* Filter bar */}
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={filterSource}
-              onChange={(e) => setFilterSource(e.target.value)}
-              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              <option value="">All sources</option>
-              {Object.entries(JOB_SOURCE_LABELS).map(([val, label]) => (
-                <option key={val} value={val}>{label}</option>
-              ))}
-            </select>
-
-            <select
-              value={filterJobType}
-              onChange={(e) => setFilterJobType(e.target.value)}
-              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              <option value="">All job types</option>
-              <option value="fulltime">Full-time</option>
-              <option value="parttime">Part-time</option>
-              <option value="contract">Contract</option>
-              <option value="temporary">Temporary</option>
-              <option value="internship">Internship</option>
-            </select>
-
-            <Input
-              value={filterLocation}
-              onChange={(e) => setFilterLocation(e.target.value)}
-              placeholder="Filter by location / country…"
-              className="h-8 w-56 text-sm"
-            />
-
-            <select
-              value={filterSourceType}
-              onChange={(e) => setFilterSourceType(e.target.value)}
-              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              <option value="">All jobs</option>
-              <option value="global">Global (scraped)</option>
-              <option value="manual">Manual imports</option>
-              <option value="extension">Extension imports</option>
-            </select>
-          </div>
-        </div>
         {jobsQuery.isLoading && (
           <p className="text-sm text-muted-foreground">Loading jobs…</p>
         )}
@@ -313,32 +417,75 @@ export function JobsPanel() {
             </CardContent>
           </Card>
         )}
-        <div className="flex flex-col gap-3">
-          {allJobs.map((job) => (
-            <JobCard
-              key={job.id}
-              job={job}
-              onArchive={() => archiveMutation.mutate(job.id)}
-              onSaveToApps={() => saveAppMutation.mutate(job.id)}
-              onCoverLetter={() => setCoverJob(job)}
-            />
-          ))}
-        </div>
-
-        {/* Infinite scroll sentinel — overflow-anchor:none prevents the browser
-            from scrolling the viewport to keep this element in view when new
-            items are inserted above it, which would skip past the new content. */}
-        <div ref={sentinelRef} className="h-4" style={{ overflowAnchor: "none" }} />
-        {jobsQuery.isFetchingNextPage && (
-          <div className="flex justify-center py-4">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            {/* Virtualized job list — uses window scroll */}
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                width: "100%",
+                position: "relative",
+              }}
+            >
+                {virtualItems.map((vi) => {
+                  const isLoader = vi.index >= allJobs.length;
+                  return (
+                    <div
+                      key={isLoader ? "__loader__" : allJobs[vi.index].id}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${vi.start}px)`,
+                      }}
+                      data-index={vi.index}
+                      ref={virtualizer.measureElement}
+                    >
+                      {isLoader ? (
+                        jobsQuery.isFetchingNextPage ? (
+                          <div className="flex justify-center py-4">
+                            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                          </div>
+                        ) : jobsQuery.hasNextPage ? null : (
+                          <p className="py-2 text-center text-xs text-muted-foreground">
+                            {allJobs.length >= MAX_JOBS
+                              ? `Showing ${allJobs.length} of ${total} jobs. Refine your search or filters to see more.`
+                              : `All ${total} jobs loaded`}
+                          </p>
+                        )
+                      ) : (
+                        <div className="pb-3">
+                          {(() => {
+                            const jc = jobCards[vi.index];
+                            return (
+                              <JobCard
+                                job={jc.card}
+                                sourceLabel={jc.sourceLabel}
+                                hideExternalLink
+                                isSaved={savedJobIds.has(jc.card.jobId)}
+                                topRightAction={
+                                  savedJobIds.has(jc.card.jobId) ? null : (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => saveAppMutation.mutate(jc.card.jobId)}
+                                      className="h-7 px-2.5 text-xs"
+                                    >
+                                      <Bookmark className="h-3.5 w-3.5 mr-1" />
+                                      Save
+                                    </Button>
+                                  )
+                                }
+                              />
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
           </div>
-        )}
-        {!jobsQuery.hasNextPage && allJobs.length > 0 && (
-          <p className="py-2 text-center text-xs text-muted-foreground">
-            All {total} jobs loaded
-          </p>
-        )}
+        </div>
       </section>
 
       <Dialog open={showImport} onOpenChange={setShowImport}>
@@ -430,115 +577,36 @@ export function JobsPanel() {
           </div>
         </DialogContent>
       </Dialog>
-
-      <CoverLetterDialog
-        jobId={coverJob?.id ?? null}
-        jobTitle={coverJob?.title}
-        open={coverJob !== null}
-        onOpenChange={(open) => !open && setCoverJob(null)}
-      />
     </div>
   );
 }
 
 // ---- Helpers -----------------------------------------------------------------
 
-function JobCard({
-  job,
-  onArchive,
-  onSaveToApps,
-  onCoverLetter,
-}: {
-  job: Job;
-  onArchive: () => void;
-  onSaveToApps: () => void;
-  onCoverLetter: () => void;
-}) {
-  const sourceLabel =
-    job.ingest_source === "manual"
-      ? "Manual Import"
-      : job.ingest_source === "extension"
-        ? "Extension Import"
-        : job.visibility === "public"
-          ? "Global"
-          : null;
+/** Map a Job API object to the shared JobCardData shape. */
+function toJobCardData(job: Job): JobCardData {
+  return {
+    jobId: job.id,
+    title: job.title,
+    company: job.company,
+    location: job.location,
+    isRemote: job.is_remote,
+    jobType: job.job_type,
+    shiftType: job.shift_type,
+    salaryMin: job.salary_min,
+    salaryMax: job.salary_max,
+    salaryCurrency: job.salary_currency,
+    source: job.source,
+    sourceUrl: job.source_url,
+    description: job.description,
+    postedAt: job.posted_at,
+    importedAt: job.imported_at,
+  };
+}
 
-  return (
-    <Card>
-      <CardContent className="flex flex-col gap-2 py-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <a
-              href={job.source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium hover:underline"
-            >
-              {job.title}
-            </a>
-            <p className="text-sm text-muted-foreground">
-              {job.company ?? "Unknown company"}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {sourceLabel && (
-              <Badge variant="secondary" className="text-xs">{sourceLabel}</Badge>
-            )}
-            <Badge variant="outline">{job.source}</Badge>
-            <button
-              type="button"
-              onClick={onArchive}
-              title="Archive job"
-              className="text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Archive className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          {job.location && (
-            <span className="flex items-center gap-1">
-              <MapPin className="h-3 w-3" />
-              {job.location}
-            </span>
-          )}
-          {job.is_remote && <span>Remote</span>}
-          {job.job_type && <span>{job.job_type}</span>}
-          {job.shift_type && (
-            <span className={`capitalize font-medium ${
-              job.shift_type === "night" ? "text-blue-500" :
-              job.shift_type === "mid"   ? "text-amber-500" :
-              job.shift_type === "day"   ? "text-green-600" : ""
-            }`}>
-              {job.shift_type} shift
-            </span>
-          )}
-          {job.salary_min != null && (
-            <span>
-              {job.salary_currency ?? ""} {job.salary_min}
-              {job.salary_max != null ? `–${job.salary_max}` : ""}
-            </span>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2 pt-1">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onCoverLetter}
-          >
-            <FileText className="h-4 w-4" />
-            Cover letter
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onSaveToApps}
-          >
-            <Plus className="h-4 w-4" />
-            Save to applications
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
+function jobSourceLabel(job: Job): string | null {
+  if (job.ingest_source === "manual") return "Manual Import";
+  if (job.ingest_source === "extension") return "Extension Import";
+  if (job.visibility === "public") return "Global";
+  return null;
 }
