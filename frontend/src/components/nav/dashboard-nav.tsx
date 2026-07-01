@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Briefcase,
-  Download,
   ListChecks,
   LogOut,
   Settings,
@@ -22,7 +21,6 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard/jobs", label: "Jobs", icon: Briefcase },
   { href: "/dashboard/matches", label: "Matches", icon: Sparkles },
-  { href: "/dashboard/imported", label: "Imported", icon: Download },
   { href: "/dashboard/applications", label: "Applications", icon: ListChecks },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
