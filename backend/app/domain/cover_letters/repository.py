@@ -65,3 +65,25 @@ class CoverLetterRepository:
         await self._session.flush()
         await self._session.refresh(cover_letter)
         return cover_letter
+
+    async def link_to_application(
+        self, *, user_id: int, job_id: int, cover_letter_id: int
+    ) -> bool:
+        """If an application exists for (user, job), set its cover_letter_id.
+
+        Returns ``True`` if an application was found and linked.
+        """
+        from app.models.application import Application
+
+        result = await self._session.execute(
+            select(Application).where(
+                Application.user_id == user_id,
+                Application.job_id == job_id,
+            )
+        )
+        application = result.scalar_one_or_none()
+        if application is not None:
+            application.cover_letter_id = cover_letter_id
+            await self._session.flush()
+            return True
+        return False

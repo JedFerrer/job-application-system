@@ -108,7 +108,7 @@ class PreferenceService:
         Called after every save so the scheduler always dispatches the right
         queries for every user.
         """
-        session = self._repo._session  # noqa: SLF001 — same transaction
+        session = self._repo.session
         query_repo = ScrapeQueryRepository(session)
         sub_repo = SubscriptionRepository(session)
 

@@ -14,6 +14,11 @@ class PreferenceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @property
+    def session(self) -> AsyncSession:
+        """The underlying SQLAlchemy session (for cross-repo orchestration)."""
+        return self._session
+
     async def get_for_user(self, user_id: int) -> UserJobPreference | None:
         result = await self._session.execute(
             select(UserJobPreference).where(UserJobPreference.user_id == user_id)
