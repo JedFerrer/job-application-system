@@ -54,10 +54,11 @@ class WebSessionRepository:
     async def rotate(
         self, session: WebRefreshSession, new_refresh_token: str
     ) -> WebRefreshSession:
-        """Rotate *session*: revoke the old token, create a new session row
-        in the same token family with the new hash."""
+        """Rotate *session*: mark it used, revoke it, then create a new
+        session row in the same token family with the new hash."""
         now = datetime.now(UTC)
-        # Revoke the current session.
+        # Record last usage before revoking.
+        session.last_used_at = now
         session.revoked_at = now
         # Create a new session row in the same family.
         new_session = WebRefreshSession(

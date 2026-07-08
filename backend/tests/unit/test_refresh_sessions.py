@@ -238,9 +238,229 @@ async def test_refresh_with_revoked_token_fails(engine, settings) -> None:  # no
         from app.domain.auth.exceptions import InvalidTokenError
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=tokens.refresh_token)
+
+
+# ── Cryptographic JWT validation in session-based path ────────────────────
+
+
+async def test_expired_refresh_token_rejected(engine, settings) -> None:  # noqa: ANN001
+    """An expired JWT is rejected by decode_token() before the hash lookup."""
+    import time
+    from datetime import UTC, datetime, timedelta
+
+    import jwt as pyjwt
+
+    # Build an expired refresh token manually.
+    now = datetime.now(UTC)
+    payload = {
+        "sub": "1",
+        "type": "refresh",
+        "jti": "expired-jti",
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+        "iat": int((now - timedelta(days=30)).timestamp()),
+        "exp": int((now - timedelta(days=1)).timestamp()),
+    }
+    expired_token = pyjwt.encode(
+        payload,
+        settings.jwt_secret.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+    )
+
+    # Insert the expired token's hash into the DB so the hash lookup would
+    # succeed if decode_token() were not called first.
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        sess = WebRefreshSession(
+            user_id=user.id,
+            refresh_token_hash=hashlib.sha256(expired_token.encode()).hexdigest(),
+            token_family="expired-family",
+        )
+        db.add(sess)
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=expired_token)
+
+
+async def test_access_token_used_as_refresh_rejected(engine, settings) -> None:  # noqa: ANN001
+    """An access token presented as a refresh token is rejected (type check)."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
         tokens = await svc.authenticate(email="a@test.com", password="password123")
-        await svc.logout(refresh_token=tokens.refresh_token)
+        # tokens.access_token is of type "access", not "refresh".
+        access = tokens.access_token
 
         from app.domain.auth.exceptions import InvalidTokenError
         with pytest.raises(InvalidTokenError):
-            await svc.refresh(refresh_token=tokens.refresh_token)
+            await svc.refresh(refresh_token=access)
+
+
+async def test_invalid_signature_token_rejected(engine, settings) -> None:  # noqa: ANN001
+    """A token signed with a different secret is rejected."""
+    import jwt as pyjwt
+
+    forged = pyjwt.encode(
+        {"sub": "1", "type": "refresh", "exp": 9999999999, "iat": 1},
+        "wrong-secret-that-does-not-match-the-real-one",
+        algorithm=settings.jwt_algorithm,
+    )
+
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=forged)
+
+
+async def test_wrong_audience_token_rejected(engine, settings) -> None:  # noqa: ANN001
+    """A token with the wrong audience claim is rejected."""
+    import jwt as pyjwt
+    from datetime import UTC, datetime, timedelta
+
+    # Build a token with a deliberately wrong audience.
+    now = datetime.now(UTC)
+    payload = {
+        "sub": "1",
+        "type": "refresh",
+        "jti": "wrong-aud-jti",
+        "iss": settings.jwt_issuer,
+        "aud": "wrong-audience",
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(days=1)).timestamp()),
+    }
+    wrong_aud_token = pyjwt.encode(
+        payload, settings.jwt_secret.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+    )
+
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        # Insert hash so session lookup would find it.
+        sess = WebRefreshSession(
+            user_id=user.id,
+            refresh_token_hash=hashlib.sha256(wrong_aud_token.encode()).hexdigest(),
+            token_family="wrong-aud-family",
+        )
+        db.add(sess)
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=wrong_aud_token)
+
+
+async def test_wrong_issuer_token_rejected(engine, settings) -> None:  # noqa: ANN001
+    """A token with the wrong issuer claim is rejected."""
+    import jwt as pyjwt
+    from datetime import UTC, datetime, timedelta
+
+    # Build a token with a deliberately wrong issuer.
+    now = datetime.now(UTC)
+    payload = {
+        "sub": "1",
+        "type": "refresh",
+        "jti": "wrong-iss-jti",
+        "iss": "wrong-issuer",
+        "aud": settings.jwt_audience,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(days=1)).timestamp()),
+    }
+    wrong_iss_token = pyjwt.encode(
+        payload, settings.jwt_secret.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+    )
+
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        sess = WebRefreshSession(
+            user_id=user.id,
+            refresh_token_hash=hashlib.sha256(wrong_iss_token.encode()).hexdigest(),
+            token_family="wrong-iss-family",
+        )
+        db.add(sess)
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=wrong_iss_token)
+
+
+async def test_jwt_user_id_mismatch_session_rejected(engine, settings) -> None:  # noqa: ANN001
+    """JWT decodes to user A but session row belongs to user B — rejected."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user_a = await _create_user(db, 1, "a@test.com")
+        user_b = await _create_user(db, 2, "b@test.com")
+        await db.commit()
+
+        # Create a valid refresh token for user A.
+        token_for_a = create_token(
+            settings=settings, subject=user_a.id, token_type="refresh",
+        )
+
+        # But insert the hash into a session that points to user B.
+        sess = WebRefreshSession(
+            user_id=user_b.id,
+            refresh_token_hash=hashlib.sha256(token_for_a.encode()).hexdigest(),
+            token_family="mismatch-family",
+        )
+        db.add(sess)
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=token_for_a)
+
+
+# ── last_used_at tracking ─────────────────────────────────────────────────
+
+
+async def test_last_used_at_updated_on_refresh(engine, settings) -> None:  # noqa: ANN001
+    """After a successful refresh, the old session has last_used_at set."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        tokens = await svc.authenticate(email="a@test.com", password="password123")
+
+        # Refresh.
+        await svc.refresh(refresh_token=tokens.refresh_token)
+        await db.commit()
+
+    async with sf() as db:
+        result = await db.execute(
+            select(WebRefreshSession).order_by(WebRefreshSession.created_at)
+        )
+        sessions = result.scalars().all()
+        assert len(sessions) == 2
+        # The first (old) session should have last_used_at set.
+        old_s = sessions[0]
+        assert old_s.last_used_at is not None
+        assert old_s.revoked_at is not None
+        # The new session should not have been used yet.
+        new_s = sessions[1]
+        assert new_s.last_used_at is None
+        assert new_s.revoked_at is None

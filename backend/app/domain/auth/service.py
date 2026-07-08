@@ -162,11 +162,33 @@ class AuthService:
     # -- refresh -----------------------------------------------------------
 
     async def refresh(self, *, refresh_token: str) -> IssuedTokens:
-        # If session storage is available, validate the refresh token
+        # ALWAYS cryptographically verify the JWT first — even when session
+        # storage is available.  This ensures expiry, signature, issuer,
+        # audience, and token-type are validated BEFORE the hash lookup.
+        try:
+            user_id = decode_token(
+                settings=self._settings,
+                token=refresh_token,
+                expected_type="refresh",
+            )
+        except TokenError as exc:
+            raise InvalidTokenError from exc
+
+        # If session storage is available, cross-check the verified token
         # against persisted sessions (rotation, revocation, reuse detection).
         if self._sessions is not None:
             session = await self._sessions.find_by_token(refresh_token)
             if session is None:
+                raise InvalidTokenError
+
+            # Ensure the JWT subject matches the session's user.
+            if session.user_id != user_id:
+                logger.warning(
+                    "refresh.user_mismatch jwt_sub=%s session_user=%s session_id=%s",
+                    user_id,
+                    session.user_id,
+                    session.id,
+                )
                 raise InvalidTokenError
 
             if session.revoked_at is not None:
@@ -181,7 +203,7 @@ class AuthService:
                 raise InvalidTokenError
 
             # Verify the user still exists and is active.
-            user = await self._repo.get_by_id(session.user_id)
+            user = await self._repo.get_by_id(user_id)
             if user is None or not user.is_active:
                 raise InvalidTokenError
 
@@ -190,17 +212,8 @@ class AuthService:
             await self._sessions.rotate(session, tokens.refresh_token)
             return tokens
 
-        # Fallback: stateless JWT verification (backward-compatible when no
-        # session repository is configured).
-        try:
-            user_id = decode_token(
-                settings=self._settings,
-                token=refresh_token,
-                expected_type="refresh",
-            )
-        except TokenError as exc:
-            raise InvalidTokenError from exc
-
+        # Fallback: stateless JWT (already decoded above).  Backward-
+        # compatible when no session repository is configured.
         user = await self._repo.get_by_id(user_id)
         if user is None or not user.is_active:
             raise InvalidTokenError
