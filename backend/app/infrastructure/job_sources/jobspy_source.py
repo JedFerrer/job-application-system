@@ -168,6 +168,7 @@ class JobSpySource:
             salary_max=_clean_float(data.get("max_amount")),
             salary_currency=_clean_str(data.get("currency")),
             posted_at=_clean_datetime(data.get("date_posted")),
+            company_logo=_clean_str(data.get("company_logo")),
             raw={k: _json_safe(v) for k, v in data.items()},
         )
 
