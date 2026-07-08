@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,23 +86,69 @@ class MatchingRepository:
         user_id: int,
         limit: int,
         offset: int,
+        q: str | None = None,
+        source: str | None = None,
+        is_remote: bool | None = None,
+        job_type: str | None = None,
+        location_contains: str | None = None,
+        company_contains: str | None = None,
+        shift_type: str | None = None,
+        source_type: str | None = None,
     ) -> tuple[list[tuple[Job, UserJobMatch]], int]:
-        """Return ranked matches — only jobs with completed match analysis.
+        """Return ranked matches with optional filters on job fields.
 
         Imported jobs without match scores are excluded; they belong in
         /imported, not /matches, until analysis completes.
         """
+        filters: list[Any] = [
+            UserJobMatch.user_id == user_id,
+            Job.status == "active",
+        ]
+
+        if q:
+            like = f"%{q}%"
+            filters.append(
+                or_(
+                    Job.title.ilike(like),
+                    Job.company.ilike(like),
+                    Job.description.ilike(like),
+                )
+            )
+        if source is not None:
+            filters.append(Job.source == source)
+        if is_remote is not None:
+            filters.append(Job.is_remote.is_(is_remote))
+        if shift_type is not None:
+            filters.append(Job.shift_type == shift_type)
+        if source_type == "global":
+            filters.append(Job.visibility == "public")
+        elif source_type == "manual":
+            filters.append(
+                and_(Job.visibility == "private", Job.ingest_source == "manual")
+            )
+        elif source_type == "extension":
+            filters.append(
+                and_(Job.visibility == "private", Job.ingest_source == "extension")
+            )
+        if job_type is not None:
+            filters.append(func.lower(Job.job_type) == job_type.lower())
+        if location_contains is not None:
+            filters.append(Job.location.ilike(f"%{location_contains}%"))
+        if company_contains is not None:
+            filters.append(Job.company.ilike(f"%{company_contains}%"))
+
         count_stmt = (
             select(func.count())
             .select_from(UserJobMatch)
-            .where(UserJobMatch.user_id == user_id)
+            .join(Job, UserJobMatch.job_id == Job.id)
+            .where(*filters)
         )
         total = int((await self._session.execute(count_stmt)).scalar_one())
 
         list_stmt = (
             select(Job, UserJobMatch)
             .join(UserJobMatch, UserJobMatch.job_id == Job.id)
-            .where(UserJobMatch.user_id == user_id)
+            .where(*filters)
             .order_by(UserJobMatch.vector_score.desc(), Job.id.desc())
             .limit(limit)
             .offset(offset)

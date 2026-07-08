@@ -129,7 +129,7 @@ class JobSpySource:
             if query.location:
                 parts.append(query.location)
             google_search_term = " ".join(parts)
-        df: pd.DataFrame = scrape_jobs(
+        kwargs: dict[str, Any] = dict(
             site_name=self._sites,
             search_term=query.search_term,
             google_search_term=google_search_term,
@@ -137,11 +137,16 @@ class JobSpySource:
             country_indeed=query.country,
             results_wanted=query.results_wanted,
             hours_old=query.hours_old,
-            is_remote=query.is_remote,
             linkedin_fetch_description=True,
             description_format="markdown",
             proxies=self._proxies,
         )
+        # is_remote must be bool, never None (jobspy >= 1.1.82 validates
+        # ScraperInput strictly).
+        if query.is_remote is not None:
+            kwargs["is_remote"] = query.is_remote
+
+        df: pd.DataFrame = scrape_jobs(**kwargs)
         posts = [self._row_to_post(row) for _, row in df.iterrows()]
         logger.info("jobspy.fetch.done", count=len(posts))
         return posts

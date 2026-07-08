@@ -6,11 +6,14 @@ methods raise domain exceptions (never ``HTTPException``).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from google.auth.exceptions import GoogleAuthError as _GoogleVerifyError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import Settings
 from app.core.security import (
@@ -104,8 +107,10 @@ class AuthService:
                 id_token_str,
                 google_requests.Request(),
                 self._settings.google_client_id,
+                clock_skew_in_seconds=30,
             )
         except (ValueError, _GoogleVerifyError) as exc:
+            logger.warning("Google token verification failed: %s", exc)
             raise GoogleAuthError from exc
 
         google_id = claims.get("sub")

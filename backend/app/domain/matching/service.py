@@ -76,11 +76,27 @@ class MatchingService:
         user_id: int,
         limit: int,
         offset: int,
+        q: str | None = None,
+        source: str | None = None,
+        is_remote: bool | None = None,
+        job_type: str | None = None,
+        location_contains: str | None = None,
+        company_contains: str | None = None,
+        shift_type: str | None = None,
+        source_type: str | None = None,
     ) -> MatchListResponse:
         rows, total = await self._repo.list_matches(
             user_id=user_id,
             limit=limit,
             offset=offset,
+            q=q,
+            source=source,
+            is_remote=is_remote,
+            job_type=job_type,
+            location_contains=location_contains,
+            company_contains=company_contains,
+            shift_type=shift_type,
+            source_type=source_type,
         )
         items: list[MatchItem] = []
         for job, match in rows:
@@ -99,6 +115,7 @@ class MatchingService:
                     salary_currency=job.salary_currency,
                     source=job.source,
                     source_url=job.source_url,
+                    company_logo=job.company_logo,
                     vector_score=match.vector_score,
                     confidence=match.confidence,
                     llm_score=match.llm_score,

@@ -16,7 +16,11 @@ export function stripMarkdown(md: string | null | undefined): string {
   text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
   // Remove heading markers (##, ###, etc.)
   text = text.replace(/^#{1,6}\s+/gm, "");
-  // Remove bold/italic markers
+  // Normalise list bullets before paired markers — otherwise * bullets get
+  // consumed by the italic regex. Replace "* ", "- ", "+ " at line starts
+  // with a plain bullet so the text still reads as a list.
+  text = text.replace(/^[\t ]*[-*+]\s+/gm, "• ");
+  // Remove bold/italic markers (must run after bullet normalisation)
   text = text.replace(/\*\*(.+?)\*\*/g, "$1");
   text = text.replace(/__(.+?)__/g, "$1");
   text = text.replace(/\*(.+?)\*/g, "$1");
@@ -29,8 +33,8 @@ export function stripMarkdown(md: string | null | undefined): string {
   text = text.replace(/^>\s+/gm, "");
   // Remove horizontal rules
   text = text.replace(/^[-*_]{3,}\s*$/gm, "");
-  // Unescape backslash-escaped characters (like \- → -, \* → *)
-  text = text.replace(/\\([]!#(){}|.+[*_~`-])/g, "$1");
+  // Unescape all backslash-escaped markdown punctuation (\\-, \\&, \\*, etc.)
+  text = text.replace(/\\(.)/g, "$1");
   // Remove HTML tags
   text = text.replace(/<[^>]*>/g, "");
   // Collapse whitespace

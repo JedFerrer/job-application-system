@@ -34,6 +34,7 @@ class MatchItem(BaseModel):
     salary_currency: str | None = None
     source: str
     source_url: str
+    company_logo: str | None = None
     vector_score: float
     confidence: str | None
     llm_score: int | None

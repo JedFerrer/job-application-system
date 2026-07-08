@@ -138,6 +138,7 @@ export interface Job {
   posted_at: string | null;
   fetched_at: string;
   shift_type: string | null;
+  company_logo: string | null;
   // Feed-separation fields
   visibility: "public" | "private";
   ingest_source: "scraper" | "manual" | "extension";
@@ -169,6 +170,7 @@ export interface MatchItem {
   salary_currency: string | null;
   source: string;
   source_url: string;
+  company_logo: string | null;
   vector_score: number;
   confidence: string | null;
   llm_score: number | null;
