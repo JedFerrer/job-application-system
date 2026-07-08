@@ -57,6 +57,7 @@ class JobResponse(BaseModel):
     posted_at: datetime | None
     fetched_at: datetime
     shift_type: str | None
+    company_logo: str | None = None
     # Feed-separation fields
     visibility: str
     ingest_source: str

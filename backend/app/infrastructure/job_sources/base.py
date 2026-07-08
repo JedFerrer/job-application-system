@@ -28,6 +28,7 @@ class RawJobPost:
     salary_max: float | None = None
     salary_currency: str | None = None
     posted_at: datetime | None = None
+    company_logo: str | None = None
     raw: dict[str, object] = field(default_factory=dict)
 
 

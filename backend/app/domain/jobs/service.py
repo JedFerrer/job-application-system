@@ -16,6 +16,8 @@ from typing import Any
 from anyio import to_thread
 from sqlalchemy import update
 
+import html2text
+
 from app.core.logging import get_logger
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.exceptions import JobNotFoundError
@@ -37,6 +39,35 @@ logger = get_logger(__name__)
 
 # Async callable used to stream progress events to the task store.
 ProgressFn = Callable[..., Awaitable[None]]
+
+_h2t = html2text.HTML2Text()
+_h2t.body_width = 0          # don't wrap lines
+_h2t.ignore_links = False
+_h2t.ignore_images = True
+_h2t.ignore_emphasis = False
+
+
+def _normalise_description(raw: str | None) -> str | None:
+    """Convert HTML descriptions to clean markdown for consistent display.
+
+    Only touches text that contains HTML tags; plain text passes through
+    unchanged.  The conversion strips inline styles, scripts, and other
+    browser-specific cruft while preserving headings, lists, links, and
+    paragraph structure.
+    """
+    if not raw:
+        return raw
+    # Quick check — if there are no HTML tags, skip conversion.
+    if "<" not in raw or ">" not in raw:
+        return raw
+    try:
+        md = _h2t.handle(raw)
+        # Collapse excessive blank lines.
+        import re
+        md = re.sub(r"\n{3,}", "\n\n", md)
+        return md.strip()
+    except Exception:
+        return raw  # degrade gracefully — keep original
 
 
 class JobService:
@@ -178,6 +209,10 @@ class JobService:
 
     async def _upsert(self, post: RawJobPost, shift_type: str | None = None) -> tuple[int, bool]:
         fingerprint = job_fingerprint(post.company, post.title, post.location)
+
+        # Convert HTML descriptions to markdown for consistent formatting.
+        description = _normalise_description(post.description)
+
         values: dict[str, object] = {
             "fingerprint": fingerprint,
             "title": post.title,
@@ -185,7 +220,7 @@ class JobService:
             "location": post.location,
             "is_remote": post.is_remote,
             "job_type": post.job_type,
-            "description": post.description,
+            "description": description,
             "salary_min": post.salary_min,
             "salary_max": post.salary_max,
             "salary_currency": post.salary_currency,
@@ -193,6 +228,7 @@ class JobService:
             "source_url": post.source_url,
             "posted_at": post.posted_at,
             "shift_type": shift_type,  # None → COALESCE keeps existing value
+            "company_logo": post.company_logo,
             "raw_response": post.raw,
         }
         return await self._repo.upsert_job(values)
@@ -277,6 +313,13 @@ class JobService:
     ) -> None:
         """Per-user archive — sets ``user_jobs.status = 'archived'``."""
         await self._repo.set_user_job_status(user_id, job_id, "archived")
+
+    async def get_job(self, job_id: int) -> JobResponse:
+        """Fetch a single job by its primary key."""
+        job = await self._repo.get_by_id(job_id)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        return JobResponse.model_validate(job)
 
     async def import_job(
         self, payload: JobImportRequest, *, user_id: int

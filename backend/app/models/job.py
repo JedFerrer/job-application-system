@@ -51,6 +51,7 @@ class Job(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     shift_type: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    company_logo: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     raw_response: Mapped[dict[str, object]] = mapped_column(JSONB)
 
     # ---- Feed-separation columns (Phase 4 migration) ----

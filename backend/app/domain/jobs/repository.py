@@ -73,6 +73,7 @@ class JobRepository:
             "salary_currency",
             "posted_at",
             "shift_type",
+            "company_logo",
         ):
             update_cols[col] = func.coalesce(
                 stmt.excluded[col], getattr(Job, col)
