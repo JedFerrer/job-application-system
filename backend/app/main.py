@@ -44,6 +44,28 @@ if settings.is_production and (
 elif settings.jwt_secret.get_secret_value() == "insecure-dev-secret-change-me":
     logger.warning("jwt_secret_default", detail="Using insecure default JWT secret")
 
+if settings.is_production and not settings.refresh_cookie_secure:
+    raise RuntimeError(
+        "REFRESH_COOKIE_SECURE must be True in production. "
+        "Refresh cookies carry long-lived credentials and must only be sent over HTTPS."
+    )
+
+if settings.refresh_cookie_samesite == "none" and not settings.refresh_cookie_secure:
+    logger.warning(
+        "refresh_cookie_samesite_none_without_secure",
+        detail=(
+            "SameSite=None requires Secure=True, otherwise browsers will reject "
+            "the cookie. Set REFRESH_COOKIE_SECURE=true."
+        ),
+    )
+
+if settings.is_production and settings.job_refresh_cooldown_minutes < 15:
+    raise RuntimeError(
+        "JOB_REFRESH_COOLDOWN_MINUTES must be at least 15 in production. "
+        f"Got {settings.job_refresh_cooldown_minutes}. "
+        "On-demand scraping is expensive; a low cooldown enables abuse."
+    )
+
 app = FastAPI(
     title="Job Application API",
     version="0.1.0",
