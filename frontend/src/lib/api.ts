@@ -1,5 +1,6 @@
 import type {
   Application,
+  ApplicationListItem,
   ApplicationListResponse,
   ApplicationStatus,
   AuthUser,
@@ -239,11 +240,10 @@ export const jobsApi = {
       body: JSON.stringify(payload),
     }),
   /** List jobs imported by the current user (manual + extension). */
-  listImported: (opts: { limit?: number; offset?: number } = {}) => {
-    const qs = new URLSearchParams({
-      limit: String(opts.limit ?? 50),
-      offset: String(opts.offset ?? 0),
-    });
+  listImported: (opts: { cursor?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.cursor) qs.set("cursor", opts.cursor);
+    qs.set("limit", String(opts.limit ?? 50));
     return apiRequest<JobListResponse>(`/jobs/imported?${qs.toString()}`);
   },
   /** Fetch a single job by id. */
@@ -340,7 +340,12 @@ export const coverLettersApi = {
 
 // ---- Applications -----------------------------------------------------------
 export const applicationsApi = {
-  list: () => apiRequest<ApplicationListResponse>("/applications"),
+  list: (opts: { cursor?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.cursor) qs.set("cursor", opts.cursor);
+    qs.set("limit", String(opts.limit ?? 50));
+    return apiRequest<ApplicationListResponse>(`/applications?${qs.toString()}`);
+  },
   create: (jobId: number) =>
     apiRequest<Application>("/applications", {
       method: "POST",
@@ -359,6 +364,21 @@ export const applicationsApi = {
       body: JSON.stringify(payload),
     }),
 };
+
+/** Fetch all application pages via cursor pagination.
+ *  Used for saved-state detection in jobs/matches panels so that
+ *  users with >50 applications are not silently affected. */
+export async function listAllApplications(): Promise<ApplicationListItem[]> {
+  const all: ApplicationListItem[] = [];
+  let cursor: string | undefined;
+  while (true) {
+    const page = await applicationsApi.list({ cursor, limit: 100 });
+    all.push(...page.items);
+    if (!page.next_cursor) break;
+    cursor = page.next_cursor;
+  }
+  return all;
+}
 
 // ---- Auth -------------------------------------------------------------------
 export const authApi = {

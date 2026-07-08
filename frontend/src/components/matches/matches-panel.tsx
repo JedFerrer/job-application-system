@@ -10,7 +10,7 @@ import {
 } from "@tanstack/react-query";
 import { Bookmark, Loader2, RefreshCw, Search, Sparkles } from "lucide-react";
 import { toast } from "sonner";
-import { ApiError, applicationsApi, matchesApi } from "@/lib/api";
+import { ApiError, applicationsApi, listAllApplications, matchesApi } from "@/lib/api";
 import type { MatchItem } from "@/lib/types";
 
 const PAGE_SIZE = 20;
@@ -149,6 +149,7 @@ export function MatchesPanel() {
     // so the viewport never needs to shift and the scroll position stays put.
     const observer = new IntersectionObserver(
       ([entry]) => {
+        if (!entry) return;
         if (
           entry.isIntersecting &&
           hasNextPageRef.current &&
@@ -185,15 +186,16 @@ export function MatchesPanel() {
   });
 
   const [savedJobIds, setSavedJobIds] = useState<Set<number>>(new Set());
+  // Uses listAllApplications to avoid the first-50 limitation.
   const { data: appData } = useQuery({
-    queryKey: ["applications"],
-    queryFn: () => applicationsApi.list(),
+    queryKey: ["applications", "list"],
+    queryFn: listAllApplications,
     staleTime: 30_000,
   });
   const seededRef = useRef(false);
   useEffect(() => {
     if (appData && !seededRef.current) {
-      setSavedJobIds(new Set(appData.items.map((a) => a.job_id)));
+      setSavedJobIds(new Set(appData.map((a) => a.job_id)));
       seededRef.current = true;
     }
   }, [appData]);

@@ -6,7 +6,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { Bookmark, Briefcase, Link2, Loader2, Search } from "lucide-react";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
-import { ApiError, applicationsApi, jobsApi } from "@/lib/api";
+import { ApiError, applicationsApi, jobsApi, listAllApplications } from "@/lib/api";
 import type { Job } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -146,7 +146,7 @@ export function JobsPanel() {
   // Fetch next page when nearing the end — guard against double-fetches
   const fetchingRef = useRef(false);
   const virtualItems = virtualizer.getVirtualItems();
-  const lastVirtualIndex = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1].index : 0;
+  const lastVirtualIndex = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1]!.index : 0;
   useEffect(() => {
     if (
       lastVirtualIndex >= allJobs.length - 5 &&
@@ -170,16 +170,17 @@ export function JobsPanel() {
 
   const [savedJobIds, setSavedJobIds] = useState<Set<number>>(new Set());
 
-  // Fetch existing applications to know which jobs are already saved
+  // Fetch existing applications to know which jobs are already saved.
+  // Uses listAllApplications to avoid the first-50 limitation.
   const { data: appData } = useQuery({
-    queryKey: ["applications"],
-    queryFn: () => applicationsApi.list(),
+    queryKey: ["applications", "list"],
+    queryFn: listAllApplications,
     staleTime: 30_000,
   });
   const seededRef = useRef(false);
   useEffect(() => {
     if (appData && !seededRef.current) {
-      setSavedJobIds(new Set(appData.items.map((a) => a.job_id)));
+      setSavedJobIds(new Set(appData.map((a) => a.job_id)));
       seededRef.current = true;
     }
   }, [appData]);
@@ -462,7 +463,7 @@ export function JobsPanel() {
                   const isLoader = vi.index >= allJobs.length;
                   return (
                     <div
-                      key={isLoader ? "__loader__" : allJobs[vi.index].id}
+                      key={isLoader ? "__loader__" : allJobs[vi.index]!.id}
                       style={{
                         position: "absolute",
                         top: 0,

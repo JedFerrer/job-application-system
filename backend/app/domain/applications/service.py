@@ -77,4 +77,6 @@ class ApplicationService:
             )
             for app, job in rows
         ]
-        return ApplicationListResponse(items=items, total=total)
+        return ApplicationListResponse(
+            items=items, total=total, limit=limit, next_cursor=next_cursor
+        )

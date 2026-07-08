@@ -258,6 +258,8 @@ export interface ApplicationListItem {
 export interface ApplicationListResponse {
   items: ApplicationListItem[];
   total: number;
+  limit: number;
+  next_cursor: string | null;
 }
 
 // ---- Job preferences (Phase 2) ----------------------------------------------

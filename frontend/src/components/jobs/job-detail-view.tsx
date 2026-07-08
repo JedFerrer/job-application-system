@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ApiError, applicationsApi, jobsApi, matchesApi } from "@/lib/api";
+import { ApiError, applicationsApi, jobsApi, listAllApplications, matchesApi } from "@/lib/api";
 import type { ApplicationListItem, MatchExplanation, MatchItem, MatchListResponse } from "@/lib/types";
 import { useState, useMemo } from "react";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
@@ -79,7 +79,7 @@ const TABS = ["Description", "Skills", "Notes"] as const;
 type Tab = (typeof TABS)[number];
 
 /** Derive a 1–2 sentence overview from available job data. */
-function deriveOverview(job: NonNullable<ReturnType<typeof useQuery>["data"]>, match: MatchExplanation | null): string {
+function deriveOverview(job: { title?: string | null } | undefined, match: MatchExplanation | null): string {
   if (!job) return "";
   const role = job.title ?? "This role";
   const skills = match?.matched_skills?.slice(0, 5) ?? [];
@@ -153,13 +153,14 @@ export function JobDetailView({ jobId }: { jobId: number }) {
       toast.error(err instanceof ApiError ? err.message : "Explain failed"),
   });
 
+  // Uses listAllApplications to avoid the first-50 limitation.
   const appsQuery = useQuery({
-    queryKey: ["applications"],
-    queryFn: () => applicationsApi.list(),
+    queryKey: ["applications", "list"],
+    queryFn: listAllApplications,
     staleTime: 30_000,
   });
 
-  const existingApp: ApplicationListItem | undefined = appsQuery.data?.items.find(
+  const existingApp: ApplicationListItem | undefined = appsQuery.data?.find(
     (a) => a.job_id === jobId,
   );
 
@@ -175,10 +176,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   });
 
   const unsaveMutation = useMutation({
-    mutationFn: () =>
-      existingApp
-        ? applicationsApi.update(existingApp.id, { status: "closed" })
-        : Promise.resolve(),
+    mutationFn: async () => {
+      if (existingApp) {
+        await applicationsApi.update(existingApp.id, { status: "closed" });
+      }
+    },
     onSuccess: () => {
       toast.success("Removed from saved");
       queryClient.invalidateQueries({ queryKey: ["applications"] });

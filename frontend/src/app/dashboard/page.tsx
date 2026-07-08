@@ -15,7 +15,7 @@ import { Card, CardContent } from "@/components/ui/card";
 export default function DashboardHome() {
   const appsQuery = useQuery({
     queryKey: ["home-applications"],
-    queryFn: applicationsApi.list,
+    queryFn: () => applicationsApi.list(),
   });
 
   const matchesQuery = useQuery({

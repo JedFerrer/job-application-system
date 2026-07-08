@@ -9,7 +9,7 @@
  * Run with: npm test
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 
 // ── Format helpers ───────────────────────────────────────────────────────
 
@@ -282,5 +282,150 @@ describe("Dashboard states", () => {
     expect(state.isLoading).toBe(false);
     expect(state.data).toEqual(items);
     expect(state.error).toBeNull();
+  });
+});
+
+// ── Pagination contract tests ────────────────────────────────────────────
+
+import { jobsApi, applicationsApi, listAllApplications } from "../src/lib/api";
+
+/** Helper: mock `fetch` to return a controlled JSON response and capture the
+ *  requested URL. */
+function mockFetch(responseData: unknown, status = 200) {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => responseData,
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function lastUrl(fetchMock: ReturnType<typeof mockFetch>): URL {
+  const call = fetchMock.mock.lastCall;
+  if (!call) throw new Error("fetch was not called");
+  return new URL(call[0] as string, "http://localhost");
+}
+
+describe("jobsApi.listImported", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("first page sends limit, no cursor, no offset", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 25, next_cursor: null });
+    await jobsApi.listImported({ limit: 25 });
+    const url = lastUrl(fm);
+    expect(url.searchParams.get("limit")).toBe("25");
+    expect(url.searchParams.has("cursor")).toBe(false);
+    expect(url.searchParams.has("offset")).toBe(false);
+  });
+
+  it("second page sends cursor and limit, never offset", async () => {
+    const fm = mockFetch({ items: [], total: 30, limit: 25, next_cursor: "bmV4dA" });
+    await jobsApi.listImported({ cursor: "bmV4dF9wYWdl", limit: 25 });
+    const url = lastUrl(fm);
+    expect(url.searchParams.get("cursor")).toBe("bmV4dF9wYWdl");
+    expect(url.searchParams.get("limit")).toBe("25");
+    expect(url.searchParams.has("offset")).toBe(false);
+  });
+
+  it("defaults limit to 50", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 50, next_cursor: null });
+    await jobsApi.listImported();
+    expect(lastUrl(fm).searchParams.get("limit")).toBe("50");
+  });
+});
+
+describe("applicationsApi.list", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("first page sends limit, no cursor", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 25, next_cursor: null });
+    await applicationsApi.list({ limit: 25 });
+    const url = lastUrl(fm);
+    expect(url.searchParams.get("limit")).toBe("25");
+    expect(url.searchParams.has("cursor")).toBe(false);
+  });
+
+  it("second page sends cursor and limit", async () => {
+    const fm = mockFetch({ items: [], total: 30, limit: 25, next_cursor: "bmV4dA" });
+    await applicationsApi.list({ cursor: "bmV4dF9wYWdl", limit: 25 });
+    const url = lastUrl(fm);
+    expect(url.searchParams.get("cursor")).toBe("bmV4dF9wYWdl");
+    expect(url.searchParams.get("limit")).toBe("25");
+  });
+
+  it("defaults limit to 50 when not provided", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 50, next_cursor: null });
+    await applicationsApi.list();
+    expect(lastUrl(fm).searchParams.get("limit")).toBe("50");
+  });
+});
+
+describe("listAllApplications", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("returns all items from a single page", async () => {
+    const items = [{ id: 1, job_id: 10, job_title: "Dev", company: "A", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }];
+    mockFetch({ items, total: 1, limit: 100, next_cursor: null });
+    const result = await listAllApplications();
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(1);
+  });
+
+  it("follows next_cursor across multiple pages", async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn().mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: async () => ({ items: [{ id: 1, job_id: 1, job_title: "A", company: "X", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }], total: 3, limit: 2, next_cursor: "page2" }),
+        });
+      }
+      if (callCount === 2) {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: async () => ({ items: [{ id: 2, job_id: 2, job_title: "B", company: "Y", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }], total: 3, limit: 2, next_cursor: null }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ items: [], total: 3, limit: 2, next_cursor: null }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await listAllApplications();
+    expect(result).toHaveLength(2);
+    expect(result.map((a: { id: number }) => a.id)).toEqual([1, 2]);
+    expect(callCount).toBe(2);
+  });
+
+  it("returns empty array when there are no applications", async () => {
+    mockFetch({ items: [], total: 0, limit: 100, next_cursor: null });
+    const result = await listAllApplications();
+    expect(result).toEqual([]);
+  });
+});
+
+describe("ApplicationListResponse shape", () => {
+  it("backend contract includes limit and next_cursor", () => {
+    const response = {
+      items: [{ id: 1, job_id: 10, job_title: "Engineer", company: "Acme", location: null, source_url: "https://example.com", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }],
+      total: 1,
+      limit: 50,
+      next_cursor: null,
+    };
+    expect(response.total).toBe(1);
+    expect(response.limit).toBe(50);
+    expect(response.next_cursor).toBeNull();
+    expect(response.items).toHaveLength(1);
+  });
+
+  it("next_cursor is a non-empty string when more pages exist", () => {
+    const response = {
+      items: [{ id: 1, job_id: 10, job_title: "Dev", company: "A", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }],
+      total: 2,
+      limit: 1,
+      next_cursor: "bmV4dF9jdXJzb3I",
+    };
+    expect(response.next_cursor).toBeTruthy();
+    expect(typeof response.next_cursor).toBe("string");
   });
 });
