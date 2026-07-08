@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bookmark, Briefcase, Link2, Loader2, Search } from "lucide-react";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
@@ -23,6 +24,7 @@ import { JobCard, type JobCardData } from "@/components/jobs/job-card";
 
 const PAGE_SIZE = 25;
 const MAX_JOBS = 500; // UX cap — stop infinite scroll after this many loaded
+const SESSION_KEY = "jobs-list-state";
 
 const JOB_SOURCE_LABELS: Record<string, string> = {
   indeed: "Indeed",
@@ -52,6 +54,7 @@ function useDebounce<T>(value: T, delay: number): [T, (v: T) => void] {
 
 export function JobsPanel() {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const [filterSource, setFilterSource] = useState("");
   const [filterJobType, setFilterJobType] = useState("");
   const [filterLocationInput, setFilterLocationInput] = useState("");
@@ -65,6 +68,36 @@ export function JobsPanel() {
   // Debounced text filters (500ms delay)
   const [filterLocation, flushLocation] = useDebounce(filterLocationInput, 500);
   const [filterCompany, flushCompany] = useDebounce(filterCompanyInput, 500);
+
+  // Restore saved filter state and scroll position on mount (back from detail)
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw);
+      if (saved.filterSource) setFilterSource(saved.filterSource);
+      if (saved.filterJobType) setFilterJobType(saved.filterJobType);
+      if (saved.filterLocationInput) { setFilterLocationInput(saved.filterLocationInput); flushLocation(saved.filterLocationInput); }
+      if (saved.filterCompanyInput) { setFilterCompanyInput(saved.filterCompanyInput); flushCompany(saved.filterCompanyInput); }
+      if (saved.filterSourceType) setFilterSourceType(saved.filterSourceType);
+      if (saved.filterShiftType) setFilterShiftType(saved.filterShiftType);
+      if (saved.filterRemote) setFilterRemote(saved.filterRemote);
+      if (saved.filterSearch) { setFilterSearch(saved.filterSearch); setSearchValue(saved.filterSearch); }
+      restoredRef.current = true;
+      // Restore scroll after a short delay for the virtualizer to stabilise
+      if (saved.scrollY != null) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            window.scrollTo({ top: saved.scrollY, behavior: "instant" as ScrollBehavior });
+          });
+        });
+      }
+      sessionStorage.removeItem(SESSION_KEY);
+    } catch { /* ignore corrupted state */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only; guarded by restoredRef
+  }, []);
 
   const jobsQuery = useInfiniteQuery({
     queryKey: ["jobs", filterSearch, filterSource, filterJobType, filterLocation, filterCompany, filterSourceType, filterShiftType, filterRemote],
@@ -455,20 +488,37 @@ export function JobsPanel() {
                       ) : (
                         <div className="pb-3">
                           {(() => {
-                            const jc = jobCards[vi.index];
+                            const jc = jobCards[vi.index]!;
                             return (
                               <JobCard
                                 job={jc.card}
                                 sourceLabel={jc.sourceLabel}
                                 hideExternalLink
                                 isSaved={savedJobIds.has(jc.card.jobId)}
+                                onCardClick={() => {
+                                  sessionStorage.setItem(
+                                    SESSION_KEY,
+                                    JSON.stringify({
+                                      filterSource,
+                                      filterJobType,
+                                      filterLocationInput,
+                                      filterCompanyInput,
+                                      filterSourceType,
+                                      filterShiftType,
+                                      filterRemote,
+                                      filterSearch: filterSearch || searchValue,
+                                      scrollY: window.scrollY,
+                                    }),
+                                  );
+                                  router.push(`/dashboard/jobs/${jc.card.jobId}`);
+                                }}
                                 topRightAction={
                                   savedJobIds.has(jc.card.jobId) ? null : (
                                     <Button
                                       size="sm"
-                                      variant="outline"
+                                      variant="secondary"
                                       onClick={() => saveAppMutation.mutate(jc.card.jobId)}
-                                      className="h-7 px-2.5 text-xs"
+                                      className="h-7 px-2.5 text-xs hover:bg-secondary-foreground/10 transition-colors"
                                     >
                                       <Bookmark className="h-3.5 w-3.5 mr-1" />
                                       Save
@@ -601,6 +651,7 @@ function toJobCardData(job: Job): JobCardData {
     description: job.description,
     postedAt: job.posted_at,
     importedAt: job.imported_at,
+    companyLogo: job.company_logo,
   };
 }
 

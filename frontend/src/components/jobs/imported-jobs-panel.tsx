@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Download, FileText, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -24,8 +25,30 @@ function dedupeById(jobs: Job[]): Job[] {
 
 export function ImportedJobsPanel() {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const [coverJob, setCoverJob] = useState<Job | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+
+  // Restore scroll position on mount (back from detail page)
+  const scrollRestoredRef = useRef(false);
+  useEffect(() => {
+    if (scrollRestoredRef.current) return;
+    const raw = sessionStorage.getItem("imported-jobs-state");
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw);
+      scrollRestoredRef.current = true;
+      if (saved.scrollY != null) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            window.scrollTo({ top: saved.scrollY, behavior: "instant" as ScrollBehavior });
+          });
+        });
+      }
+      sessionStorage.removeItem("imported-jobs-state");
+    } catch { /* ignore corrupted state */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only; guarded by scrollRestoredRef
+  }, []);
 
   const hasNextPageRef = useRef(false);
   const isFetchingNextPageRef = useRef(false);
@@ -144,6 +167,13 @@ export function ImportedJobsPanel() {
                 match={match}
                 isAnalyzing={job.match_score == null}
                 onArchive={() => archiveMutation.mutate(job.id)}
+                onCardClick={() => {
+                  sessionStorage.setItem(
+                    "imported-jobs-state",
+                    JSON.stringify({ scrollY: window.scrollY }),
+                  );
+                  router.push(`/dashboard/jobs/${job.id}`);
+                }}
               >
                 <Button
                   size="sm"
@@ -209,5 +239,6 @@ function toJobCardData(job: Job): JobCardData {
     description: job.description,
     postedAt: job.posted_at,
     importedAt: job.imported_at,
+    companyLogo: job.company_logo,
   };
 }
