@@ -45,7 +45,7 @@ export function TagInput({
       return;
     }
     if (event.key === "Backspace" && !draft && value.length) {
-      removeTag(value[value.length - 1]);
+      removeTag(value[value.length - 1]!);
     }
   }
 

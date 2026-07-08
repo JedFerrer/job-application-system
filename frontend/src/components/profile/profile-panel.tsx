@@ -560,7 +560,7 @@ function WorkTimeline({
             {workHistory.map((item, i) => {
               const set = (patch: Partial<WorkItem>) => {
                 const next = [...workHistory];
-                next[i] = { ...next[i], ...patch };
+                next[i] = { ...next[i], ...patch } as WorkItem;
                 onChange(next);
               };
               return (
@@ -823,7 +823,7 @@ function EducationSection({
             {education.map((item, i) => {
               const set = (patch: Partial<EducationItem>) => {
                 const next = [...education];
-                next[i] = { ...next[i], ...patch };
+                next[i] = { ...next[i], ...patch } as EducationItem;
                 onChange(next);
               };
               return (

@@ -93,7 +93,7 @@ function monthYear(d: string | null): string {
   const m = d.match(/^(\d{4})-(\d{2})/);
   if (!m) return d;
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return `${months[parseInt(m[2],10)-1] || m[2]} ${m[1]}`;
+  return `${months[parseInt(m[2]!,10)-1] || m[2]} ${m[1]}`;
 }
 
 function dateRange(start: string | null, end: string | null): string {
@@ -208,7 +208,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
     writeSectionHeading(ctx, "PROFESSIONAL EXPERIENCE");
 
     for (let i = 0; i < data.work_history.length; i++) {
-      const role = data.work_history[i];
+      const role = data.work_history[i]!;
       const title = role.title || "Role";
       const company = role.company || "";
       const date = dateRange(role.start, role.end);
@@ -219,7 +219,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
       const minBullets = Math.min(2, bullets.length);
       const textLines: number[] = [];
       for (let b = 0; b < bullets.length; b++) {
-        const lines = pdf.splitTextToSize(bullets[b], textW - BULLET_INDENT).length;
+        const lines = pdf.splitTextToSize(bullets[b]!, textW - BULLET_INDENT).length;
         textLines.push(lines);
       }
       const minBlock = LINE_H + PARA_GAP + minBullets * (LINE_H + PARA_GAP);
@@ -239,13 +239,13 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
 
       // Write bullets
       for (let b = 0; b < bullets.length; b++) {
-        const bLines = textLines[b];
+        const bLines = textLines[b]!;
         // If only 1 bullet left and it would be orphaned, new page
         if (b === bullets.length - 1 && bLines === 1 && ctx.y + LINE_H + PARA_GAP > ctx.pageH - MARGIN && ctx.y > MARGIN + 20) {
           newPage(ctx);
         }
         ensureSpace(ctx, bLines * LINE_H + PARA_GAP);
-        writeBullet(ctx, bullets[b]);
+        writeBullet(ctx, bullets[b]!);
       }
     }
     ctx.y += SECTION_GAP;

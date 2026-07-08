@@ -33,7 +33,7 @@ function formatDateNice(start: string | null, end: string | null): string {
         "Jan","Feb","Mar","Apr","May","Jun",
         "Jul","Aug","Sep","Oct","Nov","Dec",
       ];
-      const idx = parseInt(m[2], 10) - 1;
+      const idx = parseInt(m[2]!, 10) - 1;
       return `${months[idx] || m[2]} ${m[1]}`;
     }
     return d;
