@@ -54,7 +54,22 @@ def _make_worker_session_factory() -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
 
 
-_worker_session_factory = _make_worker_session_factory()
+_worker_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def _get_worker_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return a session factory, creating one lazily per process.
+
+    Celery forks workers, so a module-level engine created at import time
+    carries internal state (event-loop bindings, connection bookkeeping)
+    from the parent process that is invalid in the forked child.  Creating
+    the engine lazily inside each task (or on first use per process) avoids
+    this.
+    """
+    global _worker_session_factory
+    if _worker_session_factory is None:
+        _worker_session_factory = _make_worker_session_factory()
+    return _worker_session_factory
 
 logger = get_logger(__name__)
 
@@ -98,7 +113,7 @@ async def _dispatch_shared_queries_async() -> dict[str, int]:
     """Pick due ``ScrapeQuery`` rows and enqueue one task per query."""
     now = datetime.now(UTC)
 
-    async with _worker_session_factory() as db:
+    async with _get_worker_session_factory()() as db:
         repo = ScrapeQueryRepository(db)
         due = await repo.get_due_queries(now=now, limit=50)
 
@@ -135,7 +150,7 @@ async def _scrape_single_query_async(
 
     redis: aioredis.Redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
-        async with _worker_session_factory() as db:
+        async with _get_worker_session_factory()() as db:
             query_repo = ScrapeQueryRepository(db)
             sub_repo = SubscriptionRepository(db)
 
@@ -229,7 +244,7 @@ async def _scrape_single_query_async(
     if totals["subscribers"] > 0:
         from app.workers.match_ranking import run_match_ranking_for_all_users
 
-        async with _worker_session_factory() as db:
+        async with _get_worker_session_factory()() as db:
             sub_repo = SubscriptionRepository(db)
             subscriber_ids = await sub_repo.get_subscribers(query_id)
         for uid in subscriber_ids:
@@ -286,7 +301,7 @@ async def _scrape_user_on_demand_async(user_id: int) -> dict[str, int]:
     Called by the on-demand refresh endpoint.  We find the user's
     subscriptions and dispatch one forced scrape per subscribed query.
     """
-    async with _worker_session_factory() as db:
+    async with _get_worker_session_factory()() as db:
         sub_repo = SubscriptionRepository(db)
         result = await db.execute(
             select(distinct(UserScrapeQuerySubscription.scrape_query_id)).where(
