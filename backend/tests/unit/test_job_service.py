@@ -13,9 +13,9 @@ from app.domain.jobs.service import JobService
 
 @pytest.fixture
 def mock_repo() -> AsyncMock:
-    """Return a mock JobRepository with a get_by_id method."""
+    """Return a mock JobRepository with a get_visible_by_id method."""
     repo = AsyncMock()
-    repo.get_by_id = AsyncMock()
+    repo.get_visible_by_id = AsyncMock()
     return repo
 
 
@@ -26,7 +26,7 @@ def service(mock_repo: AsyncMock) -> JobService:
 
 
 async def test_get_job_returns_job_response(service: JobService, mock_repo: AsyncMock) -> None:
-    """get_job calls repo.get_by_id and returns a JobResponse."""
+    """get_job calls repo.get_visible_by_id and returns a JobResponse."""
     from app.models.job import Job
 
     job = Job(
@@ -42,11 +42,11 @@ async def test_get_job_returns_job_response(service: JobService, mock_repo: Asyn
         visibility="public",
         ingest_source="scraper",
     )
-    mock_repo.get_by_id.return_value = job
+    mock_repo.get_visible_by_id.return_value = job
 
-    result = await service.get_job(1)
+    result = await service.get_job(user_id=1, job_id=1)
 
-    mock_repo.get_by_id.assert_called_once_with(1)
+    mock_repo.get_visible_by_id.assert_called_once_with(user_id=1, job_id=1)
     assert isinstance(result, JobResponse)
     assert result.id == 1
     assert result.title == "Senior Engineer"
@@ -56,7 +56,7 @@ async def test_get_job_returns_job_response(service: JobService, mock_repo: Asyn
 
 async def test_get_job_raises_not_found(service: JobService, mock_repo: AsyncMock) -> None:
     """get_job raises JobNotFoundError when repo returns None."""
-    mock_repo.get_by_id.return_value = None
+    mock_repo.get_visible_by_id.return_value = None
 
     with pytest.raises(JobNotFoundError):
-        await service.get_job(999)
+        await service.get_job(user_id=1, job_id=999)

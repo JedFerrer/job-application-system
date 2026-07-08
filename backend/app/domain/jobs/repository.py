@@ -231,6 +231,25 @@ class JobRepository:
             .values(status=status)
         )
 
+    async def mark_as_private_import(
+        self, *, job_id: int, user_id: int
+    ) -> None:
+        """Set visibility=private, created_by_user_id, and ingest_source on a job.
+
+        Used after ``upsert_job`` creates a new row during manual/extension
+        import so the job is scoped to the importing user.
+        """
+        await self._session.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .values(
+                visibility="private",
+                created_by_user_id=user_id,
+                ingest_source="manual",
+                imported_at=datetime.now(UTC),
+            )
+        )
+
     async def archive_older_than(self, cutoff: datetime) -> int:
         """Mark jobs older than ``cutoff`` as expired (global lifecycle).
 
@@ -248,7 +267,44 @@ class JobRepository:
         return int(result.rowcount or 0)
 
     async def get_by_id(self, job_id: int) -> Job | None:
+        """Raw PK lookup — no visibility or ownership checks.
+
+        Prefer :meth:`get_visible_by_id` for user-facing reads.
+        """
         return await self._session.get(Job, job_id)
+
+    async def get_visible_by_id(
+        self, *, user_id: int, job_id: int
+    ) -> Job | None:
+        """Return *job_id* only if it is visible to *user_id*.
+
+        Visibility rules (same predicate as :meth:`list_jobs`):
+        - ``visibility = 'public'`` → visible to all authenticated users.
+        - ``visibility = 'private'`` → visible ONLY to ``created_by_user_id``.
+        - Per-user archived jobs are excluded.
+        - Only active jobs are returned.
+        """
+        visibility_filter = or_(
+            Job.visibility == "public",
+            Job.created_by_user_id == user_id,
+        )
+        archived_subq = (
+            select(UserJob.job_id)
+            .where(
+                UserJob.user_id == user_id,
+                UserJob.status == "archived",
+            )
+            .scalar_subquery()
+        )
+        result = await self._session.execute(
+            select(Job).where(
+                Job.id == job_id,
+                Job.status == "active",
+                visibility_filter,
+                Job.id.not_in(archived_subq),
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def find_by_source_url(self, url: str) -> Job | None:
         """Find a job by its source URL (exact match)."""
@@ -382,15 +438,24 @@ class JobRepository:
         self,
         *,
         user_id: int,
+        cursor: str | None = None,
         limit: int = 50,
-        offset: int = 0,
-    ) -> tuple[list[Job], int]:
-        """Return only jobs the user imported (manual or extension)."""
+    ) -> tuple[list[tuple[Job, Any, Any]], int, str | None]:
+        """Return only jobs the user imported (manual or extension).
+
+        Cursor-based pagination using ``(UserJob.created_at, Job.id)``.
+        """
         filters: list[Any] = [
             UserJob.user_id == user_id,
             UserJob.relationship_source.in_(["manual", "extension"]),
             Job.status == "active",
         ]
+
+        if cursor:
+            cursor_ts, cursor_id = _decode_cursor(cursor)
+            filters.append(
+                tuple_(UserJob.created_at, Job.id) < (cursor_ts, cursor_id)
+            )
 
         count_stmt = (
             select(func.count())
@@ -401,12 +466,25 @@ class JobRepository:
         total = int((await self._session.execute(count_stmt)).scalar_one())
 
         list_stmt = (
-            select(Job, UserJob.match_score, UserJob.match_reason)
+            select(Job, UserJob.match_score, UserJob.match_reason, UserJob.created_at)
             .join(UserJob, UserJob.job_id == Job.id)
             .where(*filters)
-            .order_by(UserJob.created_at.desc())
-            .limit(limit)
-            .offset(offset)
+            .order_by(UserJob.created_at.desc(), Job.id.desc())
+            .limit(limit + 1)
         )
         rows = list((await self._session.execute(list_stmt)).all())
-        return rows, total
+
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+
+        next_cursor: str | None = None
+        if has_more and rows:
+            last_job = rows[-1][0]
+            last_created_at = rows[-1][3]  # UserJob.created_at (4th column)
+            next_cursor = _encode_cursor(
+                sort_ts=last_created_at,
+                job_id=last_job.id,
+            )
+
+        return rows, total, next_cursor

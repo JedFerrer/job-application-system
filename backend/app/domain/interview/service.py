@@ -44,7 +44,7 @@ class InterviewService:
             if cached is not None:
                 return self._to_response(cached, cached=True)
 
-        job = await self._repo.get_job(job_id)
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         if job is None:
             raise JobNotFoundError(job_id)
         profile = await self._repo.get_active_profile(user_id)

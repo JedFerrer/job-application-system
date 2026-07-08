@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.core.logging import get_logger
+from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.domain.matching.skill_matcher import SkillMatchReport, compute_skill_match, extract_jd_skills
 from app.domain.resume.exceptions import (
@@ -193,8 +194,10 @@ class ResumeService:
             raise ProfileNotFoundError(user_id)
 
         profile = ParsedProfile.model_validate(profile_row.parsed)
-        job = await job_repository.get_by_id(job_id)
-        if job is None or not job.description:
+        job = await job_repository.get_visible_by_id(user_id=user_id, job_id=job_id)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        if not job.description:
             # Return untailored — nothing to match against.
             return TailoredResume(
                 job_id=job_id,

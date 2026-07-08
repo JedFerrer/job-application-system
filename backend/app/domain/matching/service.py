@@ -152,7 +152,7 @@ class MatchingService:
         if match.llm_explanation is not None:
             return self._to_explanation(match)
 
-        job = await self._repo.get_job(job_id)
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         profile = await self._repo.get_active_profile(user_id)
         if job is None or profile is None:
             raise MatchNotFoundError(job_id)

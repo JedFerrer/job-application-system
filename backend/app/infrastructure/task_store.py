@@ -35,12 +35,21 @@ class TaskStore:
     def _key(task_id: str) -> str:
         return f"task:{task_id}"
 
-    async def create(self, task_type: str) -> str:
+    async def create(self, task_type: str, user_id: int) -> str:
+        """Create a new task owned by *user_id*.
+
+        Returns the generated ``task_id`` (UUID).
+        """
         task_id = str(uuid.uuid4())
         await self._r.setex(
             self._key(task_id),
             _TTL,
-            json.dumps({"type": task_type, "status": "queued", "message": "Queued…"}),
+            json.dumps({
+                "type": task_type,
+                "status": "queued",
+                "message": "Queued…",
+                "user_id": user_id,
+            }),
         )
         return task_id
 

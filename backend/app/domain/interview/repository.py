@@ -55,8 +55,39 @@ class InterviewRepository:
         prep: InterviewPrep = result.scalar_one()
         return prep
 
-    async def get_job(self, job_id: int) -> Job | None:
-        return await self._session.get(Job, job_id)
+    async def get_visible_job(
+        self, *, user_id: int, job_id: int
+    ) -> Job | None:
+        """Return *job_id* only if visible to *user_id*.
+
+        Same visibility + archive-exclusion predicate as
+        ``JobRepository.list_jobs``.
+        """
+        from sqlalchemy import or_
+
+        from app.models.user_job import UserJob
+
+        visibility_filter = or_(
+            Job.visibility == "public",
+            Job.created_by_user_id == user_id,
+        )
+        archived_subq = (
+            select(UserJob.job_id)
+            .where(
+                UserJob.user_id == user_id,
+                UserJob.status == "archived",
+            )
+            .scalar_subquery()
+        )
+        result = await self._session.execute(
+            select(Job).where(
+                Job.id == job_id,
+                Job.status == "active",
+                visibility_filter,
+                Job.id.not_in(archived_subq),
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def get_active_profile(self, user_id: int) -> CandidateProfile | None:
         result = await self._session.execute(
