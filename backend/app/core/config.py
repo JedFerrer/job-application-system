@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     # Minimum gap between on-demand "refresh" scrapes for one user. The
     # /preferences/refresh endpoint returns 429 until this many minutes have
     # passed since ``last_scraped_at``.
-    job_refresh_cooldown_minutes: int = 120
+    job_refresh_cooldown_minutes: int = 0  # 0 = no cooldown (dev only; set >0 in production)
     # Jobs whose ``posted_at`` (or ``created_at`` when posted_at is NULL) is
     # older than this are archived by the nightly maintenance task.
     job_archive_after_days: int = 30

@@ -246,6 +246,8 @@ export const jobsApi = {
     });
     return apiRequest<JobListResponse>(`/jobs/imported?${qs.toString()}`);
   },
+  /** Fetch a single job by id. */
+  get: (jobId: number) => apiRequest<Job>(`/jobs/${jobId}`),
 };
 
 // ---- Matches ----------------------------------------------------------------
@@ -255,11 +257,32 @@ export const matchesApi = {
       method: "POST",
       body: JSON.stringify({ limit }),
     }),
-  list: (opts: { limit?: number; offset?: number } = {}) => {
+  list: (
+    opts: {
+      limit?: number;
+      offset?: number;
+      q?: string;
+      source?: string;
+      isRemote?: boolean;
+      jobType?: string;
+      location?: string;
+      company?: string;
+      shiftType?: string;
+      sourceType?: string;
+    } = {},
+  ) => {
     const qs = new URLSearchParams({
       limit: String(opts.limit ?? 50),
       offset: String(opts.offset ?? 0),
     });
+    if (opts.q) qs.set("q", opts.q);
+    if (opts.source) qs.set("source", opts.source);
+    if (opts.isRemote !== undefined) qs.set("is_remote", String(opts.isRemote));
+    if (opts.jobType) qs.set("job_type", opts.jobType);
+    if (opts.location) qs.set("location", opts.location);
+    if (opts.company) qs.set("company", opts.company);
+    if (opts.shiftType) qs.set("shift_type", opts.shiftType);
+    if (opts.sourceType) qs.set("source_type", opts.sourceType);
     return apiRequest<MatchListResponse>(`/matches?${qs.toString()}`);
   },
   explain: (jobId: number) =>
