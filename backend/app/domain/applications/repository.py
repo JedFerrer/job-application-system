@@ -64,8 +64,13 @@ class ApplicationRepository:
         return application
 
     async def list_with_jobs(
-        self, *, user_id: int
-    ) -> tuple[list[tuple[Application, Job]], int]:
+        self, *, user_id: int, cursor: str | None = None, limit: int = 50
+    ) -> tuple[list[tuple[Application, Job]], int, str | None]:
+        """Return applications for *user_id* with cursor-based pagination.
+
+        Cursor is a base64-encoded ``updated_at.isoformat()|id`` pair.
+        Returns ``(rows, total, next_cursor)``.
+        """
         count = int(
             (
                 await self._session.execute(
@@ -75,12 +80,52 @@ class ApplicationRepository:
                 )
             ).scalar_one()
         )
-        rows = (
+
+        filters: list = [Application.user_id == user_id]
+        if cursor:
+            cursor_ts, cursor_id = _decode_app_cursor(cursor)
+            filters.append(
+                __import__("sqlalchemy").tuple_(
+                    Application.updated_at, Application.id
+                )
+                < (cursor_ts, cursor_id)
+            )
+
+        rows_raw = (
             await self._session.execute(
                 select(Application, Job)
                 .join(Job, Job.id == Application.job_id)
-                .where(Application.user_id == user_id)
-                .order_by(Application.updated_at.desc())
+                .where(*filters)
+                .order_by(Application.updated_at.desc(), Application.id.desc())
+                .limit(limit + 1)
             )
         ).all()
-        return [(row[0], row[1]) for row in rows], count
+
+        has_more = len(rows_raw) > limit
+        if has_more:
+            rows_raw = rows_raw[:limit]
+
+        rows = [(r[0], r[1]) for r in rows_raw]
+
+        next_cursor: str | None = None
+        if has_more and rows:
+            last_app, _ = rows[-1]
+            next_cursor = _encode_app_cursor(last_app.updated_at, last_app.id)
+
+        return rows, count, next_cursor
+
+
+# ── Cursor helpers (same pattern as job listing) ──────────────────────────
+
+def _encode_app_cursor(updated_at, app_id: int) -> str:
+    import base64
+    raw = f"{updated_at.isoformat()}|{app_id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode_app_cursor(cursor: str):
+    import base64
+    from datetime import UTC, datetime
+    raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+    ts_str, id_str = raw.rsplit("|", 1)
+    return datetime.fromisoformat(ts_str).replace(tzinfo=UTC), int(id_str)
