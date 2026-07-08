@@ -19,6 +19,7 @@ from app.domain.applications.service import ApplicationService
 from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.service import AuthService
+from app.domain.auth.web_session_repository import WebSessionRepository
 from app.domain.cover_letters.repository import CoverLetterRepository
 from app.domain.cover_letters.service import CoverLetterService
 from app.domain.interview.repository import InterviewRepository
@@ -47,7 +48,11 @@ SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 
 
 def get_auth_service(db: DbSession) -> AuthService:
-    return AuthService(UserRepository(db), get_settings())
+    return AuthService(
+        UserRepository(db),
+        get_settings(),
+        web_sessions=WebSessionRepository(db),
+    )
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]

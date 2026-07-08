@@ -32,6 +32,7 @@ from app.domain.auth.exceptions import (
     InvalidTokenError,
 )
 from app.domain.auth.repository import UserRepository
+from app.domain.auth.web_session_repository import WebSessionRepository
 from app.models.user import User
 
 
@@ -44,9 +45,15 @@ class IssuedTokens:
 
 
 class AuthService:
-    def __init__(self, repository: UserRepository, settings: Settings) -> None:
+    def __init__(
+        self,
+        repository: UserRepository,
+        settings: Settings,
+        web_sessions: WebSessionRepository | None = None,
+    ) -> None:
         self._repo = repository
         self._settings = settings
+        self._sessions = web_sessions
 
     # -- token helpers -----------------------------------------------------
 
@@ -61,6 +68,16 @@ class AuthService:
             expires_in=self._settings.access_token_expire_minutes * 60,
             user=user,
         )
+
+    async def _issue_and_track(self, user: User) -> IssuedTokens:
+        """Issue tokens and persist a refresh session when session storage is
+        available."""
+        tokens = self._issue(user)
+        if self._sessions is not None:
+            await self._sessions.create_session(
+                user_id=user.id, refresh_token=tokens.refresh_token
+            )
+        return tokens
 
     # -- email + password --------------------------------------------------
 
@@ -78,7 +95,7 @@ class AuthService:
             user = await self._repo.create(
                 email=email, name=name, hashed_password=hash_password(password)
             )
-        return self._issue(user)
+        return await self._issue_and_track(user)
 
     async def authenticate(self, *, email: str, password: str) -> IssuedTokens:
         user = await self._repo.get_by_email(email)
@@ -94,7 +111,7 @@ class AuthService:
             await self._repo.update_password(
                 user, hashed_password=hash_password(password)
             )
-        return self._issue(user)
+        return await self._issue_and_track(user)
 
     # -- Google ------------------------------------------------------------
 
@@ -140,11 +157,41 @@ class AuthService:
 
         if not user.is_active:
             raise InactiveUserError
-        return self._issue(user)
+        return await self._issue_and_track(user)
 
     # -- refresh -----------------------------------------------------------
 
     async def refresh(self, *, refresh_token: str) -> IssuedTokens:
+        # If session storage is available, validate the refresh token
+        # against persisted sessions (rotation, revocation, reuse detection).
+        if self._sessions is not None:
+            session = await self._sessions.find_by_token(refresh_token)
+            if session is None:
+                raise InvalidTokenError
+
+            if session.revoked_at is not None:
+                # Reuse detected — revoke the entire token family.
+                await self._sessions.revoke_family(session.token_family)
+                logger.warning(
+                    "refresh.reuse_detected session_id=%s family=%s user_id=%s",
+                    session.id,
+                    session.token_family,
+                    session.user_id,
+                )
+                raise InvalidTokenError
+
+            # Verify the user still exists and is active.
+            user = await self._repo.get_by_id(session.user_id)
+            if user is None or not user.is_active:
+                raise InvalidTokenError
+
+            # Rotate: issue new tokens, update the session with the new hash.
+            tokens = self._issue(user)
+            await self._sessions.rotate(session, tokens.refresh_token)
+            return tokens
+
+        # Fallback: stateless JWT verification (backward-compatible when no
+        # session repository is configured).
         try:
             user_id = decode_token(
                 settings=self._settings,
@@ -159,13 +206,27 @@ class AuthService:
             raise InvalidTokenError
         return self._issue(user)
 
+    # -- logout ------------------------------------------------------------
+
+    async def logout(self, *, refresh_token: str) -> None:
+        """Revoke the refresh session for *refresh_token* (if tracked)."""
+        if self._sessions is None:
+            return
+        session = await self._sessions.find_by_token(refresh_token)
+        if session is not None:
+            await self._sessions.revoke_session(session)
+
     # -- password reset ----------------------------------------------------
 
     async def forgot_password(self, *, email: str) -> dict[str, str]:
-        """Generate a password-reset token for ``email``.
+        """Generate a password-reset token for *email*.
 
-        Returns the reset URL (for dev environments). In production, the token
-        would be sent via email instead.
+        In **development**, the reset URL is returned in the API response for
+        convenience.  In **staging / production**, only a generic message is
+        returned — the actual reset link must be delivered via email.
+
+        TODO: Integrate an email provider (SendGrid / SES / Resend) to deliver
+              the reset link out-of-band in non-development environments.
         """
         user = await self._repo.get_by_email(email)
         if user is None or user.hashed_password is None:
@@ -177,14 +238,17 @@ class AuthService:
             subject=user.id,
             token_type="reset",
         )
-        # In production, email this URL instead.
-        return {
+        is_dev = self._settings.environment == "development"
+        response: dict[str, str] = {
             "message": "If the email is registered, a reset link has been sent.",
-            "reset_url": f"/reset-password?token={token}",
         }
+        if is_dev:
+            response["reset_url"] = f"/reset-password?token={token}"
+        return response
 
     async def reset_password(self, *, token_str: str, new_password: str) -> None:
-        """Validate a reset token and update the user's password."""
+        """Validate a reset token, update the password, and revoke all
+        existing refresh sessions for the user (forcing re-login everywhere)."""
         try:
             user_id = decode_token(
                 settings=self._settings,
@@ -201,3 +265,13 @@ class AuthService:
         await self._repo.update_password(
             user, hashed_password=hash_password(new_password)
         )
+
+        # Revoke all web refresh sessions so old tokens can't be used.
+        if self._sessions is not None:
+            count = await self._sessions.revoke_all_for_user(user.id)
+            if count:
+                logger.info(
+                    "password_reset.sessions_revoked user_id=%s count=%s",
+                    user.id,
+                    count,
+                )

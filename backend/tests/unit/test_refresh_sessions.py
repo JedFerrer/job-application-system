@@ -1,0 +1,246 @@
+"""Refresh-token session security regression tests.
+
+Verifies that the web refresh-token session storage correctly handles:
+- Session creation on login/register
+- Token rotation on refresh
+- Session revocation on logout
+- Token reuse detection
+- Password reset revokes all sessions
+"""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import UTC, datetime
+
+import pytest
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from app.core.config import Settings, get_settings
+from app.core.security import create_token
+from app.domain.auth.repository import UserRepository
+from app.domain.auth.service import AuthService
+from app.domain.auth.web_session_repository import WebSessionRepository
+from app.models.user import User
+from app.models.web_refresh_session import WebRefreshSession
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def engine():
+    settings = get_settings()
+    return create_async_engine(settings.database_url, poolclass=NullPool, echo=False)
+
+
+@pytest.fixture(autouse=True)
+async def clean_db(engine) -> None:  # noqa: ANN001
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        await db.execute(text("TRUNCATE TABLE web_refresh_sessions CASCADE"))
+        await db.execute(text("TRUNCATE TABLE users CASCADE"))
+        await db.commit()
+
+
+@pytest.fixture
+def settings() -> Settings:
+    s = get_settings()
+    # Use a fixed secret for deterministic token generation in tests.
+    from pydantic import SecretStr
+    return Settings(
+        environment="development",
+        jwt_secret=SecretStr("test-secret-for-testing-at-least-32-chars!!"),
+    )
+
+
+async def _create_user(db: AsyncSession, user_id: int, email: str) -> User:
+    user = User(id=user_id, email=email, name="Test User", is_active=True)
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+def _make_svc(db: AsyncSession, settings: Settings) -> AuthService:
+    return AuthService(
+        repository=UserRepository(db),
+        settings=settings,
+        web_sessions=WebSessionRepository(db),
+    )
+
+
+# ── Tests ─────────────────────────────────────────────────────────────────
+
+
+async def test_login_creates_session(engine, settings) -> None:  # noqa: ANN001
+    """Login creates a web refresh session with a hashed token."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        tokens = await svc.authenticate(email="a@test.com", password="password123")
+        await db.commit()
+
+    # Verify session was created.
+    async with sf() as db:
+        result = await db.execute(select(WebRefreshSession))
+        sessions = result.scalars().all()
+        assert len(sessions) == 1
+        s = sessions[0]
+        assert s.user_id == 1
+        assert s.refresh_token_hash == hashlib.sha256(
+            tokens.refresh_token.encode()
+        ).hexdigest()
+        assert s.revoked_at is None
+        assert s.token_family is not None
+
+
+async def test_refresh_rotates_token(engine, settings) -> None:  # noqa: ANN001
+    """Refresh rotates the token: old session revoked, new session created."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        tokens1 = await svc.authenticate(email="a@test.com", password="password123")
+        old_token = tokens1.refresh_token
+
+        # Refresh.
+        tokens2 = await svc.refresh(refresh_token=old_token)
+        new_token = tokens2.refresh_token
+        await db.commit()
+
+    # Verify old session revoked, new session created, same family.
+    async with sf() as db:
+        result = await db.execute(
+            select(WebRefreshSession).order_by(WebRefreshSession.created_at)
+        )
+        sessions = result.scalars().all()
+        assert len(sessions) == 2
+        old_s, new_s = sessions[0], sessions[1]
+        assert old_s.revoked_at is not None
+        assert new_s.revoked_at is None
+        assert old_s.token_family == new_s.token_family
+        assert new_s.refresh_token_hash == hashlib.sha256(
+            new_token.encode()
+        ).hexdigest()
+
+
+async def test_old_token_reuse_revokes_family(engine, settings) -> None:  # noqa: ANN001
+    """Using an already-rotated token revokes the entire token family."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        tokens1 = await svc.authenticate(email="a@test.com", password="password123")
+
+        # First refresh — rotates token.
+        await svc.refresh(refresh_token=tokens1.refresh_token)
+
+        # Reuse the OLD token — should raise InvalidTokenError and revoke family.
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=tokens1.refresh_token)
+        await db.commit()
+
+    # Verify ALL sessions in the family are revoked.
+    async with sf() as db:
+        result = await db.execute(select(WebRefreshSession))
+        sessions = result.scalars().all()
+        for s in sessions:
+            assert s.revoked_at is not None
+
+
+async def test_logout_revokes_session(engine, settings) -> None:  # noqa: ANN001
+    """Logout revokes the current refresh session."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        tokens = await svc.authenticate(email="a@test.com", password="password123")
+
+        # Logout.
+        await svc.logout(refresh_token=tokens.refresh_token)
+        await db.commit()
+
+    # Verify session revoked.
+    async with sf() as db:
+        result = await db.execute(select(WebRefreshSession))
+        sessions = result.scalars().all()
+        assert len(sessions) == 1
+        assert sessions[0].revoked_at is not None
+
+
+async def test_password_reset_revokes_all_sessions(engine, settings) -> None:  # noqa: ANN001
+    """Password reset revokes all active web refresh sessions for the user."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+
+        # Create two sessions (simulating two logins).
+        await svc.authenticate(email="a@test.com", password="password123")
+        await svc.authenticate(email="a@test.com", password="password123")
+
+        # Generate a reset token and reset the password.
+        reset_token = create_token(
+            settings=settings, subject=user.id, token_type="reset"
+        )
+        await svc.reset_password(
+            token_str=reset_token, new_password="newpassword456"
+        )
+        await db.commit()
+
+    # Verify all sessions revoked.
+    async with sf() as db:
+        result = await db.execute(select(WebRefreshSession))
+        sessions = result.scalars().all()
+        assert len(sessions) == 2
+        for s in sessions:
+            assert s.revoked_at is not None
+
+
+async def test_refresh_with_revoked_token_fails(engine, settings) -> None:  # noqa: ANN001
+    """A logged-out token cannot be used to refresh."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        tokens = await svc.authenticate(email="a@test.com", password="password123")
+        await svc.logout(refresh_token=tokens.refresh_token)
+        await db.commit()
+
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=tokens.refresh_token)
+        tokens = await svc.authenticate(email="a@test.com", password="password123")
+        await svc.logout(refresh_token=tokens.refresh_token)
+
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=tokens.refresh_token)

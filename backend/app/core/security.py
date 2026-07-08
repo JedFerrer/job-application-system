@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+from uuid import uuid4
 
 import jwt
 from argon2 import PasswordHasher
@@ -65,6 +66,7 @@ def create_token(
     payload: dict[str, Any] = {
         "sub": str(subject),
         "type": token_type,
+        "jti": str(uuid4()),
         "iss": settings.jwt_issuer,
         "aud": settings.jwt_audience,
         "iat": int(now.timestamp()),
