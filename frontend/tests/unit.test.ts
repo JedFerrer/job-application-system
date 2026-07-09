@@ -429,3 +429,43 @@ describe("ApplicationListResponse shape", () => {
     expect(typeof response.next_cursor).toBe("string");
   });
 });
+
+// ── Profile empty-state contract (smoke) ─────────────────────────────────
+
+import { resumeApi, ApiError } from "../src/lib/api";
+
+describe("resumeApi.getProfile — empty-state contract", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("calls the correct profile endpoint", async () => {
+    const fm = mockFetch(null, 200);
+    await resumeApi.getProfile();
+    const url = lastUrl(fm);
+    expect(url.pathname).toBe("/api/backend/resume/profile");
+  });
+
+  it("returns null when backend sends 200 + null (empty profile)", async () => {
+    mockFetch(null, 200);
+    const result = await resumeApi.getProfile();
+    expect(result).toBeNull();
+  });
+
+  it("returns profile data when backend sends 200 + profile object", async () => {
+    const profile = {
+      profile_id: 1,
+      resume_id: 2,
+      profile: { full_name: "Test", email: null, phone: null, headline: null, years_experience: null, skills: [], education: [], certifications: [], work_history: [], preferred_roles: [], seniority: null },
+    };
+    mockFetch(profile, 200);
+    const result = await resumeApi.getProfile();
+    expect(result).not.toBeNull();
+    expect(result?.profile_id).toBe(1);
+    expect(result?.profile.full_name).toBe("Test");
+  });
+
+  it("throws ApiError on 401 (not to be confused with empty profile)", async () => {
+    mockFetch({ detail: "Not authenticated" }, 401);
+    await expect(resumeApi.getProfile()).rejects.toThrow(ApiError);
+    await expect(resumeApi.getProfile()).rejects.toMatchObject({ status: 401 });
+  });
+});

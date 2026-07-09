@@ -180,7 +180,7 @@ export const resumeApi = {
   },
   getTaskStatus: (taskId: string) =>
     apiRequest<TaskStatus>(`/resume/tasks/${taskId}`),
-  getProfile: () => apiRequest<ProfileResponse>("/resume/profile"),
+  getProfile: () => apiRequest<ProfileResponse | null>("/resume/profile"),
   updateProfile: (profile: ParsedProfile) =>
     apiRequest<ProfileResponse>("/resume/profile", {
       method: "PUT",

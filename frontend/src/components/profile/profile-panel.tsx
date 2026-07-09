@@ -78,6 +78,9 @@ export function ProfilePanel() {
 
   const profile = profileQuery.data?.profile;
 
+  // No active profile yet — backend returns 200 with null body (not 404).
+  const noProfile = profileQuery.data === null;
+
   // Sync form when profile loads or changes externally.
   useEffect(() => {
     if (profile) setForm(profile);
@@ -109,11 +112,6 @@ export function ProfilePanel() {
     if (!file) return;
     uploadMutation.mutate(file);
   };
-
-  const noProfile =
-    profileQuery.isError &&
-    profileQuery.error instanceof ApiError &&
-    profileQuery.error.status === 404;
 
   if (profileQuery.isLoading) {
     return <p className="text-sm text-muted-foreground">Loading profile…</p>;

@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile,
 from app.api.deps import CurrentUser, JobRepositoryDep, ResumeServiceDep, TaskStoreDep
 from app.core.logging import get_logger
 from app.domain.resume.exceptions import (
+    ProfileNotFoundError,
     ResumeParseError,
     UnsupportedResumeFormatError,
 )
@@ -142,12 +143,15 @@ async def get_resume_task(
     return task
 
 
-@router.get("/profile", response_model=ProfileResponse)
+@router.get("/profile", response_model=ProfileResponse | None)
 async def get_profile(
     current_user: CurrentUser,
     service: ResumeServiceDep,
-) -> ProfileResponse:
-    return await service.get_profile(current_user.id)
+) -> ProfileResponse | None:
+    try:
+        return await service.get_profile(current_user.id)
+    except ProfileNotFoundError:
+        return None
 
 
 @router.put("/profile", response_model=ProfileResponse)

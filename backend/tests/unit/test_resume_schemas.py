@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 from app.domain.resume.schemas import ParsedProfile
 from app.domain.resume.service import build_summary_text
 
