@@ -7,9 +7,13 @@ Verifies that production misconfigurations raise errors at startup
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from pydantic import SecretStr
 
 from app.core.config import Settings
+from app.main import validate_startup_settings
 
 
 def test_is_production_returns_false_for_development() -> None:
@@ -30,20 +34,67 @@ def test_is_production_returns_true_for_production() -> None:
     assert s.is_production is True
 
 
-def test_production_refresh_cookie_secure_must_be_true() -> None:
-    """Production with refresh_cookie_secure=False is a misconfiguration.
+# ── Production guard validation tests ─────────────────────────────────────
 
-    The main.py startup guard should catch this, but we verify the settings
-    surface the misconfiguration so the guard has the right data.
-    """
+
+def test_production_insecure_jwt_secret_raises() -> None:
+    """Production with default JWT secret raises RuntimeError."""
+    s = Settings(
+        environment="production",
+        jwt_secret=SecretStr("insecure-dev-secret-change-me"),
+        refresh_cookie_secure=True,
+        job_refresh_cooldown_minutes=15,
+    )
+    with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        validate_startup_settings(s)
+
+
+def test_production_refresh_cookie_not_secure_raises() -> None:
+    """Production with refresh_cookie_secure=False raises RuntimeError."""
     s = Settings(
         environment="production",
         jwt_secret=SecretStr("a-strong-production-secret-at-least-32-chars!!"),
         refresh_cookie_secure=False,
+        job_refresh_cooldown_minutes=15,
     )
-    assert s.is_production is True
-    assert s.refresh_cookie_secure is False
-    # The startup guard in main.py will RuntimeError on this combination.
+    with pytest.raises(RuntimeError, match="REFRESH_COOKIE_SECURE"):
+        validate_startup_settings(s)
+
+
+def test_production_low_cooldown_raises() -> None:
+    """Production with job_refresh_cooldown_minutes < 15 raises RuntimeError."""
+    s = Settings(
+        environment="production",
+        jwt_secret=SecretStr("a-strong-production-secret-at-least-32-chars!!"),
+        refresh_cookie_secure=True,
+        job_refresh_cooldown_minutes=5,
+    )
+    with pytest.raises(RuntimeError, match="JOB_REFRESH_COOLDOWN"):
+        validate_startup_settings(s)
+
+
+def test_valid_production_settings_pass() -> None:
+    """Valid production settings do not raise."""
+    s = Settings(
+        environment="production",
+        jwt_secret=SecretStr("a-strong-production-secret-at-least-32-chars!!"),
+        refresh_cookie_secure=True,
+        job_refresh_cooldown_minutes=15,
+    )
+    # Should not raise
+    validate_startup_settings(s)
+
+
+def test_development_insecure_settings_pass() -> None:
+    """Development with insecure defaults does not raise (only logs warning)."""
+    s = Settings(
+        environment="development",
+        jwt_secret=SecretStr("insecure-dev-secret-change-me"),
+        refresh_cookie_secure=False,
+        job_refresh_cooldown_minutes=5,
+    )
+    # Should not raise in development
+    validate_startup_settings(s)
 
 
 def test_production_refresh_cookie_secure_true_is_valid() -> None:

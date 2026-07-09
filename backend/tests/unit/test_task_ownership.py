@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 # ── FakeTaskStore — in-memory store for deterministic testing ─────────────
 

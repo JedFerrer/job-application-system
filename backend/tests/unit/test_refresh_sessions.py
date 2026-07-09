@@ -14,6 +14,8 @@ import hashlib
 from datetime import UTC, datetime
 
 import pytest
+
+pytestmark = pytest.mark.integration
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -464,3 +466,135 @@ async def test_last_used_at_updated_on_refresh(engine, settings) -> None:  # noq
         new_s = sessions[1]
         assert new_s.last_used_at is None
         assert new_s.revoked_at is None
+
+
+# ── Password Reset Production Safety Tests ──────────────────────────────────
+
+
+async def test_forgot_password_dev_returns_reset_url(engine) -> None:  # noqa: ANN001
+    """In development, forgot_password returns reset_url for convenience."""
+    from pydantic import SecretStr
+
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    dev_settings = Settings(
+        environment="development",
+        jwt_secret=SecretStr("test-secret-for-testing-at-least-32-chars!!"),
+    )
+
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, dev_settings)
+        result = await svc.forgot_password(email="a@test.com")
+        assert "reset_url" in result
+        assert result["message"] == "If the email is registered, a reset link has been sent."
+
+
+async def test_forgot_password_prod_excludes_reset_url(engine) -> None:  # noqa: ANN001
+    """In production, forgot_password does NOT leak reset_url."""
+    from pydantic import SecretStr
+
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    prod_settings = Settings(
+        environment="production",
+        jwt_secret=SecretStr("a-strong-production-secret-at-least-32-chars!!"),
+        refresh_cookie_secure=True,
+        job_refresh_cooldown_minutes=15,
+    )
+
+    async with sf() as db:
+        user = await _create_user(db, 2, "b@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, prod_settings)
+        result = await svc.forgot_password(email="b@test.com")
+        assert "reset_url" not in result
+        assert result["message"] == "If the email is registered, a reset link has been sent."
+
+
+async def test_forgot_password_unknown_email_no_leak(engine) -> None:  # noqa: ANN001
+    """forgot_password returns generic message for unknown email (no user enum)."""
+    from pydantic import SecretStr
+
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    dev_settings = Settings(
+        environment="development",
+        jwt_secret=SecretStr("test-secret-for-testing-at-least-32-chars!!"),
+    )
+
+    async with sf() as db:
+        svc = _make_svc(db, dev_settings)
+        result = await svc.forgot_password(email="nonexistent@test.com")
+        assert "reset_url" not in result
+        assert result["message"] == "If the email is registered, a reset link has been sent."
+
+
+class _FakeEmailProvider:
+    """Records calls for test verification."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    async def send_password_reset(self, *, to_email: str, reset_url: str) -> None:
+        self.calls.append({"to_email": to_email, "reset_url": reset_url})
+
+
+async def test_forgot_password_prod_calls_email_provider(engine) -> None:  # noqa: ANN001
+    """In production with email provider, forgot_password calls the provider."""
+    from pydantic import SecretStr
+
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    prod_settings = Settings(
+        environment="production",
+        jwt_secret=SecretStr("a-strong-production-secret-at-least-32-chars!!"),
+        refresh_cookie_secure=True,
+        job_refresh_cooldown_minutes=15,
+    )
+
+    async with sf() as db:
+        user = await _create_user(db, 3, "c@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, prod_settings)
+        provider = _FakeEmailProvider()
+        result = await svc.forgot_password(
+            email="c@test.com", email_provider=provider
+        )
+        # Response must never leak reset_url in production
+        assert "reset_url" not in result
+        # Provider must have been called
+        assert len(provider.calls) == 1
+        assert provider.calls[0]["to_email"] == "c@test.com"
+        assert "/reset-password?token=" in provider.calls[0]["reset_url"]
+
+
+async def test_forgot_password_no_provider_no_leak(engine) -> None:  # noqa: ANN001
+    """In production without email provider, no reset_url is leaked."""
+    from pydantic import SecretStr
+
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    prod_settings = Settings(
+        environment="production",
+        jwt_secret=SecretStr("a-strong-production-secret-at-least-32-chars!!"),
+        refresh_cookie_secure=True,
+        job_refresh_cooldown_minutes=15,
+    )
+
+    async with sf() as db:
+        user = await _create_user(db, 4, "d@test.com")
+        from app.core.security import hash_password
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, prod_settings)
+        # No email_provider passed
+        result = await svc.forgot_password(email="d@test.com")
+        assert "reset_url" not in result
+        assert result["message"] == "If the email is registered, a reset link has been sent."

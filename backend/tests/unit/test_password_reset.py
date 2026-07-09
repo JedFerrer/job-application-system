@@ -9,6 +9,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+
+pytestmark = pytest.mark.unit
 from pydantic import SecretStr
 
 from app.core.config import Settings

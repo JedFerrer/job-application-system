@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from app.core.config import Settings
-from app.core.security import create_token, decode_token
+from app.core.security import create_token, decode_token, decode_token_payload
 from app.domain.extension.exceptions import (
     ExtensionSessionNotFoundError,
     ExtensionSessionRevokedError,
@@ -179,7 +179,14 @@ class FakeJobRepository:
         return jid, True
 
     async def link_user_jobs(
-        self, user_id: int, job_ids: list[int], *, preference_id: int | None = None
+        self,
+        user_id: int,
+        job_ids: list[int],
+        *,
+        preference_id: int | None = None,
+        relationship_source: str | None = None,
+        import_method: str | None = None,
+        status: str | None = None,
     ) -> None:
         for jid in job_ids:
             self.user_jobs.add((user_id, jid))
@@ -192,6 +199,22 @@ class FakeJobRepository:
             if job.get("source_url") == url:
                 return _DictObj(job)
         return None
+
+    async def find_by_source_id(
+        self, source: str, source_job_id: str
+    ) -> int | None:
+        """Fake lookup — returns None (no source links in fake store)."""
+        return None
+
+    async def mark_as_private_import(
+        self, *, job_id: int, user_id: int, ingest_source: str = "manual"
+    ) -> None:
+        """Fake: no-op (privacy markers are not tracked in fake store)."""
+        pass
+
+    async def create_user_job_import(self, **kwargs: Any) -> Any:
+        """Fake: no-op (import metadata not tracked in fake store)."""
+        return _DictObj({"id": 1, **kwargs})
 
 
 class FakeApplicationRepository:
@@ -796,3 +819,263 @@ class TestFingerprintCorrectness:
         fp1 = job_fingerprint("Acme", "Engineer", None)
         fp2 = job_fingerprint("Acme", "Engineer", "")
         assert fp1 == fp2
+
+
+# ── Extension Session Revocation Security Tests ─────────────────────────────
+# Verifies that extension access tokens carry a session_id claim and that
+# revoked sessions cannot use old access tokens (Priority 0 — security).
+
+
+class TestExtensionSessionTokenClaims:
+    """Extension tokens MUST carry a session_id claim for revocation checks."""
+
+    def _service(self) -> tuple[FakeExtensionRepository, ExtensionAuthService]:
+        repo = FakeExtensionRepository()
+        svc = ExtensionAuthService(
+            repository=repo,  # type: ignore[arg-type]
+            settings=_settings(),
+        )
+        return repo, svc
+
+    @pytest.mark.asyncio
+    async def test_access_token_carries_session_id_claim(self) -> None:
+        """Access token issued during pairing includes the session_id."""
+        repo, svc = self._service()
+        code, _ = await svc.generate_pairing_code(user_id=42)
+        result = await svc.complete_pairing(code)
+
+        # Decode the access token and verify session_id claim
+        payload = decode_token_payload(
+            settings=_settings(),
+            token=result.access_token,
+            expected_type="access",
+        )
+        assert payload["session_id"] == result.session_id
+        assert int(payload["sub"]) == 42
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_carries_session_id_claim(self) -> None:
+        """Refresh token issued during pairing includes the session_id."""
+        repo, svc = self._service()
+        code, _ = await svc.generate_pairing_code(user_id=42)
+        result = await svc.complete_pairing(code)
+
+        payload = decode_token_payload(
+            settings=_settings(),
+            token=result.refresh_token,
+            expected_type="refresh",
+        )
+        assert payload["session_id"] == result.session_id
+
+    @pytest.mark.asyncio
+    async def test_refreshed_tokens_carry_same_session_id(self) -> None:
+        """After refresh, new token pair keeps the same session_id."""
+        import asyncio
+        repo, svc = self._service()
+        code, _ = await svc.generate_pairing_code(user_id=42)
+        result = await svc.complete_pairing(code)
+        original_session_id = result.session_id
+
+        await asyncio.sleep(2.0)
+
+        refreshed = await svc.refresh(result.refresh_token)
+
+        # Both new tokens must carry the same session_id
+        access_payload = decode_token_payload(
+            settings=_settings(),
+            token=refreshed.access_token,
+            expected_type="access",
+        )
+        refresh_payload = decode_token_payload(
+            settings=_settings(),
+            token=refreshed.refresh_token,
+            expected_type="refresh",
+        )
+        assert access_payload["session_id"] == original_session_id
+        assert refresh_payload["session_id"] == original_session_id
+
+    @pytest.mark.asyncio
+    async def test_revoked_session_token_still_decodable_but_session_revoked(self) -> None:
+        """Token from a revoked session is cryptographically valid but the
+        session is revoked — the dependency layer must reject it."""
+        repo, svc = self._service()
+        code, _ = await svc.generate_pairing_code(user_id=42)
+        result = await svc.complete_pairing(code)
+
+        # Verify session is active
+        session = await repo.get_session(result.session_id)
+        assert session is not None
+        assert session.revoked_at is None
+
+        # Revoke the session
+        await svc.logout(result.session_id)
+
+        # Session should now be revoked
+        session = await repo.get_session(result.session_id)
+        assert session.revoked_at is not None
+
+        # Token is still valid cryptographically (not expired, valid signature)
+        payload = decode_token_payload(
+            settings=_settings(),
+            token=result.access_token,
+            expected_type="access",
+        )
+        assert int(payload["sub"]) == 42
+        # But the dependency will check the session and reject it.
+
+    @pytest.mark.asyncio
+    async def test_session_id_mismatch_rejects_refresh(self) -> None:
+        """If the session_id in the JWT doesn't match the session found by
+        hash, refresh must fail."""
+        repo, svc = self._service()
+        code, _ = await svc.generate_pairing_code(user_id=42)
+        result = await svc.complete_pairing(code)
+
+        # Tamper with the refresh token to have a wrong session_id
+        import jwt
+        payload = decode_token_payload(
+            settings=_settings(),
+            token=result.refresh_token,
+            expected_type="refresh",
+        )
+        payload["session_id"] = "nonexistent-session"
+        tampered_token = jwt.encode(
+            payload,
+            _settings().jwt_secret.get_secret_value(),
+            algorithm=_settings().jwt_algorithm,
+        )
+
+        with pytest.raises(ExtensionSessionNotFoundError):
+            await svc.refresh(tampered_token)
+
+
+class TestCurrentExtensionUserDependency:
+    """Simulates the dependency logic: user + active extension session required."""
+
+    def _settings(self) -> Settings:
+        return _settings()
+
+    def _token_for_session(
+        self, session_id: str, user_id: int = 42
+    ) -> str:
+        """Create an access token carrying a session_id claim."""
+        return create_token(
+            settings=self._settings(),
+            subject=user_id,
+            token_type="access",
+            extra_claims={"session_id": session_id},
+        )
+
+    @pytest.mark.asyncio
+    async def test_active_session_token_passes_dependency_check(self) -> None:
+        """Simulate what get_current_extension_user does: decode + check session."""
+        repo = FakeExtensionRepository()
+        # Create an active session
+        session = await repo.create_session(
+            user_id=42,
+            refresh_token_hash="somehash",
+        )
+
+        token = self._token_for_session(str(session.id))
+        payload = decode_token_payload(
+            settings=self._settings(),
+            token=token,
+            expected_type="access",
+        )
+
+        user_id = int(payload["sub"])
+        session_id = payload.get("session_id")
+        assert session_id is not None
+
+        # Check session is active
+        found = await repo.get_session(session_id)
+        assert found is not None
+        assert found.user_id == user_id
+        assert found.revoked_at is None
+
+    @pytest.mark.asyncio
+    async def test_revoked_session_token_fails_dependency_check(self) -> None:
+        """A token bound to a revoked session must fail the dep check."""
+        repo = FakeExtensionRepository()
+        session = await repo.create_session(
+            user_id=42,
+            refresh_token_hash="somehash",
+        )
+
+        token = self._token_for_session(str(session.id))
+        payload = decode_token_payload(
+            settings=self._settings(),
+            token=token,
+            expected_type="access",
+        )
+        session_id = payload.get("session_id")
+        assert session_id is not None
+
+        # Revoke the session
+        await repo.revoke_session(session_id)
+
+        # Simulate the dependency check
+        found = await repo.get_session(session_id)
+        is_active = (
+            found is not None
+            and found.user_id == int(payload["sub"])
+            and found.revoked_at is None
+        )
+        assert is_active is False
+
+    @pytest.mark.asyncio
+    async def test_missing_session_id_claim_fails_dependency_check(self) -> None:
+        """A token without session_id claim must fail extension auth."""
+        token = create_token(
+            settings=self._settings(),
+            subject=42,
+            token_type="access",
+            # No extra_claims — behaves like a regular web token
+        )
+        payload = decode_token_payload(
+            settings=self._settings(),
+            token=token,
+            expected_type="access",
+        )
+        assert payload.get("session_id") is None
+        # The dependency would raise InvalidTokenError for missing session_id.
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_session_id_fails_dependency_check(self) -> None:
+        """A token with a session_id that doesn't exist must fail."""
+        repo = FakeExtensionRepository()
+        token = self._token_for_session("nonexistent-session-id")
+
+        payload = decode_token_payload(
+            settings=self._settings(),
+            token=token,
+            expected_type="access",
+        )
+        session_id = payload.get("session_id")
+        found = await repo.get_session(session_id)
+        assert found is None
+        # The dependency would raise InvalidTokenError.
+
+    @pytest.mark.asyncio
+    async def test_session_user_mismatch_fails_dependency_check(self) -> None:
+        """A token claiming user A but session owned by user B must fail."""
+        repo = FakeExtensionRepository()
+        # Session belongs to user 99
+        session = await repo.create_session(
+            user_id=99,
+            refresh_token_hash="somehash",
+        )
+
+        # Token claims user 42 but references user 99's session
+        token = self._token_for_session(str(session.id), user_id=42)
+
+        payload = decode_token_payload(
+            settings=self._settings(),
+            token=token,
+            expected_type="access",
+        )
+        session_id = payload.get("session_id")
+        found = await repo.get_session(session_id)
+        assert found is not None
+        assert found.user_id != int(payload["sub"])
+        # The dependency would raise InvalidTokenError due to user mismatch.

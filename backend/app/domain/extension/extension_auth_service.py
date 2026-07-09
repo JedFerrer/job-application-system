@@ -143,19 +143,13 @@ class ExtensionAuthService:
         """Exchange a pairing code for extension tokens + session."""
         user_id = await self.consume_pairing_code(code)
 
-        # Create access + refresh tokens for the extension
-        access_token = create_token(
-            settings=self._settings,
-            subject=user_id,
-            token_type="access",
-        )
+        # Hash a placeholder refresh token to create the session first.
+        # We need the session ID before we can issue tokens that carry it.
         refresh_token = create_token(
             settings=self._settings,
             subject=user_id,
             token_type="refresh",
         )
-
-        # Hash the refresh token for storage
         refresh_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
 
         session = await self._repo.create_session(
@@ -165,14 +159,26 @@ class ExtensionAuthService:
             browser=browser,
         )
 
-        # Decode to get expiry
-        from app.core.security import decode_token as _decode
-
-        user_id_decoded = _decode(
+        # Issue tokens carrying the session id so the extension dependency can
+        # verify the session is still active on every request.
+        session_claim = {"session_id": str(session.id)}
+        access_token = create_token(
             settings=self._settings,
-            token=access_token,
-            expected_type="access",
+            subject=user_id,
+            token_type="access",
+            extra_claims=session_claim,
         )
+        # Re-issue refresh token with the same session claim for consistency.
+        refresh_token = create_token(
+            settings=self._settings,
+            subject=user_id,
+            token_type="refresh",
+            extra_claims=session_claim,
+        )
+        # Update the stored hash to match the re-issued refresh token.
+        new_refresh_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
+        session.refresh_token_hash = new_refresh_hash
+        await self._repo.touch_session(str(session.id))
 
         logger.info("extension.pairing_complete", user_id=user_id, session_id=session.id)
 
@@ -193,12 +199,17 @@ class ExtensionAuthService:
         refresh_token: str,
     ) -> ExtensionRefreshResponse:
         """Rotate extension tokens using a refresh token."""
-        # Decode and verify the refresh token
-        user_id = decode_token(
+        # Decode and verify the refresh token — we need the full payload to
+        # extract the session_id claim.
+        from app.core.security import decode_token_payload
+
+        payload = decode_token_payload(
             settings=self._settings,
             token=refresh_token,
             expected_type="refresh",
         )
+        user_id = int(payload["sub"])
+        session_id = payload.get("session_id")
 
         # Find the session by refresh token hash
         token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
@@ -217,16 +228,23 @@ class ExtensionAuthService:
         if session.revoked_at is not None:
             raise ExtensionSessionRevokedError
 
-        # Issue new token pair
+        # Cross-check: the session_id in the JWT must match the session we found.
+        if session_id is not None and str(session.id) != session_id:
+            raise ExtensionSessionNotFoundError("session mismatch")
+
+        # Issue new token pair carrying the same session id.
+        claims = {"session_id": str(session.id)}
         new_access = create_token(
             settings=self._settings,
             subject=user_id,
             token_type="access",
+            extra_claims=claims,
         )
         new_refresh = create_token(
             settings=self._settings,
             subject=user_id,
             token_type="refresh",
+            extra_claims=claims,
         )
 
         # Update session with new refresh hash

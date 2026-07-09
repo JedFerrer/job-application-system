@@ -231,15 +231,20 @@ class AuthService:
 
     # -- password reset ----------------------------------------------------
 
-    async def forgot_password(self, *, email: str) -> dict[str, str]:
+    async def forgot_password(
+        self,
+        *,
+        email: str,
+        email_provider: object | None = None,
+    ) -> dict[str, str]:
         """Generate a password-reset token for *email*.
 
         In **development**, the reset URL is returned in the API response for
         convenience.  In **staging / production**, only a generic message is
         returned — the actual reset link must be delivered via email.
 
-        TODO: Integrate an email provider (SendGrid / SES / Resend) to deliver
-              the reset link out-of-band in non-development environments.
+        When *email_provider* is supplied, ``send_password_reset()`` is called
+        in non-dev environments (the provider handles actual delivery).
         """
         user = await self._repo.get_by_email(email)
         if user is None or user.hashed_password is None:
@@ -256,7 +261,15 @@ class AuthService:
             "message": "If the email is registered, a reset link has been sent.",
         }
         if is_dev:
+            # Development-only: include reset_url for convenience.
             response["reset_url"] = f"/reset-password?token={token}"
+        elif email_provider is not None and hasattr(email_provider, "send_password_reset"):
+            # Production/staging: deliver via email provider.
+            reset_url = f"/reset-password?token={token}"
+            await email_provider.send_password_reset(
+                to_email=email, reset_url=reset_url
+            )
+        # else: no email provider configured — generic message only (safe).
         return response
 
     async def reset_password(self, *, token_str: str, new_password: str) -> None:
