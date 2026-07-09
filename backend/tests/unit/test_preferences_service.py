@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from app.domain.preferences.exceptions import (
     PreferenceNotFoundError,
     PreferenceValidationError,
@@ -31,6 +33,7 @@ def _preference(**overrides: object) -> UserJobPreference:
         remote_preference="any",
         salary_min=None,
         results_per_source=50,
+        hours_old=48,
         is_active=True,
         last_scraped_at=None,
         created_at=datetime.now(UTC),

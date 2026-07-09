@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.schemas import JobResponse
 from app.domain.jobs.service import JobService

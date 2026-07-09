@@ -12,10 +12,6 @@ Key responsibilities:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
-from sqlalchemy import update
-
 from app.core.logging import get_logger
 from app.domain.extension.repository import ExtensionRepository
 from app.domain.extension.schemas import (
@@ -27,7 +23,6 @@ from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.source_id_extractor import extract_source_id
 from app.infrastructure.embeddings import embed_text
-from app.models.job import Job
 
 logger = get_logger("extension_job_import")
 
@@ -87,15 +82,8 @@ class ExtensionJobImportService:
 
         # ── Privacy: mark new jobs as private ──────────────────────────
         if was_inserted:
-            await self._jobs._session.execute(
-                update(Job)
-                .where(Job.id == job_id)
-                .values(
-                    visibility="private",
-                    created_by_user_id=user_id,
-                    ingest_source="extension",
-                    imported_at=datetime.now(UTC),
-                )
+            await self._jobs.mark_as_private_import(
+                job_id=job_id, user_id=user_id, ingest_source="extension"
             )
 
         # ── Link user → job ────────────────────────────────────────────
@@ -176,18 +164,7 @@ class ExtensionJobImportService:
         self, source: str, source_job_id: str
     ) -> int | None:
         """Check job_source_links for an existing public job."""
-        from sqlalchemy import select
-
-        from app.models.job_source_link import JobSourceLink
-
-        result = await self._jobs._session.execute(
-            select(JobSourceLink.job_id).where(
-                JobSourceLink.source == source,
-                JobSourceLink.source_job_id == source_job_id,
-            )
-        )
-        row = result.first()
-        return int(row[0]) if row else None
+        return await self._jobs.find_by_source_id(source, source_job_id)
 
     async def lookup_by_url(self, source_url: str) -> ExtensionJobLookupResponse:
         """Look up a job by source URL."""

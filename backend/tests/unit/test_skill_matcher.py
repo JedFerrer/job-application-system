@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 from app.domain.matching.skill_matcher import (
     compute_skill_match,
     extract_known_skills,

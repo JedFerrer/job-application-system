@@ -6,7 +6,7 @@ from fastapi import APIRouter
 
 from app.api.deps import (
     ApplicationEventServiceDep,
-    CurrentUser,
+    CurrentExtensionUser,
 )
 from app.domain.extension.schemas import (
     ApplicationEventRequest,
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/extension/applications", tags=["extension-applicatio
 @router.post("/events", response_model=ApplicationEventResponse)
 async def record_application_event(
     payload: ApplicationEventRequest,
-    current_user: CurrentUser,
+    current_user: CurrentExtensionUser,
     service: ApplicationEventServiceDep,
 ) -> ApplicationEventResponse:
     """Record an application lifecycle event.
@@ -43,7 +43,7 @@ async def record_application_event(
 @router.post("/mark-applied", response_model=MarkAppliedResponse)
 async def mark_application_applied(
     payload: MarkAppliedRequest,
-    current_user: CurrentUser,
+    current_user: CurrentExtensionUser,
     service: ApplicationEventServiceDep,
 ) -> MarkAppliedResponse:
     """Mark an application as 'applied' after confirmation.
@@ -63,7 +63,7 @@ async def mark_application_applied(
 @router.get("/{application_id}/timeline", response_model=ApplicationTimelineResponse)
 async def get_application_timeline(
     application_id: int,
-    current_user: CurrentUser,
+    current_user: CurrentExtensionUser,
     service: ApplicationEventServiceDep,
 ) -> ApplicationTimelineResponse:
     """Get the chronological event timeline for an application."""

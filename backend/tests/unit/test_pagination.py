@@ -10,6 +10,8 @@ Verifies that:
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.integration
 from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool

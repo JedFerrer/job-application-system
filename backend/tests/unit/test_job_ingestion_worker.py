@@ -4,80 +4,85 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.user_job_preference import UserJobPreference
-from app.workers.job_ingestion import _build_requests, _is_remote_for
+pytestmark = pytest.mark.unit
+
+from app.domain.jobs.schemas import IngestRequest
+from app.models.scrape_query import ScrapeQuery
+from app.workers.job_ingestion import _request_from_query
 
 
-def _preference(**overrides: object) -> UserJobPreference:
-    pref = UserJobPreference(
-        job_titles=["Backend Engineer", "Platform Engineer"],
-        keywords=[],
-        excluded_keywords=[],
-        locations=["Remote", "New York"],
-        job_types=[],
-        enabled_sources=["indeed", "linkedin"],
-        remote_preference="any",
-        salary_min=None,
-        results_per_source=25,
-        is_active=True,
-    )
-    for key, value in overrides.items():
-        setattr(pref, key, value)
-    return pref
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [("remote", True), ("onsite", False), ("hybrid", None), ("any", None), (None, None)],
-)
-def test_is_remote_for(value: str | None, expected: bool | None) -> None:
-    assert _is_remote_for(value) is expected
-
-
-def test_build_requests_fans_out_titles_and_locations() -> None:
-    pref = _preference()
-
-    requests = _build_requests(pref, default_results=50)
-
-    # 2 titles x 2 locations = 4 requests.
-    assert len(requests) == 4
-    assert {r.search_term for r in requests} == {
-        "Backend Engineer",
-        "Platform Engineer",
+def _query(**overrides: object) -> ScrapeQuery:
+    """Build a ScrapeQuery with sensible defaults for testing."""
+    defaults: dict[str, object] = {
+        "id": "q-001",
+        "search_term": "Backend Engineer",
+        "location": "Remote",
+        "is_remote": None,
+        "hours_old": 24,
+        "results_wanted": 50,
+        "sources": ["indeed", "linkedin"],
+        "normalized_hash": "abc123def456",
+        "status": "active",
+        "priority": 5,
+        "active_user_count": 2,
     }
-    assert {r.location for r in requests} == {"Remote", "New York"}
-    assert all(r.results_wanted == 25 for r in requests)
-    assert all(r.sources == ["indeed", "linkedin"] for r in requests)
+    defaults.update(overrides)
+    return ScrapeQuery(**defaults)  # type: ignore[arg-type]
 
 
-def test_build_requests_defaults_location_to_none() -> None:
-    pref = _preference(locations=[])
+def test_request_from_query_maps_fields_directly() -> None:
+    """_request_from_query maps ScrapeQuery fields 1:1 to IngestRequest."""
+    query = _query(
+        search_term="Platform Engineer",
+        location="New York",
+        is_remote=False,
+        hours_old=48,
+        results_wanted=25,
+        sources=["indeed"],
+    )
 
-    requests = _build_requests(pref, default_results=50)
+    req = _request_from_query(query)
 
-    assert len(requests) == 2  # 2 titles x [None]
-    assert all(r.location is None for r in requests)
-
-
-def test_build_requests_falls_back_to_default_results() -> None:
-    pref = _preference(results_per_source=0)
-
-    requests = _build_requests(pref, default_results=75)
-
-    assert all(r.results_wanted == 75 for r in requests)
-
-
-def test_build_requests_skips_blank_titles() -> None:
-    pref = _preference(job_titles=["Backend Engineer", "  ", ""])
-
-    requests = _build_requests(pref, default_results=50)
-
-    assert {r.search_term for r in requests} == {"Backend Engineer"}
+    assert isinstance(req, IngestRequest)
+    assert req.search_term == "Platform Engineer"
+    assert req.location == "New York"
+    assert req.is_remote is False
+    assert req.hours_old == 48
+    assert req.results_wanted == 25
+    assert req.sources == ["indeed"]
 
 
-def test_build_requests_sets_remote_flag() -> None:
-    pref = _preference(remote_preference="remote", locations=["Anywhere"])
+def test_request_from_query_location_can_be_none() -> None:
+    """location=None maps through correctly."""
+    query = _query(location=None)
 
-    requests = _build_requests(pref, default_results=50)
+    req = _request_from_query(query)
 
-    assert all(r.is_remote is True for r in requests)
+    assert req.location is None
+
+
+def test_request_from_query_is_remote_can_be_none() -> None:
+    """is_remote=None maps through correctly."""
+    query = _query(is_remote=None)
+
+    req = _request_from_query(query)
+
+    assert req.is_remote is None
+
+
+def test_request_from_query_sources_can_be_none() -> None:
+    """Empty sources list maps to None via `or None`."""
+    query = _query(sources=[])
+
+    req = _request_from_query(query)
+
+    assert req.sources is None
+
+
+def test_request_from_query_multiple_sources() -> None:
+    """All sources are passed through."""
+    query = _query(sources=["indeed", "linkedin", "glassdoor"])
+
+    req = _request_from_query(query)
+
+    assert req.sources == ["indeed", "linkedin", "glassdoor"]

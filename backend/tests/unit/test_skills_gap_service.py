@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from app.domain.matching.service import MatchingService
 
 

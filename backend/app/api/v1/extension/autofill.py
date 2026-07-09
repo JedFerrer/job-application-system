@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.deps import AutofillProfileServiceDep, CurrentUser
+from app.api.deps import AutofillProfileServiceDep, CurrentExtensionUser
 from app.domain.extension.schemas import (
     FieldMappingRequest,
     FieldMappingResponse,
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/extension", tags=["extension-autofill"])
 
 @router.get("/profile/autofill")
 async def get_autofill_profile(
-    current_user: CurrentUser,
+    current_user: CurrentExtensionUser,
     service: AutofillProfileServiceDep,
 ) -> dict[str, object]:
     """Get the user's profile fields for autofill.
@@ -32,7 +32,7 @@ async def get_autofill_profile(
 @router.post("/forms/map-fields", response_model=FieldMappingResponse)
 async def map_form_fields(
     payload: FieldMappingRequest,
-    _current_user: CurrentUser,
+    _current_user: CurrentExtensionUser,
     service: AutofillProfileServiceDep,
 ) -> FieldMappingResponse:
     """Use LLM to map unknown form fields to profile paths.
@@ -46,7 +46,7 @@ async def map_form_fields(
 @router.post("/forms/fill-log", response_model=FormFillLogResponse)
 async def log_form_fill(
     payload: FormFillLogRequest,
-    current_user: CurrentUser,
+    current_user: CurrentExtensionUser,
     service: AutofillProfileServiceDep,
 ) -> FormFillLogResponse:
     """Record a form fill session with per-field details."""

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from pydantic import ValidationError
 
 from app.domain.applications.schemas import (

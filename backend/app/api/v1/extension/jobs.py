@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.deps import CurrentUser, ExtensionJobImportServiceDep
+from app.api.deps import CurrentExtensionUser, ExtensionJobImportServiceDep
 from app.domain.extension.schemas import (
     ExtensionJobImportRequest,
     ExtensionJobImportResponse,
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/extension/jobs", tags=["extension-jobs"])
 @router.post("/import", response_model=ExtensionJobImportResponse)
 async def import_job_from_browser(
     payload: ExtensionJobImportRequest,
-    current_user: CurrentUser,
+    current_user: CurrentExtensionUser,
     service: ExtensionJobImportServiceDep,
 ) -> ExtensionJobImportResponse:
     """Import a job detected by the browser extension.
@@ -37,7 +37,7 @@ async def import_job_from_browser(
 @router.get("/by-url", response_model=ExtensionJobLookupResponse)
 async def lookup_job_by_url(
     url: str,
-    current_user: CurrentUser,
+    current_user: CurrentExtensionUser,
     service: ExtensionJobImportServiceDep,
 ) -> ExtensionJobLookupResponse:
     """Look up an existing job by its source URL."""

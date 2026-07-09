@@ -232,7 +232,7 @@ class JobRepository:
         )
 
     async def mark_as_private_import(
-        self, *, job_id: int, user_id: int
+        self, *, job_id: int, user_id: int, ingest_source: str = "manual"
     ) -> None:
         """Set visibility=private, created_by_user_id, and ingest_source on a job.
 
@@ -245,7 +245,7 @@ class JobRepository:
             .values(
                 visibility="private",
                 created_by_user_id=user_id,
-                ingest_source="manual",
+                ingest_source=ingest_source,
                 imported_at=datetime.now(UTC),
             )
         )
@@ -312,6 +312,21 @@ class JobRepository:
             select(Job).where(Job.source_url == url).limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def find_by_source_id(
+        self, source: str, source_job_id: str
+    ) -> int | None:
+        """Look up a job_id from job_source_links by (source, source_job_id)."""
+        from app.models.job_source_link import JobSourceLink
+
+        result = await self._session.execute(
+            select(JobSourceLink.job_id).where(
+                JobSourceLink.source == source,
+                JobSourceLink.source_job_id == source_job_id,
+            )
+        )
+        row = result.first()
+        return int(row[0]) if row else None
 
     async def list_jobs(
         self,
