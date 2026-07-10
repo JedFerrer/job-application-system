@@ -71,27 +71,34 @@ class MatchingService:
         return RankResponse(ranked=len(ranked), profile_id=profile.id)
 
     async def list_matches(
-        self, *, user_id: int, limit: int, offset: int
+        self,
+        *,
+        user_id: int,
+        limit: int,
+        offset: int,
     ) -> MatchListResponse:
         rows, total = await self._repo.list_matches(
-            user_id=user_id, limit=limit, offset=offset
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
         )
-        items = [
-            MatchItem(
-                job_id=job.id,
-                title=job.title,
-                company=job.company,
-                location=job.location,
-                is_remote=job.is_remote,
-                source=job.source,
-                source_url=job.source_url,
-                vector_score=match.vector_score,
-                confidence=match.confidence,
-                llm_score=match.llm_score,
-                posted_at=job.posted_at,
+        items: list[MatchItem] = []
+        for job, match in rows:
+            items.append(
+                MatchItem(
+                    job_id=job.id,
+                    title=job.title,
+                    company=job.company,
+                    location=job.location,
+                    is_remote=job.is_remote,
+                    source=job.source,
+                    source_url=job.source_url,
+                    vector_score=match.vector_score,
+                    confidence=match.confidence,
+                    llm_score=match.llm_score,
+                    posted_at=job.posted_at,
+                )
             )
-            for job, match in rows
-        ]
         return MatchListResponse(
             items=items, total=total, limit=limit, offset=offset
         )

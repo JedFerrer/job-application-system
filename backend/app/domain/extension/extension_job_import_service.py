@@ -1,14 +1,20 @@
 """Extension job import service — upsert jobs from the browser extension.
 
 Key responsibilities:
-  - Upsert job into the global jobs table (fingerprint dedup)
+  - Upsert job into the global jobs table (fingerprint + source-link dedup)
+  - Mark new jobs as private (visibility='private', created_by_user_id)
   - Link job to the importing user via user_jobs
+  - Store private raw payload in user_job_imports
   - Queue embedding if missing
   - Record application events (job_imported)
   - Never create duplicate jobs
 """
 
 from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from sqlalchemy import update
 
 from app.core.logging import get_logger
 from app.domain.extension.repository import ExtensionRepository
@@ -19,7 +25,9 @@ from app.domain.extension.schemas import (
 )
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
+from app.domain.jobs.source_id_extractor import extract_source_id
 from app.infrastructure.embeddings import embed_text
+from app.models.job import Job
 
 logger = get_logger("extension_job_import")
 
@@ -42,51 +50,98 @@ class ExtensionJobImportService:
     ) -> ExtensionJobImportResponse:
         """Import a job from the browser extension.
 
-        Deduplicates by fingerprint. Links to user via user_jobs.
-        Queues embedding. Records job_imported event.
-        """
-        # fingerprint: (company, title, location) — normalized, case/whitespace-insensitive
-        # Using location (not source_url) so the same job posted on multiple sites
-        # (LinkedIn, Indeed, Greenhouse, etc.) collapses to one row.
-        fp = job_fingerprint(request.company, request.title, request.location)
+        Dedup order:
+        1. Extract stable source ID → check job_source_links for existing public job.
+        2. Fall back to fingerprint (company, title, location).
 
-        # Upsert into jobs table
-        values = {
-            "fingerprint": fp,
-            "title": request.title,
-            "company": request.company,
-            "location": request.location,
-            "description": request.description,
-            "source": request.source,
-            "source_url": request.source_url,
-            "raw_response": {
+        Privacy: new jobs are created as private (visibility='private',
+        created_by_user_id=user_id). If an existing public job is found, we
+        link to it without creating a duplicate.
+
+        Raw extension payload is always stored in user_job_imports.
+        """
+        # ── Dedup: try stable source ID first ──────────────────────────
+        source_id = extract_source_id(request.source_url, request.ats_type)
+        existing_job_id: int | None = None
+        if source_id:
+            existing_job_id = await self._lookup_by_source_id(
+                source_id[0], source_id[1]
+            )
+
+        # ── Dedup fallback: fingerprint ────────────────────────────────
+        if existing_job_id is None:
+            fp = job_fingerprint(request.company, request.title, request.location)
+            values: dict[str, object] = {
+                "fingerprint": fp,
+                "title": request.title,
+                "company": request.company,
+                "location": request.location,
+                "description": request.description,
+                "source": request.source,
+                "source_url": request.source_url,
+            }
+            job_id, was_inserted = await self._jobs.upsert_job(values)
+        else:
+            job_id = existing_job_id
+            was_inserted = False
+
+        # ── Privacy: mark new jobs as private ──────────────────────────
+        if was_inserted:
+            await self._jobs._session.execute(
+                update(Job)
+                .where(Job.id == job_id)
+                .values(
+                    visibility="private",
+                    created_by_user_id=user_id,
+                    ingest_source="extension",
+                    imported_at=datetime.now(UTC),
+                )
+            )
+
+        # ── Link user → job ────────────────────────────────────────────
+        await self._jobs.link_user_jobs(
+            user_id,
+            [job_id],
+            relationship_source="extension",
+            import_method="extension",
+            status="imported",
+        )
+
+        # ── Store private import metadata ──────────────────────────────
+        await self._jobs.create_user_job_import(
+            user_id=user_id,
+            job_id=job_id,
+            user_job_user_id=user_id,
+            user_job_job_id=job_id,
+            import_method="extension",
+            source_url=request.source_url,
+            raw_payload={
+                "title": request.title,
+                "company": request.company,
+                "location": request.location,
+                "description": request.description,
+                "salary_text": request.salary_text,
+                "source_url": request.source_url,
                 "source": request.source,
                 "ats_type": request.ats_type,
-                "salary_text": request.salary_text,
                 "external_apply_url": request.external_apply_url,
             },
-        }
-        job_id, was_inserted = await self._jobs.upsert_job(values)
+            raw_html_hash=request.raw_html_hash,
+            parsed_title=request.title,
+            parsed_company=request.company,
+            parsed_location=request.location,
+            parsed_salary=request.salary_text,
+        )
 
-        # Link to user
-        await self._jobs.link_user_jobs(user_id, [job_id])
-
-        # Queue embedding for new jobs with descriptions
+        # ── Embedding (async via Celery) ────────────────────────────────
         match_status = "existing"
         if was_inserted and request.description:
-            # Embed in background — don't block the response
             match_status = "queued"
-            try:
-                embedding = await embed_text(request.description)
-                await self._jobs.set_embedding(job_id, embedding)
-            except Exception:
-                logger.warning(
-                    "extension.job_embed_failed",
-                    job_id=job_id,
-                    exc_info=True,
-                )
+            from app.workers.job_imports import embed_imported_job  # noqa: PLC0415
 
-        # Record event
+            embed_imported_job.delay(job_id, user_id)
+
+        # ── Record event ───────────────────────────────────────────────
         await self._ext.create_event(
             user_id=user_id,
             event_type="job_imported",
@@ -110,12 +165,29 @@ class ExtensionJobImportService:
 
         return ExtensionJobImportResponse(
             job_id=job_id,
-            application_id=None,  # No application created on import
+            application_id=None,
             status="saved",
             was_existing_job=not was_inserted,
             was_existing_application=False,
             match_status=match_status,
         )
+
+    async def _lookup_by_source_id(
+        self, source: str, source_job_id: str
+    ) -> int | None:
+        """Check job_source_links for an existing public job."""
+        from sqlalchemy import select
+
+        from app.models.job_source_link import JobSourceLink
+
+        result = await self._jobs._session.execute(
+            select(JobSourceLink.job_id).where(
+                JobSourceLink.source == source,
+                JobSourceLink.source_job_id == source_job_id,
+            )
+        )
+        row = result.first()
+        return int(row[0]) if row else None
 
     async def lookup_by_url(self, source_url: str) -> ExtensionJobLookupResponse:
         """Look up a job by source URL."""

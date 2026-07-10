@@ -122,6 +122,10 @@ def _search_dedup_key(request: IngestRequest, effective_sources: list[str]) -> s
 
 # ---------------------------------------------------------------------------
 # Dispatcher (Beat entry-point for multi-user fan-out)
+#
+# TODO(shared-scrape-queries): Replace per-user fan-out with shared scrape
+# queries.  Each user preference should subscribe to normalized
+# ``scrape_queries`` rows.  See docs/job_scraper_scaling_feed_import_plan.md.
 # ---------------------------------------------------------------------------
 
 

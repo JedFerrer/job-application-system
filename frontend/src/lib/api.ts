@@ -206,7 +206,8 @@ export const jobsApi = {
       jobType?: string;
       location?: string;
       minSalary?: number;
-      includeArchived?: boolean;
+      sourceType?: string;
+      importedOnly?: boolean;
       limit?: number;
       offset?: number;
     } = {},
@@ -217,18 +218,28 @@ export const jobsApi = {
     if (opts.jobType) qs.set("job_type", opts.jobType);
     if (opts.location) qs.set("location", opts.location);
     if (opts.minSalary !== undefined) qs.set("min_salary", String(opts.minSalary));
-    if (opts.includeArchived) qs.set("include_archived", "true");
+    if (opts.sourceType) qs.set("source_type", opts.sourceType);
+    if (opts.importedOnly) qs.set("imported_only", "true");
     qs.set("limit", String(opts.limit ?? 50));
     qs.set("offset", String(opts.offset ?? 0));
     return apiRequest<JobListResponse>(`/jobs?${qs.toString()}`);
   },
-  archive: (jobId: number, archived: boolean) =>
-    apiRequest<Job>(`/jobs/${jobId}/archive?archived=${archived}`, { method: "PATCH" }),
+  /** Per-user archive (affects only the current user). */
+  archive: (jobId: number) =>
+    apiRequest<void>(`/jobs/${jobId}/archive`, { method: "PATCH" }),
   importJob: (payload: { url: string; title: string; company?: string; description?: string }) =>
     apiRequest<Job>("/jobs/import", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  /** List jobs imported by the current user (manual + extension). */
+  listImported: (opts: { limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams({
+      limit: String(opts.limit ?? 50),
+      offset: String(opts.offset ?? 0),
+    });
+    return apiRequest<JobListResponse>(`/jobs/imported?${qs.toString()}`);
+  },
 };
 
 // ---- Matches ----------------------------------------------------------------

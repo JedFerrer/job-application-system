@@ -10,9 +10,11 @@ without changes.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from anyio import to_thread
+from sqlalchemy import update
 
 from app.core.logging import get_logger
 from app.domain.jobs.dedup import job_fingerprint
@@ -29,6 +31,7 @@ from app.domain.jobs.shift_detector import ShiftDetector, classify_shift_llm
 from app.infrastructure.embeddings import embed_text
 from app.infrastructure.job_sources.base import JobQuery, RawJobPost
 from app.infrastructure.job_sources.registry import build_sources
+from app.models.job import Job
 
 logger = get_logger(__name__)
 
@@ -201,7 +204,8 @@ class JobService:
         min_salary: float | None,
         job_type: str | None,
         location_contains: str | None,
-        include_archived: bool = False,
+        source_type: str | None = None,
+        imported_only: bool = False,
         limit: int,
         offset: int,
     ) -> JobListResponse:
@@ -212,7 +216,8 @@ class JobService:
             min_salary=min_salary,
             job_type=job_type,
             location_contains=location_contains,
-            include_archived=include_archived,
+            source_type=source_type,
+            imported_only=imported_only,
             limit=limit,
             offset=offset,
         )
@@ -223,21 +228,52 @@ class JobService:
             offset=offset,
         )
 
-    async def archive_job(self, job_id: int, *, archived: bool) -> JobResponse:
-        job = await self._repo.set_archived(job_id, archived=archived)
-        if job is None:
-            raise JobNotFoundError(job_id)
-        return JobResponse.model_validate(job)
+    async def list_imported_jobs(
+        self,
+        *,
+        user_id: int,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> JobListResponse:
+        """Return only jobs imported by the current user (manual + extension)."""
+        rows, total = await self._repo.list_imported_jobs(
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+        )
+        items: list[JobResponse] = []
+        for row in rows:
+            job, match_score, match_reason = row[0], row[1], row[2]
+            resp = JobResponse.model_validate(job)
+            resp.match_score = float(match_score) if match_score is not None else None
+            resp.match_reason = match_reason if isinstance(match_reason, dict) else None
+            items.append(resp)
+        return JobListResponse(
+            items=items,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def archive_job(
+        self, user_id: int, job_id: int
+    ) -> None:
+        """Per-user archive — sets ``user_jobs.status = 'archived'``."""
+        await self._repo.set_user_job_status(user_id, job_id, "archived")
 
     async def import_job(
         self, payload: JobImportRequest, *, user_id: int
     ) -> JobResponse:
-        """Manually import a single job posting from a URL.
+        """Manually import a single job posting.
 
-        Creates a fingerprint, upserts with ``source="manual"``, embeds the
-        description, and links the job to the user's feed.
+        Privacy: new jobs are created with ``visibility='private'`` and
+        ``created_by_user_id=user_id``.  If an existing public job matches the
+        fingerprint, we link to it instead of creating a duplicate.
         """
         fingerprint = job_fingerprint(payload.company, payload.title, None)
+
+        # Check if a public job with this fingerprint already exists.
+        # If so, link the user to the existing public job (no duplicate).
         values: dict[str, object] = {
             "fingerprint": fingerprint,
             "title": payload.title,
@@ -248,9 +284,53 @@ class JobService:
             "raw_response": {"imported_from": payload.url},
         }
         job_id, was_inserted = await self._repo.upsert_job(values)
-        if was_inserted and payload.description:
-            await self._embed_job(job_id, payload.description)
-        await self._repo.link_user_jobs(user_id, [job_id])
+
+        # If this is a brand-new job, mark it as private to the importing user.
+        if was_inserted:
+            await self._repo._session.execute(
+                update(Job)
+                .where(Job.id == job_id)
+                .values(
+                    visibility="private",
+                    created_by_user_id=user_id,
+                    ingest_source="manual",
+                    imported_at=datetime.now(UTC),
+                )
+            )
+            if payload.description:
+                # Dispatch async embedding via Celery — don't block the response.
+                from app.workers.job_imports import embed_imported_job  # noqa: PLC0415
+                embed_imported_job.delay(job_id, user_id)
+            relationship_source = "manual"
+            import_method = "manual"
+            uj_status = "imported"
+        else:
+            relationship_source = "manual"
+            import_method = "manual"
+            uj_status = "imported"
+
+        # Link user to the job (or re-link if already linked via different source)
+        await self._repo.link_user_jobs(
+            user_id,
+            [job_id],
+            relationship_source=relationship_source,
+            import_method=import_method,
+            status=uj_status,
+        )
+
+        # Store private import metadata
+        await self._repo.create_user_job_import(
+            user_id=user_id,
+            job_id=job_id,
+            user_job_user_id=user_id,
+            user_job_job_id=job_id,
+            import_method="manual",
+            source_url=payload.url,
+            raw_input=payload.description,
+            parsed_title=payload.title,
+            parsed_company=payload.company,
+        )
+
         job = await self._repo.get_by_id(job_id)
         if job is None:
             raise JobNotFoundError(job_id)

@@ -120,7 +120,8 @@ async def list_jobs(
     job_type: str | None = None,
     location: str | None = None,
     min_salary: float | None = Query(default=None, ge=0),
-    include_archived: bool = False,
+    source_type: str | None = Query(default=None, description="global | imported | manual | extension"),
+    imported_only: bool = False,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> JobListResponse:
@@ -131,9 +132,23 @@ async def list_jobs(
         min_salary=min_salary,
         job_type=job_type,
         location_contains=location,
-        include_archived=include_archived,
+        source_type=source_type,
+        imported_only=imported_only,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/imported", response_model=JobListResponse)
+async def list_imported_jobs(
+    current_user: CurrentUser,
+    service: JobServiceDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> JobListResponse:
+    """Jobs imported by the current user (manual + extension)."""
+    return await service.list_imported_jobs(
+        user_id=current_user.id, limit=limit, offset=offset
     )
 
 
@@ -156,13 +171,12 @@ async def get_job(
     return await service.get_job(job_id)
 
 
-@router.patch("/{job_id}/archive", response_model=JobResponse)
+@router.patch("/{job_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
 async def archive_job(
     job_id: int,
     current_user: CurrentUser,
     service: JobServiceDep,
-    archived: bool = True,
-) -> JobResponse:
-    """Archive (or un-archive) a job.  Archived jobs are hidden from the default list."""
-    return await service.archive_job(job_id, archived=archived)
+) -> None:
+    """Per-user archive — only affects the current user's view of this job."""
+    await service.archive_job(current_user.id, job_id)
 

@@ -1,7 +1,12 @@
-"""Job repository — upsert (dedup) + filtered listing.
+"""Job repository — upsert (dedup) + visibility-scoped listing.
 
 Uses ``INSERT ... ON CONFLICT (fingerprint) DO UPDATE`` so the same role from
 multiple sources collapses into one row, never ``SELECT``-then-``INSERT``.
+
+Visibility rules:
+- ``visibility = 'public'`` → visible to ALL users.
+- ``visibility = 'private'`` → visible ONLY to ``created_by_user_id``.
+- Per-user archiving via ``user_jobs.status = 'archived'``.
 """
 
 from __future__ import annotations
@@ -9,12 +14,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, literal_column, select, update
+from sqlalchemy import and_, func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job
 from app.models.user_job import UserJob
+from app.models.user_job_import import UserJobImport
 
 
 class JobRepository:
@@ -30,7 +36,7 @@ class JobRepository:
         is non-null (a second source may supply salary the first lacked).
         """
         stmt = pg_insert(Job).values(**values)
-        update_cols = {
+        update_cols: dict[str, object] = {
             "fetched_at": datetime.now(UTC),
             "title": stmt.excluded.title,
             "source": stmt.excluded.source,
@@ -38,8 +44,6 @@ class JobRepository:
             "raw_response": stmt.excluded.raw_response,
         }
         # Backfill optional fields only when the new value is present.
-        # shift_type is also COALESCE'd: regex may return None for an updated
-        # job, so we keep the previously classified value rather than clearing it.
         for col in (
             "company",
             "location",
@@ -58,7 +62,6 @@ class JobRepository:
         upsert: Any = stmt.on_conflict_do_update(
             index_elements=[Job.fingerprint],
             set_=update_cols,
-            # NEVER touch is_archived on conflict — preserve any manual archive.
         ).returning(Job.id, literal_column("(xmax = 0)").label("inserted"))
         result = await self._session.execute(upsert)
         row = result.one()
@@ -70,6 +73,9 @@ class JobRepository:
         job_ids: list[int],
         *,
         preference_id: int | None = None,
+        relationship_source: str = "match",
+        import_method: str | None = None,
+        status: str = "new",
     ) -> None:
         """Link globally-deduplicated jobs to a single user's feed.
 
@@ -80,11 +86,55 @@ class JobRepository:
         if not job_ids:
             return
         rows = [
-            {"user_id": user_id, "job_id": job_id, "preference_id": preference_id}
+            {
+                "user_id": user_id,
+                "job_id": job_id,
+                "preference_id": preference_id,
+                "relationship_source": relationship_source,
+                "import_method": import_method,
+                "status": status,
+            }
             for job_id in job_ids
         ]
         stmt = pg_insert(UserJob).values(rows).on_conflict_do_nothing(
             index_elements=[UserJob.user_id, UserJob.job_id]
+        )
+        await self._session.execute(stmt)
+
+    async def create_user_job_import(
+        self,
+        *,
+        user_id: int,
+        job_id: int,
+        user_job_user_id: int,
+        user_job_job_id: int,
+        import_method: str,
+        source_url: str | None = None,
+        raw_input: str | None = None,
+        raw_payload: dict[str, object] | None = None,
+        raw_html_hash: str | None = None,
+        parsed_title: str | None = None,
+        parsed_company: str | None = None,
+        parsed_location: str | None = None,
+        parsed_salary: str | None = None,
+        parse_confidence: float | None = None,
+    ) -> None:
+        """Store user-private import metadata. Never touches the public job row."""
+        stmt = pg_insert(UserJobImport).values(
+            user_id=user_id,
+            job_id=job_id,
+            user_job_user_id=user_job_user_id,
+            user_job_job_id=user_job_job_id,
+            import_method=import_method,
+            source_url=source_url,
+            raw_input=raw_input,
+            raw_payload=raw_payload,
+            raw_html_hash=raw_html_hash,
+            parsed_title=parsed_title,
+            parsed_company=parsed_company,
+            parsed_location=parsed_location,
+            parsed_salary=parsed_salary,
+            parse_confidence=parse_confidence,
         )
         await self._session.execute(stmt)
 
@@ -101,15 +151,18 @@ class JobRepository:
             update(Job).where(Job.id == job_id).values(shift_type=shift_type)
         )
 
-    async def set_archived(self, job_id: int, *, archived: bool) -> Job | None:
-        """Toggle is_archived on a job.  Returns the updated row or None."""
+    async def set_user_job_status(
+        self, user_id: int, job_id: int, status: str
+    ) -> None:
+        """Update the per-user relationship status (e.g. mark as archived)."""
         await self._session.execute(
-            update(Job).where(Job.id == job_id).values(is_archived=archived)
+            update(UserJob)
+            .where(UserJob.user_id == user_id, UserJob.job_id == job_id)
+            .values(status=status)
         )
-        return await self._session.get(Job, job_id)
 
     async def archive_older_than(self, cutoff: datetime) -> int:
-        """Archive non-archived jobs older than ``cutoff``.
+        """Mark jobs older than ``cutoff`` as expired (global lifecycle).
 
         Recency uses ``posted_at`` when present, falling back to ``fetched_at``
         for sources that don't supply a posting date. Returns the row count.
@@ -117,13 +170,12 @@ class JobRepository:
         result = await self._session.execute(
             update(Job)
             .where(
-                Job.is_archived.is_(False),
+                Job.status == "active",
                 func.coalesce(Job.posted_at, Job.fetched_at) < cutoff,
             )
-            .values(is_archived=True)
+            .values(status="expired")
         )
         return int(result.rowcount or 0)
-
 
     async def get_by_id(self, job_id: int) -> Job | None:
         return await self._session.get(Job, job_id)
@@ -144,13 +196,29 @@ class JobRepository:
         min_salary: float | None = None,
         job_type: str | None = None,
         location_contains: str | None = None,
-        include_archived: bool = False,
+        source_type: str | None = None,
+        imported_only: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Job], int]:
-        # Only jobs linked to this user (scraped for their preferences) are
-        # visible. The junction keeps the jobs table globally deduplicated.
-        filters = [UserJob.user_id == user_id]
+        """List jobs visible to *user_id*.
+
+        Visibility:
+        - Public jobs (``visibility = 'public'``) are visible to everyone.
+        - Private jobs (``visibility = 'private'``) are visible ONLY to their
+          ``created_by_user_id``.
+
+        Per-user archiving is respected: jobs where ``user_jobs.status =
+        'archived'`` for this user are excluded.
+        """
+        # LEFT JOIN user_jobs so we can filter per-user status and enrich with
+        # relationship metadata.
+        visibility_filter = or_(
+            Job.visibility == "public",
+            Job.created_by_user_id == user_id,
+        )
+        filters: list[Any] = [Job.status == "active", visibility_filter]
+
         if source is not None:
             filters.append(Job.source == source)
         if is_remote is not None:
@@ -161,8 +229,67 @@ class JobRepository:
             filters.append(func.lower(Job.job_type) == job_type.lower())
         if location_contains is not None:
             filters.append(Job.location.ilike(f"%{location_contains}%"))
-        if not include_archived:
-            filters.append(Job.is_archived.is_(False))
+        if source_type == "global":
+            filters.append(Job.visibility == "public")
+        elif source_type == "imported":
+            filters.append(Job.visibility == "private")
+        elif source_type == "manual":
+            filters.append(
+                and_(Job.visibility == "private", Job.ingest_source == "manual")
+            )
+        elif source_type == "extension":
+            filters.append(
+                and_(Job.visibility == "private", Job.ingest_source == "extension")
+            )
+        if imported_only:
+            filters.append(Job.visibility == "private")
+
+        # Exclude jobs the user has explicitly archived
+        archived_subq = (
+            select(UserJob.job_id)
+            .where(
+                UserJob.user_id == user_id,
+                UserJob.status == "archived",
+            )
+            .scalar_subquery()
+        )
+        filters.append(Job.id.not_in(archived_subq))
+
+        count_stmt = (
+            select(func.count())
+            .select_from(Job)
+            .where(*filters)
+        )
+        total = int((await self._session.execute(count_stmt)).scalar_one())
+
+        list_stmt = (
+            select(Job)
+            .where(*filters)
+            .order_by(
+                func.coalesce(
+                    Job.last_seen_at, Job.scraped_at, Job.fetched_at
+                ).desc(),
+                Job.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = list((await self._session.execute(list_stmt)).scalars().all())
+        return rows, total
+
+    async def list_imported_jobs(
+        self,
+        *,
+        user_id: int,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Job], int]:
+        """Return only jobs the user imported (manual or extension)."""
+        filters: list[Any] = [
+            UserJob.user_id == user_id,
+            UserJob.relationship_source.in_(["manual", "extension"]),
+            Job.status == "active",
+        ]
 
         count_stmt = (
             select(func.count())
@@ -173,12 +300,12 @@ class JobRepository:
         total = int((await self._session.execute(count_stmt)).scalar_one())
 
         list_stmt = (
-            select(Job)
+            select(Job, UserJob.match_score, UserJob.match_reason)
             .join(UserJob, UserJob.job_id == Job.id)
             .where(*filters)
-            .order_by(Job.fetched_at.desc(), Job.id.desc())
+            .order_by(UserJob.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
-        rows = list((await self._session.execute(list_stmt)).scalars().all())
+        rows = list((await self._session.execute(list_stmt)).all())
         return rows, total

@@ -7,7 +7,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { FilePenLine, FileText, Loader2, MessagesSquare, Plus, RefreshCw } from "lucide-react";
+import { FilePenLine, FileText, Loader2, MessagesSquare, Plus, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, matchesApi } from "@/lib/api";
 import type { MatchItem } from "@/lib/types";
@@ -164,9 +164,12 @@ export function MatchesPanel() {
 
       {matchesQuery.data && allMatches.length === 0 && (
         <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            No matches yet. Make sure you have an active profile and ingested
-            jobs, then click "Rank matches".
+          <CardContent className="flex flex-col items-center gap-3 py-12 text-center text-sm text-muted-foreground">
+            <Sparkles className="h-10 w-10 text-amber-400" />
+            <p>
+              No matches yet. Make sure you have an active profile and ingested
+              jobs, then click "Rank matches".
+            </p>
           </CardContent>
         </Card>
       )}

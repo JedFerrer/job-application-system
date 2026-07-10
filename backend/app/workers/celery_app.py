@@ -28,6 +28,7 @@ celery_app = Celery(
     backend=_backend_url,
     include=[
         "app.workers.job_ingestion",
+        "app.workers.job_imports",
         "app.workers.maintenance",
         "app.workers.match_ranking",
     ],
