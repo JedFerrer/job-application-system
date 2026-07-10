@@ -287,7 +287,7 @@ describe("Dashboard states", () => {
 
 // ── Pagination contract tests ────────────────────────────────────────────
 
-import { jobsApi, applicationsApi, listAllApplications } from "../src/lib/api";
+import { jobsApi, applicationsApi, listAllApplications, matchesApi } from "../src/lib/api";
 
 /** Helper: mock `fetch` to return a controlled JSON response and capture the
  *  requested URL. */
@@ -335,6 +335,62 @@ describe("jobsApi.listImported", () => {
   });
 });
 
+
+describe("matchesApi.list", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("first page sends limit, no cursor, no offset", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 25, offset: 0, next_cursor: null, has_more: false });
+    await matchesApi.list({ limit: 25 });
+    const url = lastUrl(fm);
+    expect(url.searchParams.get("limit")).toBe("25");
+    expect(url.searchParams.has("cursor")).toBe(false);
+    expect(url.searchParams.has("offset")).toBe(false);
+  });
+
+  it("second page sends cursor and limit, never offset", async () => {
+    const fm = mockFetch({ items: [], total: 30, limit: 25, offset: 0, next_cursor: "bmV4dA", has_more: true });
+    await matchesApi.list({ cursor: "bmV4dF9wYWdl", limit: 25 });
+    const url = lastUrl(fm);
+    expect(url.searchParams.get("cursor")).toBe("bmV4dF9wYWdl");
+    expect(url.searchParams.get("limit")).toBe("25");
+    expect(url.searchParams.has("offset")).toBe(false);
+  });
+
+  it("preserves filters with cursor pagination", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 20, offset: 0, next_cursor: null, has_more: false });
+    await matchesApi.list({
+      cursor: "page2",
+      limit: 20,
+      q: "engineer",
+      source: "indeed",
+      isRemote: true,
+      jobType: "fulltime",
+      location: "Manila",
+      company: "Acme",
+      shiftType: "day",
+      sourceType: "global",
+    });
+    const url = lastUrl(fm);
+    expect(url.searchParams.get("cursor")).toBe("page2");
+    expect(url.searchParams.get("q")).toBe("engineer");
+    expect(url.searchParams.get("source")).toBe("indeed");
+    expect(url.searchParams.get("is_remote")).toBe("true");
+    expect(url.searchParams.get("job_type")).toBe("fulltime");
+    expect(url.searchParams.get("location")).toBe("Manila");
+    expect(url.searchParams.get("company")).toBe("Acme");
+    expect(url.searchParams.get("shift_type")).toBe("day");
+    expect(url.searchParams.get("source_type")).toBe("global");
+    expect(url.searchParams.has("offset")).toBe(false);
+  });
+
+  it("defaults limit to 50", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 50, offset: 0, next_cursor: null, has_more: false });
+    await matchesApi.list();
+    expect(lastUrl(fm).searchParams.get("limit")).toBe("50");
+  });
+});
+
 describe("applicationsApi.list", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -369,7 +425,7 @@ describe("listAllApplications", () => {
     mockFetch({ items, total: 1, limit: 100, next_cursor: null });
     const result = await listAllApplications();
     expect(result).toHaveLength(1);
-    expect(result[0].id).toBe(1);
+    expect(result[0]?.id).toBe(1);
   });
 
   it("follows next_cursor across multiple pages", async () => {

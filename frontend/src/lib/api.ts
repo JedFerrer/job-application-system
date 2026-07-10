@@ -260,7 +260,7 @@ export const matchesApi = {
   list: (
     opts: {
       limit?: number;
-      offset?: number;
+      cursor?: string;
       q?: string;
       source?: string;
       isRemote?: boolean;
@@ -271,10 +271,9 @@ export const matchesApi = {
       sourceType?: string;
     } = {},
   ) => {
-    const qs = new URLSearchParams({
-      limit: String(opts.limit ?? 50),
-      offset: String(opts.offset ?? 0),
-    });
+    const qs = new URLSearchParams();
+    qs.set("limit", String(opts.limit ?? 50));
+    if (opts.cursor) qs.set("cursor", opts.cursor);
     if (opts.q) qs.set("q", opts.q);
     if (opts.source) qs.set("source", opts.source);
     if (opts.isRemote !== undefined) qs.set("is_remote", String(opts.isRemote));

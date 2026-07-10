@@ -107,11 +107,11 @@ export function MatchesPanel() {
 
   const matchesQuery = useInfiniteQuery({
     queryKey: ["matches", filterSearch, filterSource, filterJobType, filterLocation, filterCompany, filterShiftType, filterRemote, filterSourceType],
-    initialPageParam: 0,
+    initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       matchesApi.list({
         limit: PAGE_SIZE,
-        offset: (pageParam as number) * PAGE_SIZE,
+        cursor: pageParam ?? undefined,
         q: filterSearch || undefined,
         source: filterSource || undefined,
         jobType: filterJobType || undefined,
@@ -121,10 +121,7 @@ export function MatchesPanel() {
         isRemote: filterRemote || undefined,
         sourceType: filterSourceType || undefined,
       }),
-    getNextPageParam: (lastPage, allPages) => {
-      const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
-      return loaded < lastPage.total ? allPages.length : undefined;
-    },
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
 
   const allMatches = dedupeByJobId(

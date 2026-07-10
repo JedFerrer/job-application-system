@@ -47,6 +47,8 @@ class MatchListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class MatchExplanation(BaseModel):
