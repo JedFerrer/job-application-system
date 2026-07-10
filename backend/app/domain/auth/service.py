@@ -32,6 +32,7 @@ from app.domain.auth.exceptions import (
     InvalidTokenError,
 )
 from app.domain.auth.repository import UserRepository
+from app.domain.auth.web_session_repository import WebSessionRepository
 from app.models.user import User
 
 
@@ -44,9 +45,15 @@ class IssuedTokens:
 
 
 class AuthService:
-    def __init__(self, repository: UserRepository, settings: Settings) -> None:
+    def __init__(
+        self,
+        repository: UserRepository,
+        settings: Settings,
+        web_sessions: WebSessionRepository | None = None,
+    ) -> None:
         self._repo = repository
         self._settings = settings
+        self._sessions = web_sessions
 
     # -- token helpers -----------------------------------------------------
 
@@ -61,6 +68,16 @@ class AuthService:
             expires_in=self._settings.access_token_expire_minutes * 60,
             user=user,
         )
+
+    async def _issue_and_track(self, user: User) -> IssuedTokens:
+        """Issue tokens and persist a refresh session when session storage is
+        available."""
+        tokens = self._issue(user)
+        if self._sessions is not None:
+            await self._sessions.create_session(
+                user_id=user.id, refresh_token=tokens.refresh_token
+            )
+        return tokens
 
     # -- email + password --------------------------------------------------
 
@@ -78,7 +95,7 @@ class AuthService:
             user = await self._repo.create(
                 email=email, name=name, hashed_password=hash_password(password)
             )
-        return self._issue(user)
+        return await self._issue_and_track(user)
 
     async def authenticate(self, *, email: str, password: str) -> IssuedTokens:
         user = await self._repo.get_by_email(email)
@@ -94,7 +111,7 @@ class AuthService:
             await self._repo.update_password(
                 user, hashed_password=hash_password(password)
             )
-        return self._issue(user)
+        return await self._issue_and_track(user)
 
     # -- Google ------------------------------------------------------------
 
@@ -140,11 +157,14 @@ class AuthService:
 
         if not user.is_active:
             raise InactiveUserError
-        return self._issue(user)
+        return await self._issue_and_track(user)
 
     # -- refresh -----------------------------------------------------------
 
     async def refresh(self, *, refresh_token: str) -> IssuedTokens:
+        # ALWAYS cryptographically verify the JWT first — even when session
+        # storage is available.  This ensures expiry, signature, issuer,
+        # audience, and token-type are validated BEFORE the hash lookup.
         try:
             user_id = decode_token(
                 settings=self._settings,
@@ -154,18 +174,77 @@ class AuthService:
         except TokenError as exc:
             raise InvalidTokenError from exc
 
+        # If session storage is available, cross-check the verified token
+        # against persisted sessions (rotation, revocation, reuse detection).
+        if self._sessions is not None:
+            session = await self._sessions.find_by_token(refresh_token)
+            if session is None:
+                raise InvalidTokenError
+
+            # Ensure the JWT subject matches the session's user.
+            if session.user_id != user_id:
+                logger.warning(
+                    "refresh.user_mismatch jwt_sub=%s session_user=%s session_id=%s",
+                    user_id,
+                    session.user_id,
+                    session.id,
+                )
+                raise InvalidTokenError
+
+            if session.revoked_at is not None:
+                # Reuse detected — revoke the entire token family.
+                await self._sessions.revoke_family(session.token_family)
+                logger.warning(
+                    "refresh.reuse_detected session_id=%s family=%s user_id=%s",
+                    session.id,
+                    session.token_family,
+                    session.user_id,
+                )
+                raise InvalidTokenError
+
+            # Verify the user still exists and is active.
+            user = await self._repo.get_by_id(user_id)
+            if user is None or not user.is_active:
+                raise InvalidTokenError
+
+            # Rotate: issue new tokens, update the session with the new hash.
+            tokens = self._issue(user)
+            await self._sessions.rotate(session, tokens.refresh_token)
+            return tokens
+
+        # Fallback: stateless JWT (already decoded above).  Backward-
+        # compatible when no session repository is configured.
         user = await self._repo.get_by_id(user_id)
         if user is None or not user.is_active:
             raise InvalidTokenError
         return self._issue(user)
 
+    # -- logout ------------------------------------------------------------
+
+    async def logout(self, *, refresh_token: str) -> None:
+        """Revoke the refresh session for *refresh_token* (if tracked)."""
+        if self._sessions is None:
+            return
+        session = await self._sessions.find_by_token(refresh_token)
+        if session is not None:
+            await self._sessions.revoke_session(session)
+
     # -- password reset ----------------------------------------------------
 
-    async def forgot_password(self, *, email: str) -> dict[str, str]:
-        """Generate a password-reset token for ``email``.
+    async def forgot_password(
+        self,
+        *,
+        email: str,
+        email_provider: object | None = None,
+    ) -> dict[str, str]:
+        """Generate a password-reset token for *email*.
 
-        Returns the reset URL (for dev environments). In production, the token
-        would be sent via email instead.
+        In **development**, the reset URL is returned in the API response for
+        convenience.  In **staging / production**, only a generic message is
+        returned — the actual reset link must be delivered via email.
+
+        When *email_provider* is supplied, ``send_password_reset()`` is called
+        in non-dev environments (the provider handles actual delivery).
         """
         user = await self._repo.get_by_email(email)
         if user is None or user.hashed_password is None:
@@ -177,14 +256,25 @@ class AuthService:
             subject=user.id,
             token_type="reset",
         )
-        # In production, email this URL instead.
-        return {
+        is_dev = self._settings.environment == "development"
+        response: dict[str, str] = {
             "message": "If the email is registered, a reset link has been sent.",
-            "reset_url": f"/reset-password?token={token}",
         }
+        if is_dev:
+            # Development-only: include reset_url for convenience.
+            response["reset_url"] = f"/reset-password?token={token}"
+        elif email_provider is not None and hasattr(email_provider, "send_password_reset"):
+            # Production/staging: deliver via email provider.
+            reset_url = f"/reset-password?token={token}"
+            await email_provider.send_password_reset(
+                to_email=email, reset_url=reset_url
+            )
+        # else: no email provider configured — generic message only (safe).
+        return response
 
     async def reset_password(self, *, token_str: str, new_password: str) -> None:
-        """Validate a reset token and update the user's password."""
+        """Validate a reset token, update the password, and revoke all
+        existing refresh sessions for the user (forcing re-login everywhere)."""
         try:
             user_id = decode_token(
                 settings=self._settings,
@@ -201,3 +291,13 @@ class AuthService:
         await self._repo.update_password(
             user, hashed_password=hash_password(new_password)
         )
+
+        # Revoke all web refresh sessions so old tokens can't be used.
+        if self._sessions is not None:
+            count = await self._sessions.revoke_all_for_user(user.id)
+            if count:
+                logger.info(
+                    "password_reset.sessions_revoked user_id=%s count=%s",
+                    user.id,
+                    count,
+                )

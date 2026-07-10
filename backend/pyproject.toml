@@ -88,3 +88,7 @@ disallow_untyped_decorators = false
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
+markers = [
+    "unit: Tests that do not need a database (fast, always safe to run)",
+    "integration: Tests that need a real PostgreSQL database (uses job_app_test only)",
+]

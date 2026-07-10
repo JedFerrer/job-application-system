@@ -28,7 +28,7 @@ class ApplicationService:
         self._jobs = job_repository
 
     async def create(self, *, user_id: int, job_id: int) -> ApplicationResponse:
-        job = await self._jobs.get_by_id(job_id)
+        job = await self._jobs.get_visible_by_id(user_id=user_id, job_id=job_id)
         if job is None:
             raise JobNotFoundError(job_id)
         application = await self._repo.create_or_get(user_id=user_id, job_id=job_id)
@@ -55,8 +55,12 @@ class ApplicationService:
         )
         return ApplicationResponse.model_validate(updated)
 
-    async def list(self, *, user_id: int) -> ApplicationListResponse:
-        rows, total = await self._repo.list_with_jobs(user_id=user_id)
+    async def list(
+        self, *, user_id: int, cursor: str | None = None, limit: int = 50
+    ) -> ApplicationListResponse:
+        rows, total, next_cursor = await self._repo.list_with_jobs(
+            user_id=user_id, cursor=cursor, limit=limit
+        )
         items = [
             ApplicationListItem(
                 id=app.id,
@@ -73,4 +77,6 @@ class ApplicationService:
             )
             for app, job in rows
         ]
-        return ApplicationListResponse(items=items, total=total)
+        return ApplicationListResponse(
+            items=items, total=total, limit=limit, next_cursor=next_cursor
+        )

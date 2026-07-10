@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.api.deps import CurrentUser, MatchServiceDep
 from app.domain.matching.schemas import (
@@ -32,8 +32,11 @@ async def list_matches(
     current_user: CurrentUser,
     service: MatchServiceDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
-    q: str | None = Query(default=None, description="Free-text search across title, company, description"),
+    offset: Annotated[int | None, Query(ge=0, deprecated=True)] = None,
+    cursor: str | None = Query(default=None, description="Cursor for next page"),
+    q: str | None = Query(
+        default=None, description="Free-text search across title, company, description"
+    ),
     source: str | None = None,
     is_remote: bool | None = None,
     job_type: str | None = None,
@@ -42,19 +45,23 @@ async def list_matches(
     shift_type: str | None = Query(default=None, description="day | night | mid | flexible"),
     source_type: str | None = Query(default=None, description="global | manual | extension"),
 ) -> MatchListResponse:
-    return await service.list_matches(
-        user_id=current_user.id,
-        limit=limit,
-        offset=offset,
-        q=q,
-        source=source,
-        is_remote=is_remote,
-        job_type=job_type,
-        location_contains=location,
-        company_contains=company,
-        shift_type=shift_type,
-        source_type=source_type,
-    )
+    try:
+        return await service.list_matches(
+            user_id=current_user.id,
+            limit=limit,
+            offset=offset,
+            cursor=cursor,
+            q=q,
+            source=source,
+            is_remote=is_remote,
+            job_type=job_type,
+            location_contains=location,
+            company_contains=company,
+            shift_type=shift_type,
+            source_type=source_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid cursor") from exc
 
 
 @router.get("/skills-gap-summary", response_model=SkillsGapSummary)

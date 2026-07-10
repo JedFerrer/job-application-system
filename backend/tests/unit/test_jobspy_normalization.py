@@ -5,6 +5,10 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 from app.infrastructure.job_sources.jobspy_source import (
     _clean_bool,
     _clean_datetime,

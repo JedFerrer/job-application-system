@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileText, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { FileText, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi } from "@/lib/api";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
@@ -19,21 +19,43 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
+const PAGE_SIZE = 25;
+
 export function ApplicationsPanel() {
   const queryClient = useQueryClient();
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const [coverLetterJob, setCoverLetterJob] = useState<{
     jobId: number;
     jobTitle: string;
   } | null>(null);
   const [filterStatus, setFilterStatus] = useState<ApplicationStatus | null>(null);
 
-  const appsQuery = useQuery({
-    queryKey: ["applications"],
-    queryFn: applicationsApi.list,
+  const hasNextPageRef = useRef(false);
+  const isFetchingNextPageRef = useRef(false);
+  const fetchNextPageRef = useRef<() => void>(() => {});
+
+  const appsQuery = useInfiniteQuery({
+    queryKey: ["applications", "infinite"],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) =>
+      applicationsApi.list({
+        limit: PAGE_SIZE,
+        cursor: pageParam ?? undefined,
+      }),
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
 
+  hasNextPageRef.current = appsQuery.hasNextPage;
+  isFetchingNextPageRef.current = appsQuery.isFetchingNextPage;
+  fetchNextPageRef.current = appsQuery.fetchNextPage;
+
+  const allItems = useMemo(
+    () => appsQuery.data?.pages.flatMap((p) => p.items) ?? [],
+    [appsQuery.data],
+  );
+  const total = appsQuery.data?.pages[0]?.total ?? 0;
+
   const { filteredItems, statusCounts } = useMemo(() => {
-    const items = appsQuery.data?.items ?? [];
     const counts: Record<ApplicationStatus, number> = {
       saved: 0,
       applied: 0,
@@ -42,42 +64,69 @@ export function ApplicationsPanel() {
       rejected: 0,
       closed: 0,
     };
-    for (const item of items) {
-      counts[item.status] = (counts[item.status] ?? 0) + 1;
+    for (const item of allItems) {
+      const st = item.status as ApplicationStatus;
+      counts[st] = (counts[st] ?? 0) + 1;
     }
     return {
       filteredItems: filterStatus
-        ? items.filter((a) => a.status === filterStatus)
-        : items,
+        ? allItems.filter((a) => a.status === filterStatus)
+        : allItems,
       statusCounts: counts,
     };
-  }, [appsQuery.data, filterStatus]);
+  }, [allItems, filterStatus]);
+
+  // IntersectionObserver for infinite scroll
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry) return;
+        if (
+          entry.isIntersecting &&
+          hasNextPageRef.current &&
+          !isFetchingNextPageRef.current
+        ) {
+          fetchNextPageRef.current();
+        }
+      },
+      { rootMargin: "0px 0px 300px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const statusMutation = useMutation({
     mutationFn: ({ id, status }: { id: number; status: ApplicationStatus }) =>
       applicationsApi.update(id, { status }),
     onMutate: async ({ id, status }) => {
-      await queryClient.cancelQueries({ queryKey: ["applications"] });
-      const prev = queryClient.getQueryData<ApplicationListResponse>([
-        "applications",
-      ]);
-      queryClient.setQueryData<ApplicationListResponse>(
-        ["applications"],
-        (old) =>
-          old
-            ? {
-                ...old,
-                items: old.items.map((a) =>
+      await queryClient.cancelQueries({ queryKey: ["applications", "infinite"] });
+      const prev = queryClient.getQueryData<{
+        pages: ApplicationListResponse[];
+        pageParams: (string | null)[];
+      }>(["applications", "infinite"]);
+      queryClient.setQueryData<{
+        pages: ApplicationListResponse[];
+        pageParams: (string | null)[];
+      }>(["applications", "infinite"], (old) =>
+        old
+          ? {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                items: page.items.map((a) =>
                   a.id === id ? { ...a, status } : a,
                 ),
-              }
-            : old,
+              })),
+            }
+          : old,
       );
       return { prev };
     },
     onError: (err, _vars, context) => {
       if (context?.prev) {
-        queryClient.setQueryData(["applications"], context.prev);
+        queryClient.setQueryData(["applications", "infinite"], context.prev);
       }
       toast.error(err instanceof ApiError ? err.message : "Update failed");
     },
@@ -90,7 +139,7 @@ export function ApplicationsPanel() {
     return <p className="text-sm text-muted-foreground">Loading applications…</p>;
   }
 
-  if (appsQuery.data && appsQuery.data.items.length === 0) {
+  if (appsQuery.data && allItems.length === 0) {
     return (
       <Card>
         <CardContent className="py-8 text-center text-sm text-muted-foreground">
@@ -118,7 +167,7 @@ export function ApplicationsPanel() {
           className="cursor-pointer"
           onClick={() => setFilterStatus(null)}
         >
-          All ({appsQuery.data?.total ?? 0})
+          All ({total})
         </Badge>
         {APPLICATION_STATUSES.map((status) => (
           <Badge
@@ -188,6 +237,14 @@ export function ApplicationsPanel() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Infinite-scroll sentinel */}
+      <div ref={sentinelRef} className="h-4" style={{ overflowAnchor: "none" }} />
+      {appsQuery.isFetchingNextPage && (
+        <div className="flex items-center justify-center py-4">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
       )}
 
       <CoverLetterDialog

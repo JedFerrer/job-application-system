@@ -56,16 +56,13 @@ export function ImportedJobsPanel() {
 
   const jobsQuery = useInfiniteQuery({
     queryKey: ["imported-jobs"],
-    initialPageParam: 0,
+    initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       jobsApi.listImported({
         limit: PAGE_SIZE,
-        offset: (pageParam as number) * PAGE_SIZE,
+        cursor: pageParam ?? undefined,
       }),
-    getNextPageParam: (lastPage, allPages) => {
-      const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
-      return loaded < lastPage.total ? allPages.length : undefined;
-    },
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     refetchOnMount: "always",
   });
 
@@ -83,6 +80,7 @@ export function ImportedJobsPanel() {
     if (!el) return;
     const observer = new IntersectionObserver(
       ([entry]) => {
+        if (!entry) return;
         if (
           entry.isIntersecting &&
           hasNextPageRef.current &&
@@ -211,7 +209,8 @@ export function ImportedJobsPanel() {
 
       {coverJob && (
         <CoverLetterDialog
-          job={coverJob}
+          jobId={coverJob.id}
+          jobTitle={coverJob.title}
           open={!!coverJob}
           onOpenChange={(open) => { if (!open) setCoverJob(null); }}
         />

@@ -118,7 +118,15 @@ async def refresh(
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(response: Response, settings: SettingsDep) -> Response:
+async def logout(
+    request: Request,
+    response: Response,
+    service: AuthServiceDep,
+    settings: SettingsDep,
+) -> Response:
+    token = request.cookies.get(settings.refresh_cookie_name)
+    if token:
+        await service.logout(refresh_token=token)
     response.delete_cookie(
         key=settings.refresh_cookie_name,
         path=settings.refresh_cookie_path,

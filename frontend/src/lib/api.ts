@@ -1,5 +1,6 @@
 import type {
   Application,
+  ApplicationListItem,
   ApplicationListResponse,
   ApplicationStatus,
   AuthUser,
@@ -179,7 +180,7 @@ export const resumeApi = {
   },
   getTaskStatus: (taskId: string) =>
     apiRequest<TaskStatus>(`/resume/tasks/${taskId}`),
-  getProfile: () => apiRequest<ProfileResponse>("/resume/profile"),
+  getProfile: () => apiRequest<ProfileResponse | null>("/resume/profile"),
   updateProfile: (profile: ParsedProfile) =>
     apiRequest<ProfileResponse>("/resume/profile", {
       method: "PUT",
@@ -239,11 +240,10 @@ export const jobsApi = {
       body: JSON.stringify(payload),
     }),
   /** List jobs imported by the current user (manual + extension). */
-  listImported: (opts: { limit?: number; offset?: number } = {}) => {
-    const qs = new URLSearchParams({
-      limit: String(opts.limit ?? 50),
-      offset: String(opts.offset ?? 0),
-    });
+  listImported: (opts: { cursor?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.cursor) qs.set("cursor", opts.cursor);
+    qs.set("limit", String(opts.limit ?? 50));
     return apiRequest<JobListResponse>(`/jobs/imported?${qs.toString()}`);
   },
   /** Fetch a single job by id. */
@@ -260,7 +260,7 @@ export const matchesApi = {
   list: (
     opts: {
       limit?: number;
-      offset?: number;
+      cursor?: string;
       q?: string;
       source?: string;
       isRemote?: boolean;
@@ -271,10 +271,9 @@ export const matchesApi = {
       sourceType?: string;
     } = {},
   ) => {
-    const qs = new URLSearchParams({
-      limit: String(opts.limit ?? 50),
-      offset: String(opts.offset ?? 0),
-    });
+    const qs = new URLSearchParams();
+    qs.set("limit", String(opts.limit ?? 50));
+    if (opts.cursor) qs.set("cursor", opts.cursor);
     if (opts.q) qs.set("q", opts.q);
     if (opts.source) qs.set("source", opts.source);
     if (opts.isRemote !== undefined) qs.set("is_remote", String(opts.isRemote));
@@ -340,7 +339,12 @@ export const coverLettersApi = {
 
 // ---- Applications -----------------------------------------------------------
 export const applicationsApi = {
-  list: () => apiRequest<ApplicationListResponse>("/applications"),
+  list: (opts: { cursor?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.cursor) qs.set("cursor", opts.cursor);
+    qs.set("limit", String(opts.limit ?? 50));
+    return apiRequest<ApplicationListResponse>(`/applications?${qs.toString()}`);
+  },
   create: (jobId: number) =>
     apiRequest<Application>("/applications", {
       method: "POST",
@@ -359,6 +363,21 @@ export const applicationsApi = {
       body: JSON.stringify(payload),
     }),
 };
+
+/** Fetch all application pages via cursor pagination.
+ *  Used for saved-state detection in jobs/matches panels so that
+ *  users with >50 applications are not silently affected. */
+export async function listAllApplications(): Promise<ApplicationListItem[]> {
+  const all: ApplicationListItem[] = [];
+  let cursor: string | undefined;
+  while (true) {
+    const page = await applicationsApi.list({ cursor, limit: 100 });
+    all.push(...page.items);
+    if (!page.next_cursor) break;
+    cursor = page.next_cursor;
+  }
+  return all;
+}
 
 // ---- Auth -------------------------------------------------------------------
 export const authApi = {
@@ -400,6 +419,34 @@ export const authApi = {
       method: "POST",
       body: JSON.stringify({ token, password }),
       skipAuth: true,
+    }),
+};
+
+// ---- Extension sessions (web dashboard) -------------------------------------
+
+export interface ExtensionSessionItem {
+  id: string;
+  device_name: string | null;
+  browser: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked: boolean;
+}
+
+export interface ExtensionSessionListResponse {
+  sessions: ExtensionSessionItem[];
+}
+
+export const extensionApi = {
+  /** List extension sessions for the current user (web dashboard). */
+  listSessions: () =>
+    apiRequest<ExtensionSessionListResponse>("/extension/sessions"),
+
+  /** Revoke an extension session by id (web dashboard). */
+  revokeSession: (sessionId: string) =>
+    apiRequest<void>("/extension/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId }),
     }),
 };
 

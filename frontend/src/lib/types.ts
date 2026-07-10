@@ -155,7 +155,7 @@ export interface JobListResponse {
   next_cursor: string | null;
 }
 
-// ---- Matches (Phase 3) ------------------------------------------------------
+// ---- Matches ----------------------------------------------------------------
 export interface MatchItem {
   job_id: number;
   title: string;
@@ -183,6 +183,8 @@ export interface MatchListResponse {
   total: number;
   limit: number;
   offset: number;
+  next_cursor: string | null;
+  has_more: boolean;
 }
 
 export interface RankResponse {
@@ -258,6 +260,8 @@ export interface ApplicationListItem {
 export interface ApplicationListResponse {
   items: ApplicationListItem[];
   total: number;
+  limit: number;
+  next_cursor: string | null;
 }
 
 // ---- Job preferences (Phase 2) ----------------------------------------------

@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile,
 from app.api.deps import CurrentUser, JobRepositoryDep, ResumeServiceDep, TaskStoreDep
 from app.core.logging import get_logger
 from app.domain.resume.exceptions import (
+    ProfileNotFoundError,
     ResumeParseError,
     UnsupportedResumeFormatError,
 )
@@ -124,7 +125,7 @@ async def upload_resume(
             detail="Resume exceeds the 10 MB size limit.",
         )
 
-    task_id = await task_store.create("resume_parse")
+    task_id = await task_store.create("resume_parse", user_id=current_user.id)
     background_tasks.add_task(_run_resume_bg, task_id, current_user.id, filename, content)
     return {"task_id": task_id}
 
@@ -137,17 +138,20 @@ async def get_resume_task(
 ) -> dict[str, Any]:
     """Poll resume-parse task progress.  Expires after 1 hour."""
     task = await task_store.get(task_id)
-    if task is None:
+    if task is None or task.get("user_id") != current_user.id:
         raise HTTPException(status_code=404, detail="Task not found or expired")
     return task
 
 
-@router.get("/profile", response_model=ProfileResponse)
+@router.get("/profile", response_model=ProfileResponse | None)
 async def get_profile(
     current_user: CurrentUser,
     service: ResumeServiceDep,
-) -> ProfileResponse:
-    return await service.get_profile(current_user.id)
+) -> ProfileResponse | None:
+    try:
+        return await service.get_profile(current_user.id)
+    except ProfileNotFoundError:
+        return None
 
 
 @router.put("/profile", response_model=ProfileResponse)

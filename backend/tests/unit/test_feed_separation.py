@@ -6,6 +6,8 @@ Requires a running PostgreSQL instance (docker-compose up db test).
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.integration
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -35,12 +37,22 @@ def engine():
 
 @pytest.fixture(autouse=True)
 async def clean_jobs(engine) -> None:  # noqa: ANN001
-    """Truncate job-related tables before each test using CASCADE."""
+    """Truncate job-related tables before each test, resetting sequences,
+    then re-seed required test users."""
+    from app.models.user import User
+
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
-        await db.execute(  # type: ignore[attr-defined]
-            __import__("sqlalchemy").text("TRUNCATE TABLE jobs CASCADE")
+        await db.execute(
+            __import__("sqlalchemy").text(
+                "TRUNCATE TABLE user_jobs, jobs, users RESTART IDENTITY CASCADE"
+            )
         )
+        # Re-seed users so FK constraints on user_jobs are satisfied.
+        db.add_all([
+            User(id=1, email="user-a@test.com", name="User A", is_active=True),
+            User(id=2, email="user-b@test.com", name="User B", is_active=True),
+        ])
         await db.commit()
 
 
@@ -48,6 +60,39 @@ async def _make_service(engine) -> JobService:  # noqa: ANN001
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     db = session_factory()
     return JobService(JobRepository(db)), db
+
+
+async def _create_job_and_get_id(db: AsyncSession, **overrides: object) -> int:
+    """Insert a job and return its auto-generated ID."""
+    from sqlalchemy import select as _sel
+
+    fp = job_fingerprint(
+        str(overrides.get("company", "Acme")),
+        str(overrides.get("title", "Senior Engineer")),
+        str(overrides.get("location", "Remote")),
+    )
+    values: dict[str, object] = {
+        "fingerprint": fp,
+        "title": "Senior Engineer",
+        "company": "Acme",
+        "location": "Remote",
+        "source": "indeed",
+        "source_url": "https://indeed.com/job/1",
+        "visibility": "public",
+        "ingest_source": "scraper",
+        "status": "active",
+        "raw_response": {},
+    }
+    values.update(overrides)
+    values["fingerprint"] = job_fingerprint(
+        str(values.get("company", "")),
+        str(values.get("title", "")),
+        str(values.get("location", "")),
+    )
+    await db.execute(__import__("sqlalchemy").insert(Job).values(**values))  # type: ignore[arg-type]
+    await db.commit()
+    result = await db.execute(_sel(Job.id).where(Job.fingerprint == values["fingerprint"]))
+    return result.scalar_one()
 
 
 # ── Visibility: public scraped jobs ──────────────────────────────────────
@@ -58,27 +103,11 @@ async def test_public_job_visible_to_any_user(engine) -> None:  # noqa: ANN001
     service_a, db_a = await _make_service(engine)
     service_b, db_b = await _make_service(engine)
 
-    # Insert a public scraped job (simulating what the scraper does).
-    fp = job_fingerprint("Acme", "Senior Engineer", "Remote")
-    await db_a.execute(
-        __import__("sqlalchemy").insert(Job).values(
-            fingerprint=fp,
-            title="Senior Engineer",
-            company="Acme",
-            location="Remote",
-            source="indeed",
-            source_url="https://indeed.com/job/1",
-            visibility="public",
-            ingest_source="scraper",
-            status="active",
-            raw_response={},
-        )
-    )
-    await db_a.commit()
+    job_id = await _create_job_and_get_id(db_a)
 
     # Link both users to the job (simulating scraping for both).
-    await JobRepository(db_a).link_user_jobs(1, [1])  # user A
-    await JobRepository(db_b).link_user_jobs(2, [1])  # user B
+    await JobRepository(db_a).link_user_jobs(1, [job_id])  # user A
+    await JobRepository(db_b).link_user_jobs(2, [job_id])  # user B
     await db_a.commit()
     await db_b.commit()
 

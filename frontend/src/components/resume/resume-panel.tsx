@@ -46,10 +46,9 @@ export function ResumePanel() {
   };
 
   const profile = profileQuery.data?.profile;
-  const noProfile =
-    profileQuery.isError &&
-    profileQuery.error instanceof ApiError &&
-    profileQuery.error.status === 404;
+
+  // No active profile yet — backend returns 200 with null body (not 404).
+  const noProfile = profileQuery.data === null;
 
   return (
     <div className="flex flex-col gap-6">

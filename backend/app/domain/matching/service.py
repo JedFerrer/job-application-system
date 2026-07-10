@@ -75,7 +75,8 @@ class MatchingService:
         *,
         user_id: int,
         limit: int,
-        offset: int,
+        offset: int | None = None,
+        cursor: str | None = None,
         q: str | None = None,
         source: str | None = None,
         is_remote: bool | None = None,
@@ -85,10 +86,13 @@ class MatchingService:
         shift_type: str | None = None,
         source_type: str | None = None,
     ) -> MatchListResponse:
-        rows, total = await self._repo.list_matches(
+        # Cursor is the frontend path; offset remains a deprecated compatibility
+        # fallback for old clients until a later API cleanup removes it.
+        rows, total, next_cursor, has_more = await self._repo.list_matches(
             user_id=user_id,
             limit=limit,
             offset=offset,
+            cursor=cursor,
             q=q,
             source=source,
             is_remote=is_remote,
@@ -124,21 +128,21 @@ class MatchingService:
                 )
             )
         return MatchListResponse(
-            items=items, total=total, limit=limit, offset=offset
+            items=items,
+            total=total,
+            limit=limit,
+            offset=0 if offset is None else offset,
+            next_cursor=next_cursor,
+            has_more=has_more,
         )
 
-    async def skills_gap_summary(
-        self, *, user_id: int, top_n: int = 5
-    ) -> SkillsGapSummary:
+    async def skills_gap_summary(self, *, user_id: int, top_n: int = 5) -> SkillsGapSummary:
         """Aggregate the most common missing skills across the user's matches."""
-        pairs = await self._repo.aggregate_missing_keywords(
-            user_id=user_id, top_n=top_n
-        )
+        pairs = await self._repo.aggregate_missing_keywords(user_id=user_id, top_n=top_n)
         total = await self._repo.count_matches_with_gaps(user_id)
         return SkillsGapSummary(
             items=[
-                SkillGapItem(keyword=keyword, frequency=frequency)
-                for keyword, frequency in pairs
+                SkillGapItem(keyword=keyword, frequency=frequency) for keyword, frequency in pairs
             ],
             total_matches_considered=total,
         )
@@ -152,7 +156,7 @@ class MatchingService:
         if match.llm_explanation is not None:
             return self._to_explanation(match)
 
-        job = await self._repo.get_job(job_id)
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         profile = await self._repo.get_active_profile(user_id)
         if job is None or profile is None:
             raise MatchNotFoundError(job_id)
@@ -163,13 +167,17 @@ class MatchingService:
         report_dict = report_to_dict(report)
 
         # Layer 3: LLM explanation grounded by layer 2.
-        llm_score, llm_confidence, missing_keywords, explanation, conf_band = (
-            await self._explain_with_llm(
-                profile_parsed=dict(profile.parsed),
-                job_description=job.description or "",
-                report_dict=report_dict,
-                deterministic_missing=report.missing_skills,
-            )
+        (
+            llm_score,
+            llm_confidence,
+            missing_keywords,
+            explanation,
+            conf_band,
+        ) = await self._explain_with_llm(
+            profile_parsed=dict(profile.parsed),
+            job_description=job.description or "",
+            report_dict=report_dict,
+            deterministic_missing=report.missing_skills,
         )
 
         await self._repo.save_explanation(
@@ -231,9 +239,7 @@ class MatchingService:
 
         confidence = data.get("confidence")
         conf_band = (
-            confidence
-            if isinstance(confidence, str) and confidence in _VALID_CONFIDENCE
-            else None
+            confidence if isinstance(confidence, str) and confidence in _VALID_CONFIDENCE else None
         )
 
         raw_missing = data.get("missing_keywords")

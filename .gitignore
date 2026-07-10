@@ -44,3 +44,12 @@ docs/
 
 # ── Misc ───────────────────────────────────────────────────────────────────
 nul
+
+# Local tooling artifacts
+.agents/
+.cursor/
+AGENTS.md
+.github/copilot-instructions.md
+.github/instructions/*.md
+.github/prompts/
+

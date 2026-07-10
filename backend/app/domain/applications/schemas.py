@@ -51,3 +51,6 @@ class ApplicationListItem(BaseModel):
 class ApplicationListResponse(BaseModel):
     items: list[ApplicationListItem]
     total: int
+    limit: int = 50
+    next_cursor: str | None = None
+    """Cursor for the next page (base64-encoded updated_at|id), or None if last page."""

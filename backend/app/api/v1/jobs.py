@@ -93,7 +93,7 @@ async def ingest_jobs(
     background_tasks: BackgroundTasks,
 ) -> dict[str, str]:
     """Queue a job-scraping run.  Poll ``GET /jobs/tasks/{task_id}`` for progress."""
-    task_id = await task_store.create("ingest")
+    task_id = await task_store.create("ingest", user_id=current_user.id)
     background_tasks.add_task(_run_ingest_bg, task_id, payload, current_user.id)
     return {"task_id": task_id}
 
@@ -106,7 +106,7 @@ async def get_ingest_task(
 ) -> dict[str, Any]:
     """Poll ingest task progress.  Expires after 1 hour."""
     task = await task_store.get(task_id)
-    if task is None:
+    if task is None or task.get("user_id") != current_user.id:
         raise HTTPException(status_code=404, detail="Task not found or expired")
     return task
 
@@ -149,12 +149,12 @@ async def list_jobs(
 async def list_imported_jobs(
     current_user: CurrentUser,
     service: JobServiceDep,
+    cursor: str | None = Query(default=None),
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> JobListResponse:
     """Jobs imported by the current user (manual + extension)."""
     return await service.list_imported_jobs(
-        user_id=current_user.id, limit=limit, offset=offset
+        user_id=current_user.id, cursor=cursor, limit=limit
     )
 
 
@@ -174,7 +174,7 @@ async def get_job(
     current_user: CurrentUser,
     service: JobServiceDep,
 ) -> JobResponse:
-    return await service.get_job(job_id)
+    return await service.get_job(user_id=current_user.id, job_id=job_id)
 
 
 @router.patch("/{job_id}/archive", status_code=status.HTTP_204_NO_CONTENT)

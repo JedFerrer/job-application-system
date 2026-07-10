@@ -31,16 +31,24 @@ class PreferenceService:
         allowed_sources: list[str],
         refresh_cooldown_minutes: int,
         default_results: int = 50,
+        query_repository: ScrapeQueryRepository | None = None,
+        subscription_repository: SubscriptionRepository | None = None,
     ) -> None:
         self._repo = repository
         self._allowed_sources = allowed_sources
         self._cooldown = timedelta(minutes=refresh_cooldown_minutes)
         self._default_results = default_results
+        self._query_repo = query_repository
+        self._sub_repo = subscription_repository
 
     async def get_preferences(self, user_id: int) -> PreferenceResponse:
         preference = await self._repo.get_for_user(user_id)
         if preference is None:
-            raise PreferenceNotFoundError(user_id)
+            # First read bootstraps an empty preference row so the frontend no
+            # longer has to special-case a 404 before the user saves anything.
+            preference = await self._repo.create(
+                user_id=user_id, values=PreferenceCreate().model_dump()
+            )
         return PreferenceResponse.model_validate(preference)
 
     async def upsert_preferences(
@@ -108,16 +116,20 @@ class PreferenceService:
         Called after every save so the scheduler always dispatches the right
         queries for every user.
         """
-        session = self._repo._session  # noqa: SLF001 — same transaction
-        query_repo = ScrapeQueryRepository(session)
-        sub_repo = SubscriptionRepository(session)
+        if self._query_repo is None or self._sub_repo is None:
+            logger.warning(
+                "preferences.sync_subscriptions_skipped",
+                user_id=preference.user_id,
+                detail="Query/subscription repositories not configured",
+            )
+            return
 
         # 1. Remove old subscriptions for this preference.
-        old_ids = await sub_repo.unsubscribe_all(
+        old_ids = await self._sub_repo.unsubscribe_all(
             user_id=preference.user_id, preference_id=preference.id
         )
         for qid in old_ids:
-            await query_repo.decrement_user_count(qid)
+            await self._query_repo.decrement_user_count(qid)
 
         # 2. Normalise the preference into queries and subscribe.
         queries = normalize_preference(
@@ -136,8 +148,8 @@ class PreferenceService:
                 "normalized_hash": nq.normalized_hash,
                 "status": "active",
             }
-            sq = await query_repo.get_or_create(values)
-            await sub_repo.subscribe(
+            sq = await self._query_repo.get_or_create(values)
+            await self._sub_repo.subscribe(
                 user_id=preference.user_id,
                 preference_id=preference.id,
                 scrape_query_id=sq.id,

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,7 +87,8 @@ class MatchingRepository:
         *,
         user_id: int,
         limit: int,
-        offset: int,
+        offset: int | None = None,
+        cursor: str | None = None,
         q: str | None = None,
         source: str | None = None,
         is_remote: bool | None = None,
@@ -94,15 +97,30 @@ class MatchingRepository:
         company_contains: str | None = None,
         shift_type: str | None = None,
         source_type: str | None = None,
-    ) -> tuple[list[tuple[Job, UserJobMatch]], int]:
+    ) -> tuple[list[tuple[Job, UserJobMatch]], int, str | None, bool]:
         """Return ranked matches with optional filters on job fields.
 
         Imported jobs without match scores are excluded; they belong in
         /imported, not /matches, until analysis completes.
         """
+        visibility_filter = or_(
+            Job.visibility == "public",
+            Job.created_by_user_id == user_id,
+        )
+        archived_subq = (
+            select(UserJob.job_id)
+            .where(
+                UserJob.user_id == user_id,
+                UserJob.status == "archived",
+            )
+            .scalar_subquery()
+        )
         filters: list[Any] = [
             UserJobMatch.user_id == user_id,
+            UserJobMatch.vector_score.is_not(None),
             Job.status == "active",
+            visibility_filter,
+            Job.id.not_in(archived_subq),
         ]
 
         if q:
@@ -123,13 +141,9 @@ class MatchingRepository:
         if source_type == "global":
             filters.append(Job.visibility == "public")
         elif source_type == "manual":
-            filters.append(
-                and_(Job.visibility == "private", Job.ingest_source == "manual")
-            )
+            filters.append(and_(Job.visibility == "private", Job.ingest_source == "manual"))
         elif source_type == "extension":
-            filters.append(
-                and_(Job.visibility == "private", Job.ingest_source == "extension")
-            )
+            filters.append(and_(Job.visibility == "private", Job.ingest_source == "extension"))
         if job_type is not None:
             filters.append(func.lower(Job.job_type) == job_type.lower())
         if location_contains is not None:
@@ -145,20 +159,53 @@ class MatchingRepository:
         )
         total = int((await self._session.execute(count_stmt)).scalar_one())
 
+        def _encode_cursor(vector_score: float, job_id: int) -> str:
+            raw = f"{vector_score!r}|{job_id}"
+            return base64.urlsafe_b64encode(raw.encode()).decode()
+
+        def _decode_cursor(raw_cursor: str) -> tuple[float, int]:
+            try:
+                decoded = base64.b64decode(raw_cursor.encode(), altchars=b"-_", validate=True)
+                raw = decoded.decode()
+                score_str, id_str = raw.rsplit("|", 1)
+                if not score_str or not id_str:
+                    raise ValueError
+                return float(score_str), int(id_str)
+            except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+                raise ValueError("Invalid cursor") from exc
+
+        pagination_filters = list(filters)
+        # Deprecated compatibility fallback for old clients; frontend uses cursor.
+        use_offset = cursor is None and offset is not None and offset > 0
+        if cursor is not None:
+            cursor_score, cursor_job_id = _decode_cursor(cursor)
+            pagination_filters.append(
+                tuple_(UserJobMatch.vector_score, Job.id) < (cursor_score, cursor_job_id)
+            )
+
         list_stmt = (
             select(Job, UserJobMatch)
             .join(UserJobMatch, UserJobMatch.job_id == Job.id)
-            .where(*filters)
+            .where(*pagination_filters)
             .order_by(UserJobMatch.vector_score.desc(), Job.id.desc())
-            .limit(limit)
-            .offset(offset)
+            .limit(limit + 1)
         )
+        if use_offset:
+            list_stmt = list_stmt.offset(offset)
         rows = (await self._session.execute(list_stmt)).all()
-        return [(r[0], r[1]) for r in rows], total
 
-    async def get_match(
-        self, *, user_id: int, job_id: int
-    ) -> UserJobMatch | None:
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+
+        next_cursor: str | None = None
+        if has_more and rows:
+            last_job, last_match = rows[-1]
+            next_cursor = _encode_cursor(last_match.vector_score, last_job.id)
+
+        return [(r[0], r[1]) for r in rows], total, next_cursor, has_more
+
+    async def get_match(self, *, user_id: int, job_id: int) -> UserJobMatch | None:
         result = await self._session.execute(
             select(UserJobMatch).where(
                 UserJobMatch.user_id == user_id,
@@ -167,8 +214,33 @@ class MatchingRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_job(self, job_id: int) -> Job | None:
-        return await self._session.get(Job, job_id)
+    async def get_visible_job(self, *, user_id: int, job_id: int) -> Job | None:
+        """Return *job_id* only if visible to *user_id*.
+
+        Same visibility + archive-exclusion predicate as
+        ``JobRepository.get_visible_by_id``.
+        """
+        visibility_filter = or_(
+            Job.visibility == "public",
+            Job.created_by_user_id == user_id,
+        )
+        archived_subq = (
+            select(UserJob.job_id)
+            .where(
+                UserJob.user_id == user_id,
+                UserJob.status == "archived",
+            )
+            .scalar_subquery()
+        )
+        result = await self._session.execute(
+            select(Job).where(
+                Job.id == job_id,
+                Job.status == "active",
+                visibility_filter,
+                Job.id.not_in(archived_subq),
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def aggregate_missing_keywords(
         self, *, user_id: int, top_n: int
@@ -178,9 +250,9 @@ class MatchingRepository:
         Unnests the ``missing_keywords`` JSONB arrays and counts occurrences,
         normalising case so "React" and "react" collapse to one bucket.
         """
-        keyword = func.lower(
-            func.jsonb_array_elements_text(UserJobMatch.missing_keywords)
-        ).label("keyword")
+        keyword = func.lower(func.jsonb_array_elements_text(UserJobMatch.missing_keywords)).label(
+            "keyword"
+        )
         subquery = (
             select(keyword)
             .where(

@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from anyio import to_thread
-from sqlalchemy import update
 
 import html2text
 
@@ -285,14 +284,14 @@ class JobService:
         self,
         *,
         user_id: int,
+        cursor: str | None = None,
         limit: int = 50,
-        offset: int = 0,
     ) -> JobListResponse:
         """Return only jobs imported by the current user (manual + extension)."""
-        rows, total = await self._repo.list_imported_jobs(
+        rows, total, next_cursor = await self._repo.list_imported_jobs(
             user_id=user_id,
+            cursor=cursor,
             limit=limit,
-            offset=offset,
         )
         items: list[JobResponse] = []
         for row in rows:
@@ -305,7 +304,7 @@ class JobService:
             items=items,
             total=total,
             limit=limit,
-            offset=offset,
+            next_cursor=next_cursor,
         )
 
     async def archive_job(
@@ -314,9 +313,14 @@ class JobService:
         """Per-user archive — sets ``user_jobs.status = 'archived'``."""
         await self._repo.set_user_job_status(user_id, job_id, "archived")
 
-    async def get_job(self, job_id: int) -> JobResponse:
-        """Fetch a single job by its primary key."""
-        job = await self._repo.get_by_id(job_id)
+    async def get_job(self, *, user_id: int, job_id: int) -> JobResponse:
+        """Fetch a single job, scoped to *user_id* visibility.
+
+        Private jobs are only visible to their owner.  Public jobs are visible
+        to all authenticated users.  Returns 404 for invisible / non-existent
+        jobs (never 403 — existence is not leaked).
+        """
+        job = await self._repo.get_visible_by_id(user_id=user_id, job_id=job_id)
         if job is None:
             raise JobNotFoundError(job_id)
         return JobResponse.model_validate(job)
@@ -347,15 +351,8 @@ class JobService:
 
         # If this is a brand-new job, mark it as private to the importing user.
         if was_inserted:
-            await self._repo._session.execute(
-                update(Job)
-                .where(Job.id == job_id)
-                .values(
-                    visibility="private",
-                    created_by_user_id=user_id,
-                    ingest_source="manual",
-                    imported_at=datetime.now(UTC),
-                )
+            await self._repo.mark_as_private_import(
+                job_id=job_id, user_id=user_id
             )
             if payload.description:
                 # Dispatch async embedding via Celery — don't block the response.

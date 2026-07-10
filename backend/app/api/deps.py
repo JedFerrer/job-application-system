@@ -13,14 +13,16 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.security import TokenError, decode_token
+from app.core.security import TokenError, decode_token, decode_token_payload
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.service import ApplicationService
 from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.service import AuthService
+from app.domain.auth.web_session_repository import WebSessionRepository
 from app.domain.cover_letters.repository import CoverLetterRepository
 from app.domain.cover_letters.service import CoverLetterService
+from app.domain.extension.repository import ExtensionRepository
 from app.domain.interview.repository import InterviewRepository
 from app.domain.interview.service import InterviewService
 from app.domain.jobs.repository import JobRepository
@@ -47,7 +49,11 @@ SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 
 
 def get_auth_service(db: DbSession) -> AuthService:
-    return AuthService(UserRepository(db), get_settings())
+    return AuthService(
+        UserRepository(db),
+        get_settings(),
+        web_sessions=WebSessionRepository(db),
+    )
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
@@ -81,6 +87,44 @@ async def get_current_user(request: Request, db: DbSession) -> User:
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+async def get_current_extension_user(request: Request, db: DbSession) -> User:
+    """Resolve the authenticated user from an extension access token.
+
+    Like ``get_current_user`` but also verifies that the token carries a
+    valid ``session_id`` claim linking it to an active (non-revoked)
+    extension session.  A revoked extension session cannot use its old
+    access tokens — even if they haven't expired yet.
+    """
+    token = _extract_bearer_token(request)
+    settings = get_settings()
+    try:
+        payload = decode_token_payload(
+            settings=settings, token=token, expected_type="access"
+        )
+    except TokenError as exc:
+        raise InvalidTokenError from exc
+
+    user_id = int(payload["sub"])
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise InvalidTokenError
+
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise InvalidTokenError
+
+    # Verify the extension session is still active.
+    ext_repo = ExtensionRepository(db)
+    session = await ext_repo.get_session(session_id)
+    if session is None or session.user_id != user_id or session.revoked_at is not None:
+        raise InvalidTokenError
+
+    return user
+
+
+CurrentExtensionUser = Annotated[User, Depends(get_current_extension_user)]
+
+
 def get_resume_service(db: DbSession) -> ResumeService:
     return ResumeService(ResumeRepository(db))
 
@@ -111,11 +155,15 @@ MatchServiceDep = Annotated[MatchingService, Depends(get_match_service)]
 
 def get_preference_service(db: DbSession) -> PreferenceService:
     settings = get_settings()
+    from app.domain.scraping.repository import ScrapeQueryRepository, SubscriptionRepository
+
     return PreferenceService(
         PreferenceRepository(db),
         allowed_sources=settings.enabled_job_sources,
         refresh_cooldown_minutes=settings.job_refresh_cooldown_minutes,
         default_results=settings.job_results_wanted,
+        query_repository=ScrapeQueryRepository(db),
+        subscription_repository=SubscriptionRepository(db),
     )
 
 
@@ -165,7 +213,6 @@ TaskStoreDep = Annotated[TaskStore, Depends(get_task_store)]
 
 # ── Extension Services (Phase 5 — Browser Extension) ──────────────────────
 
-from app.domain.extension.repository import ExtensionRepository
 from app.domain.extension.extension_auth_service import ExtensionAuthService
 from app.domain.extension.extension_job_import_service import ExtensionJobImportService
 from app.domain.extension.application_event_service import ApplicationEventService

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
 from app.api.deps import ApplicationServiceDep, CurrentUser
 from app.domain.applications.schemas import (
@@ -30,8 +30,12 @@ async def create_application(
 async def list_applications(
     current_user: CurrentUser,
     service: ApplicationServiceDep,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
 ) -> ApplicationListResponse:
-    return await service.list(user_id=current_user.id)
+    return await service.list(
+        user_id=current_user.id, cursor=cursor, limit=limit
+    )
 
 
 @router.patch("/{application_id}", response_model=ApplicationResponse)
