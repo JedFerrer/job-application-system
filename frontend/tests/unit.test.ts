@@ -469,3 +469,89 @@ describe("resumeApi.getProfile — empty-state contract", () => {
     await expect(resumeApi.getProfile()).rejects.toMatchObject({ status: 401 });
   });
 });
+
+// ── Extension sessions API ───────────────────────────────────────────────
+
+import { extensionApi, setAccessToken } from "../src/lib/api";
+
+describe("extensionApi", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setAccessToken(null);
+  });
+
+  function lastFetchInit(fm: ReturnType<typeof mockFetch>): RequestInit | undefined {
+    const call = fm.mock.lastCall;
+    if (!call) throw new Error("fetch was not called");
+    return call[1] as RequestInit | undefined;
+  }
+
+  describe("listSessions", () => {
+    it("calls the correct endpoint", async () => {
+      const fm = mockFetch({ sessions: [] }, 200);
+      await extensionApi.listSessions();
+      const url = lastUrl(fm);
+      expect(url.pathname).toBe("/api/backend/extension/sessions");
+    });
+
+    it("includes Authorization header when access token is set", async () => {
+      setAccessToken("test-bearer-token");
+      const fm = mockFetch({ sessions: [] }, 200);
+      await extensionApi.listSessions();
+      const init = lastFetchInit(fm);
+      const headers = init?.headers as Record<string, string> | undefined;
+      expect(headers?.["Authorization"]).toBe("Bearer test-bearer-token");
+    });
+
+    it("includes credentials: include", async () => {
+      const fm = mockFetch({ sessions: [] }, 200);
+      await extensionApi.listSessions();
+      const init = lastFetchInit(fm);
+      expect(init?.credentials).toBe("include");
+    });
+
+    it("returns session list from response", async () => {
+      const sessions = [
+        { id: "s1", device_name: "Mac", browser: "Chrome", created_at: "2026-01-01", last_used_at: null, revoked: false },
+      ];
+      mockFetch({ sessions }, 200);
+      const result = await extensionApi.listSessions();
+      expect(result.sessions).toEqual(sessions);
+    });
+  });
+
+  describe("revokeSession", () => {
+    it("calls the correct endpoint with POST method", async () => {
+      const fm = mockFetch(null, 204);
+      await extensionApi.revokeSession("session-abc");
+      const url = lastUrl(fm);
+      expect(url.pathname).toBe("/api/backend/extension/auth/logout");
+      const init = lastFetchInit(fm);
+      expect(init?.method).toBe("POST");
+    });
+
+    it("sends session_id in the request body", async () => {
+      const fm = mockFetch(null, 204);
+      await extensionApi.revokeSession("session-xyz");
+      const init = lastFetchInit(fm);
+      const body = JSON.parse(init?.body as string);
+      expect(body.session_id).toBe("session-xyz");
+    });
+
+    it("includes Authorization header when access token is set", async () => {
+      setAccessToken("test-bearer-token");
+      const fm = mockFetch(null, 204);
+      await extensionApi.revokeSession("session-abc");
+      const init = lastFetchInit(fm);
+      const headers = init?.headers as Record<string, string> | undefined;
+      expect(headers?.["Authorization"]).toBe("Bearer test-bearer-token");
+    });
+
+    it("includes credentials: include", async () => {
+      const fm = mockFetch(null, 204);
+      await extensionApi.revokeSession("session-abc");
+      const init = lastFetchInit(fm);
+      expect(init?.credentials).toBe("include");
+    });
+  });
+});

@@ -6,11 +6,11 @@
  * revoking them.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Monitor, X } from "lucide-react";
 import { toast } from "sonner";
-import { ApiError } from "@/lib/api";
+import { ApiError, extensionApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -21,45 +21,16 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-interface ExtensionSession {
-  id: string;
-  device_name: string | null;
-  browser: string | null;
-  created_at: string;
-  last_used_at: string | null;
-  revoked: boolean;
-}
-
-async function fetchSessions(): Promise<ExtensionSession[]> {
-  const res = await fetch("/api/backend/extension/sessions", {
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw new ApiError("Failed to load sessions", res.status, null);
-  }
-  const data = await res.json();
-  return data.sessions ?? [];
-}
-
-async function revokeSession(sessionId: string): Promise<void> {
-  const res = await fetch("/api/backend/extension/auth/logout", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId }),
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw new ApiError("Failed to revoke session", res.status, null);
-  }
-}
-
 export default function ConnectedAppsPage() {
   const queryClient = useQueryClient();
   const [revoking, setRevoking] = useState<string | null>(null);
 
   const { data: sessions, isLoading, error } = useQuery({
     queryKey: ["extension-sessions"],
-    queryFn: fetchSessions,
+    queryFn: async () => {
+      const data = await extensionApi.listSessions();
+      return data.sessions;
+    },
     refetchOnWindowFocus: true,
   });
 
@@ -67,7 +38,7 @@ export default function ConnectedAppsPage() {
     async (sessionId: string) => {
       setRevoking(sessionId);
       try {
-        await revokeSession(sessionId);
+        await extensionApi.revokeSession(sessionId);
         toast.success("Session revoked");
         void queryClient.invalidateQueries({ queryKey: ["extension-sessions"] });
       } catch (e) {

@@ -423,3 +423,31 @@ export const authApi = {
     }),
 };
 
+// ---- Extension sessions (web dashboard) -------------------------------------
+
+export interface ExtensionSessionItem {
+  id: string;
+  device_name: string | null;
+  browser: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked: boolean;
+}
+
+export interface ExtensionSessionListResponse {
+  sessions: ExtensionSessionItem[];
+}
+
+export const extensionApi = {
+  /** List extension sessions for the current user (web dashboard). */
+  listSessions: () =>
+    apiRequest<ExtensionSessionListResponse>("/extension/sessions"),
+
+  /** Revoke an extension session by id (web dashboard). */
+  revokeSession: (sessionId: string) =>
+    apiRequest<void>("/extension/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId }),
+    }),
+};
+
