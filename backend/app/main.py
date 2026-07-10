@@ -20,6 +20,12 @@ from app.api.v1 import (
     preferences,
     resume,
 )
+from app.api.v1.extension import (
+    applications as ext_applications,
+    auth as ext_auth,
+    autofill as ext_autofill,
+    jobs as ext_jobs,
+)
 from app.core.config import get_settings
 from app.core.lifespan import lifespan, register_exception_handlers
 from app.core.logging import configure_logging, get_logger
@@ -84,3 +90,8 @@ app.include_router(preferences.router, prefix="/api/v1")
 app.include_router(interview.router, prefix="/api/v1")
 app.include_router(cover_letters.router, prefix="/api/v1")
 app.include_router(applications.router, prefix="/api/v1")
+app.include_router(ext_auth.router, prefix="/api/v1")
+app.include_router(ext_jobs.router, prefix="/api/v1")
+app.include_router(ext_applications.router, prefix="/api/v1")
+app.include_router(ext_autofill.router, prefix="/api/v1")
+app.include_router(ext_auth.web_router, prefix="/api/v1")

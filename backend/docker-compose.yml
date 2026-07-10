@@ -36,6 +36,7 @@ services:
       - "8000:8000"
     volumes:
       - ./app:/app/app
+      - ./migrations:/app/migrations
     depends_on:
       db:
         condition: service_healthy
@@ -54,12 +55,37 @@ services:
       REDIS_URL: redis://redis:6379/0
     volumes:
       - ./app:/app/app
+      - ./migrations:/app/migrations
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
     command: celery -A app.workers.celery_app worker --beat --loglevel=info
+
+  test:
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/job_app
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: development
+    volumes:
+      - ./app:/app/app
+      - ./migrations:/app/migrations
+      - ./tests:/app/tests
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m pytest tests/ -v --tb=short --no-header -o 'addopts='"
 
 volumes:
   pgdata:
