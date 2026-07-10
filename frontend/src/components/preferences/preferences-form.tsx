@@ -69,14 +69,11 @@ export function PreferencesForm() {
       !(error instanceof ApiError && error.status === 404) && count < 2,
   });
 
-  // Only fetch the profile to seed defaults if no preference exists yet.
+  // Fetch the profile when the backend bootstraps an empty preferences row.
   const profileQuery = useQuery({
     queryKey: ["resume-profile"],
     queryFn: resumeApi.getProfile,
-    enabled:
-      prefQuery.isError &&
-      prefQuery.error instanceof ApiError &&
-      prefQuery.error.status === 404,
+    enabled: Boolean(prefQuery.data && prefQuery.data.job_titles.length === 0),
     retry: false,
   });
 
@@ -131,7 +128,7 @@ export function PreferencesForm() {
     );
   }
 
-  const hasSavedPreference = Boolean(prefQuery.data);
+  const hasSavedPreference = Boolean(prefQuery.data?.job_titles.length);
 
   return (
     <form

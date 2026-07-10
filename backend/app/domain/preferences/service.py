@@ -44,7 +44,11 @@ class PreferenceService:
     async def get_preferences(self, user_id: int) -> PreferenceResponse:
         preference = await self._repo.get_for_user(user_id)
         if preference is None:
-            raise PreferenceNotFoundError(user_id)
+            # First read bootstraps an empty preference row so the frontend no
+            # longer has to special-case a 404 before the user saves anything.
+            preference = await self._repo.create(
+                user_id=user_id, values=PreferenceCreate().model_dump()
+            )
         return PreferenceResponse.model_validate(preference)
 
     async def upsert_preferences(

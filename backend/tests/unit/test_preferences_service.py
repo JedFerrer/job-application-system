@@ -84,6 +84,18 @@ def _service(repo: FakePreferenceRepository, *, cooldown: int = 120) -> Preferen
 
 
 @pytest.mark.asyncio
+async def test_get_preferences_creates_default_when_absent() -> None:
+    repo = FakePreferenceRepository(None)
+    service = _service(repo)
+
+    result = await service.get_preferences(7)
+
+    assert repo.created is not None
+    assert result.user_id == 7
+    assert result.job_titles == []
+    assert result.enabled_sources == []
+
+@pytest.mark.asyncio
 async def test_upsert_creates_when_absent() -> None:
     repo = FakePreferenceRepository(None)
     service = _service(repo)
