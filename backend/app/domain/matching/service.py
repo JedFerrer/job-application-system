@@ -59,7 +59,7 @@ class MatchingService:
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
         embedding = list(profile.embedding)
-        ranked = await self._repo.rank_jobs_by_vector(embedding, limit)
+        ranked = await self._repo.rank_jobs_by_vector(embedding, limit, user_id=user_id)
         for job_id, similarity in ranked:
             await self._repo.upsert_match(
                 user_id=user_id,
@@ -76,11 +76,27 @@ class MatchingService:
         user_id: int,
         limit: int,
         offset: int,
+        q: str | None = None,
+        source: str | None = None,
+        is_remote: bool | None = None,
+        job_type: str | None = None,
+        location_contains: str | None = None,
+        company_contains: str | None = None,
+        shift_type: str | None = None,
+        source_type: str | None = None,
     ) -> MatchListResponse:
         rows, total = await self._repo.list_matches(
             user_id=user_id,
             limit=limit,
             offset=offset,
+            q=q,
+            source=source,
+            is_remote=is_remote,
+            job_type=job_type,
+            location_contains=location_contains,
+            company_contains=company_contains,
+            shift_type=shift_type,
+            source_type=source_type,
         )
         items: list[MatchItem] = []
         for job, match in rows:
@@ -91,11 +107,19 @@ class MatchingService:
                     company=job.company,
                     location=job.location,
                     is_remote=job.is_remote,
+                    job_type=job.job_type,
+                    description=job.description,
+                    shift_type=job.shift_type,
+                    salary_min=job.salary_min,
+                    salary_max=job.salary_max,
+                    salary_currency=job.salary_currency,
                     source=job.source,
                     source_url=job.source_url,
+                    company_logo=job.company_logo,
                     vector_score=match.vector_score,
                     confidence=match.confidence,
                     llm_score=match.llm_score,
+                    matched_skills=match.matched_skills or None,
                     posted_at=job.posted_at,
                 )
             )

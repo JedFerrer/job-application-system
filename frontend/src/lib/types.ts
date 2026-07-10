@@ -138,6 +138,7 @@ export interface Job {
   posted_at: string | null;
   fetched_at: string;
   shift_type: string | null;
+  company_logo: string | null;
   // Feed-separation fields
   visibility: "public" | "private";
   ingest_source: "scraper" | "manual" | "extension";
@@ -151,7 +152,7 @@ export interface JobListResponse {
   items: Job[];
   total: number;
   limit: number;
-  offset: number;
+  next_cursor: string | null;
 }
 
 // ---- Matches (Phase 3) ------------------------------------------------------
@@ -161,11 +162,19 @@ export interface MatchItem {
   company: string | null;
   location: string | null;
   is_remote: boolean | null;
+  job_type: string | null;
+  description: string | null;
+  shift_type: string | null;
+  salary_min: number | null;
+  salary_max: number | null;
+  salary_currency: string | null;
   source: string;
   source_url: string;
+  company_logo: string | null;
   vector_score: number;
   confidence: string | null;
   llm_score: number | null;
+  matched_skills: string[] | null;
   posted_at: string | null;
 }
 

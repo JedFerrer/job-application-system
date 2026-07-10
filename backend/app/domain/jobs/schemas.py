@@ -57,6 +57,7 @@ class JobResponse(BaseModel):
     posted_at: datetime | None
     fetched_at: datetime
     shift_type: str | None
+    company_logo: str | None = None
     # Feed-separation fields
     visibility: str
     ingest_source: str
@@ -71,7 +72,8 @@ class JobListResponse(BaseModel):
     items: list[JobResponse]
     total: int
     limit: int
-    offset: int
+    next_cursor: str | None = None
+    """Cursor for the next page (base64-encoded sort_key|id), or None if last page."""
 
 
 class JobImportRequest(BaseModel):

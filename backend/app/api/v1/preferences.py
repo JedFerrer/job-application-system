@@ -65,9 +65,9 @@ async def refresh_preferences(
     await service.prepare_refresh(current_user.id)
     # Import locally so the API process doesn't hard-depend on the worker module
     # graph at import time.
-    from app.workers.job_ingestion import scrape_all_active_preferences  # noqa: PLC0415
+    from app.workers.job_ingestion import scrape_user_on_demand  # noqa: PLC0415
 
-    async_result = scrape_all_active_preferences.delay(current_user.id, force=True)
+    async_result = scrape_user_on_demand.delay(current_user.id)
     logger.info(
         "preferences.refresh.dispatched",
         user_id=current_user.id,

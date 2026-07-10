@@ -12,11 +12,13 @@ from app.models.interview_prep import InterviewPrep
 from app.models.job import Job
 from app.models.job_source_link import JobSourceLink
 from app.models.resume import CandidateProfile, Resume
+from app.models.scrape_query import ScrapeQuery
 from app.models.user import User
 from app.models.user_job import UserJob
 from app.models.user_job_import import UserJobImport
 from app.models.user_job_match import UserJobMatch
 from app.models.user_job_preference import UserJobPreference
+from app.models.user_scrape_query_subscription import UserScrapeQuerySubscription
 
 __all__ = [
     "Application",
@@ -30,9 +32,11 @@ __all__ = [
     "Job",
     "JobSourceLink",
     "Resume",
+    "ScrapeQuery",
     "User",
     "UserJob",
     "UserJobImport",
     "UserJobMatch",
     "UserJobPreference",
+    "UserScrapeQuerySubscription",
 ]

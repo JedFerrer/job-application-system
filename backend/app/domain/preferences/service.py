@@ -16,6 +16,8 @@ from app.domain.preferences.schemas import (
     PreferenceResponse,
     PreferenceUpdate,
 )
+from app.domain.scraping.normalizer import normalize_preference
+from app.domain.scraping.repository import ScrapeQueryRepository, SubscriptionRepository
 from app.models.user_job_preference import UserJobPreference
 
 logger = get_logger(__name__)
@@ -28,10 +30,12 @@ class PreferenceService:
         *,
         allowed_sources: list[str],
         refresh_cooldown_minutes: int,
+        default_results: int = 50,
     ) -> None:
         self._repo = repository
         self._allowed_sources = allowed_sources
         self._cooldown = timedelta(minutes=refresh_cooldown_minutes)
+        self._default_results = default_results
 
     async def get_preferences(self, user_id: int) -> PreferenceResponse:
         preference = await self._repo.get_for_user(user_id)
@@ -53,6 +57,7 @@ class PreferenceService:
             preference = await self._repo.create(user_id=user_id, values=values)
         else:
             preference = await self._repo.update(existing, values)
+        await self._sync_subscriptions(preference)
         return PreferenceResponse.model_validate(preference)
 
     async def patch_preferences(
@@ -66,6 +71,7 @@ class PreferenceService:
         merged_sources = values.get("enabled_sources", existing.enabled_sources)
         self._validate(job_titles=merged_titles, enabled_sources=merged_sources)
         preference = await self._repo.update(existing, values)
+        await self._sync_subscriptions(preference)
         return PreferenceResponse.model_validate(preference)
 
     async def prepare_refresh(self, user_id: int) -> UserJobPreference:
@@ -95,6 +101,53 @@ class PreferenceService:
 
         await self._repo.mark_scraped(user_id, scraped_at=now)
         return preference
+
+    async def _sync_subscriptions(self, preference: UserJobPreference) -> None:
+        """Keep ``user_scrape_query_subscriptions`` in sync with the preference.
+
+        Called after every save so the scheduler always dispatches the right
+        queries for every user.
+        """
+        session = self._repo._session  # noqa: SLF001 — same transaction
+        query_repo = ScrapeQueryRepository(session)
+        sub_repo = SubscriptionRepository(session)
+
+        # 1. Remove old subscriptions for this preference.
+        old_ids = await sub_repo.unsubscribe_all(
+            user_id=preference.user_id, preference_id=preference.id
+        )
+        for qid in old_ids:
+            await query_repo.decrement_user_count(qid)
+
+        # 2. Normalise the preference into queries and subscribe.
+        queries = normalize_preference(
+            preference,
+            default_results=self._default_results,
+            default_sources=self._allowed_sources,
+        )
+        for nq in queries:
+            values: dict[str, object] = {
+                "search_term": nq.search_term,
+                "location": nq.location,
+                "is_remote": nq.is_remote,
+                "hours_old": nq.hours_old,
+                "results_wanted": nq.results_wanted,
+                "sources": nq.sources,
+                "normalized_hash": nq.normalized_hash,
+                "status": "active",
+            }
+            sq = await query_repo.get_or_create(values)
+            await sub_repo.subscribe(
+                user_id=preference.user_id,
+                preference_id=preference.id,
+                scrape_query_id=sq.id,
+            )
+
+        logger.info(
+            "preferences.sync_subscriptions",
+            user_id=preference.user_id,
+            query_count=len(queries),
+        )
 
     def _validate(
         self, *, job_titles: list[str], enabled_sources: list[str]

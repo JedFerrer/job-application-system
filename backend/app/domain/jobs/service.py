@@ -16,6 +16,8 @@ from typing import Any
 from anyio import to_thread
 from sqlalchemy import update
 
+import html2text
+
 from app.core.logging import get_logger
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.exceptions import JobNotFoundError
@@ -37,6 +39,35 @@ logger = get_logger(__name__)
 
 # Async callable used to stream progress events to the task store.
 ProgressFn = Callable[..., Awaitable[None]]
+
+_h2t = html2text.HTML2Text()
+_h2t.body_width = 0          # don't wrap lines
+_h2t.ignore_links = False
+_h2t.ignore_images = True
+_h2t.ignore_emphasis = False
+
+
+def _normalise_description(raw: str | None) -> str | None:
+    """Convert HTML descriptions to clean markdown for consistent display.
+
+    Only touches text that contains HTML tags; plain text passes through
+    unchanged.  The conversion strips inline styles, scripts, and other
+    browser-specific cruft while preserving headings, lists, links, and
+    paragraph structure.
+    """
+    if not raw:
+        return raw
+    # Quick check — if there are no HTML tags, skip conversion.
+    if "<" not in raw or ">" not in raw:
+        return raw
+    try:
+        md = _h2t.handle(raw)
+        # Collapse excessive blank lines.
+        import re
+        md = re.sub(r"\n{3,}", "\n\n", md)
+        return md.strip()
+    except Exception:
+        return raw  # degrade gracefully — keep original
 
 
 class JobService:
@@ -165,8 +196,23 @@ class JobService:
             sources=sorted(used_sources),
         )
 
+    async def link_recent_jobs_batch(
+        self, *, user_ids: list[int], since: datetime
+    ) -> int:
+        """Link all *user_ids* to jobs fetched since *since*.
+
+        Used after a shared scrape so every subscriber sees the results.
+        """
+        return await self._repo.link_recent_jobs_batch(
+            user_ids=user_ids, since=since
+        )
+
     async def _upsert(self, post: RawJobPost, shift_type: str | None = None) -> tuple[int, bool]:
         fingerprint = job_fingerprint(post.company, post.title, post.location)
+
+        # Convert HTML descriptions to markdown for consistent formatting.
+        description = _normalise_description(post.description)
+
         values: dict[str, object] = {
             "fingerprint": fingerprint,
             "title": post.title,
@@ -174,7 +220,7 @@ class JobService:
             "location": post.location,
             "is_remote": post.is_remote,
             "job_type": post.job_type,
-            "description": post.description,
+            "description": description,
             "salary_min": post.salary_min,
             "salary_max": post.salary_max,
             "salary_currency": post.salary_currency,
@@ -182,6 +228,7 @@ class JobService:
             "source_url": post.source_url,
             "posted_at": post.posted_at,
             "shift_type": shift_type,  # None → COALESCE keeps existing value
+            "company_logo": post.company_logo,
             "raw_response": post.raw,
         }
         return await self._repo.upsert_job(values)
@@ -199,33 +246,39 @@ class JobService:
         self,
         *,
         user_id: int,
-        source: str | None,
-        is_remote: bool | None,
-        min_salary: float | None,
-        job_type: str | None,
-        location_contains: str | None,
+        q: str | None = None,
+        source: str | None = None,
+        is_remote: bool | None = None,
+        min_salary: float | None = None,
+        job_type: str | None = None,
+        location_contains: str | None = None,
+        company_contains: str | None = None,
+        shift_type: str | None = None,
         source_type: str | None = None,
         imported_only: bool = False,
-        limit: int,
-        offset: int,
+        cursor: str | None = None,
+        limit: int = 50,
     ) -> JobListResponse:
-        rows, total = await self._repo.list_jobs(
+        rows, total, next_cursor = await self._repo.list_jobs(
             user_id=user_id,
+            q=q,
             source=source,
             is_remote=is_remote,
             min_salary=min_salary,
             job_type=job_type,
             location_contains=location_contains,
+            company_contains=company_contains,
+            shift_type=shift_type,
             source_type=source_type,
             imported_only=imported_only,
+            cursor=cursor,
             limit=limit,
-            offset=offset,
         )
         return JobListResponse(
             items=[JobResponse.model_validate(row) for row in rows],
             total=total,
             limit=limit,
-            offset=offset,
+            next_cursor=next_cursor,
         )
 
     async def list_imported_jobs(
@@ -260,6 +313,13 @@ class JobService:
     ) -> None:
         """Per-user archive — sets ``user_jobs.status = 'archived'``."""
         await self._repo.set_user_job_status(user_id, job_id, "archived")
+
+    async def get_job(self, job_id: int) -> JobResponse:
+        """Fetch a single job by its primary key."""
+        job = await self._repo.get_by_id(job_id)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        return JobResponse.model_validate(job)
 
     async def import_job(
         self, payload: JobImportRequest, *, user_id: int

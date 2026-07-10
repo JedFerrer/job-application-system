@@ -20,9 +20,9 @@ router = APIRouter(prefix="/matches", tags=["matches"])
 
 @router.post("/rank", response_model=RankResponse)
 async def rank_matches(
-    payload: RankRequest,
     current_user: CurrentUser,
     service: MatchServiceDep,
+    payload: RankRequest = RankRequest(),
 ) -> RankResponse:
     return await service.rank_jobs(current_user.id, payload.limit)
 
@@ -33,9 +33,27 @@ async def list_matches(
     service: MatchServiceDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    q: str | None = Query(default=None, description="Free-text search across title, company, description"),
+    source: str | None = None,
+    is_remote: bool | None = None,
+    job_type: str | None = None,
+    location: str | None = Query(default=None, description="Location filter (ILIKE)"),
+    company: str | None = Query(default=None, description="Company name filter (ILIKE)"),
+    shift_type: str | None = Query(default=None, description="day | night | mid | flexible"),
+    source_type: str | None = Query(default=None, description="global | manual | extension"),
 ) -> MatchListResponse:
     return await service.list_matches(
-        user_id=current_user.id, limit=limit, offset=offset
+        user_id=current_user.id,
+        limit=limit,
+        offset=offset,
+        q=q,
+        source=source,
+        is_remote=is_remote,
+        job_type=job_type,
+        location_contains=location,
+        company_contains=company,
+        shift_type=shift_type,
+        source_type=source_type,
     )
 
 

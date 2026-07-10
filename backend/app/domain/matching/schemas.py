@@ -26,11 +26,19 @@ class MatchItem(BaseModel):
     company: str | None
     location: str | None
     is_remote: bool | None
+    job_type: str | None = None
+    description: str | None = None
+    shift_type: str | None = None
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_currency: str | None = None
     source: str
     source_url: str
+    company_logo: str | None = None
     vector_score: float
     confidence: str | None
     llm_score: int | None
+    matched_skills: list[str] | None = None
     posted_at: datetime | None
 
 

@@ -115,6 +115,7 @@ def get_preference_service(db: DbSession) -> PreferenceService:
         PreferenceRepository(db),
         allowed_sources=settings.enabled_job_sources,
         refresh_cooldown_minutes=settings.job_refresh_cooldown_minutes,
+        default_results=settings.job_results_wanted,
     )
 
 

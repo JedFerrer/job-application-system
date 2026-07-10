@@ -36,15 +36,17 @@ def _make_worker_session_factory() -> async_sessionmaker[AsyncSession]:
 @celery_app.task(
     bind=True,
     soft_time_limit=120,
-    max_retries=2,
-    default_retry_delay=30,
+    max_retries=4,
+    default_retry_delay=60,
     name="embed_imported_job",
 )
 def embed_imported_job(self, job_id: int, user_id: int) -> None:
     """Embed a newly imported job's description, then run match scoring.
 
     Called after a manual or extension import creates a new job with a
-    description.  Failures are retried twice with a 30-second delay.
+    description.  Failures are retried up to 4 times with exponential
+    backoff (60 s, 120 s, 240 s, 480 s).  After all retries are exhausted
+    the job is flagged so a reconciliation task can pick it up later.
     """
 
     async def _run() -> None:
@@ -66,12 +68,24 @@ def embed_imported_job(self, job_id: int, user_id: int) -> None:
             try:
                 embedding = await embed_text(job.description)
             except Exception as exc:
+                # If we have retries left, Celery will re-queue with backoff.
+                if self.request.retries < self.max_retries:
+                    logger.warning(
+                        "embed_imported_job.retrying",
+                        job_id=job_id,
+                        attempt=self.request.retries + 1,
+                        max_retries=self.max_retries,
+                    )
+                    raise self.retry(exc=exc)
+                # All retries exhausted — flag the job so admins can see it.
                 logger.error(
-                    "embed_imported_job.embed_failed",
+                    "embed_imported_job.all_retries_exhausted",
                     job_id=job_id,
                     exc_info=True,
                 )
-                raise self.retry(exc=exc)
+                await job_repo.set_embed_error(job_id, str(exc)[:500])
+                await db.commit()
+                return
 
             await job_repo.set_embedding(job_id, embedding)
             logger.info("embed_imported_job.embedded", job_id=job_id)

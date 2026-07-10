@@ -17,21 +17,25 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { RemotePreference } from "@/lib/types";
 
 interface FormState {
   jobTitles: string;
   locations: string;
+  remotePreference: RemotePreference;
 }
 
 const EMPTY_FORM: FormState = {
   jobTitles: "",
   locations: "",
+  remotePreference: "any",
 };
 
 function fromResponse(pref: PreferenceResponse): FormState {
   return {
     jobTitles: pref.job_titles.join(", "),
     locations: pref.locations.join(", "),
+    remotePreference: pref.remote_preference ?? "any",
   };
 }
 
@@ -46,7 +50,7 @@ function toPayload(state: FormState): PreferenceUpdate {
       .map((s) => s.trim())
       .filter(Boolean),
     enabled_sources: ["indeed", "linkedin"],
-    remote_preference: "any",
+    remote_preference: state.remotePreference,
     results_per_source: 50,
     hours_old: 24,
     is_active: true,
@@ -145,28 +149,48 @@ export function PreferencesForm() {
             on Indeed & LinkedIn for the last 24 hours of postings.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-row gap-4">
-          <div className="flex flex-1 flex-col gap-2">
-            <Label htmlFor="job-titles">Job title</Label>
-            <Input
-              id="job-titles"
-              value={form.jobTitles}
-              onChange={(event) =>
-                setForm((p) => ({ ...p, jobTitles: event.target.value }))
-              }
-              placeholder="e.g. Backend Engineer, Frontend Developer"
-            />
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-row gap-4">
+            <div className="flex flex-1 flex-col gap-2">
+              <Label htmlFor="job-titles">Job title</Label>
+              <Input
+                id="job-titles"
+                value={form.jobTitles}
+                onChange={(event) =>
+                  setForm((p) => ({ ...p, jobTitles: event.target.value }))
+                }
+                placeholder="e.g. Backend Engineer, Frontend Developer"
+              />
+            </div>
+            <div className="flex flex-1 flex-col gap-2">
+              <Label htmlFor="locations">Locations</Label>
+              <Input
+                id="locations"
+                value={form.locations}
+                onChange={(event) =>
+                  setForm((p) => ({ ...p, locations: event.target.value }))
+                }
+                placeholder="e.g. Philippines, Singapore, Remote"
+              />
+            </div>
           </div>
-          <div className="flex flex-1 flex-col gap-2">
-            <Label htmlFor="locations">Locations</Label>
-            <Input
-              id="locations"
-              value={form.locations}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="remote-preference">Remote preference</Label>
+            <select
+              id="remote-preference"
+              value={form.remotePreference}
               onChange={(event) =>
-                setForm((p) => ({ ...p, locations: event.target.value }))
+                setForm((p) => ({
+                  ...p,
+                  remotePreference: event.target.value as RemotePreference,
+                }))
               }
-              placeholder="e.g. Philippines, Singapore, Remote"
-            />
+              className="flex h-10 w-[200px] rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option value="any">All (no filter)</option>
+              <option value="remote">Remote only</option>
+              <option value="onsite">On-site only</option>
+            </select>
           </div>
         </CardContent>
         <CardFooter className="flex flex-row justify-end gap-4">

@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Archive, Download, FileText, Loader2, MapPin, Plus } from "lucide-react";
+import { Download, FileText, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, jobsApi } from "@/lib/api";
 import type { Job } from "@/lib/types";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
+import { JobCard, type JobCardData, type JobCardMatch } from "@/components/jobs/job-card";
 
 const PAGE_SIZE = 25;
 
@@ -24,8 +25,30 @@ function dedupeById(jobs: Job[]): Job[] {
 
 export function ImportedJobsPanel() {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const [coverJob, setCoverJob] = useState<Job | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+
+  // Restore scroll position on mount (back from detail page)
+  const scrollRestoredRef = useRef(false);
+  useEffect(() => {
+    if (scrollRestoredRef.current) return;
+    const raw = sessionStorage.getItem("imported-jobs-state");
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw);
+      scrollRestoredRef.current = true;
+      if (saved.scrollY != null) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            window.scrollTo({ top: saved.scrollY, behavior: "instant" as ScrollBehavior });
+          });
+        });
+      }
+      sessionStorage.removeItem("imported-jobs-state");
+    } catch { /* ignore corrupted state */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only; guarded by scrollRestoredRef
+  }, []);
 
   const hasNextPageRef = useRef(false);
   const isFetchingNextPageRef = useRef(false);
@@ -121,91 +144,56 @@ export function ImportedJobsPanel() {
           </Card>
         )}
         <div className="flex flex-col gap-3">
-          {allJobs.map((job) => (
-            <Card key={job.id}>
-              <CardContent className="flex flex-col gap-2 py-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <a
-                      href={job.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-medium hover:underline"
-                    >
-                      {job.title}
-                    </a>
-                    <p className="text-sm text-muted-foreground">
-                      {job.company ?? "Unknown company"}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Badge variant="secondary" className="text-xs">
-                      {job.ingest_source === "extension" ? "Extension" : "Manual"}
-                    </Badge>
-                    <Badge variant="outline">{job.source}</Badge>
-                    <button
-                      type="button"
-                      onClick={() => archiveMutation.mutate(job.id)}
-                      title="Archive"
-                      className="text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <Archive className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                  {job.location && (
-                    <span className="flex items-center gap-1">
-                      <MapPin className="h-3 w-3" />
-                      {job.location}
-                    </span>
-                  )}
-                  {job.is_remote && <span>Remote</span>}
-                  {job.job_type && <span>{job.job_type}</span>}
-                  {job.salary_min != null && (
-                    <span>
-                      {job.salary_currency ?? ""} {job.salary_min}
-                      {job.salary_max != null ? `–${job.salary_max}` : ""}
-                    </span>
-                  )}
-                  {job.imported_at && (
-                    <span>
-                      Imported {new Date(job.imported_at).toLocaleDateString()}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 pt-1">
-                  {job.match_score != null ? (
-                    <Badge variant="default" className="text-xs">
-                      {Math.round(job.match_score)}% match
-                    </Badge>
-                  ) : (
-                    <Badge variant="secondary" className="text-xs animate-pulse">
-                      Analysis pending
-                    </Badge>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setCoverJob(job)}
-                  >
-                    <FileText className="h-4 w-4" />
-                    Cover letter
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => saveAppMutation.mutate(job.id)}
-                  >
-                    <Plus className="h-4 w-4" />
-                    Save to applications
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+          {allJobs.map((job) => {
+            const match: JobCardMatch | null =
+              job.match_score != null
+                ? {
+                    score: job.match_score,
+                    confidence:
+                      typeof job.match_reason === "object" &&
+                      job.match_reason &&
+                      "confidence" in job.match_reason
+                        ? (job.match_reason.confidence as string)
+                        : null,
+                    matchedSkills: null,
+                  }
+                : null;
+
+            return (
+              <JobCard
+                key={job.id}
+                job={toJobCardData(job)}
+                sourceLabel={job.ingest_source === "extension" ? "Extension" : "Manual"}
+                match={match}
+                isAnalyzing={job.match_score == null}
+                onArchive={() => archiveMutation.mutate(job.id)}
+                onCardClick={() => {
+                  sessionStorage.setItem(
+                    "imported-jobs-state",
+                    JSON.stringify({ scrollY: window.scrollY }),
+                  );
+                  router.push(`/dashboard/jobs/${job.id}`);
+                }}
+              >
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setCoverJob(job)}
+                >
+                  <FileText className="h-4 w-4" />
+                  Cover letter
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => saveAppMutation.mutate(job.id)}
+                >
+                  <Plus className="h-4 w-4" />
+                  Save to applications
+                </Button>
+              </JobCard>
+            );
+          })}
         </div>
 
         <div ref={sentinelRef} className="h-4" style={{ overflowAnchor: "none" }} />
@@ -230,4 +218,27 @@ export function ImportedJobsPanel() {
       )}
     </div>
   );
+}
+
+// ---- Helpers -----------------------------------------------------------------
+
+function toJobCardData(job: Job): JobCardData {
+  return {
+    jobId: job.id,
+    title: job.title,
+    company: job.company,
+    location: job.location,
+    isRemote: job.is_remote,
+    jobType: job.job_type,
+    shiftType: job.shift_type,
+    salaryMin: job.salary_min,
+    salaryMax: job.salary_max,
+    salaryCurrency: job.salary_currency,
+    source: job.source,
+    sourceUrl: job.source_url,
+    description: job.description,
+    postedAt: job.posted_at,
+    importedAt: job.imported_at,
+    companyLogo: job.company_logo,
+  };
 }
