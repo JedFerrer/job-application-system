@@ -1,0 +1,359 @@
+"""Regression tests for application next-action fields."""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+
+import pytest
+from sqlalchemy import insert, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from app.core.config import get_settings
+from app.domain.applications.exceptions import ApplicationNotFoundError
+from app.domain.applications.repository import ApplicationRepository
+from app.domain.applications.schemas import ApplicationUpdate
+from app.domain.applications.service import ApplicationService
+from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.repository import JobRepository
+from app.models.job import Job
+from app.models.user import User
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(scope="module")
+def engine():
+    settings = get_settings()
+    return create_async_engine(settings.database_url, poolclass=NullPool, echo=False)
+
+
+@pytest.fixture(autouse=True)
+async def clean_db(engine) -> None:  # noqa: ANN001
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        for table in ("applications", "user_jobs", "jobs", "users"):
+            await db.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+        await db.commit()
+
+
+def _sf(engine):
+    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def _seed_user(db: AsyncSession, *, user_id: int, email: str) -> None:
+    await db.execute(
+        insert(User).values(id=user_id, email=email, name=email, is_active=True)
+    )
+    await db.commit()
+
+
+async def _seed_public_job(
+    db: AsyncSession,
+    *,
+    job_id: int,
+    title: str = "Backend Engineer",
+    company: str = "Acme",
+) -> None:
+    fp = job_fingerprint(company, title, f"remote-{job_id}")
+    await db.execute(
+        insert(Job).values(
+            id=job_id,
+            fingerprint=fp,
+            title=title,
+            company=company,
+            location="Remote",
+            source="test",
+            source_url=f"https://example.com/{job_id}",
+            visibility="public",
+            ingest_source="scraper",
+            status="active",
+            raw_response={},
+        )
+    )
+    await db.commit()
+
+
+def _service(db: AsyncSession) -> ApplicationService:
+    return ApplicationService(
+        repository=ApplicationRepository(db),
+        job_repository=JobRepository(db),
+    )
+
+
+async def test_application_create_defaults_next_actions_to_null(engine) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=101)
+
+    async with sf() as db:
+        svc = _service(db)
+        result = await svc.create(user_id=1, job_id=101)
+
+        assert result.status == "saved"
+        assert result.next_action_type is None
+        assert result.next_action_note is None
+        assert result.next_action_due_date is None
+        assert result.next_action_completed_at is None
+
+
+async def test_application_update_can_set_clear_and_complete_next_action(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=102)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=102)
+
+        updated = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_note": "Ping recruiter after portfolio review.",
+                    "next_action_due_date": "2026-07-20",
+                }
+            ),
+        )
+
+        assert updated.status == "saved"
+        assert updated.next_action_type == "follow_up"
+        assert updated.next_action_note == "Ping recruiter after portfolio review."
+        assert updated.next_action_due_date == date(2026, 7, 20)
+        assert updated.next_action_completed_at is None
+
+        retargeted = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "networking",
+                    "next_action_note": "Follow up with the hiring manager instead.",
+                    "next_action_due_date": "2026-07-22",
+                }
+            ),
+        )
+
+        assert retargeted.next_action_type == "networking"
+        assert retargeted.next_action_note == (
+            "Follow up with the hiring manager instead."
+        )
+        assert retargeted.next_action_due_date == date(2026, 7, 22)
+
+        completed = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_completed_at": datetime(2026, 7, 21, 14, 30, tzinfo=UTC),
+                }
+            ),
+        )
+
+        assert completed.next_action_type == "networking"
+        assert completed.next_action_note == (
+            "Follow up with the hiring manager instead."
+        )
+        assert completed.next_action_due_date == date(2026, 7, 22)
+        assert completed.next_action_completed_at == datetime(
+            2026, 7, 21, 14, 30, tzinfo=UTC
+        )
+
+        cleared = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": None,
+                    "next_action_note": None,
+                    "next_action_due_date": None,
+                    "next_action_completed_at": None,
+                }
+            ),
+        )
+
+        assert cleared.next_action_type is None
+        assert cleared.next_action_note is None
+        assert cleared.next_action_due_date is None
+        assert cleared.next_action_completed_at is None
+        assert cleared.status == "saved"
+
+
+async def test_application_list_due_next_actions_excludes_future_completed_and_null_due_dates(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=201, title="Engineer 1")
+        await _seed_public_job(db, job_id=202, title="Engineer 2")
+        await _seed_public_job(db, job_id=203, title="Engineer 3")
+        await _seed_public_job(db, job_id=204, title="Engineer 4")
+        await _seed_public_job(db, job_id=205, title="Engineer 5")
+
+    async with sf() as db:
+        svc = _service(db)
+        app_yesterday = await svc.create(user_id=1, job_id=201)
+        app_today = await svc.create(user_id=1, job_id=202)
+        app_future = await svc.create(user_id=1, job_id=203)
+        app_completed = await svc.create(user_id=1, job_id=204)
+        app_cleared = await svc.create(user_id=1, job_id=205)
+
+        await svc.update(
+            user_id=1,
+            application_id=app_yesterday.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_due_date": "2026-07-12",
+                }
+            ),
+        )
+        await svc.update(
+            user_id=1,
+            application_id=app_today.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "networking",
+                    "next_action_note": "Reach out to the hiring manager.",
+                    "next_action_due_date": "2026-07-13",
+                }
+            ),
+        )
+        await svc.update(
+            user_id=1,
+            application_id=app_future.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "prepare_interview",
+                    "next_action_due_date": "2026-07-14",
+                }
+            ),
+        )
+        await svc.update(
+            user_id=1,
+            application_id=app_completed.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "submit_assessment",
+                    "next_action_due_date": "2026-07-13",
+                    "next_action_completed_at": datetime(
+                        2026, 7, 13, 9, 0, tzinfo=UTC
+                    ),
+                }
+            ),
+        )
+        await svc.update(
+            user_id=1,
+            application_id=app_cleared.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "other",
+                    "next_action_note": "Clear after rescheduling.",
+                    "next_action_due_date": "2026-07-13",
+                }
+            ),
+        )
+        await svc.update(
+            user_id=1,
+            application_id=app_cleared.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": None,
+                    "next_action_note": None,
+                    "next_action_due_date": None,
+                    "next_action_completed_at": None,
+                }
+            ),
+        )
+
+        result = await svc.list_due_next_actions(
+            user_id=1, due_by=date(2026, 7, 13)
+        )
+
+        assert result.total == 2
+        assert result.limit == 2
+        assert result.next_cursor is None
+        assert [item.job_title for item in result.items] == ["Engineer 1", "Engineer 2"]
+        assert [item.next_action_due_date for item in result.items] == [
+            date(2026, 7, 12),
+            date(2026, 7, 13),
+        ]
+        assert all(item.next_action_completed_at is None for item in result.items)
+
+
+async def test_application_list_due_next_actions_is_scoped_to_user(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_user(db, user_id=2, email="b@test.com")
+        await _seed_public_job(db, job_id=301, title="User A Engineer")
+        await _seed_public_job(db, job_id=302, title="User B Engineer")
+
+    async with sf() as db:
+        svc = _service(db)
+        app_user_a = await svc.create(user_id=1, job_id=301)
+        app_user_b = await svc.create(user_id=2, job_id=302)
+
+        await svc.update(
+            user_id=1,
+            application_id=app_user_a.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_due_date": "2026-07-13",
+                }
+            ),
+        )
+        await svc.update(
+            user_id=2,
+            application_id=app_user_b.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "networking",
+                    "next_action_due_date": "2026-07-12",
+                }
+            ),
+        )
+
+        result = await svc.list_due_next_actions(
+            user_id=1, due_by=date(2026, 7, 13)
+        )
+
+        assert result.total == 1
+        assert [item.job_title for item in result.items] == ["User A Engineer"]
+        assert result.items[0].next_action_due_date == date(2026, 7, 13)
+
+
+async def test_application_update_rejects_other_users_application(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="owner@test.com")
+        await _seed_user(db, user_id=2, email="other@test.com")
+        await _seed_public_job(db, job_id=103)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=103)
+        await db.commit()
+
+    async with sf() as db:
+        svc = _service(db)
+        with pytest.raises(ApplicationNotFoundError):
+            await svc.update(
+                user_id=2,
+                application_id=created.id,
+                payload=ApplicationUpdate.model_validate(
+                    {"next_action_type": "networking"}
+                ),
+            )

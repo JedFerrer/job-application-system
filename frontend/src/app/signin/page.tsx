@@ -31,7 +31,7 @@ export default function SignInPage() {
     setSubmitting(true);
     try {
       await login(email.trim(), password);
-      router.replace("/dashboard/jobs");
+      router.replace("/dashboard");
     } catch (error) {
       const message =
         error instanceof ApiError
@@ -47,7 +47,7 @@ export default function SignInPage() {
     setSubmitting(true);
     try {
       await loginWithGoogle(idToken);
-      router.replace("/dashboard/jobs");
+      router.replace("/dashboard");
     } catch (error) {
       const message =
         error instanceof ApiError

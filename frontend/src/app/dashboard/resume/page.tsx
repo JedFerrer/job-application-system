@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
 export default function ResumePage() {
-  redirect("/dashboard/settings/profile");
+  redirect("/settings/profile");
 }

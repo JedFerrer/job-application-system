@@ -104,7 +104,7 @@ export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
         );
       } else {
         toast.warning("No jobs found. Try a different search term, location, or source.", {
-          action: { label: "View jobs", onClick: () => router.push("/dashboard/jobs") },
+            action: { label: "View jobs", onClick: () => router.push("/dashboard/jobs") },
           duration: 8000,
         });
       }

@@ -2,17 +2,28 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { FileText, Loader2, X } from "lucide-react";
+import { Check, FileText, Loader2, Pencil, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi } from "@/lib/api";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   APPLICATION_STATUSES,
+  APPLICATION_NEXT_ACTION_LABELS,
+  APPLICATION_NEXT_ACTION_TYPES,
   type ApplicationListItem,
   type ApplicationListResponse,
+  type ApplicationNextActionType,
+  type ApplicationUpdate,
   type ApplicationStatus,
 } from "@/lib/types";
+import {
+  formatNextActionDateLabel,
+  getNextActionState,
+  getTodayIsoDate,
+} from "@/lib/next-actions";
 import {
   Card,
   CardContent,
@@ -20,6 +31,26 @@ import {
 import { Badge } from "@/components/ui/badge";
 
 const PAGE_SIZE = 25;
+
+function draftFromApplication(app: ApplicationListItem) {
+  return {
+    next_action_type: (app.next_action_type as ApplicationNextActionType | "") ?? "",
+    next_action_note: app.next_action_note ?? "",
+    next_action_due_date: app.next_action_due_date ?? "",
+  };
+}
+
+function formatDateTimeLabel(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
 
 export function ApplicationsPanel() {
   const queryClient = useQueryClient();
@@ -135,6 +166,77 @@ export function ApplicationsPanel() {
     },
   });
 
+  const nextActionMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: ApplicationUpdate }) =>
+      applicationsApi.update(id, payload),
+    onMutate: async ({ id, payload }) => {
+      await queryClient.cancelQueries({ queryKey: ["applications", "infinite"] });
+      const prev = queryClient.getQueryData<{
+        pages: ApplicationListResponse[];
+        pageParams: (string | null)[];
+      }>(["applications", "infinite"]);
+      queryClient.setQueryData<{
+        pages: ApplicationListResponse[];
+        pageParams: (string | null)[];
+      }>(["applications", "infinite"], (old) =>
+        old
+          ? {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                items: page.items.map((a) =>
+                  a.id === id ? { ...a, ...payload } : a,
+                ),
+              })),
+            }
+          : old,
+      );
+      return { prev };
+    },
+    onError: (err, _vars, context) => {
+      if (context?.prev) {
+        queryClient.setQueryData(["applications", "infinite"], context.prev);
+      }
+      toast.error(err instanceof ApiError ? err.message : "Update failed");
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData<{
+        pages: ApplicationListResponse[];
+        pageParams: (string | null)[];
+      }>(["applications", "infinite"], (old) =>
+        old
+          ? {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                items: page.items.map((a) =>
+                  a.id === updated.id
+                    ? {
+                        ...a,
+                        status: updated.status,
+                        cover_letter_id: updated.cover_letter_id,
+                        notes: updated.notes,
+                        next_action_type: updated.next_action_type,
+                        next_action_note: updated.next_action_note,
+                        next_action_due_date: updated.next_action_due_date,
+                        next_action_completed_at:
+                          updated.next_action_completed_at,
+                        updated_at: updated.updated_at,
+                      }
+                    : a,
+                ),
+              })),
+            }
+          : old,
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["applications", "infinite"] });
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+      queryClient.invalidateQueries({ queryKey: ["home-next-actions"] });
+    },
+  });
+
   if (appsQuery.isLoading) {
     return <p className="text-sm text-muted-foreground">Loading applications…</p>;
   }
@@ -213,6 +315,7 @@ export function ApplicationsPanel() {
                     <th className="px-4 py-3 font-medium">Job</th>
                     <th className="px-4 py-3 font-medium">Company</th>
                     <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Next action</th>
                     <th className="px-4 py-3 font-medium">Cover letter</th>
                   </tr>
                 </thead>
@@ -223,6 +326,9 @@ export function ApplicationsPanel() {
                       app={app}
                       onStatusChange={(status) =>
                         statusMutation.mutate({ id: app.id, status })
+                      }
+                      onNextActionChange={(payload) =>
+                        nextActionMutation.mutateAsync({ id: app.id, payload })
                       }
                       onCoverLetterClick={() =>
                         setCoverLetterJob({
@@ -262,55 +368,322 @@ export function ApplicationsPanel() {
 function ApplicationRow({
   app,
   onStatusChange,
+  onNextActionChange,
   onCoverLetterClick,
 }: {
   app: ApplicationListItem;
   onStatusChange: (status: ApplicationStatus) => void;
+  onNextActionChange: (payload: ApplicationUpdate) => Promise<unknown>;
   onCoverLetterClick: () => void;
 }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(() => draftFromApplication(app));
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraft(draftFromApplication(app));
+    }
+  }, [app, isEditing]);
+
+  const hasNextAction = Boolean(
+    app.next_action_type ||
+      app.next_action_note ||
+      app.next_action_due_date ||
+      app.next_action_completed_at,
+  );
+  const todayIso = getTodayIsoDate();
+  const nextActionState = getNextActionState(
+    app.next_action_type,
+    app.next_action_due_date,
+    app.next_action_completed_at,
+    todayIso,
+  );
+  const statusBadgeLabel = nextActionState.isCompleted
+    ? null
+    : nextActionState.statusLabel;
+
+  const startEditing = () => {
+    setDraft(draftFromApplication(app));
+    setIsEditing(true);
+  };
+
+  const saveNextAction = async () => {
+    try {
+      await onNextActionChange({
+        next_action_type: draft.next_action_type || null,
+        next_action_note: draft.next_action_note.trim() || null,
+        next_action_due_date: draft.next_action_due_date || null,
+        next_action_completed_at: app.next_action_completed_at,
+      });
+      setIsEditing(false);
+    } catch {
+      // mutation error is surfaced by the toast in the mutation handler
+    }
+  };
+
+  const completeNextAction = async () => {
+    if (!hasNextAction) return;
+    try {
+      const currentType = isEditing ? draft.next_action_type : app.next_action_type;
+      const currentNote = isEditing ? draft.next_action_note : app.next_action_note;
+      const currentDueDate = isEditing ? draft.next_action_due_date : app.next_action_due_date;
+      await onNextActionChange({
+        next_action_type: currentType ? (currentType as ApplicationNextActionType) : null,
+        next_action_note: currentNote || null,
+        next_action_due_date: currentDueDate || null,
+        next_action_completed_at: new Date().toISOString(),
+      });
+      setIsEditing(false);
+    } catch {
+      // mutation error is surfaced by the toast in the mutation handler
+    }
+  };
+
+  const clearNextAction = async () => {
+    try {
+      await onNextActionChange({
+        next_action_type: null,
+        next_action_note: null,
+        next_action_due_date: null,
+        next_action_completed_at: null,
+      });
+      setDraft({
+        next_action_type: "",
+        next_action_note: "",
+        next_action_due_date: "",
+      });
+      setIsEditing(false);
+    } catch {
+      // mutation error is surfaced by the toast in the mutation handler
+    }
+  };
+
+  const canSave =
+    draft.next_action_type !== "" ||
+    draft.next_action_note.trim() !== "" ||
+    draft.next_action_due_date !== "";
+
   return (
-    <tr className="border-b last:border-0">
-      <td className="px-4 py-3">
-        <a
-          href={app.source_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="font-medium hover:underline"
-        >
-          {app.job_title}
-        </a>
-        {app.location && (
-          <p className="text-xs text-muted-foreground">{app.location}</p>
-        )}
-      </td>
-      <td className="px-4 py-3 text-muted-foreground">
-        {app.company ?? "—"}
-      </td>
-      <td className="px-4 py-3">
-        <select
-          value={app.status}
-          onChange={(e) => onStatusChange(e.target.value as ApplicationStatus)}
-          className="rounded-md border border-input bg-background px-2 py-1 text-sm capitalize"
-        >
-          {APPLICATION_STATUSES.map((s) => (
-            <option key={s} value={s} className="capitalize">
-              {s}
-            </option>
-          ))}
-        </select>
-      </td>
-      <td className="px-4 py-3">
-        <Button
-          variant={app.cover_letter_id != null ? "secondary" : "outline"}
-          size="sm"
-          onClick={onCoverLetterClick}
-          className="gap-1.5"
-        >
-          <FileText className="h-3.5 w-3.5" />
-          {app.cover_letter_id != null ? "View / Edit" : "Create"}
-        </Button>
-      </td>
-    </tr>
+    <>
+      <tr className="border-b last:border-0">
+        <td className="px-4 py-3">
+          <a
+            href={app.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium hover:underline"
+          >
+            {app.job_title}
+          </a>
+          {app.location && (
+            <p className="text-xs text-muted-foreground">{app.location}</p>
+          )}
+        </td>
+        <td className="px-4 py-3 text-muted-foreground">
+          {app.company ?? "—"}
+        </td>
+        <td className="px-4 py-3">
+          <select
+            value={app.status}
+            onChange={(e) => onStatusChange(e.target.value as ApplicationStatus)}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm capitalize"
+          >
+            {APPLICATION_STATUSES.map((s) => (
+              <option key={s} value={s} className="capitalize">
+                {s}
+              </option>
+            ))}
+          </select>
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {hasNextAction ? (
+                <>
+                  <Badge
+                    variant={nextActionState.isCompleted ? "secondary" : "outline"}
+                    className="capitalize"
+                  >
+                    {nextActionState.actionLabel}
+                  </Badge>
+                  {nextActionState.isCompleted && (
+                    <Badge variant="secondary">Completed</Badge>
+                  )}
+                  {statusBadgeLabel && (
+                    <Badge
+                      variant={
+                        nextActionState.isOverdue ? "destructive" : "outline"
+                      }
+                    >
+                      {statusBadgeLabel}
+                      {app.next_action_due_date && (
+                        <span className="ml-1 font-normal">
+                          {formatNextActionDateLabel(app.next_action_due_date)}
+                        </span>
+                      )}
+                    </Badge>
+                  )}
+                </>
+              ) : (
+                <span className="text-xs text-muted-foreground">No next action set</span>
+              )}
+            </div>
+            {app.next_action_note && (
+              <p className="max-w-[18rem] text-xs text-muted-foreground line-clamp-2">
+                {app.next_action_note}
+              </p>
+            )}
+            {app.next_action_completed_at && (
+              <p className="text-xs text-muted-foreground">
+                Completed {formatDateTimeLabel(app.next_action_completed_at)}
+              </p>
+            )}
+            {app.next_action_completed_at && app.next_action_due_date && (
+              <p className="text-xs text-muted-foreground">
+                Due {formatNextActionDateLabel(app.next_action_due_date)}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-1.5">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={startEditing}
+                className="gap-1.5"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                {hasNextAction ? "Edit" : "Set"}
+              </Button>
+              {!app.next_action_completed_at && hasNextAction && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={completeNextAction}
+                  className="gap-1.5"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  Complete
+                </Button>
+              )}
+            </div>
+          </div>
+        </td>
+        <td className="px-4 py-3">
+          <Button
+            variant={app.cover_letter_id != null ? "secondary" : "outline"}
+            size="sm"
+            onClick={onCoverLetterClick}
+            className="gap-1.5"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            {app.cover_letter_id != null ? "View / Edit" : "Create"}
+          </Button>
+        </td>
+      </tr>
+      {isEditing && (
+        <tr className="border-b last:border-0 bg-muted/20">
+          <td colSpan={5} className="px-4 pb-4 pt-0">
+            <div className="rounded-lg border bg-background p-3">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium">Next action</p>
+                  <p className="text-xs text-muted-foreground">
+                    Keep it short, truthful, and current. Clear it when it stops being the next step.
+                  </p>
+                </div>
+                {app.next_action_completed_at && (
+                  <Badge variant="secondary">Completed</Badge>
+                )}
+              </div>
+              <div className="grid gap-3 md:grid-cols-[180px_1fr_160px]">
+                <label className="flex flex-col gap-1 text-xs font-medium">
+                  Type
+                  <select
+                    value={draft.next_action_type}
+                    onChange={(e) =>
+                      setDraft((current) => ({
+                        ...current,
+                        next_action_type: e.target.value as ApplicationNextActionType | "",
+                      }))
+                    }
+                    className="rounded-md border border-input bg-background px-2 py-2 text-sm"
+                  >
+                    <option value="">No next action</option>
+                    {APPLICATION_NEXT_ACTION_TYPES.map((type) => (
+                      <option key={type} value={type}>
+                        {APPLICATION_NEXT_ACTION_LABELS[type]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-xs font-medium">
+                  Note
+                  <Textarea
+                    value={draft.next_action_note}
+                    onChange={(e) =>
+                      setDraft((current) => ({
+                        ...current,
+                        next_action_note: e.target.value,
+                      }))
+                    }
+                    placeholder="Short next step or context"
+                    rows={2}
+                    className="min-h-[72px]"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs font-medium">
+                  Due date
+                  <Input
+                    type="date"
+                    value={draft.next_action_due_date}
+                    onChange={(e) =>
+                      setDraft((current) => ({
+                        ...current,
+                        next_action_due_date: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  onClick={saveNextAction}
+                  disabled={!canSave}
+                >
+                  Save next action
+                </Button>
+                {!app.next_action_completed_at && hasNextAction && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={completeNextAction}
+                    className="gap-1.5"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    Mark complete
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={clearNextAction}
+                  className="gap-1.5"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Clear
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setIsEditing(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
-

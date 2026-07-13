@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -50,8 +50,16 @@ class ApplicationRepository:
         status: str | None,
         cover_letter_id: int | None,
         notes: str | None,
+        next_action_type: str | None,
+        next_action_note: str | None,
+        next_action_due_date: date | None,
+        next_action_completed_at: datetime | None,
         update_cover_letter: bool,
         update_notes: bool,
+        update_next_action_type: bool,
+        update_next_action_note: bool,
+        update_next_action_due_date: bool,
+        update_next_action_completed_at: bool,
     ) -> Application:
         if status is not None:
             application.status = status
@@ -59,6 +67,14 @@ class ApplicationRepository:
             application.cover_letter_id = cover_letter_id
         if update_notes:
             application.notes = notes
+        if update_next_action_type:
+            application.next_action_type = next_action_type
+        if update_next_action_note:
+            application.next_action_note = next_action_note
+        if update_next_action_due_date:
+            application.next_action_due_date = next_action_due_date
+        if update_next_action_completed_at:
+            application.next_action_completed_at = next_action_completed_at
         await self._session.flush()
         await self._session.refresh(application)
         return application
@@ -81,7 +97,7 @@ class ApplicationRepository:
             ).scalar_one()
         )
 
-        filters: list = [Application.user_id == user_id]
+        filters: list[Any] = [Application.user_id == user_id]
         if cursor:
             cursor_ts, cursor_id = _decode_app_cursor(cursor)
             filters.append(
@@ -113,6 +129,41 @@ class ApplicationRepository:
             next_cursor = _encode_app_cursor(last_app.updated_at, last_app.id)
 
         return rows, count, next_cursor
+
+    async def list_due_next_actions(
+        self, *, user_id: int, due_by: date
+    ) -> tuple[list[tuple[Application, Job]], int]:
+        filters: list[Any] = [
+            Application.user_id == user_id,
+            Application.next_action_due_date.is_not(None),
+            Application.next_action_due_date <= due_by,
+            Application.next_action_completed_at.is_(None),
+        ]
+
+        count = int(
+            (
+                await self._session.execute(
+                    select(func.count())
+                    .select_from(Application)
+                    .where(*filters)
+                )
+            ).scalar_one()
+        )
+
+        rows_raw = (
+            await self._session.execute(
+                select(Application, Job)
+                .join(Job, Job.id == Application.job_id)
+                .where(*filters)
+                .order_by(
+                    Application.next_action_due_date.asc(),
+                    Application.updated_at.desc(),
+                    Application.id.desc(),
+                )
+            )
+        ).all()
+
+        return [(r[0], r[1]) for r in rows_raw], count
 
 
 # ── Cursor helpers (same pattern as job listing) ──────────────────────────

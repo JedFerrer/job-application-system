@@ -14,6 +14,11 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 // ── Format helpers ───────────────────────────────────────────────────────
 
 import { formatSalary, formatRelativeDate } from "../src/lib/format";
+import {
+  formatNextActionDateLabel,
+  getNextActionLabel,
+  getNextActionState,
+} from "../src/lib/next-actions";
 import { stripMarkdown } from "../src/lib/utils";
 
 describe("formatSalary", () => {
@@ -53,24 +58,24 @@ describe("formatRelativeDate", () => {
     expect(formatRelativeDate(undefined)).toBe("");
   });
 
-  it('returns "today" for today\'s date', () => {
-    // formatRelativeDate compares calendar days; midnight UTC today should match.
-    const today = new Date();
-    const todayMidnight = new Date(
-      Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 10, 0, 0)
-    );
-    // The function uses local time; create a string that correlates with "today".
-    // Just verify it returns a non-empty string for a recent date.
-    const result = formatRelativeDate(todayMidnight.toISOString());
-    expect(result).toBeTruthy();
-    expect(typeof result).toBe("string");
+  it("returns hourly text for dates under 24 hours old", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T12:00:00Z"));
+    try {
+      expect(formatRelativeDate("2026-07-14T00:00:00Z")).toBe("12h ago");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns "yesterday" for yesterday', () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setHours(10, 0, 0, 0);
-    expect(formatRelativeDate(yesterday.toISOString())).toBe("yesterday");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T12:00:00Z"));
+    try {
+      expect(formatRelativeDate("2026-07-13T12:00:00Z")).toBe("yesterday");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns empty for invalid date strings", () => {
@@ -108,6 +113,34 @@ describe("stripMarkdown", () => {
 
   it("removes HTML tags", () => {
     expect(stripMarkdown("<p>text</p>")).toBe("text");
+  });
+});
+
+describe("next-action helpers", () => {
+  it("maps known action types to display labels", () => {
+    expect(getNextActionLabel("follow_up")).toBe("Follow up");
+    expect(getNextActionLabel(null)).toBe("Custom");
+  });
+
+  it("formats due dates for next actions", () => {
+    expect(formatNextActionDateLabel("2026-07-22")).toBeTruthy();
+  });
+
+  it("keeps due today and overdue states distinct", () => {
+    const todayIso = "2026-07-14";
+    expect(
+      getNextActionState("follow_up", "2026-07-14", null, todayIso).statusLabel,
+    ).toBe("Due today");
+    expect(
+      getNextActionState("follow_up", "2026-07-13", null, todayIso).statusLabel,
+    ).toBe("Overdue");
+    expect(
+      getNextActionState("follow_up", "2026-07-15", null, todayIso).statusLabel,
+    ).toBe("Due");
+    expect(
+      getNextActionState("follow_up", "2026-07-14", "2026-07-14T10:00:00Z", todayIso)
+        .statusLabel,
+    ).toBe("Completed");
   });
 });
 
@@ -417,11 +450,59 @@ describe("applicationsApi.list", () => {
   });
 });
 
+describe("applicationsApi.listDueNextActions", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("sends the due_by filter to the next-actions endpoint", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 0, next_cursor: null });
+    await applicationsApi.listDueNextActions("2026-07-13");
+    const url = lastUrl(fm);
+    expect(url.pathname).toBe("/api/backend/applications/next-actions");
+    expect(url.searchParams.get("due_by")).toBe("2026-07-13");
+  });
+});
+
+describe("applicationsApi.update", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("sends next action fields in the update payload", async () => {
+    const fm = mockFetch({
+      id: 1,
+      job_id: 10,
+      status: "saved",
+      cover_letter_id: null,
+      notes: null,
+      next_action_type: "networking",
+      next_action_note: "Follow up with the hiring manager instead.",
+      next_action_due_date: "2026-07-22",
+      next_action_completed_at: null,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    });
+
+    await applicationsApi.update(1, {
+      next_action_type: "networking",
+      next_action_note: "Follow up with the hiring manager instead.",
+      next_action_due_date: "2026-07-22",
+    });
+
+    const call = fm.mock.lastCall;
+    if (!call) throw new Error("fetch was not called");
+    const init = call[1] as RequestInit | undefined;
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      next_action_type: "networking",
+      next_action_note: "Follow up with the hiring manager instead.",
+      next_action_due_date: "2026-07-22",
+    });
+  });
+});
+
 describe("listAllApplications", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it("returns all items from a single page", async () => {
-    const items = [{ id: 1, job_id: 10, job_title: "Dev", company: "A", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }];
+    const items = [{ id: 1, job_id: 10, job_title: "Dev", company: "A", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, next_action_type: null, next_action_note: null, next_action_due_date: null, next_action_completed_at: null, created_at: "2026-01-01", updated_at: "2026-01-01" }];
     mockFetch({ items, total: 1, limit: 100, next_cursor: null });
     const result = await listAllApplications();
     expect(result).toHaveLength(1);
@@ -435,13 +516,13 @@ describe("listAllApplications", () => {
       if (callCount === 1) {
         return Promise.resolve({
           ok: true, status: 200,
-          json: async () => ({ items: [{ id: 1, job_id: 1, job_title: "A", company: "X", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }], total: 3, limit: 2, next_cursor: "page2" }),
+          json: async () => ({ items: [{ id: 1, job_id: 1, job_title: "A", company: "X", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, next_action_type: null, next_action_note: null, next_action_due_date: null, next_action_completed_at: null, created_at: "2026-01-01", updated_at: "2026-01-01" }], total: 3, limit: 2, next_cursor: "page2" }),
         });
       }
       if (callCount === 2) {
         return Promise.resolve({
           ok: true, status: 200,
-          json: async () => ({ items: [{ id: 2, job_id: 2, job_title: "B", company: "Y", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }], total: 3, limit: 2, next_cursor: null }),
+          json: async () => ({ items: [{ id: 2, job_id: 2, job_title: "B", company: "Y", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, next_action_type: null, next_action_note: null, next_action_due_date: null, next_action_completed_at: null, created_at: "2026-01-01", updated_at: "2026-01-01" }], total: 3, limit: 2, next_cursor: null }),
         });
       }
       return Promise.resolve({ ok: true, status: 200, json: async () => ({ items: [], total: 3, limit: 2, next_cursor: null }) });
@@ -463,7 +544,7 @@ describe("listAllApplications", () => {
 describe("ApplicationListResponse shape", () => {
   it("backend contract includes limit and next_cursor", () => {
     const response = {
-      items: [{ id: 1, job_id: 10, job_title: "Engineer", company: "Acme", location: null, source_url: "https://example.com", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }],
+      items: [{ id: 1, job_id: 10, job_title: "Engineer", company: "Acme", location: null, source_url: "https://example.com", status: "saved", cover_letter_id: null, notes: null, next_action_type: null, next_action_note: null, next_action_due_date: null, next_action_completed_at: null, created_at: "2026-01-01", updated_at: "2026-01-01" }],
       total: 1,
       limit: 50,
       next_cursor: null,
@@ -476,7 +557,7 @@ describe("ApplicationListResponse shape", () => {
 
   it("next_cursor is a non-empty string when more pages exist", () => {
     const response = {
-      items: [{ id: 1, job_id: 10, job_title: "Dev", company: "A", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, created_at: "2026-01-01", updated_at: "2026-01-01" }],
+      items: [{ id: 1, job_id: 10, job_title: "Dev", company: "A", location: null, source_url: "x", status: "saved", cover_letter_id: null, notes: null, next_action_type: null, next_action_note: null, next_action_due_date: null, next_action_completed_at: null, created_at: "2026-01-01", updated_at: "2026-01-01" }],
       total: 2,
       limit: 1,
       next_cursor: "bmV4dF9jdXJzb3I",

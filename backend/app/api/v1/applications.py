@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Query, status
 
 from app.api.deps import ApplicationServiceDep, CurrentUser
@@ -35,6 +37,17 @@ async def list_applications(
 ) -> ApplicationListResponse:
     return await service.list(
         user_id=current_user.id, cursor=cursor, limit=limit
+    )
+
+
+@router.get("/next-actions", response_model=ApplicationListResponse)
+async def list_due_next_actions(
+    current_user: CurrentUser,
+    service: ApplicationServiceDep,
+    due_by: date = Query(...),
+) -> ApplicationListResponse:
+    return await service.list_due_next_actions(
+        user_id=current_user.id, due_by=due_by
     )
 
 

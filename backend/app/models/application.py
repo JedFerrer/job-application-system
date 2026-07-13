@@ -6,9 +6,10 @@ pipeline; an optional ``cover_letter_id`` links the drafted letter.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
+    Date,
     DateTime,
     ForeignKey,
     String,
@@ -34,6 +35,12 @@ class Application(Base):
         ForeignKey("cover_letters.id")
     )
     notes: Mapped[str | None] = mapped_column(Text)
+    next_action_type: Mapped[str | None] = mapped_column(String(32))
+    next_action_note: Mapped[str | None] = mapped_column(Text)
+    next_action_due_date: Mapped[date | None] = mapped_column(Date)
+    next_action_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

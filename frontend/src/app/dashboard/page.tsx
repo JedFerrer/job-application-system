@@ -1,21 +1,40 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Briefcase,
+  Check,
   ListChecks,
   Loader2,
   Sparkles,
   TrendingUp,
 } from "lucide-react";
 import Link from "next/link";
-import { applicationsApi, jobsApi, matchesApi } from "@/lib/api";
+import { toast } from "sonner";
+import { ApiError, applicationsApi, jobsApi, matchesApi } from "@/lib/api";
+import { type ApplicationListItem } from "@/lib/types";
+import {
+  formatNextActionDateLabel,
+  getNextActionLabel,
+  getNextActionState,
+  getTodayIsoDate,
+} from "@/lib/next-actions";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 export default function DashboardHome() {
+  const queryClient = useQueryClient();
+  const todayIso = getTodayIsoDate();
+
   const appsQuery = useQuery({
     queryKey: ["home-applications"],
     queryFn: () => applicationsApi.list(),
+  });
+
+  const nextActionsQuery = useQuery({
+    queryKey: ["home-next-actions", todayIso],
+    queryFn: () => applicationsApi.listDueNextActions(todayIso),
   });
 
   const matchesQuery = useQuery({
@@ -46,6 +65,21 @@ export default function DashboardHome() {
   const successRate =
     apps.length > 0 ? Math.round((statusCounts.offer / apps.length) * 100) : 0;
 
+  const completeNextActionMutation = useMutation({
+    mutationFn: (applicationId: number) =>
+      applicationsApi.update(applicationId, {
+        next_action_completed_at: new Date().toISOString(),
+      }),
+    onSuccess: () => {
+      toast.success("Marked next action complete");
+      queryClient.invalidateQueries({ queryKey: ["home-next-actions"] });
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+    },
+    onError: (err) => {
+      toast.error(err instanceof ApiError ? err.message : "Update failed");
+    },
+  });
+
   return (
     <div className="flex flex-col gap-8">
       <div>
@@ -55,7 +89,59 @@ export default function DashboardHome() {
         </p>
       </div>
 
-      {/* Summary stats */}
+      <Card>
+        <CardContent className="px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold">Today</h3>
+              <p className="text-xs text-muted-foreground">
+                User-managed next actions due today or overdue.
+              </p>
+            </div>
+            <Badge variant="secondary">{nextActionsQuery.data?.items.length ?? 0}</Badge>
+          </div>
+
+          {nextActionsQuery.isLoading ? (
+            <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading next actions…
+            </div>
+          ) : nextActionsQuery.isError ? (
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <span>Couldn’t load next actions.</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => nextActionsQuery.refetch()}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : (nextActionsQuery.data?.items.length ?? 0) === 0 ? (
+            <p className="mt-4 text-sm text-muted-foreground">
+              No due or overdue next actions right now.
+            </p>
+          ) : (
+            <div className="mt-4 space-y-3">
+              {nextActionsQuery.data?.items.map((item) => (
+                <TodayNextActionRow
+                  key={item.id}
+                  item={item}
+                  todayIso={todayIso}
+                  isCompleting={
+                    completeNextActionMutation.isPending &&
+                    completeNextActionMutation.variables === item.id
+                  }
+                  onComplete={(applicationId) =>
+                    completeNextActionMutation.mutate(applicationId)
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Link href="/dashboard/jobs">
           <Card className="hover:bg-muted/50 transition-colors">
@@ -134,7 +220,6 @@ export default function DashboardHome() {
         </Card>
       </div>
 
-      {/* Pipeline breakdown */}
       <Card>
         <CardContent className="px-5 py-4">
           <h3 className="mb-3 text-sm font-semibold">Application pipeline</h3>
@@ -157,9 +242,17 @@ export default function DashboardHome() {
           ) : (
             <div className="flex flex-wrap gap-4">
               {[
-                { label: "Saved", count: statusCounts.saved, color: "bg-muted-foreground" },
+                {
+                  label: "Saved",
+                  count: statusCounts.saved,
+                  color: "bg-muted-foreground",
+                },
                 { label: "Applied", count: statusCounts.applied, color: "bg-blue-500" },
-                { label: "Interview", count: statusCounts.interview, color: "bg-amber-500" },
+                {
+                  label: "Interview",
+                  count: statusCounts.interview,
+                  color: "bg-amber-500",
+                },
                 { label: "Offer", count: statusCounts.offer, color: "bg-green-500" },
                 { label: "Rejected", count: statusCounts.rejected, color: "bg-red-500" },
                 { label: "Closed", count: statusCounts.closed, color: "bg-muted" },
@@ -176,6 +269,76 @@ export default function DashboardHome() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function TodayNextActionRow({
+  item,
+  todayIso,
+  isCompleting,
+  onComplete,
+}: {
+  item: ApplicationListItem;
+  todayIso: string;
+  isCompleting: boolean;
+  onComplete: (applicationId: number) => void;
+}) {
+  const dueDate = item.next_action_due_date;
+  if (!dueDate) return null;
+
+  const nextActionState = getNextActionState(
+    item.next_action_type,
+    item.next_action_due_date,
+    item.next_action_completed_at,
+    todayIso,
+  );
+
+  return (
+    <div className="rounded-lg border px-3 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href={`/dashboard/jobs/${item.job_id}`}
+              className="font-medium hover:underline"
+            >
+              {item.job_title}
+            </Link>
+            <span className="text-xs text-muted-foreground">
+              {item.company ?? "—"}
+            </span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <Badge variant={nextActionState.isOverdue ? "destructive" : "outline"}>
+              {nextActionState.isOverdue ? "Overdue" : "Due today"}
+            </Badge>
+            <Badge variant="secondary">{getNextActionLabel(item.next_action_type)}</Badge>
+            <span className="text-xs text-muted-foreground">
+              {formatNextActionDateLabel(dueDate)}
+            </span>
+          </div>
+          {item.next_action_note && (
+            <p className="mt-2 max-w-2xl line-clamp-2 text-xs text-muted-foreground">
+              {item.next_action_note}
+            </p>
+          )}
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => onComplete(item.id)}
+          disabled={isCompleting}
+          className="gap-1.5"
+        >
+          {isCompleting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Check className="h-3.5 w-3.5" />
+          )}
+          {isCompleting ? "Completing…" : "Complete"}
+        </Button>
+      </div>
     </div>
   );
 }

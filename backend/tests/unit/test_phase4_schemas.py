@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
-
-pytestmark = pytest.mark.unit
-
 from pydantic import ValidationError
 
 from app.domain.applications.schemas import (
@@ -15,6 +14,8 @@ from app.domain.applications.schemas import (
 )
 from app.domain.cover_letters.schemas import CoverLetterUpdate
 
+pytestmark = pytest.mark.unit
+
 
 def test_application_list_response_includes_limit_and_next_cursor() -> None:
     """ApplicationListResponse must include limit and next_cursor
@@ -23,6 +24,8 @@ def test_application_list_response_includes_limit_and_next_cursor() -> None:
         id=1, job_id=10, job_title="Dev", company="Acme",
         location=None, source_url="https://example.com", status="saved",
         cover_letter_id=None, notes=None,
+        next_action_type=None, next_action_note=None,
+        next_action_due_date=None, next_action_completed_at=None,
         created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z",
     )
     # With next_cursor
@@ -60,9 +63,35 @@ def test_application_update_rejects_invalid_status() -> None:
         ApplicationUpdate.model_validate({"status": "ghosted"})
 
 
+def test_application_update_validates_next_action_type() -> None:
+    explicit = ApplicationUpdate.model_validate(
+        {"next_action_type": "follow_up", "next_action_due_date": "2026-02-01"}
+    )
+    assert explicit.next_action_type == "follow_up"
+    assert explicit.next_action_due_date == date(2026, 2, 1)
+
+    with pytest.raises(ValidationError):
+        ApplicationUpdate.model_validate({"next_action_type": "coffee_chat"})
+
+
 def test_application_update_accepts_known_statuses() -> None:
     for status in ("saved", "applied", "interview", "offer", "rejected", "closed"):
         assert ApplicationUpdate.model_validate({"status": status}).status == status
+
+
+def test_application_update_tracks_explicit_null_next_action_fields() -> None:
+    payload = ApplicationUpdate.model_validate(
+        {
+            "next_action_type": None,
+            "next_action_note": None,
+            "next_action_due_date": None,
+            "next_action_completed_at": None,
+        }
+    )
+    assert "next_action_type" in payload.model_fields_set
+    assert "next_action_note" in payload.model_fields_set
+    assert "next_action_due_date" in payload.model_fields_set
+    assert "next_action_completed_at" in payload.model_fields_set
 
 
 def test_cover_letter_update_requires_non_empty_content() -> None:

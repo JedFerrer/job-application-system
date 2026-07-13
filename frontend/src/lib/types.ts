@@ -239,6 +239,10 @@ export interface Application {
   status: string;
   cover_letter_id: number | null;
   notes: string | null;
+  next_action_type: string | null;
+  next_action_note: string | null;
+  next_action_due_date: string | null;
+  next_action_completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -253,8 +257,45 @@ export interface ApplicationListItem {
   status: string;
   cover_letter_id: number | null;
   notes: string | null;
+  next_action_type: string | null;
+  next_action_note: string | null;
+  next_action_due_date: string | null;
+  next_action_completed_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export const APPLICATION_NEXT_ACTION_TYPES = [
+  "apply",
+  "follow_up",
+  "prepare_interview",
+  "submit_assessment",
+  "networking",
+  "review_offer",
+  "other",
+] as const;
+
+export type ApplicationNextActionType =
+  (typeof APPLICATION_NEXT_ACTION_TYPES)[number];
+
+export const APPLICATION_NEXT_ACTION_LABELS: Record<ApplicationNextActionType, string> = {
+  apply: "Apply",
+  follow_up: "Follow up",
+  prepare_interview: "Prepare interview",
+  submit_assessment: "Submit assessment",
+  networking: "Networking",
+  review_offer: "Review offer",
+  other: "Other",
+};
+
+export interface ApplicationUpdate {
+  status?: ApplicationStatus;
+  cover_letter_id?: number | null;
+  notes?: string | null;
+  next_action_type?: ApplicationNextActionType | null;
+  next_action_note?: string | null;
+  next_action_due_date?: string | null;
+  next_action_completed_at?: string | null;
 }
 
 export interface ApplicationListResponse {

@@ -2,7 +2,7 @@ import type {
   Application,
   ApplicationListItem,
   ApplicationListResponse,
-  ApplicationStatus,
+  ApplicationUpdate,
   AuthUser,
   CoverLetter,
   IngestRequest,
@@ -345,6 +345,10 @@ export const applicationsApi = {
     qs.set("limit", String(opts.limit ?? 50));
     return apiRequest<ApplicationListResponse>(`/applications?${qs.toString()}`);
   },
+  listDueNextActions: (dueBy: string) =>
+    apiRequest<ApplicationListResponse>(
+      `/applications/next-actions?${new URLSearchParams({ due_by: dueBy }).toString()}`,
+    ),
   create: (jobId: number) =>
     apiRequest<Application>("/applications", {
       method: "POST",
@@ -352,11 +356,7 @@ export const applicationsApi = {
     }),
   update: (
     id: number,
-    payload: {
-      status?: ApplicationStatus;
-      cover_letter_id?: number | null;
-      notes?: string | null;
-    },
+    payload: ApplicationUpdate,
   ) =>
     apiRequest<Application>(`/applications/${id}`, {
       method: "PATCH",
@@ -449,4 +449,3 @@ export const extensionApi = {
       body: JSON.stringify({ session_id: sessionId }),
     }),
 };
-

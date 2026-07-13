@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from app.core.logging import get_logger
 from app.domain.applications.exceptions import ApplicationNotFoundError
 from app.domain.applications.repository import ApplicationRepository
@@ -50,8 +52,17 @@ class ApplicationService:
             status=payload.status,
             cover_letter_id=payload.cover_letter_id,
             notes=payload.notes,
+            next_action_type=payload.next_action_type,
+            next_action_note=payload.next_action_note,
+            next_action_due_date=payload.next_action_due_date,
+            next_action_completed_at=payload.next_action_completed_at,
             update_cover_letter="cover_letter_id" in fields_set,
             update_notes="notes" in fields_set,
+            update_next_action_type="next_action_type" in fields_set,
+            update_next_action_note="next_action_note" in fields_set,
+            update_next_action_due_date="next_action_due_date" in fields_set,
+            update_next_action_completed_at="next_action_completed_at"
+            in fields_set,
         )
         return ApplicationResponse.model_validate(updated)
 
@@ -72,6 +83,10 @@ class ApplicationService:
                 status=app.status,
                 cover_letter_id=app.cover_letter_id,
                 notes=app.notes,
+                next_action_type=app.next_action_type,
+                next_action_note=app.next_action_note,
+                next_action_due_date=app.next_action_due_date,
+                next_action_completed_at=app.next_action_completed_at,
                 created_at=app.created_at,
                 updated_at=app.updated_at,
             )
@@ -79,4 +94,34 @@ class ApplicationService:
         ]
         return ApplicationListResponse(
             items=items, total=total, limit=limit, next_cursor=next_cursor
+        )
+
+    async def list_due_next_actions(
+        self, *, user_id: int, due_by: date
+    ) -> ApplicationListResponse:
+        rows, total = await self._repo.list_due_next_actions(
+            user_id=user_id, due_by=due_by
+        )
+        items = [
+            ApplicationListItem(
+                id=app.id,
+                job_id=job.id,
+                job_title=job.title,
+                company=job.company,
+                location=job.location,
+                source_url=job.source_url,
+                status=app.status,
+                cover_letter_id=app.cover_letter_id,
+                notes=app.notes,
+                next_action_type=app.next_action_type,
+                next_action_note=app.next_action_note,
+                next_action_due_date=app.next_action_due_date,
+                next_action_completed_at=app.next_action_completed_at,
+                created_at=app.created_at,
+                updated_at=app.updated_at,
+            )
+            for app, job in rows
+        ]
+        return ApplicationListResponse(
+            items=items, total=total, limit=total, next_cursor=None
         )
