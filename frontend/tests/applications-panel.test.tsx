@@ -1,0 +1,326 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApplicationsPanel } from "@/components/applications/applications-panel";
+import { formatNextActionDateLabel } from "@/lib/next-actions";
+
+const apiMocks = vi.hoisted(() => {
+  const applicationsApi = {
+    list: vi.fn(),
+    update: vi.fn(),
+    create: vi.fn(),
+    listDueNextActions: vi.fn(),
+  };
+
+  class ApiError extends Error {
+    status: number;
+    detail: unknown;
+
+    constructor(message: string, status: number, detail: unknown) {
+      super(message);
+      this.name = "ApiError";
+      this.status = status;
+      this.detail = detail;
+    }
+  }
+
+  return { applicationsApi, ApiError };
+});
+
+const toastMocks = vi.hoisted(() => {
+  const success = vi.fn();
+  const error = vi.fn();
+  return { success, error };
+});
+
+vi.mock("@/lib/api", () => apiMocks);
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: toastMocks.success,
+    error: toastMocks.error,
+  },
+}));
+
+vi.mock("@/components/cover/cover-letter-dialog", () => ({
+  CoverLetterDialog: () => null,
+}));
+
+type ApplicationItem = {
+  id: number;
+  job_id: number;
+  job_title: string;
+  company: string | null;
+  location: string | null;
+  source_url: string;
+  status: string;
+  cover_letter_id: number | null;
+  notes: string | null;
+  next_action_type: string | null;
+  next_action_note: string | null;
+  next_action_due_date: string | null;
+  next_action_completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function renderTextValue(
+  el: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
+  value: string,
+) {
+  const proto =
+    el instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : el instanceof HTMLSelectElement
+        ? HTMLSelectElement.prototype
+        : HTMLInputElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+  descriptor?.set?.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function findButton(container: HTMLElement, label: string) {
+  const button = Array.from(container.querySelectorAll("button")).find((el) =>
+    el.textContent?.includes(label),
+  );
+  if (!button) {
+    throw new Error(`Could not find button containing: ${label}`);
+  }
+  return button;
+}
+
+function findRowByJobTitle(container: HTMLElement, jobTitle: string) {
+  const row = Array.from(container.querySelectorAll("tr")).find((el) =>
+    el.textContent?.includes(jobTitle),
+  );
+  if (!row) {
+    throw new Error(`Could not find row containing: ${jobTitle}`);
+  }
+  return row;
+}
+
+function findButtonInRow(row: HTMLElement, label: string) {
+  const button = Array.from(row.querySelectorAll("button")).find((el) =>
+    el.textContent?.includes(label),
+  );
+  if (!button) {
+    throw new Error(`Could not find row button containing: ${label}`);
+  }
+  return button;
+}
+
+describe("ApplicationsPanel CRM polish", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+  let applications: ApplicationItem[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T12:00:00Z"));
+
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      },
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+
+    toastMocks.success.mockReset();
+    toastMocks.error.mockReset();
+    apiMocks.applicationsApi.list.mockReset();
+    apiMocks.applicationsApi.update.mockReset();
+    apiMocks.applicationsApi.create.mockReset();
+    apiMocks.applicationsApi.listDueNextActions.mockReset();
+
+    applications = [
+      {
+        id: 31,
+        job_id: 201,
+        job_title: "Senior Backend Engineer",
+        company: "Beta",
+        location: "Remote",
+        source_url: "https://example.com/jobs/201",
+        status: "applied",
+        cover_letter_id: null,
+        notes: null,
+        next_action_type: "follow_up",
+        next_action_note: "Ping recruiter after panel review.",
+        next_action_due_date: "2026-07-13",
+        next_action_completed_at: "2026-07-14T12:00:00.000Z",
+        created_at: "2026-07-10T00:00:00Z",
+        updated_at: "2026-07-14T12:00:00.000Z",
+      },
+      {
+        id: 42,
+        job_id: 202,
+        job_title: "Platform Engineer",
+        company: "Acme",
+        location: "Remote",
+        source_url: "https://example.com/jobs/202",
+        status: "saved",
+        cover_letter_id: null,
+        notes: null,
+        next_action_type: "prepare_interview",
+        next_action_note: "Review system design notes.",
+        next_action_due_date: "2026-07-13",
+        next_action_completed_at: null,
+        created_at: "2026-07-11T00:00:00Z",
+        updated_at: "2026-07-14T11:00:00.000Z",
+      },
+    ];
+
+    apiMocks.applicationsApi.list.mockImplementation(async () => ({
+      items: applications,
+      total: applications.length,
+      limit: 25,
+      next_cursor: null,
+    }));
+
+    apiMocks.applicationsApi.update.mockImplementation(
+      async (id: number, payload: Partial<ApplicationItem>) => {
+        const current = applications.find((app) => app.id === id);
+        if (!current) {
+          throw new Error(`Missing application ${id}`);
+        }
+        const updated: ApplicationItem = {
+          ...current,
+          ...payload,
+          updated_at: "2026-07-14T12:00:00.000Z",
+        };
+        applications = applications.map((app) => (app.id === id ? updated : app));
+        return updated;
+      },
+    );
+
+    queryClient.setQueryData(
+      ["applications", "infinite"],
+      {
+        pages: [
+          {
+            items: applications,
+            total: applications.length,
+            limit: 25,
+            next_cursor: null,
+          },
+        ],
+        pageParams: [null],
+      },
+    );
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    queryClient.clear();
+    container.remove();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function renderPanel() {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ApplicationsPanel />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it("shows completed details and creates a fresh active next action", async () => {
+    await renderPanel();
+
+    expect(container.textContent).toContain("Senior Backend Engineer");
+    expect(container.textContent).toContain("Completed");
+    expect(container.textContent).toContain("Ping recruiter after panel review.");
+    expect(container.textContent).toContain("Due");
+    expect(container.textContent).toContain(
+      formatNextActionDateLabel("2026-07-13"),
+    );
+    expect(container.textContent).toContain("New next action");
+
+    await act(async () => {
+      findButton(container, "New next action").click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Create a new next action");
+
+    const textarea = container.querySelector("textarea");
+    if (!textarea) {
+      throw new Error("Expected next action textarea");
+    }
+    await act(async () => {
+      renderTextValue(textarea, "Send a thank-you note and ask about timeline.");
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButton(container, "Save new next action").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.update).toHaveBeenCalledWith(31, {
+      next_action_type: null,
+      next_action_note: "Send a thank-you note and ask about timeline.",
+      next_action_due_date: null,
+      next_action_completed_at: null,
+    });
+  });
+
+  it("still completes and clears incomplete next actions", async () => {
+    await renderPanel();
+
+    await act(async () => {
+      findButton(container, "Complete").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.update).toHaveBeenCalledWith(42, {
+      next_action_type: "prepare_interview",
+      next_action_note: "Review system design notes.",
+      next_action_due_date: "2026-07-13",
+      next_action_completed_at: "2026-07-14T12:00:00.000Z",
+    });
+
+    await act(async () => {
+      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Edit").click();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButton(container, "Clear").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.update).toHaveBeenCalledWith(42, {
+      next_action_type: null,
+      next_action_note: null,
+      next_action_due_date: null,
+      next_action_completed_at: null,
+    });
+  });
+});

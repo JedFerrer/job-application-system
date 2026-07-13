@@ -2,7 +2,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, FileText, Loader2, Pencil, Trash2, X } from "lucide-react";
+import {
+  Check,
+  FileText,
+  Loader2,
+  Pencil,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, applicationsApi } from "@/lib/api";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
@@ -37,6 +45,14 @@ function draftFromApplication(app: ApplicationListItem) {
     next_action_type: (app.next_action_type as ApplicationNextActionType | "") ?? "",
     next_action_note: app.next_action_note ?? "",
     next_action_due_date: app.next_action_due_date ?? "",
+  };
+}
+
+function emptyNextActionDraft() {
+  return {
+    next_action_type: "" as ApplicationNextActionType | "",
+    next_action_note: "",
+    next_action_due_date: "",
   };
 }
 
@@ -376,14 +392,16 @@ function ApplicationRow({
   onNextActionChange: (payload: ApplicationUpdate) => Promise<unknown>;
   onCoverLetterClick: () => void;
 }) {
-  const [isEditing, setIsEditing] = useState(false);
+  const [nextActionMode, setNextActionMode] = useState<"edit" | "new" | null>(
+    null,
+  );
   const [draft, setDraft] = useState(() => draftFromApplication(app));
 
   useEffect(() => {
-    if (!isEditing) {
+    if (nextActionMode === null) {
       setDraft(draftFromApplication(app));
     }
-  }, [app, isEditing]);
+  }, [app, nextActionMode]);
 
   const hasNextAction = Boolean(
     app.next_action_type ||
@@ -391,6 +409,7 @@ function ApplicationRow({
       app.next_action_due_date ||
       app.next_action_completed_at,
   );
+  const isEditing = nextActionMode !== null;
   const todayIso = getTodayIsoDate();
   const nextActionState = getNextActionState(
     app.next_action_type,
@@ -404,7 +423,12 @@ function ApplicationRow({
 
   const startEditing = () => {
     setDraft(draftFromApplication(app));
-    setIsEditing(true);
+    setNextActionMode("edit");
+  };
+
+  const startNewNextAction = () => {
+    setDraft(emptyNextActionDraft());
+    setNextActionMode("new");
   };
 
   const saveNextAction = async () => {
@@ -413,9 +437,10 @@ function ApplicationRow({
         next_action_type: draft.next_action_type || null,
         next_action_note: draft.next_action_note.trim() || null,
         next_action_due_date: draft.next_action_due_date || null,
-        next_action_completed_at: app.next_action_completed_at,
+        next_action_completed_at:
+          nextActionMode === "new" ? null : app.next_action_completed_at,
       });
-      setIsEditing(false);
+      setNextActionMode(null);
     } catch {
       // mutation error is surfaced by the toast in the mutation handler
     }
@@ -433,7 +458,7 @@ function ApplicationRow({
         next_action_due_date: currentDueDate || null,
         next_action_completed_at: new Date().toISOString(),
       });
-      setIsEditing(false);
+      setNextActionMode(null);
     } catch {
       // mutation error is surfaced by the toast in the mutation handler
     }
@@ -448,11 +473,9 @@ function ApplicationRow({
         next_action_completed_at: null,
       });
       setDraft({
-        next_action_type: "",
-        next_action_note: "",
-        next_action_due_date: "",
+        ...emptyNextActionDraft(),
       });
-      setIsEditing(false);
+      setNextActionMode(null);
     } catch {
       // mutation error is surfaced by the toast in the mutation handler
     }
@@ -564,6 +587,17 @@ function ApplicationRow({
                   Complete
                 </Button>
               )}
+              {app.next_action_completed_at && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={startNewNextAction}
+                  className="gap-1.5"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  New next action
+                </Button>
+              )}
             </div>
           </div>
         </td>
@@ -585,9 +619,15 @@ function ApplicationRow({
             <div className="rounded-lg border bg-background p-3">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <p className="text-sm font-medium">Next action</p>
+                  <p className="text-sm font-medium">
+                    {nextActionMode === "new"
+                      ? "Create a new next action"
+                      : "Next action"}
+                  </p>
                   <p className="text-xs text-muted-foreground">
-                    Keep it short, truthful, and current. Clear it when it stops being the next step.
+                    {nextActionMode === "new"
+                      ? "This starts a fresh active next action and clears the completed state."
+                      : "Keep it short, truthful, and current. Clear it when it stops being the next step."}
                   </p>
                 </div>
                 {app.next_action_completed_at && (
@@ -650,7 +690,9 @@ function ApplicationRow({
                   onClick={saveNextAction}
                   disabled={!canSave}
                 >
-                  Save next action
+                  {nextActionMode === "new"
+                    ? "Save new next action"
+                    : "Save next action"}
                 </Button>
                 {!app.next_action_completed_at && hasNextAction && (
                   <Button
@@ -675,7 +717,7 @@ function ApplicationRow({
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => setIsEditing(false)}
+                  onClick={() => setNextActionMode(null)}
                 >
                   Cancel
                 </Button>
