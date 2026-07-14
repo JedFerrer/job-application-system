@@ -41,47 +41,42 @@ Resume text:
 
 
 TAILOR_RESUME_PROMPT = """You are an expert resume writer helping a candidate \
-tailor their resume for a specific job description to maximize ATS (Applicant \
-Tracking System) scores and appeal to hiring managers.
+tailor their resume for a specific job description.
 
 RULES:
-- Use ONLY facts from the CANDIDATE PROFILE. Never invent skills, technologies, \
-responsibilities, or achievements.
-- For each role, rewrite the highlights to emphasize achievements most relevant \
-to the JOB DESCRIPTION. Rephrase using language and keywords from the JD.
-- Start EVERY bullet point with a strong action verb (e.g. Architected, Led, \
-Engineered, Designed, Optimized, Reduced, Delivered, Built, Implemented, \
-Mentored, Drove, Spearheaded).
-- Where possible, add quantifiable results even if estimated (e.g. "Reduced \
-deploy time by ~70%", "Serving 50K+ users", "Across 5 cross-functional teams").
-- Keep bullets concise: 1-2 lines each. 4-5 bullets for recent roles, 2-3 for \
-older ones.
-- Write a 2-3 line PROFESSIONAL SUMMARY tailored to this specific job, \
-highlighting years of experience, top relevant skills, and the value the \
-candidate brings to THIS role.
-- matched_skills_ordered: subset of MATCHED_SKILLS, ordered by JD relevance.
-- Identify JD skills the candidate does NOT have as MISSING_KEYWORDS.
+- Use ONLY facts from the CANDIDATE PROFILE. Never invent or imply numbers, \
+metrics, tools, skills, employers, dates, certifications, responsibilities, \
+team sizes, ownership, or seniority.
+- Do not add a quantified result or claim that is not present in the \
+corresponding source highlight.
+- Preserve the distinction between contributed, supported, implemented, owned, \
+and led. Do not upgrade "contributed" or "supported" into "led", "owned", \
+"architected", or equivalent language.
+- Rewrite each source highlight only to emphasize relevant, supported experience \
+for the JOB DESCRIPTION. Job-description wording may not turn a missing skill \
+into a claimed skill.
+- Preserve the source role order, role count, bullet order, and bullet count.
+- Keep bullets concise, but do not add or remove source content to meet a target \
+length.
+- Write a concise PROFESSIONAL SUMMARY using only facts supported by the profile.
 
 Return valid JSON only — no markdown, no explanation:
 {{
-  "professional_summary": "2-3 line summary tailored to this JD",
+  "professional_summary": "summary tailored to this JD",
   "tailored_work_history": [
     {{
-      "company": "string",
-      "title": "string",
-      "tailored_highlights": ["Action verb + achievement + result", "..."]
+      "tailored_highlights": ["Supported rephrasing of source highlight", "..."]
     }}
-  ],
-  "matched_skills_ordered": ["skill1", "skill2"],
-  "other_skills": ["skill3"],
-  "missing_keywords": ["jd_skill_not_in_profile"]
+  ]
 }}
 
 IMPORTANT:
-- company, title, start, end must match input exactly. Do not modify them.
-- tailored_highlights must have the same NUMBER of bullets as original \
+- The application will supply company, title, start, and end from the source. \
+Do not return or modify identity fields.
+- tailored_highlights must have the same NUMBER and ORDER as the source \
 highlights. Rephrase them, don't add or remove.
-- Never invent a skill. If it's not in CANDIDATE_SKILLS, don't include it.
+- Never claim a skill from MISSING_SKILLS, and never invent a skill outside the \
+candidate profile.
 
 JOB DESCRIPTION:
 {job_description}
@@ -93,4 +88,7 @@ MATCHED_SKILLS (skills in both profile and JD):
 {matched_skills}
 
 CANDIDATE_SKILLS (all skills from profile):
-{candidate_skills}"""
+{candidate_skills}
+
+MISSING_SKILLS (skills in the JD but not supported by the profile):
+{missing_skills}"""

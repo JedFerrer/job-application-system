@@ -157,7 +157,7 @@ export function TailorResumeDialog({
             {jobTitle
               ? `Your experience rewritten to emphasize relevance for "${jobTitle}".`
               : "Your experience rewritten for this job."}
-            {" "}No skills or experience were invented.
+            {" "}AI-generated draft based on your profile. Review every claim before copying or downloading.
           </DialogDescription>
         </DialogHeader>
 

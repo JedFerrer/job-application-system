@@ -12,7 +12,12 @@ from typing import Any
 from app.core.logging import get_logger
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
-from app.domain.matching.skill_matcher import SkillMatchReport, compute_skill_match, extract_jd_skills
+from app.domain.matching.skill_matcher import (
+    SkillMatchReport,
+    compute_skill_match,
+    extract_jd_skills,
+    normalize_skill,
+)
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeParseError,
@@ -27,6 +32,7 @@ from app.domain.resume.schemas import (
     TailoredResume,
     TailoredWorkItem,
 )
+from app.domain.resume.truthfulness import sanitize_tailoring_output
 from app.infrastructure.embeddings import embed_text
 from app.infrastructure.llm_client import llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
@@ -65,7 +71,7 @@ def _untailored_fallback(
 ) -> TailoredResume:
     """Return the profile as-is when LLM tailoring is unavailable."""
     matched_set = set(report.matched_skills)
-    other_skills = [s for s in profile.skills if s not in matched_set]
+    other_skills = [s for s in profile.skills if normalize_skill(s) not in matched_set]
     return TailoredResume(
         job_id=job_id,
         professional_summary=profile.headline or None,
@@ -199,30 +205,7 @@ class ResumeService:
             raise JobNotFoundError(job_id)
         if not job.description:
             # Return untailored — nothing to match against.
-            return TailoredResume(
-                job_id=job_id,
-                professional_summary=profile.headline or None,
-                full_name=profile.full_name,
-                email=profile.email,
-                phone=profile.phone,
-                headline=profile.headline,
-                education=list(profile.education),
-                certifications=list(profile.certifications),
-                work_history=[
-                    TailoredWorkItem(
-                        company=w.company,
-                        title=w.title,
-                        start=w.start,
-                        end=w.end,
-                        original_highlights=list(w.highlights),
-                        tailored_highlights=list(w.highlights),
-                    )
-                    for w in profile.work_history
-                ],
-                matched_skills=[],
-                other_skills=list(profile.skills),
-                missing_keywords=[],
-            )
+            return _untailored_fallback(profile, job_id, SkillMatchReport())
 
         # Deterministic: which profile skills are in the JD?
         jd_skills = extract_jd_skills(job.description)
@@ -245,6 +228,7 @@ class ResumeService:
             work_history_json=json.dumps(work_json, default=str),
             matched_skills=json.dumps(report.matched_skills),
             candidate_skills=json.dumps(profile.skills),
+            missing_skills=json.dumps(report.missing_skills),
         )
 
         try:
@@ -265,41 +249,40 @@ class ResumeService:
             # Graceful fallback: return untailored profile with skill report.
             return _untailored_fallback(profile, job_id, report)
 
-        # Parse tailored work history from LLM response.
-        professional_summary = data.get("professional_summary")
-        if not isinstance(professional_summary, str):
-            professional_summary = profile.headline or None
-
-        tailored_wh: list[TailoredWorkItem] = []
-        llm_items = data.get("tailored_work_history") or []
-        for i, llm_item in enumerate(llm_items if isinstance(llm_items, list) else []):
-            if not isinstance(llm_item, dict):
-                continue
-            original = profile.work_history[i] if i < len(profile.work_history) else None
-            tailored_wh.append(
-                TailoredWorkItem(
-                    company=original.company if original else llm_item.get("company"),
-                    title=original.title if original else llm_item.get("title"),
-                    start=original.start if original else None,
-                    end=original.end if original else None,
-                    original_highlights=list(original.highlights) if original else [],
-                    tailored_highlights=(
-                        llm_item.get("tailored_highlights")
-                        if isinstance(llm_item.get("tailored_highlights"), list)
-                        else []
-                    ),
-                )
+        try:
+            sanitized = sanitize_tailoring_output(
+                profile,
+                data,
+                report.missing_skills,
             )
+        except Exception:
+            logger.warning(
+                "resume.tailor.output_invalid",
+                user_id=user_id,
+                job_id=job_id,
+                exc_info=True,
+            )
+            return _untailored_fallback(profile, job_id, report)
 
-        matched = data.get("matched_skills_ordered") or []
-        if not isinstance(matched, list):
-            matched = []
-        other = data.get("other_skills") or []
-        if not isinstance(other, list):
-            other = []
-        missing = data.get("missing_keywords") or []
-        if not isinstance(missing, list):
-            missing = []
+        matched = list(report.matched_skills)
+        matched_set = set(matched)
+        other = [s for s in profile.skills if normalize_skill(s) not in matched_set]
+        missing = list(report.missing_skills)
+        tailored_wh = [
+            TailoredWorkItem(
+                company=source.company,
+                title=source.title,
+                start=source.start,
+                end=source.end,
+                original_highlights=list(source.highlights),
+                tailored_highlights=sanitized_bullets,
+            )
+            for source, sanitized_bullets in zip(
+                profile.work_history,
+                sanitized.tailored_highlights,
+                strict=True,
+            )
+        ]
 
         logger.info(
             "resume.tailored",
@@ -307,10 +290,13 @@ class ResumeService:
             job_id=job_id,
             model=model,
             roles=len(tailored_wh),
+            summary_fallback=sanitized.summary_fallback,
+            role_fallbacks=sanitized.role_fallbacks,
+            bullet_fallbacks=sanitized.bullet_fallbacks,
         )
         return TailoredResume(
             job_id=job_id,
-            professional_summary=professional_summary,
+            professional_summary=sanitized.professional_summary,
             full_name=profile.full_name,
             email=profile.email,
             phone=profile.phone,
