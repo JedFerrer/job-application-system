@@ -15,6 +15,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { stripMarkdown } from "@/lib/utils";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
+import type { MatchReadiness, MatchReadinessDecision } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,6 +44,7 @@ export interface JobCardMatch {
   score: number;
   confidence: string | null;       // "strong" | "moderate" | "stretch" | "weak"
   matchedSkills: string[] | null;
+  readiness?: MatchReadiness | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +156,24 @@ export const CONFIDENCE_TEXT: Record<string, string> = {
 };
 
 const MAX_VISIBLE_SKILLS = 4;
+
+const READINESS_LABELS: Record<MatchReadinessDecision, string> = {
+  apply: "Ready to apply",
+  save: "Save for review",
+  stretch: "Stretch",
+  skip: "Likely skip",
+};
+
+const READINESS_BADGE_CLASS: Record<MatchReadinessDecision, string> = {
+  apply:
+    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300",
+  save:
+    "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300",
+  stretch:
+    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300",
+  skip:
+    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-300",
+};
 
 /** Derive a 1-2 char avatar from the company name. */
 function companyInitials(company: string | null): string {
@@ -407,6 +427,16 @@ export function JobCard({
             {match && !isAnalyzing && (
               <div className="mt-2 rounded-lg border p-2">
                 <CircularScore score={match.score} confidence={match.confidence} />
+                {match.readiness && (
+                  <div className="mt-2 flex justify-center">
+                    <Badge
+                      variant="outline"
+                      className={`rounded-full font-normal text-[11px] ${READINESS_BADGE_CLASS[match.readiness.decision]}`}
+                    >
+                      {READINESS_LABELS[match.readiness.decision]}
+                    </Badge>
+                  </div>
+                )}
               </div>
             )}
           </div>

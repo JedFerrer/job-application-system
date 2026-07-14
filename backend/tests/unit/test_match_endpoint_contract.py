@@ -88,3 +88,16 @@ def test_deprecated_offset_query_param_still_works_temporarily() -> None:
     resp = client.get("/matches?offset=20")
     assert resp.status_code == 200
     assert resp.json()["offset"] == 20
+
+
+def test_match_readiness_is_documented_in_openapi() -> None:
+    user = User(id=1, email="a@test.com", name="A", is_active=True)
+    app = _build_app_with_overrides(current_user=user, match_service=_EmptyMatchService())
+    client = TestClient(app)
+
+    schema = client.get("/openapi.json").json()
+    match_item = schema["components"]["schemas"]["MatchItem"]["properties"]
+    explanation = schema["components"]["schemas"]["MatchExplanation"]["properties"]
+
+    assert "readiness" in match_item
+    assert "readiness" in explanation

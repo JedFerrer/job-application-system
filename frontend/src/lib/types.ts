@@ -156,6 +156,14 @@ export interface JobListResponse {
 }
 
 // ---- Matches ----------------------------------------------------------------
+export type MatchReadinessDecision = "apply" | "save" | "stretch" | "skip";
+
+export interface MatchReadiness {
+  decision: MatchReadinessDecision;
+  reasons: string[];
+  caveats: string[];
+}
+
 export interface MatchItem {
   job_id: number;
   title: string;
@@ -175,6 +183,7 @@ export interface MatchItem {
   confidence: string | null;
   llm_score: number | null;
   matched_skills: string[] | null;
+  readiness: MatchReadiness;
   posted_at: string | null;
 }
 
@@ -201,6 +210,7 @@ export interface MatchExplanation {
   explanation: string | null;
   matched_skills: string[];
   missing_keywords: string[];
+  readiness: MatchReadiness;
 }
 
 // ---- Cover letters (Phase 4) ------------------------------------------------

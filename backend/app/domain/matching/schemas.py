@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +17,16 @@ class RankRequest(BaseModel):
 class RankResponse(BaseModel):
     ranked: int
     profile_id: int
+
+
+class MatchReadiness(BaseModel):
+    """Deterministic application-readiness summary for a match."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    decision: Literal["apply", "save", "stretch", "skip"]
+    reasons: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
 
 
 class MatchItem(BaseModel):
@@ -39,6 +50,7 @@ class MatchItem(BaseModel):
     confidence: str | None
     llm_score: int | None
     matched_skills: list[str] | None = None
+    readiness: MatchReadiness
     posted_at: datetime | None
 
 
@@ -62,6 +74,7 @@ class MatchExplanation(BaseModel):
     explanation: str | None
     matched_skills: list[str]
     missing_keywords: list[str]
+    readiness: MatchReadiness
 
 
 class SkillGapItem(BaseModel):

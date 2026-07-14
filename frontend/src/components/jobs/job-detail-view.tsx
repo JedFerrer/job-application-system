@@ -21,7 +21,13 @@ import {
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, jobsApi, listAllApplications, matchesApi } from "@/lib/api";
-import type { ApplicationListItem, MatchExplanation, MatchItem, MatchListResponse } from "@/lib/types";
+import type {
+  ApplicationListItem,
+  MatchExplanation,
+  MatchItem,
+  MatchListResponse,
+  MatchReadinessDecision,
+} from "@/lib/types";
 import { useState, useMemo } from "react";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
 import { formatJobDescription } from "@/lib/utils";
@@ -77,6 +83,24 @@ const BASE_PILL = "rounded-full font-normal text-xs";
 
 const TABS = ["Description", "Skills", "Notes"] as const;
 type Tab = (typeof TABS)[number];
+
+const READINESS_LABELS: Record<MatchReadinessDecision, string> = {
+  apply: "Ready to apply",
+  save: "Save for review",
+  stretch: "Stretch",
+  skip: "Likely skip",
+};
+
+const READINESS_BADGE_CLASS: Record<MatchReadinessDecision, string> = {
+  apply:
+    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300",
+  save:
+    "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300",
+  stretch:
+    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300",
+  skip:
+    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-300",
+};
 
 /** Derive a 1–2 sentence overview from available job data. */
 function deriveOverview(job: { title?: string | null } | undefined, match: MatchExplanation | null): string {
@@ -137,6 +161,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
           explanation: null,
           matched_skills: cached.matched_skills ?? [],
           missing_keywords: [],
+          readiness: cached.readiness,
         };
       }
     }
@@ -270,6 +295,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const postedLabel = job.posted_at ? formatRelativeDate(job.posted_at) : null;
   const salary = formatSalary(job.salary_min, job.salary_max, job.salary_currency);
   const matchScore = match ? (match.llm_score != null ? match.llm_score : match.vector_score) : 0;
+  const readiness = match?.readiness ?? null;
 
   return (
     <div className="flex flex-col gap-6 w-full">
@@ -539,11 +565,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             </CardHeader>
             <CardContent>
               {match ? (
-                <div className="flex items-start gap-4">
-                  {/* Left: score ring + fit label */}
-                  <div className="shrink-0">
-                    <CircularScore score={matchScore} confidence={match.confidence} size="lg" />
-                  </div>
+                  <div className="flex items-start gap-4">
+                    {/* Left: score ring + fit label */}
+                    <div className="shrink-0">
+                      <CircularScore score={matchScore} confidence={match.confidence} size="lg" />
+                    </div>
                   {/* Right: text + button */}
                   <div className="flex flex-col gap-2 min-w-0 flex-1 pt-1 ml-2">
                     <p className="text-xs text-muted-foreground leading-relaxed">
@@ -553,6 +579,30 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                           ? "You match many of the key requirements for this role."
                           : "This role may require additional skills beyond your profile."}
                     </p>
+                    {readiness && (
+                      <div className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className={`rounded-full text-[11px] font-normal ${READINESS_BADGE_CLASS[readiness.decision]}`}
+                          >
+                            {READINESS_LABELS[readiness.decision]}
+                          </Badge>
+                        </div>
+                        {readiness.reasons.length > 0 && (
+                          <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                            {readiness.reasons.slice(0, 2).map((reason) => (
+                              <li key={reason}>{reason}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {readiness.caveats.length > 0 && (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            {readiness.caveats.slice(0, 1).join(" ")}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {!explainData && (
                       <Button
                         variant="outline"

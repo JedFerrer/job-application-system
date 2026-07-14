@@ -22,10 +22,12 @@ from app.domain.matching.schemas import (
     MatchExplanation,
     MatchItem,
     MatchListResponse,
+    MatchReadiness,
     RankResponse,
     SkillGapItem,
     SkillsGapSummary,
 )
+from app.domain.matching.readiness import build_match_readiness
 from app.domain.matching.skill_matcher import (
     compute_skill_match,
     extract_known_skills,
@@ -124,6 +126,7 @@ class MatchingService:
                     confidence=match.confidence,
                     llm_score=match.llm_score,
                     matched_skills=match.matched_skills or None,
+                    readiness=self._build_readiness(match),
                     posted_at=job.posted_at,
                 )
             )
@@ -275,4 +278,19 @@ class MatchingService:
             explanation=match.llm_explanation,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
+            readiness=build_match_readiness(
+                score=match.llm_score if match.llm_score is not None else match.vector_score,  # type: ignore[attr-defined]
+                confidence=match.confidence,  # type: ignore[attr-defined]
+                matched_skills=match.matched_skills,  # type: ignore[attr-defined]
+                missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
+            ),
+        )
+
+    @staticmethod
+    def _build_readiness(match: object) -> MatchReadiness:
+        return build_match_readiness(
+            score=match.llm_score if match.llm_score is not None else match.vector_score,  # type: ignore[attr-defined]
+            confidence=match.confidence,  # type: ignore[attr-defined]
+            matched_skills=match.matched_skills,  # type: ignore[attr-defined]
+            missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
         )

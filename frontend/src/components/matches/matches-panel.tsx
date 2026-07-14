@@ -407,6 +407,7 @@ export function MatchesPanel() {
             score: match.llm_score ?? match.vector_score,
             confidence: match.confidence,
             matchedSkills: match.matched_skills,
+            readiness: match.readiness,
           };
 
           return (
