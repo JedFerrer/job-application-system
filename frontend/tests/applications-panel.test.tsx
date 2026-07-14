@@ -112,6 +112,16 @@ function findButtonInRow(row: HTMLElement, label: string) {
   return button;
 }
 
+function findRowContainingText(container: HTMLElement, text: string) {
+  const row = Array.from(container.querySelectorAll("tr")).find((el) =>
+    el.textContent?.includes(text),
+  );
+  if (!row) {
+    throw new Error(`Could not find row containing: ${text}`);
+  }
+  return row;
+}
+
 describe("ApplicationsPanel CRM polish", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -178,7 +188,7 @@ describe("ApplicationsPanel CRM polish", () => {
         source_url: "https://example.com/jobs/202",
         status: "saved",
         cover_letter_id: null,
-        notes: null,
+        notes: "General application note for the Acme role.",
         next_action_type: "prepare_interview",
         next_action_note: "Review system design notes.",
         next_action_due_date: "2026-07-13",
@@ -273,6 +283,7 @@ describe("ApplicationsPanel CRM polish", () => {
     });
 
     expect(container.textContent).toContain("Create a new next action");
+    expect(container.textContent).toContain("Next-action note");
 
     const textarea = container.querySelector("textarea");
     if (!textarea) {
@@ -330,6 +341,138 @@ describe("ApplicationsPanel CRM polish", () => {
       next_action_due_date: null,
       next_action_completed_at: null,
     });
+  });
+
+  it("opens, saves, cancels, and clears general application notes", async () => {
+    await renderPanel();
+
+    const row = findRowByJobTitle(container, "Platform Engineer");
+    await act(async () => {
+      findButtonInRow(row, "Notes").click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Application notes");
+    const notesRow = findRowContainingText(container, "Application notes");
+    const textarea = notesRow.querySelector("textarea");
+    if (!textarea) {
+      throw new Error("Expected application notes textarea");
+    }
+    expect((textarea as HTMLTextAreaElement).value).toBe(
+      "General application note for the Acme role.",
+    );
+
+    await act(async () => {
+      renderTextValue(
+        textarea as HTMLTextAreaElement,
+        "General application note for the Acme role. Mention PTO.",
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButton(container, "Save").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.update).toHaveBeenCalledWith(42, {
+      notes: "General application note for the Acme role. Mention PTO.",
+    });
+
+    await act(async () => {
+      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Notes").click();
+      await Promise.resolve();
+    });
+
+    const reopenedRow = findRowContainingText(container, "Application notes");
+    const reopenedTextarea = reopenedRow.querySelector("textarea");
+    if (!reopenedTextarea) {
+      throw new Error("Expected application notes textarea");
+    }
+
+    await act(async () => {
+      renderTextValue(
+        reopenedTextarea as HTMLTextAreaElement,
+        "Temporary draft that gets cancelled",
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButton(container, "Cancel").click();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.update).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain("Application notes");
+
+    await act(async () => {
+      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Notes").click();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButton(container, "Clear").click();
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.update).toHaveBeenLastCalledWith(42, {
+      notes: null,
+    });
+    expect(container.textContent).not.toContain("Application notes");
+
+    await act(async () => {
+      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Notes").click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("No application notes yet.");
+    const emptyNotesRow = findRowContainingText(container, "Application notes");
+    const emptyTextarea = emptyNotesRow.querySelector("textarea");
+    if (!emptyTextarea) {
+      throw new Error("Expected application notes textarea");
+    }
+    expect((emptyTextarea as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("shows a notes save error and keeps the draft open", async () => {
+    apiMocks.applicationsApi.update.mockRejectedValueOnce(new Error("boom"));
+
+    await renderPanel();
+
+    await act(async () => {
+      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Notes").click();
+      await Promise.resolve();
+    });
+
+    const notesRow = findRowContainingText(container, "Application notes");
+    const textarea = notesRow.querySelector("textarea");
+    if (!textarea) {
+      throw new Error("Expected application notes textarea");
+    }
+
+    await act(async () => {
+      renderTextValue(
+        textarea as HTMLTextAreaElement,
+        "Draft that should remain after the failed save",
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButton(container, "Save").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(toastMocks.error).toHaveBeenCalledWith("Update failed");
+    expect(container.textContent).toContain("Application notes");
+    expect((textarea as HTMLTextAreaElement).value).toBe(
+      "Draft that should remain after the failed save",
+    );
   });
 
   it("lazily loads and renders recent manual activity", async () => {
@@ -471,6 +614,9 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(container.textContent).toContain("Due:");
     expect(container.textContent).toContain("Has note");
     expect(container.textContent).not.toContain("Secret note body");
+    expect(container.textContent).not.toContain(
+      "General application note for the Acme role.",
+    );
   });
 
   it("shows an empty state and invalidates activity after next-action updates", async () => {

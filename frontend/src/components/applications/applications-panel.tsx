@@ -15,6 +15,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  StickyNote,
   Trash2,
   X,
 } from "lucide-react";
@@ -53,6 +54,10 @@ function draftFromApplication(app: ApplicationListItem) {
     next_action_note: app.next_action_note ?? "",
     next_action_due_date: app.next_action_due_date ?? "",
   };
+}
+
+function draftNotesFromApplication(app: ApplicationListItem) {
+  return app.notes ?? "";
 }
 
 function emptyNextActionDraft() {
@@ -203,7 +208,7 @@ export function ApplicationsPanel() {
     },
   });
 
-  const nextActionMutation = useMutation({
+  const applicationUpdateMutation = useMutation({
     mutationFn: ({ id, payload }: { id: number; payload: ApplicationUpdate }) =>
       applicationsApi.update(id, payload),
     onMutate: async ({ id, payload }) => {
@@ -236,7 +241,7 @@ export function ApplicationsPanel() {
       }
       toast.error(err instanceof ApiError ? err.message : "Update failed");
     },
-    onSuccess: (updated) => {
+    onSuccess: (updated, variables) => {
       queryClient.setQueryData<{
         pages: ApplicationListResponse[];
         pageParams: (string | null)[];
@@ -266,9 +271,18 @@ export function ApplicationsPanel() {
             }
           : old,
       );
-      queryClient.invalidateQueries({
-        queryKey: ["applications", updated.id, "activity"],
-      });
+      if (
+        [
+          "next_action_type",
+          "next_action_note",
+          "next_action_due_date",
+          "next_action_completed_at",
+        ].some((field) => field in variables.payload)
+      ) {
+        queryClient.invalidateQueries({
+          queryKey: ["applications", updated.id, "activity"],
+        });
+      }
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["applications", "infinite"] });
@@ -367,8 +381,11 @@ export function ApplicationsPanel() {
                       onStatusChange={(status) =>
                         statusMutation.mutate({ id: app.id, status })
                       }
-                      onNextActionChange={(payload) =>
-                        nextActionMutation.mutateAsync({ id: app.id, payload })
+                      onApplicationUpdate={(payload) =>
+                        applicationUpdateMutation.mutateAsync({
+                          id: app.id,
+                          payload,
+                        })
                       }
                       onCoverLetterClick={() =>
                         setCoverLetterJob({
@@ -408,25 +425,32 @@ export function ApplicationsPanel() {
 function ApplicationRow({
   app,
   onStatusChange,
-  onNextActionChange,
+  onApplicationUpdate,
   onCoverLetterClick,
 }: {
   app: ApplicationListItem;
   onStatusChange: (status: ApplicationStatus) => void;
-  onNextActionChange: (payload: ApplicationUpdate) => Promise<unknown>;
+  onApplicationUpdate: (payload: ApplicationUpdate) => Promise<unknown>;
   onCoverLetterClick: () => void;
 }) {
   const [nextActionMode, setNextActionMode] = useState<"edit" | "new" | null>(
     null,
   );
+  const [notesMode, setNotesMode] = useState<"edit" | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [draft, setDraft] = useState(() => draftFromApplication(app));
+  const [notesDraft, setNotesDraft] = useState(() =>
+    draftNotesFromApplication(app),
+  );
 
   useEffect(() => {
     if (nextActionMode === null) {
       setDraft(draftFromApplication(app));
     }
-  }, [app, nextActionMode]);
+    if (notesMode === null) {
+      setNotesDraft(draftNotesFromApplication(app));
+    }
+  }, [app, nextActionMode, notesMode]);
 
   const hasNextAction = Boolean(
     app.next_action_type ||
@@ -445,20 +469,25 @@ function ApplicationRow({
   const statusBadgeLabel = nextActionState.isCompleted
     ? null
     : nextActionState.statusLabel;
+  const isNotesOpen = notesMode !== null;
 
   const startEditing = () => {
+    setActivityOpen(false);
+    setNotesMode(null);
     setDraft(draftFromApplication(app));
     setNextActionMode("edit");
   };
 
   const startNewNextAction = () => {
+    setActivityOpen(false);
+    setNotesMode(null);
     setDraft(emptyNextActionDraft());
     setNextActionMode("new");
   };
 
   const saveNextAction = async () => {
     try {
-      await onNextActionChange({
+      await onApplicationUpdate({
         next_action_type: draft.next_action_type || null,
         next_action_note: draft.next_action_note.trim() || null,
         next_action_due_date: draft.next_action_due_date || null,
@@ -471,13 +500,43 @@ function ApplicationRow({
     }
   };
 
+  const startEditingNotes = () => {
+    setActivityOpen(false);
+    setNextActionMode(null);
+    setNotesDraft(draftNotesFromApplication(app));
+    setNotesMode("edit");
+  };
+
+  const saveNotes = async () => {
+    try {
+      await onApplicationUpdate({
+        notes: notesDraft.trim() || null,
+      });
+      setNotesMode(null);
+    } catch {
+      // mutation error is surfaced by the toast in the mutation handler
+    }
+  };
+
+  const clearNotes = async () => {
+    try {
+      await onApplicationUpdate({
+        notes: null,
+      });
+      setNotesDraft("");
+      setNotesMode(null);
+    } catch {
+      // mutation error is surfaced by the toast in the mutation handler
+    }
+  };
+
   const completeNextAction = async () => {
     if (!hasNextAction) return;
     try {
       const currentType = isEditing ? draft.next_action_type : app.next_action_type;
       const currentNote = isEditing ? draft.next_action_note : app.next_action_note;
       const currentDueDate = isEditing ? draft.next_action_due_date : app.next_action_due_date;
-      await onNextActionChange({
+      await onApplicationUpdate({
         next_action_type: currentType ? (currentType as ApplicationNextActionType) : null,
         next_action_note: currentNote || null,
         next_action_due_date: currentDueDate || null,
@@ -491,7 +550,7 @@ function ApplicationRow({
 
   const clearNextAction = async () => {
     try {
-      await onNextActionChange({
+      await onApplicationUpdate({
         next_action_type: null,
         next_action_note: null,
         next_action_due_date: null,
@@ -626,7 +685,27 @@ function ApplicationRow({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setActivityOpen((current) => !current)}
+                onClick={() => {
+                  if (isNotesOpen) {
+                    setNotesMode(null);
+                    setNotesDraft(draftNotesFromApplication(app));
+                    return;
+                  }
+                  startEditingNotes();
+                }}
+                className="gap-1.5"
+              >
+                <StickyNote className="h-3.5 w-3.5" />
+                {isNotesOpen ? "Hide notes" : "Notes"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setNextActionMode(null);
+                  setNotesMode(null);
+                  setActivityOpen((current) => !current);
+                }}
                 className="gap-1.5"
               >
                 <ChevronDown
@@ -694,7 +773,7 @@ function ApplicationRow({
                   </select>
                 </label>
                 <label className="flex flex-col gap-1 text-xs font-medium">
-                  Note
+                  Next-action note
                   <Textarea
                     value={draft.next_action_note}
                     onChange={(e) =>
@@ -758,6 +837,52 @@ function ApplicationRow({
                   onClick={() => setNextActionMode(null)}
                 >
                   Cancel
+                </Button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+      {isNotesOpen && (
+        <tr className="border-b last:border-0 bg-muted/20">
+          <td colSpan={5} className="px-4 pb-4 pt-0">
+            <div className="rounded-lg border bg-background p-3">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium">Application notes</p>
+                  <p className="text-xs text-muted-foreground">
+                    General notes about the application, company, or process.
+                  </p>
+                </div>
+                {!notesDraft.trim() && (
+                  <span className="text-xs text-muted-foreground">
+                    No application notes yet.
+                  </span>
+                )}
+              </div>
+              <Textarea
+                value={notesDraft}
+                onChange={(e) => setNotesDraft(e.target.value)}
+                placeholder="Add context, reminders, or follow-up details"
+                rows={3}
+                className="min-h-[96px]"
+              />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button size="sm" onClick={saveNotes}>
+                  Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setNotesMode(null);
+                    setNotesDraft(draftNotesFromApplication(app));
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button size="sm" variant="secondary" onClick={clearNotes}>
+                  Clear
                 </Button>
               </div>
             </div>
