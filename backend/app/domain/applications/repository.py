@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.application import Application
+from app.models.application_event import ApplicationEvent
 from app.models.job import Job
 
 
@@ -42,6 +43,26 @@ class ApplicationRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def create_event(
+        self,
+        *,
+        user_id: int,
+        application_id: int | None,
+        job_id: int | None,
+        event_type: str,
+        metadata: dict[str, object] | None = None,
+    ) -> ApplicationEvent:
+        event = ApplicationEvent(
+            user_id=user_id,
+            application_id=application_id,
+            job_id=job_id,
+            event_type=event_type,
+            metadata_=metadata or {},
+        )
+        self._session.add(event)
+        await self._session.flush()
+        return event
 
     async def update(
         self,

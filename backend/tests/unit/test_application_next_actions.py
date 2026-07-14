@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import insert, text
+from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -16,10 +16,18 @@ from app.domain.applications.schemas import ApplicationUpdate
 from app.domain.applications.service import ApplicationService
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
+from app.models.application_event import ApplicationEvent
 from app.models.job import Job
 from app.models.user import User
 
 pytestmark = pytest.mark.integration
+
+MANUAL_NEXT_ACTION_EVENT_ORDER = {
+    "manual_next_action_created": 0,
+    "manual_next_action_updated": 1,
+    "manual_next_action_completed": 2,
+    "manual_next_action_cleared": 3,
+}
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +40,7 @@ def engine():
 async def clean_db(engine) -> None:  # noqa: ANN001
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
-        for table in ("applications", "user_jobs", "jobs", "users"):
+        for table in ("application_events", "applications", "user_jobs", "jobs", "users"):
             await db.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
         await db.commit()
 
@@ -78,6 +86,26 @@ def _service(db: AsyncSession) -> ApplicationService:
     return ApplicationService(
         repository=ApplicationRepository(db),
         job_repository=JobRepository(db),
+    )
+
+
+async def _get_events(
+    db: AsyncSession, *, application_id: int, user_id: int
+) -> list[ApplicationEvent]:
+    result = await db.execute(
+        select(ApplicationEvent)
+        .where(
+            ApplicationEvent.application_id == application_id,
+            ApplicationEvent.user_id == user_id,
+        )
+    )
+    return sorted(
+        result.scalars().all(),
+        key=lambda event: (
+            MANUAL_NEXT_ACTION_EVENT_ORDER.get(event.event_type, 99),
+            event.created_at,
+            event.id,
+        ),
     )
 
 
@@ -183,6 +211,377 @@ async def test_application_update_can_set_clear_and_complete_next_action(
         assert cleared.next_action_due_date is None
         assert cleared.next_action_completed_at is None
         assert cleared.status == "saved"
+
+
+async def test_application_update_logs_manual_next_action_created(engine) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=301)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=301)
+
+        updated = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_note": "Email the recruiter.",
+                    "next_action_due_date": "2026-07-20",
+                }
+            ),
+        )
+
+        events = await _get_events(db, application_id=updated.id, user_id=1)
+        assert len(events) == 1
+        event = events[0]
+        assert event.event_type == "manual_next_action_created"
+        assert event.user_id == 1
+        assert event.application_id == updated.id
+        assert event.job_id == updated.job_id
+        assert event.metadata_ == {
+            "source": "browser_application_update",
+            "previous": {
+                "type": None,
+                "due_date": None,
+                "completed": False,
+                "has_note": False,
+            },
+            "current": {
+                "type": "follow_up",
+                "due_date": "2026-07-20",
+                "completed": False,
+                "has_note": True,
+            },
+            "changed_fields": [
+                "next_action_type",
+                "next_action_note",
+                "next_action_due_date",
+            ],
+        }
+
+
+async def test_application_update_logs_manual_next_action_updated_and_suppresses_note_text(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=302)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=302)
+
+        await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_note": "Initial note.",
+                    "next_action_due_date": "2026-07-20",
+                }
+            ),
+        )
+
+        updated = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_note": "Revised note.",
+                }
+            ),
+        )
+
+        events = await _get_events(db, application_id=updated.id, user_id=1)
+        assert [event.event_type for event in events] == [
+            "manual_next_action_created",
+            "manual_next_action_updated",
+        ]
+        event = events[-1]
+        assert event.metadata_["source"] == "browser_application_update"
+        assert event.metadata_["previous"]["has_note"] is True
+        assert event.metadata_["current"]["has_note"] is True
+        assert "note" not in event.metadata_["previous"]
+        assert "note" not in event.metadata_["current"]
+        assert event.metadata_["changed_fields"] == ["next_action_note"]
+        assert event.metadata_["previous"]["type"] == "follow_up"
+        assert event.metadata_["current"]["type"] == "follow_up"
+
+
+async def test_application_update_logs_manual_next_action_completed(engine) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=303)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=303)
+
+        await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_due_date": "2026-07-20",
+                }
+            ),
+        )
+
+        completed = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_completed_at": datetime(
+                        2026, 7, 21, 14, 30, tzinfo=UTC
+                    ),
+                }
+            ),
+        )
+
+        events = await _get_events(db, application_id=completed.id, user_id=1)
+        assert [event.event_type for event in events] == [
+            "manual_next_action_created",
+            "manual_next_action_completed",
+        ]
+        event = events[-1]
+        assert event.metadata_ == {
+            "source": "browser_application_update",
+            "previous": {
+                "type": "follow_up",
+                "due_date": "2026-07-20",
+                "completed": False,
+                "has_note": False,
+            },
+            "current": {
+                "type": "follow_up",
+                "due_date": "2026-07-20",
+                "completed": True,
+                "has_note": False,
+            },
+            "changed_fields": ["next_action_completed_at"],
+        }
+
+
+async def test_application_update_logs_manual_next_action_cleared(engine) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=304)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=304)
+
+        await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_note": "Ping recruiter.",
+                    "next_action_due_date": "2026-07-20",
+                }
+            ),
+        )
+
+        cleared = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": None,
+                    "next_action_note": None,
+                    "next_action_due_date": None,
+                    "next_action_completed_at": None,
+                }
+            ),
+        )
+
+        events = await _get_events(db, application_id=cleared.id, user_id=1)
+        assert [event.event_type for event in events] == [
+            "manual_next_action_created",
+            "manual_next_action_cleared",
+        ]
+        event = events[-1]
+        assert event.metadata_ == {
+            "source": "browser_application_update",
+            "previous": {
+                "type": "follow_up",
+                "due_date": "2026-07-20",
+                "completed": False,
+                "has_note": True,
+            },
+            "current": {
+                "type": None,
+                "due_date": None,
+                "completed": False,
+                "has_note": False,
+            },
+            "changed_fields": [
+                "next_action_type",
+                "next_action_note",
+                "next_action_due_date",
+            ],
+        }
+
+
+async def test_application_update_skips_noop_and_unrelated_patches(engine) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=305)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=305)
+
+        await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_note": "Ping recruiter.",
+                    "next_action_due_date": "2026-07-20",
+                }
+            ),
+        )
+
+        await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "next_action_type": "follow_up",
+                    "next_action_note": "Ping recruiter.",
+                    "next_action_due_date": "2026-07-20",
+                }
+            ),
+        )
+
+        await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "status": "applied",
+                }
+            ),
+        )
+
+        await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "cover_letter_id": None,
+                }
+            ),
+        )
+
+        events = await _get_events(db, application_id=created.id, user_id=1)
+        assert [event.event_type for event in events] == [
+            "manual_next_action_created",
+        ]
+
+
+async def test_application_update_notes_only_does_not_log_next_action_event(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=307)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=307)
+
+        updated = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate(
+                {
+                    "notes": "General application note only.",
+                }
+            ),
+        )
+
+        assert updated.notes == "General application note only."
+        assert updated.next_action_type is None
+        assert updated.next_action_note is None
+        assert updated.next_action_due_date is None
+        assert updated.next_action_completed_at is None
+
+        events = await _get_events(db, application_id=updated.id, user_id=1)
+        assert events == []
+
+
+async def test_application_update_empty_patch_does_not_log_next_action_event(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="a@test.com")
+        await _seed_public_job(db, job_id=308)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=308)
+
+        updated = await svc.update(
+            user_id=1,
+            application_id=created.id,
+            payload=ApplicationUpdate.model_validate({}),
+        )
+
+        assert updated.status == "saved"
+        assert updated.notes is None
+        assert updated.next_action_type is None
+        assert updated.next_action_note is None
+        assert updated.next_action_due_date is None
+        assert updated.next_action_completed_at is None
+
+        events = await _get_events(db, application_id=updated.id, user_id=1)
+        assert events == []
+
+
+async def test_application_update_rejects_other_users_application_without_event(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="owner@test.com")
+        await _seed_user(db, user_id=2, email="other@test.com")
+        await _seed_public_job(db, job_id=306)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=1, job_id=306)
+        await db.commit()
+
+    async with sf() as db:
+        svc = _service(db)
+        with pytest.raises(ApplicationNotFoundError):
+            await svc.update(
+                user_id=2,
+                application_id=created.id,
+                payload=ApplicationUpdate.model_validate(
+                    {"next_action_type": "networking"}
+                ),
+            )
+
+        events = await _get_events(db, application_id=created.id, user_id=1)
+        assert events == []
 
 
 async def test_application_list_due_next_actions_excludes_future_completed_and_null_due_dates(
