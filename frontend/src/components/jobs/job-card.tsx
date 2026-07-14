@@ -206,10 +206,12 @@ export function CircularScore({
   score,
   confidence,
   size = "sm",
+  showConfidenceLabel = true,
 }: {
   score: number;
   confidence: string | null;
   size?: "sm" | "lg";
+  showConfidenceLabel?: boolean;
 }) {
   const pct = Math.round(score);
   const isLg = size === "lg";
@@ -248,7 +250,7 @@ export function CircularScore({
           <span className="text-[10px] text-white leading-tight mt-0.5">Match</span>
         </div>
       </div>
-      {confidence && (
+      {showConfidenceLabel && confidence && (
         <span className="text-[11px] text-white">
           {CONFIDENCE_LABEL[confidence] ?? confidence}
         </span>
@@ -273,6 +275,8 @@ export interface JobCardProps {
   hideExternalLink?: boolean;
   /** Show "Analyzing…" instead of match score. */
   isAnalyzing?: boolean;
+  /** Hide the confidence label under the score ring when readiness is shown. */
+  showConfidenceLabel?: boolean;
   /** If true, the save action shows a "Saved" state. */
   isSaved?: boolean;
   /** Archive click handler (shows archive icon when provided). */
@@ -290,6 +294,7 @@ export function JobCard({
   topRightAction,
   hideExternalLink,
   isAnalyzing,
+  showConfidenceLabel = true,
   isSaved,
   onArchive,
   onCardClick,
@@ -426,7 +431,11 @@ export function JobCard({
             )}
             {match && !isAnalyzing && (
               <div className="mt-2 rounded-lg border p-2">
-                <CircularScore score={match.score} confidence={match.confidence} />
+                <CircularScore
+                  score={match.score}
+                  confidence={match.confidence}
+                  showConfidenceLabel={showConfidenceLabel}
+                />
                 {match.readiness && (
                   <div className="mt-2 flex justify-center">
                     <Badge

@@ -568,7 +568,12 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                   <div className="flex items-start gap-4">
                     {/* Left: score ring + fit label */}
                     <div className="shrink-0">
-                      <CircularScore score={matchScore} confidence={match.confidence} size="lg" />
+                      <CircularScore
+                        score={matchScore}
+                        confidence={match.confidence}
+                        size="lg"
+                        showConfidenceLabel={false}
+                      />
                     </div>
                   {/* Right: text + button */}
                   <div className="flex flex-col gap-2 min-w-0 flex-1 pt-1 ml-2">

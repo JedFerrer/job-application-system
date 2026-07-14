@@ -121,11 +121,19 @@ describe("JobCard readiness", () => {
     };
 
     await act(async () => {
-      root.render(<JobCard job={job} match={match} hideExternalLink />);
+      root.render(
+        <JobCard
+          job={job}
+          match={match}
+          hideExternalLink
+          showConfidenceLabel={false}
+        />,
+      );
       await Promise.resolve();
     });
 
     expect(container.textContent).toContain("Ready to apply");
+    expect(container.textContent).not.toContain("Stretch fit");
   });
 
   it("keeps JobCard usable when readiness is absent", async () => {
@@ -312,5 +320,6 @@ describe("JobDetailView readiness", () => {
       "Detailed skill gaps are not available yet",
     );
     expect(container.textContent).toContain("View Match Details");
+    expect(container.textContent).not.toContain("Stretch fit");
   });
 });
