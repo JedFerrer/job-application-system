@@ -8,23 +8,21 @@ from app.core.logging import get_logger
 from app.domain.applications.exceptions import ApplicationNotFoundError
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.schemas import (
+    ApplicationActivityEvent,
+    ApplicationActivityResponse,
     ApplicationListItem,
     ApplicationListResponse,
     ApplicationResponse,
     ApplicationUpdate,
+    MANUAL_NEXT_ACTION_EVENT_COMPLETED,
+    MANUAL_NEXT_ACTION_EVENT_CREATED,
+    MANUAL_NEXT_ACTION_EVENT_CLEARED,
+    MANUAL_NEXT_ACTION_EVENT_UPDATED,
 )
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 
 logger = get_logger("application_service")
-
-MANUAL_NEXT_ACTION_EVENT_SOURCE = "browser_application_update"
-MANUAL_NEXT_ACTION_EVENT_TYPES = {
-    "created": "manual_next_action_created",
-    "updated": "manual_next_action_updated",
-    "completed": "manual_next_action_completed",
-    "cleared": "manual_next_action_cleared",
-}
 NEXT_ACTION_FIELDS = (
     "next_action_type",
     "next_action_note",
@@ -100,6 +98,33 @@ class ApplicationService:
                     ),
                 )
         return ApplicationResponse.model_validate(updated)
+
+    async def list_activity(
+        self, *, user_id: int, application_id: int, limit: int = 10
+    ) -> ApplicationActivityResponse:
+        application = await self._repo.get(
+            user_id=user_id, application_id=application_id
+        )
+        if application is None:
+            raise ApplicationNotFoundError(application_id)
+
+        events = await self._repo.list_manual_activity_events(
+            user_id=user_id,
+            application_id=application_id,
+            limit=limit,
+        )
+        return ApplicationActivityResponse(
+            application_id=application_id,
+            events=[
+                ApplicationActivityEvent(
+                    id=event.id,
+                    event_type=event.event_type,
+                    metadata=event.metadata_,
+                    created_at=event.created_at,
+                )
+                for event in events
+            ],
+        )
 
     async def list(
         self, *, user_id: int, cursor: str | None = None, limit: int = 50
@@ -203,16 +228,16 @@ def _classify_manual_next_action_event(
     current_completed = current_next_action["completed_at"] is not None
 
     if previous_has_next_action and not current_has_next_action:
-        return MANUAL_NEXT_ACTION_EVENT_TYPES["cleared"], changed_fields
+        return MANUAL_NEXT_ACTION_EVENT_CLEARED, changed_fields
     if (
         "next_action_completed_at" in payload_fields
         and not previous_completed
         and current_completed
     ):
-        return MANUAL_NEXT_ACTION_EVENT_TYPES["completed"], changed_fields
+        return MANUAL_NEXT_ACTION_EVENT_COMPLETED, changed_fields
     if not previous_has_next_action and current_has_next_action:
-        return MANUAL_NEXT_ACTION_EVENT_TYPES["created"], changed_fields
-    return MANUAL_NEXT_ACTION_EVENT_TYPES["updated"], changed_fields
+        return MANUAL_NEXT_ACTION_EVENT_CREATED, changed_fields
+    return MANUAL_NEXT_ACTION_EVENT_UPDATED, changed_fields
 
 
 def _manual_next_action_metadata(
@@ -222,7 +247,7 @@ def _manual_next_action_metadata(
     changed_fields: list[str],
 ) -> dict[str, object]:
     return {
-        "source": MANUAL_NEXT_ACTION_EVENT_SOURCE,
+        "source": "browser_application_update",
         "previous": {
             "type": previous_next_action["type"],
             "due_date": _date_to_iso(previous_next_action["due_date"]),

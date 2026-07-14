@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, status
 
 from app.api.deps import ApplicationServiceDep, CurrentUser
 from app.domain.applications.schemas import (
+    ApplicationActivityResponse,
     ApplicationCreate,
     ApplicationListResponse,
     ApplicationResponse,
@@ -60,4 +61,18 @@ async def update_application(
 ) -> ApplicationResponse:
     return await service.update(
         user_id=current_user.id, application_id=application_id, payload=payload
+    )
+
+
+@router.get("/{application_id}/activity", response_model=ApplicationActivityResponse)
+async def list_application_activity(
+    application_id: int,
+    current_user: CurrentUser,
+    service: ApplicationServiceDep,
+    limit: int = Query(default=10, ge=1, le=25),
+) -> ApplicationActivityResponse:
+    return await service.list_activity(
+        user_id=current_user.id,
+        application_id=application_id,
+        limit=limit,
     )

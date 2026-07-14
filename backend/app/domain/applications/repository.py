@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.application import Application
 from app.models.application_event import ApplicationEvent
 from app.models.job import Job
+from app.domain.applications.schemas import MANUAL_NEXT_ACTION_EVENT_TYPES
 
 
 class ApplicationRepository:
@@ -63,6 +64,28 @@ class ApplicationRepository:
         self._session.add(event)
         await self._session.flush()
         return event
+
+    async def list_manual_activity_events(
+        self,
+        *,
+        user_id: int,
+        application_id: int,
+        limit: int,
+    ) -> list[ApplicationEvent]:
+        result = await self._session.execute(
+            select(ApplicationEvent)
+            .where(
+                ApplicationEvent.user_id == user_id,
+                ApplicationEvent.application_id == application_id,
+                ApplicationEvent.event_type.in_(MANUAL_NEXT_ACTION_EVENT_TYPES),
+            )
+            .order_by(
+                ApplicationEvent.created_at.desc(),
+                ApplicationEvent.id.desc(),
+            )
+            .limit(limit)
+        )
+        return list(result.scalars().all())
 
     async def update(
         self,

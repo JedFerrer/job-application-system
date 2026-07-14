@@ -1,10 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  ChevronDown,
   Check,
   FileText,
+  History,
   Loader2,
   Pencil,
   Plus,
@@ -67,6 +74,20 @@ function formatDateTimeLabel(value: string) {
     minute: "2-digit",
   }).format(date);
 }
+
+function formatManualNextActionTypeLabel(type: string | null) {
+  if (!type) return null;
+  return (
+    APPLICATION_NEXT_ACTION_LABELS[type as ApplicationNextActionType] ?? type
+  );
+}
+
+const MANUAL_NEXT_ACTION_ACTIVITY_LABELS: Record<string, string> = {
+  manual_next_action_created: "Next action created",
+  manual_next_action_updated: "Next action updated",
+  manual_next_action_completed: "Next action completed",
+  manual_next_action_cleared: "Next action cleared",
+};
 
 export function ApplicationsPanel() {
   const queryClient = useQueryClient();
@@ -245,6 +266,9 @@ export function ApplicationsPanel() {
             }
           : old,
       );
+      queryClient.invalidateQueries({
+        queryKey: ["applications", updated.id, "activity"],
+      });
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["applications", "infinite"] });
@@ -395,6 +419,7 @@ function ApplicationRow({
   const [nextActionMode, setNextActionMode] = useState<"edit" | "new" | null>(
     null,
   );
+  const [activityOpen, setActivityOpen] = useState(false);
   const [draft, setDraft] = useState(() => draftFromApplication(app));
 
   useEffect(() => {
@@ -598,6 +623,19 @@ function ApplicationRow({
                   New next action
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setActivityOpen((current) => !current)}
+                className="gap-1.5"
+              >
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${
+                    activityOpen ? "rotate-180" : ""
+                  }`}
+                />
+                {activityOpen ? "Hide activity" : "Recent activity"}
+              </Button>
             </div>
           </div>
         </td>
@@ -726,6 +764,83 @@ function ApplicationRow({
           </td>
         </tr>
       )}
+      {activityOpen && (
+        <RecentActivityRow applicationId={app.id} isOpen={activityOpen} />
+      )}
     </>
+  );
+}
+
+function RecentActivityRow({
+  applicationId,
+  isOpen,
+}: {
+  applicationId: number;
+  isOpen: boolean;
+}) {
+  const activityQuery = useQuery({
+    queryKey: ["applications", applicationId, "activity"],
+    queryFn: () => applicationsApi.getActivity(applicationId, { limit: 10 }),
+    enabled: isOpen,
+    retry: false,
+  });
+
+  const events = activityQuery.data?.events ?? [];
+
+  return (
+    <tr className="border-b last:border-0 bg-muted/20">
+      <td colSpan={5} className="px-4 pb-4 pt-0">
+        <div className="rounded-lg border bg-background p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <History className="h-4 w-4 text-muted-foreground" />
+            <p className="text-sm font-medium">Recent activity</p>
+          </div>
+          {activityQuery.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading activity…</p>
+          ) : activityQuery.isError ? (
+            <p className="text-xs text-muted-foreground">
+              Activity could not be loaded.
+            </p>
+          ) : events.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No manual activity yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {events.map((event) => (
+                <li
+                  key={event.id}
+                  className="rounded-md border border-border/70 bg-muted/20 px-3 py-2"
+                >
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="text-sm font-medium">
+                      {MANUAL_NEXT_ACTION_ACTIVITY_LABELS[event.event_type] ??
+                        event.event_type}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {formatDateTimeLabel(event.created_at)}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                    {event.metadata.current.type && (
+                      <span>
+                        Type: {formatManualNextActionTypeLabel(event.metadata.current.type)}
+                      </span>
+                    )}
+                    {event.metadata.current.due_date && (
+                      <span>
+                        Due: {formatNextActionDateLabel(event.metadata.current.due_date)}
+                      </span>
+                    )}
+                    <span>
+                      {event.metadata.current.has_note ? "Has note" : "No note"}
+                    </span>
+                    {event.metadata.current.completed && <span>Completed</span>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </td>
+    </tr>
   );
 }

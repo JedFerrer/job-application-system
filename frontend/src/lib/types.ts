@@ -305,6 +305,42 @@ export interface ApplicationListResponse {
   next_cursor: string | null;
 }
 
+export const APPLICATION_ACTIVITY_EVENT_TYPES = [
+  "manual_next_action_created",
+  "manual_next_action_updated",
+  "manual_next_action_completed",
+  "manual_next_action_cleared",
+] as const;
+
+export type ApplicationActivityEventType =
+  (typeof APPLICATION_ACTIVITY_EVENT_TYPES)[number];
+
+export interface ManualNextActionActivitySnapshot {
+  type: string | null;
+  due_date: string | null;
+  completed: boolean;
+  has_note: boolean;
+}
+
+export interface ManualNextActionActivityMetadata {
+  source: string;
+  previous: ManualNextActionActivitySnapshot;
+  current: ManualNextActionActivitySnapshot;
+  changed_fields: string[];
+}
+
+export interface ApplicationActivityEvent {
+  id: string;
+  event_type: ApplicationActivityEventType;
+  metadata: ManualNextActionActivityMetadata;
+  created_at: string;
+}
+
+export interface ApplicationActivityResponse {
+  application_id: number;
+  events: ApplicationActivityEvent[];
+}
+
 // ---- Job preferences (Phase 2) ----------------------------------------------
 export type RemotePreference = "remote" | "onsite" | "hybrid" | "any";
 

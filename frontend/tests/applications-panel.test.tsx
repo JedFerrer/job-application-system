@@ -11,6 +11,7 @@ const apiMocks = vi.hoisted(() => {
     update: vi.fn(),
     create: vi.fn(),
     listDueNextActions: vi.fn(),
+    getActivity: vi.fn(),
   };
 
   class ApiError extends Error {
@@ -148,6 +149,7 @@ describe("ApplicationsPanel CRM polish", () => {
     apiMocks.applicationsApi.update.mockReset();
     apiMocks.applicationsApi.create.mockReset();
     apiMocks.applicationsApi.listDueNextActions.mockReset();
+    apiMocks.applicationsApi.getActivity.mockReset();
 
     applications = [
       {
@@ -207,6 +209,12 @@ describe("ApplicationsPanel CRM polish", () => {
         applications = applications.map((app) => (app.id === id ? updated : app));
         return updated;
       },
+    );
+    apiMocks.applicationsApi.getActivity.mockImplementation(
+      async (id: number) => ({
+        application_id: id,
+        events: [],
+      }),
     );
 
     queryClient.setQueryData(
@@ -322,5 +330,205 @@ describe("ApplicationsPanel CRM polish", () => {
       next_action_due_date: null,
       next_action_completed_at: null,
     });
+  });
+
+  it("lazily loads and renders recent manual activity", async () => {
+    let resolveActivity: (value: any) => void = () => {};
+
+    const activityPromise = new Promise<any>((resolve) => {
+      resolveActivity = resolve;
+    });
+
+    apiMocks.applicationsApi.getActivity.mockReturnValueOnce(activityPromise);
+
+    await renderPanel();
+
+    expect(apiMocks.applicationsApi.getActivity).not.toHaveBeenCalled();
+
+    const row = findRowByJobTitle(container, "Platform Engineer");
+    await act(async () => {
+      findButtonInRow(row, "Recent activity").click();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.getActivity).toHaveBeenCalledWith(42, {
+      limit: 10,
+    });
+    expect(container.textContent).toContain("Loading activity…");
+
+    await act(async () => {
+      resolveActivity({
+        application_id: 42,
+        events: [
+          {
+            id: "evt-4",
+            event_type: "manual_next_action_cleared",
+            metadata: {
+              source: "browser_application_update",
+              note_body: "Secret note body",
+              previous: {
+                type: "follow_up",
+                due_date: "2026-07-20",
+                completed: false,
+                has_note: true,
+              },
+              current: {
+                type: null,
+                due_date: null,
+                completed: false,
+                has_note: false,
+              },
+              changed_fields: [
+                "next_action_type",
+                "next_action_note",
+                "next_action_due_date",
+              ],
+            },
+            created_at: "2026-07-14T13:00:00.000Z",
+          },
+          {
+            id: "evt-3",
+            event_type: "manual_next_action_completed",
+            metadata: {
+              source: "browser_application_update",
+              previous: {
+                type: "networking",
+                due_date: "2026-07-22",
+                completed: false,
+                has_note: false,
+              },
+              current: {
+                type: "networking",
+                due_date: "2026-07-22",
+                completed: true,
+                has_note: false,
+              },
+              changed_fields: ["next_action_completed_at"],
+            },
+            created_at: "2026-07-14T12:30:00.000Z",
+          },
+          {
+            id: "evt-2",
+            event_type: "manual_next_action_updated",
+            metadata: {
+              source: "browser_application_update",
+              previous: {
+                type: "follow_up",
+                due_date: "2026-07-20",
+                completed: false,
+                has_note: true,
+              },
+              current: {
+                type: "networking",
+                due_date: "2026-07-22",
+                completed: false,
+                has_note: false,
+              },
+              changed_fields: [
+                "next_action_type",
+                "next_action_due_date",
+              ],
+            },
+            created_at: "2026-07-14T12:00:00.000Z",
+          },
+          {
+            id: "evt-1",
+            event_type: "manual_next_action_created",
+            metadata: {
+              source: "browser_application_update",
+              previous: {
+                type: null,
+                due_date: null,
+                completed: false,
+                has_note: false,
+              },
+              current: {
+                type: "follow_up",
+                due_date: "2026-07-20",
+                completed: false,
+                has_note: true,
+              },
+              changed_fields: [
+                "next_action_type",
+                "next_action_note",
+                "next_action_due_date",
+              ],
+            },
+            created_at: "2026-07-14T11:00:00.000Z",
+          },
+        ],
+      });
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Next action created");
+    expect(container.textContent).toContain("Next action updated");
+    expect(container.textContent).toContain("Next action completed");
+    expect(container.textContent).toContain("Next action cleared");
+    expect(container.textContent).toContain("Type: Networking");
+    expect(container.textContent).toContain("Due:");
+    expect(container.textContent).toContain("Has note");
+    expect(container.textContent).not.toContain("Secret note body");
+  });
+
+  it("shows an empty state and invalidates activity after next-action updates", async () => {
+    apiMocks.applicationsApi.getActivity.mockResolvedValueOnce({
+      application_id: 42,
+      events: [],
+    });
+
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await renderPanel();
+
+    await act(async () => {
+      findButtonInRow(
+        findRowByJobTitle(container, "Platform Engineer"),
+        "Recent activity",
+      ).click();
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("No manual activity yet.");
+
+    await act(async () => {
+      findButton(container, "Complete").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      invalidateSpy.mock.calls.some(
+        ([arg]) =>
+          Boolean(arg) &&
+          typeof arg === "object" &&
+          JSON.stringify((arg as { queryKey?: unknown }).queryKey) ===
+            JSON.stringify(["applications", 42, "activity"]),
+      ),
+    ).toBe(true);
+  });
+
+  it("shows an error state when activity cannot be loaded", async () => {
+    apiMocks.applicationsApi.getActivity.mockRejectedValueOnce(
+      new Error("boom"),
+    );
+
+    await renderPanel();
+
+    await act(async () => {
+      findButtonInRow(
+        findRowByJobTitle(container, "Platform Engineer"),
+        "Recent activity",
+      ).click();
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Activity could not be loaded.");
   });
 });

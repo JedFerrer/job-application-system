@@ -20,6 +20,25 @@ ApplicationNextActionType = Literal[
     "other",
 ]
 
+MANUAL_NEXT_ACTION_EVENT_CREATED = "manual_next_action_created"
+MANUAL_NEXT_ACTION_EVENT_UPDATED = "manual_next_action_updated"
+MANUAL_NEXT_ACTION_EVENT_COMPLETED = "manual_next_action_completed"
+MANUAL_NEXT_ACTION_EVENT_CLEARED = "manual_next_action_cleared"
+
+MANUAL_NEXT_ACTION_EVENT_TYPES = (
+    MANUAL_NEXT_ACTION_EVENT_CREATED,
+    MANUAL_NEXT_ACTION_EVENT_UPDATED,
+    MANUAL_NEXT_ACTION_EVENT_COMPLETED,
+    MANUAL_NEXT_ACTION_EVENT_CLEARED,
+)
+
+ManualNextActionEventType = Literal[
+    "manual_next_action_created",
+    "manual_next_action_updated",
+    "manual_next_action_completed",
+    "manual_next_action_cleared",
+]
+
 
 class ApplicationCreate(BaseModel):
     job_id: int
@@ -75,3 +94,31 @@ class ApplicationListResponse(BaseModel):
     limit: int = 50
     next_cursor: str | None = None
     """Cursor for the next page (base64-encoded updated_at|id), or None if last page."""
+
+
+class ManualNextActionActivitySnapshot(BaseModel):
+    type: str | None
+    due_date: date | None
+    completed: bool
+    has_note: bool
+
+
+class ManualNextActionActivityMetadata(BaseModel):
+    source: str
+    previous: ManualNextActionActivitySnapshot
+    current: ManualNextActionActivitySnapshot
+    changed_fields: list[str]
+
+
+class ApplicationActivityEvent(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    event_type: ManualNextActionEventType
+    metadata: ManualNextActionActivityMetadata
+    created_at: datetime
+
+
+class ApplicationActivityResponse(BaseModel):
+    application_id: int
+    events: list[ApplicationActivityEvent]

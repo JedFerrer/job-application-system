@@ -1,5 +1,6 @@
 import type {
   Application,
+  ApplicationActivityResponse,
   ApplicationListItem,
   ApplicationListResponse,
   ApplicationUpdate,
@@ -349,6 +350,16 @@ export const applicationsApi = {
     apiRequest<ApplicationListResponse>(
       `/applications/next-actions?${new URLSearchParams({ due_by: dueBy }).toString()}`,
     ),
+  getActivity: (
+    id: number,
+    opts: { limit?: number } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(opts.limit ?? 10));
+    return apiRequest<ApplicationActivityResponse>(
+      `/applications/${id}/activity?${qs.toString()}`,
+    );
+  },
   create: (jobId: number) =>
     apiRequest<Application>("/applications", {
       method: "POST",
