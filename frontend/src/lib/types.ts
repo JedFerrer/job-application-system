@@ -103,6 +103,25 @@ export interface TailoredResume {
   missing_keywords: string[];
 }
 
+export interface TailoredResumeDraftCreate {
+  job_id: number;
+  content: TailoredResume;
+}
+
+export interface TailoredResumeDraftListItem {
+  id: number;
+  job_id: number | null;
+  source_profile_id: number | null;
+  job_title: string;
+  job_company: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TailoredResumeDraft extends TailoredResumeDraftListItem {
+  content: TailoredResume;
+}
+
 // ---- Jobs (Phase 2) ---------------------------------------------------------
 export interface IngestRequest {
   search_term: string;

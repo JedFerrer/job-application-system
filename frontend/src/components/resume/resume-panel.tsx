@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Upload } from "lucide-react";
+import { Eye, Loader2, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, resumeApi } from "@/lib/api";
 import { useResumeTask } from "@/context/resume-task-context";
 import type { ParsedProfile } from "@/lib/types";
+import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,12 +17,24 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const ACCEPTED = ".pdf,.docx";
 
 export function ResumePanel() {
   const queryClient = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
+  const [openDraftId, setOpenDraftId] = useState<number | null>(null);
+  const [deleteDraftId, setDeleteDraftId] = useState<number | null>(null);
 
   // Task state is managed globally so polling survives navigation.
   const { setTask, isRunning, progressMsg } = useResumeTask();
@@ -36,6 +49,29 @@ export function ResumePanel() {
     mutationFn: (file: File) => resumeApi.upload(file),
     onSuccess: (data, file) => setTask(data.task_id, file.name),
     onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  const draftsQuery = useQuery({
+    queryKey: ["resume-drafts"],
+    queryFn: resumeApi.listDrafts,
+    retry: false,
+  });
+  const draftDetailQuery = useQuery({
+    queryKey: ["resume-draft", openDraftId],
+    queryFn: () => resumeApi.getDraft(openDraftId!),
+    enabled: openDraftId != null,
+    retry: false,
+  });
+  const deleteDraftMutation = useMutation({
+    mutationFn: (draftId: number) => resumeApi.deleteDraft(draftId),
+    onSuccess: (_, draftId) => {
+      if (openDraftId === draftId) setOpenDraftId(null);
+      setDeleteDraftId(null);
+      toast.success("Saved draft deleted");
+      void queryClient.invalidateQueries({ queryKey: ["resume-drafts"] });
+      void queryClient.removeQueries({ queryKey: ["resume-draft", draftId] });
+    },
+    onError: () => toast.error("Could not delete saved draft."),
   });
 
   const handlePick = () => fileRef.current?.click();
@@ -105,8 +141,115 @@ export function ResumePanel() {
       )}
 
       {profile && <ProfileView profile={profile} />}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Saved tailored drafts</CardTitle>
+          <CardDescription>
+            Saved AI-generated drafts remain user-controlled. Review every claim before use.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {draftsQuery.isLoading && (
+            <p className="text-sm text-muted-foreground">Loading saved drafts…</p>
+          )}
+          {draftsQuery.isError && (
+            <p className="text-sm text-destructive">Could not load saved drafts.</p>
+          )}
+          {draftsQuery.data?.length === 0 && (
+            <p className="text-sm text-muted-foreground">No saved tailored drafts yet.</p>
+          )}
+          {draftsQuery.data && draftsQuery.data.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {draftsQuery.data.map((draft) => (
+                <div
+                  key={draft.id}
+                  className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{draft.job_title}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {draft.job_company ?? "Unknown company"} · Saved {formatDraftDate(draft.created_at)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setOpenDraftId(draft.id)}>
+                      <Eye className="h-4 w-4" />
+                      Open
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Delete saved draft for ${draft.job_title}`}
+                      onClick={() => setDeleteDraftId(draft.id)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {openDraftId != null && draftDetailQuery.data && (
+        <TailorResumeDialog
+          jobId={draftDetailQuery.data.job_id}
+          jobTitle={draftDetailQuery.data.job_title}
+          open
+          readOnly
+          initialData={draftDetailQuery.data.content}
+          onOpenChange={(open) => {
+            if (!open) setOpenDraftId(null);
+          }}
+        />
+      )}
+      {openDraftId != null && draftDetailQuery.isLoading && (
+        <p className="text-sm text-muted-foreground">Loading saved draft…</p>
+      )}
+      {openDraftId != null && draftDetailQuery.isError && (
+        <p className="text-sm text-destructive">Could not load saved draft.</p>
+      )}
+
+      <AlertDialog
+        open={deleteDraftId != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteDraftId(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete saved draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This saved tailored resume snapshot will be permanently removed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteDraftMutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                if (deleteDraftId != null) deleteDraftMutation.mutate(deleteDraftId);
+              }}
+            >
+              {deleteDraftMutation.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
+}
+
+function formatDraftDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
 }
 
 function ProfileView({ profile }: { profile: ParsedProfile }) {

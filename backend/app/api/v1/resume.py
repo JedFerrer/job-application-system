@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile, status
+from fastapi.responses import Response
 
 from app.api.deps import CurrentUser, JobRepositoryDep, ResumeServiceDep, TaskStoreDep
 from app.core.logging import get_logger
@@ -17,8 +18,10 @@ from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import (
     ProfileResponse,
     ProfileUpdate,
-    ResumeResponse,
     TailoredResume,
+    TailoredResumeDraftCreate,
+    TailoredResumeDraftListItem,
+    TailoredResumeDraftResponse,
 )
 from app.infrastructure.database import async_session_factory
 from app.infrastructure.redis_client import get_redis
@@ -53,7 +56,8 @@ async def _run_resume_bg(
     try:
         async with async_session_factory() as db:
             try:
-                from app.domain.resume.service import ResumeService  # local to avoid cycle  # noqa: PLC0415
+                # Local import avoids a module cycle.
+                from app.domain.resume.service import ResumeService  # noqa: PLC0415
 
                 service = ResumeService(ResumeRepository(db))
                 result = await service.upload_and_parse(
@@ -152,6 +156,51 @@ async def get_profile(
         return await service.get_profile(current_user.id)
     except ProfileNotFoundError:
         return None
+
+
+@router.post(
+    "/drafts",
+    response_model=TailoredResumeDraftResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_tailored_resume_draft(
+    payload: TailoredResumeDraftCreate,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+    job_repo: JobRepositoryDep,
+) -> TailoredResumeDraftResponse:
+    return await service.create_tailored_draft(
+        user_id=current_user.id, payload=payload, job_repository=job_repo
+    )
+
+
+@router.get("/drafts", response_model=list[TailoredResumeDraftListItem])
+async def list_tailored_resume_drafts(
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+) -> list[TailoredResumeDraftListItem]:
+    return await service.list_tailored_drafts(user_id=current_user.id)
+
+
+@router.get("/drafts/{draft_id}", response_model=TailoredResumeDraftResponse)
+async def get_tailored_resume_draft(
+    draft_id: int,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+) -> TailoredResumeDraftResponse:
+    return await service.get_tailored_draft(
+        user_id=current_user.id, draft_id=draft_id
+    )
+
+
+@router.delete("/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_tailored_resume_draft(
+    draft_id: int,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+) -> Response:
+    await service.delete_tailored_draft(user_id=current_user.id, draft_id=draft_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put("/profile", response_model=ProfileResponse)

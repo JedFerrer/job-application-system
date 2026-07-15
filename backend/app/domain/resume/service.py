@@ -21,6 +21,7 @@ from app.domain.matching.skill_matcher import (
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeParseError,
+    TailoredResumeDraftNotFoundError,
     UnsupportedResumeFormatError,
 )
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
@@ -30,6 +31,9 @@ from app.domain.resume.schemas import (
     ProfileResponse,
     ResumeResponse,
     TailoredResume,
+    TailoredResumeDraftCreate,
+    TailoredResumeDraftListItem,
+    TailoredResumeDraftResponse,
     TailoredWorkItem,
 )
 from app.domain.resume.truthfulness import sanitize_tailoring_output
@@ -179,6 +183,85 @@ class ResumeService:
             resume_id=profile_row.resume_id,
             profile=profile,
         )
+
+    # -- saved tailored drafts ---------------------------------------------
+
+    @staticmethod
+    def _draft_response(draft: Any) -> TailoredResumeDraftResponse:
+        return TailoredResumeDraftResponse(
+            id=draft.id,
+            job_id=draft.job_id,
+            source_profile_id=draft.source_profile_id,
+            job_title=draft.job_title,
+            job_company=draft.job_company,
+            created_at=draft.created_at,
+            updated_at=draft.updated_at,
+            content=TailoredResume.model_validate(draft.content),
+        )
+
+    @staticmethod
+    def _draft_list_item(draft: Any) -> TailoredResumeDraftListItem:
+        return TailoredResumeDraftListItem(
+            id=draft.id,
+            job_id=draft.job_id,
+            source_profile_id=draft.source_profile_id,
+            job_title=draft.job_title,
+            job_company=draft.job_company,
+            created_at=draft.created_at,
+            updated_at=draft.updated_at,
+        )
+
+    async def create_tailored_draft(
+        self,
+        *,
+        user_id: int,
+        payload: TailoredResumeDraftCreate,
+        job_repository: JobRepository,
+    ) -> TailoredResumeDraftResponse:
+        profile = await self._repository.get_active_profile(user_id)
+        if profile is None:
+            raise ProfileNotFoundError(user_id)
+
+        job = await job_repository.get_visible_by_id(
+            user_id=user_id, job_id=payload.job_id
+        )
+        if job is None:
+            raise JobNotFoundError(payload.job_id)
+
+        draft = await self._repository.create_tailored_draft(
+            user_id=user_id,
+            job_id=payload.job_id,
+            source_profile_id=profile.id,
+            job_title=job.title,
+            job_company=job.company,
+            content=payload.content.model_dump(mode="json"),
+        )
+        return self._draft_response(draft)
+
+    async def list_tailored_drafts(
+        self, *, user_id: int
+    ) -> list[TailoredResumeDraftListItem]:
+        drafts = await self._repository.list_tailored_drafts(user_id=user_id)
+        return [self._draft_list_item(draft) for draft in drafts]
+
+    async def get_tailored_draft(
+        self, *, user_id: int, draft_id: int
+    ) -> TailoredResumeDraftResponse:
+        draft = await self._repository.get_tailored_draft(
+            user_id=user_id, draft_id=draft_id
+        )
+        if draft is None:
+            raise TailoredResumeDraftNotFoundError(draft_id)
+        return self._draft_response(draft)
+
+    async def delete_tailored_draft(
+        self, *, user_id: int, draft_id: int
+    ) -> None:
+        deleted = await self._repository.delete_tailored_draft(
+            user_id=user_id, draft_id=draft_id
+        )
+        if not deleted:
+            raise TailoredResumeDraftNotFoundError(draft_id)
 
     # -- resume tailoring --------------------------------------------------
 

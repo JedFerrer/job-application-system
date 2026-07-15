@@ -6,6 +6,7 @@ import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 
 const apiMocks = vi.hoisted(() => ({
   tailorResume: vi.fn(),
+  createDraft: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -36,7 +37,7 @@ vi.mock("@/components/ui/dialog", () => {
 });
 
 const tailoredResume = {
-  job_id: 11,
+  job_id: 101,
   professional_summary: "Backend Engineer with supported experience",
   full_name: "Ada Lovelace",
   email: "ada@example.com",
@@ -78,6 +79,7 @@ describe("TailorResumeDialog", () => {
       },
     });
     apiMocks.tailorResume.mockReset();
+    apiMocks.createDraft.mockReset();
   });
 
   afterEach(() => {
@@ -136,6 +138,47 @@ describe("TailorResumeDialog", () => {
 
     expect(renderedText()).toContain("Tailored resume");
     expect(container.querySelector("svg")).not.toBeNull();
+  });
+
+  it("saves the displayed tailored snapshot with its job id", async () => {
+    apiMocks.tailorResume.mockResolvedValue(tailoredResume);
+    apiMocks.createDraft.mockResolvedValue({
+      id: 1,
+      job_id: 101,
+      source_profile_id: 8,
+      job_title: "Backend Engineer",
+      job_company: "Acme",
+      content: tailoredResume,
+      created_at: "2026-07-14T00:00:00Z",
+      updated_at: "2026-07-14T00:00:00Z",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog
+            jobId={101}
+            jobTitle="Backend Engineer"
+            open
+            onOpenChange={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(renderedText()).toContain("Acme"));
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Save draft"),
+    );
+    expect(saveButton).toBeDefined();
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(apiMocks.createDraft).toHaveBeenCalledWith({
+      job_id: 101,
+      content: tailoredResume,
+    });
   });
 
   it("shows the existing failure state when tailoring fails", async () => {

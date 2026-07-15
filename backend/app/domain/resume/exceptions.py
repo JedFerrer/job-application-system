@@ -26,3 +26,9 @@ class ProfileNotFoundError(ResumeError):
     def __init__(self, user_id: int) -> None:
         self.user_id = user_id
         super().__init__(f"No active profile for user {user_id}")
+
+
+class TailoredResumeDraftNotFoundError(ResumeError):
+    def __init__(self, draft_id: int) -> None:
+        self.draft_id = draft_id
+        super().__init__(f"Tailored resume draft {draft_id} not found")

@@ -1,7 +1,7 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Briefcase, Copy, FileDown, FileText, Loader2, RefreshCw } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Briefcase, Copy, FileDown, FileText, Loader2, RefreshCw, Save } from "lucide-react";
 import { toast } from "sonner";
 import { resumeApi } from "@/lib/api";
 import { downloadResumePdf, downloadResumeDocx } from "@/lib/cover-letter-export";
@@ -21,6 +21,8 @@ interface TailorResumeDialogProps {
   jobTitle?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialData?: TailoredResume | null;
+  readOnly?: boolean;
 }
 
 function formatDateNice(start: string | null, end: string | null): string {
@@ -109,16 +111,33 @@ export function TailorResumeDialog({
   jobTitle,
   open,
   onOpenChange,
+  initialData = null,
+  readOnly = false,
 }: TailorResumeDialogProps) {
+  const queryClient = useQueryClient();
   const tailorQuery = useQuery({
     queryKey: ["tailor-resume", jobId],
     queryFn: () => resumeApi.tailorResume(jobId!),
-    enabled: open && jobId != null,
+    enabled: open && !readOnly && jobId != null && initialData == null,
     staleTime: 0,
   });
+  const saveMutation = useMutation({
+    mutationFn: (content: TailoredResume) =>
+      resumeApi.createDraft({ job_id: jobId!, content }),
+    onSuccess: () => {
+      toast.success("Tailored resume draft saved");
+      void queryClient.invalidateQueries({ queryKey: ["resume-drafts"] });
+    },
+    onError: () => toast.error("Could not save tailored resume draft."),
+  });
 
-  const data = tailorQuery.data;
-  const isLoading = tailorQuery.isFetching;
+  const data = initialData ?? tailorQuery.data;
+  const isLoading = !readOnly && initialData == null && tailorQuery.isFetching;
+
+  const handleSave = () => {
+    if (!data || readOnly) return;
+    saveMutation.mutate(data);
+  };
 
   const handleCopy = () => {
     if (!data) return;
@@ -154,10 +173,14 @@ export function TailorResumeDialog({
         <DialogHeader>
           <DialogTitle>Tailored resume</DialogTitle>
           <DialogDescription>
-            {jobTitle
+            {readOnly
+              ? "Saved AI-generated draft. Review every claim before use."
+              : jobTitle
               ? `Your experience rewritten to emphasize relevance for "${jobTitle}".`
               : "Your experience rewritten for this job."}
-            {" "}AI-generated draft based on your profile. Review every claim before copying or downloading.
+            {!readOnly && (
+              <> AI-generated draft based on your profile. Review every claim before copying or downloading.</>
+            )}
           </DialogDescription>
         </DialogHeader>
 
@@ -333,15 +356,31 @@ export function TailorResumeDialog({
                 <FileText className="h-4 w-4" />
                 DOCX
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => tailorQuery.refetch()}
-                disabled={tailorQuery.isFetching}
-              >
-                <RefreshCw className="h-4 w-4" />
-                Regenerate
-              </Button>
+              {!readOnly && (
+                <>
+                  <Button
+                    size="sm"
+                    onClick={handleSave}
+                    disabled={saveMutation.isPending}
+                  >
+                    {saveMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Save className="h-4 w-4" />
+                    )}
+                    Save draft
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => tailorQuery.refetch()}
+                    disabled={tailorQuery.isFetching}
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Regenerate
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         )}

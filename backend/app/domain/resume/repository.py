@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.resume import CandidateProfile, Resume
+from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
 
 
 class ResumeRepository:
@@ -74,3 +74,61 @@ class ResumeRepository:
         profile.embedding = embedding
         await self._session.flush()
         return profile
+
+    async def create_tailored_draft(
+        self,
+        *,
+        user_id: int,
+        job_id: int,
+        source_profile_id: int,
+        job_title: str,
+        job_company: str | None,
+        content: dict[str, object],
+    ) -> TailoredResumeDraft:
+        draft = TailoredResumeDraft(
+            user_id=user_id,
+            job_id=job_id,
+            source_profile_id=source_profile_id,
+            job_title=job_title,
+            job_company=job_company,
+            content=content,
+        )
+        self._session.add(draft)
+        await self._session.flush()
+        await self._session.refresh(draft)
+        return draft
+
+    async def list_tailored_drafts(
+        self, *, user_id: int
+    ) -> list[TailoredResumeDraft]:
+        result = await self._session.execute(
+            select(TailoredResumeDraft)
+            .where(TailoredResumeDraft.user_id == user_id)
+            .order_by(
+                TailoredResumeDraft.created_at.desc(),
+                TailoredResumeDraft.id.desc(),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_tailored_draft(
+        self, *, user_id: int, draft_id: int
+    ) -> TailoredResumeDraft | None:
+        result = await self._session.execute(
+            select(TailoredResumeDraft).where(
+                TailoredResumeDraft.id == draft_id,
+                TailoredResumeDraft.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def delete_tailored_draft(
+        self, *, user_id: int, draft_id: int
+    ) -> bool:
+        result = await self._session.execute(
+            delete(TailoredResumeDraft).where(
+                TailoredResumeDraft.id == draft_id,
+                TailoredResumeDraft.user_id == user_id,
+            )
+        )
+        return bool(result.rowcount)

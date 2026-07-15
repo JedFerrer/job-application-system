@@ -18,11 +18,17 @@ from app.domain.auth.exceptions import (
     InvalidCredentialsError,
     InvalidTokenError,
 )
-from app.infrastructure.redis_client import close_redis, init_redis
 from app.domain.cover_letters.exceptions import (
     CoverLetterGenerationError,
     CoverLetterNotFoundError,
 )
+from app.domain.extension.exceptions import (
+    ExtensionSessionNotFoundError,
+    ExtensionSessionRevokedError,
+    PairingCodeExpiredError,
+    PairingCodeInvalidError,
+)
+from app.domain.interview.exceptions import InterviewGenerationError
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.matching.exceptions import (
     MatchNotFoundError,
@@ -33,18 +39,13 @@ from app.domain.preferences.exceptions import (
     PreferenceValidationError,
     RefreshCooldownError,
 )
-from app.domain.interview.exceptions import InterviewGenerationError
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeParseError,
+    TailoredResumeDraftNotFoundError,
     UnsupportedResumeFormatError,
 )
-from app.domain.extension.exceptions import (
-    ExtensionSessionNotFoundError,
-    ExtensionSessionRevokedError,
-    PairingCodeExpiredError,
-    PairingCodeInvalidError,
-)
+from app.infrastructure.redis_client import close_redis, init_redis
 
 logger = get_logger("lifespan")
 
@@ -63,6 +64,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: ProfileNotFoundError
     ) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": "No resume profile found"})
+
+    @app.exception_handler(TailoredResumeDraftNotFoundError)
+    async def _tailored_resume_draft_not_found(
+        request: Request, exc: TailoredResumeDraftNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": "Draft not found"})
 
     @app.exception_handler(UnsupportedResumeFormatError)
     async def _unsupported_format(

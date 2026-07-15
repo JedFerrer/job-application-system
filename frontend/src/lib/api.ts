@@ -23,6 +23,9 @@ import type {
   ResumeResponse,
   SkillsGapSummary,
   TailoredResume,
+  TailoredResumeDraft,
+  TailoredResumeDraftCreate,
+  TailoredResumeDraftListItem,
   TaskQueued,
   TaskStatus,
   TokenResponse,
@@ -189,6 +192,17 @@ export const resumeApi = {
     }),
   tailorResume: (jobId: number) =>
     apiRequest<TailoredResume>(`/resume/tailor/${jobId}`),
+  createDraft: (payload: TailoredResumeDraftCreate) =>
+    apiRequest<TailoredResumeDraft>("/resume/drafts", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listDrafts: () =>
+    apiRequest<TailoredResumeDraftListItem[]>("/resume/drafts"),
+  getDraft: (draftId: number) =>
+    apiRequest<TailoredResumeDraft>(`/resume/drafts/${draftId}`),
+  deleteDraft: (draftId: number) =>
+    apiRequest<void>(`/resume/drafts/${draftId}`, { method: "DELETE" }),
 };
 
 // ---- Jobs -------------------------------------------------------------------

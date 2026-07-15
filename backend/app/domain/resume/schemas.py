@@ -10,6 +10,7 @@ field names and return numeric years.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from pydantic import (
     AliasChoices,
@@ -17,6 +18,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
 
@@ -151,3 +153,30 @@ class TailoredResume(BaseModel):
     matched_skills: list[str] = Field(default_factory=list)
     other_skills: list[str] = Field(default_factory=list)
     missing_keywords: list[str] = Field(default_factory=list)
+
+
+class TailoredResumeDraftCreate(BaseModel):
+    job_id: int
+    content: TailoredResume
+
+    @model_validator(mode="after")
+    def _content_matches_job(self) -> TailoredResumeDraftCreate:
+        if self.content.job_id != self.job_id:
+            raise ValueError("content.job_id must match job_id")
+        return self
+
+
+class TailoredResumeDraftListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    job_id: int | None
+    source_profile_id: int | None
+    job_title: str
+    job_company: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TailoredResumeDraftResponse(TailoredResumeDraftListItem):
+    content: TailoredResume

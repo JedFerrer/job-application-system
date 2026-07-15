@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,6 +45,34 @@ class CandidateProfile(Base):
     # Canonical text used to compute the embedding.
     summary_text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TailoredResumeDraft(Base):
+    """An explicit, immutable user-saved tailored resume snapshot."""
+
+    __tablename__ = "tailored_resume_drafts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    job_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("jobs.id", ondelete="SET NULL"), index=True
+    )
+    source_profile_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("candidate_profiles.id", ondelete="SET NULL"),
+        index=True,
+    )
+    job_title: Mapped[str] = mapped_column(String(255))
+    job_company: Mapped[str | None] = mapped_column(String(255))
+    content: Mapped[dict[str, object]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
