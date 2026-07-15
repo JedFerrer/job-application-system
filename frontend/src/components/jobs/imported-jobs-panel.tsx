@@ -170,7 +170,7 @@ export function ImportedJobsPanel() {
                     "imported-jobs-state",
                     JSON.stringify({ scrollY: window.scrollY }),
                   );
-                  router.push(`/dashboard/jobs/${job.id}`);
+                  router.push(`/jobs/${job.id}`);
                 }}
               >
                 <Button

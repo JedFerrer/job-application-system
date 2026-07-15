@@ -300,7 +300,7 @@ function TodayNextActionRow({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Link
-              href={`/dashboard/jobs/${item.job_id}`}
+              href={`/jobs/${item.job_id}`}
               className="font-medium hover:underline"
             >
               {item.job_title}

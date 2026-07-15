@@ -422,7 +422,7 @@ export function MatchesPanel() {
                   "matches-list-state",
                   JSON.stringify({ scrollY: window.scrollY }),
                 );
-                router.push(`/dashboard/jobs/${match.job_id}`);
+                router.push(`/jobs/${match.job_id}`);
               }}
               topRightAction={
                 savedJobIds.has(match.job_id) ? null : (

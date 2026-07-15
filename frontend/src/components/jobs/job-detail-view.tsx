@@ -103,6 +103,41 @@ const READINESS_BADGE_CLASS: Record<MatchReadinessDecision, string> = {
     "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-300",
 };
 
+function renderDescription(description: string | null | undefined) {
+  const lines = formatJobDescription(description).split("\n");
+
+  return lines.map((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed) return <div key={`spacer-${index}`} className="h-2" aria-hidden="true" />;
+
+    const isBullet = trimmed.startsWith("•");
+    const headingText = isBullet ? trimmed.slice(1).trim() : trimmed;
+    const isHeading =
+      !isBullet &&
+      headingText.length <= 80 &&
+      headingText === headingText.toUpperCase() &&
+      /[A-Z]/.test(headingText);
+
+    if (isHeading) {
+      return (
+        <h3 key={`heading-${index}`} className="mt-6 text-sm font-semibold tracking-wide first:mt-0">
+          {headingText}
+        </h3>
+      );
+    }
+
+    if (isBullet) {
+      return (
+        <p key={`bullet-${index}`} className="pl-4 [text-indent:-0.75rem]">
+          • {headingText}
+        </p>
+      );
+    }
+
+    return <p key={`paragraph-${index}`}>{trimmed}</p>;
+  });
+}
+
 /** Derive a 1–2 sentence overview from available job data. */
 function deriveOverview(job: { title?: string | null } | undefined, match: MatchExplanation | null): string {
   if (!job) return "";
@@ -402,9 +437,17 @@ export function JobDetailView({ jobId }: { jobId: number }) {
 
           {/* ── Primary action row ───────────────────────────── */}
           <div className="flex items-center gap-3 flex-wrap">
+            {job.source_url && (
+              <Button variant="default" size="sm" asChild>
+                <a href={job.source_url} target="_blank" rel="noopener noreferrer">
+                  <ExternalLink className="h-4 w-4 mr-1.5" />
+                  Open Original Job
+                </a>
+              </Button>
+            )}
             {/* Mark as Applied */}
             <Button
-              variant={isApplied ? "secondary" : "default"}
+              variant={isApplied ? "secondary" : "outline"}
               size="sm"
               onClick={() => applyMutation.mutate()}
               disabled={applyMutation.isPending || isApplied}
@@ -459,19 +502,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-48">
-                {job.source_url && (
-                  <DropdownMenuItem asChild>
-                    <a
-                      href={job.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="cursor-pointer"
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                      View Original Job
-                    </a>
-                  </DropdownMenuItem>
-                )}
                 <DropdownMenuItem onClick={() => setShowTailorResume(true)}>
                   <FilePenLine className="h-4 w-4" />
                   Tailor Resume
@@ -501,11 +531,15 @@ export function JobDetailView({ jobId }: { jobId: number }) {
           {/* ── Tabs: Description / Requirements / Skills / Notes */}
           <Card>
             <CardHeader className="pb-0">
-              <div className="flex gap-1 border-b border-border">
+              <div role="tablist" aria-label="Job details" className="flex gap-1 border-b border-border">
                 {TABS.map((tab) => (
                   <button
                     key={tab}
                     type="button"
+                    role="tab"
+                    aria-selected={activeTab === tab}
+                    aria-controls={`job-detail-tabpanel-${tab.toLowerCase()}`}
+                    id={`job-detail-tab-${tab.toLowerCase()}`}
                     onClick={() => setActiveTab(tab)}
                     className={`px-4 py-2.5 text-sm font-medium transition-colors relative -mb-px ${
                       activeTab === tab
@@ -520,16 +554,21 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             </CardHeader>
             <CardContent className="pt-5">
               {activeTab === "Description" && (
-                <div className="text-sm leading-relaxed whitespace-pre-wrap wrap-break-word">
+                <div
+                  role="tabpanel"
+                  id="job-detail-tabpanel-description"
+                  aria-labelledby="job-detail-tab-description"
+                  className="text-sm leading-7 wrap-break-word"
+                >
                   {job.description ? (
-                    formatJobDescription(job.description)
+                    renderDescription(job.description)
                   ) : (
                     <p className="text-muted-foreground">No description available.</p>
                   )}
                 </div>
               )}
               {activeTab === "Skills" && (
-                <div>
+                <div role="tabpanel" id="job-detail-tabpanel-skills" aria-labelledby="job-detail-tab-skills">
                   {match?.matched_skills && match.matched_skills.length > 0 ? (
                     <div className="flex flex-wrap gap-1.5">
                       {match.matched_skills.map((skill) => (
@@ -560,7 +599,12 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 </div>
               )}
               {activeTab === "Notes" && (
-                <p className="text-sm text-muted-foreground">
+                <p
+                  role="tabpanel"
+                  id="job-detail-tabpanel-notes"
+                  aria-labelledby="job-detail-tab-notes"
+                  className="text-sm text-muted-foreground"
+                >
                   Personal notes for this job will appear here.
                 </p>
               )}
@@ -571,7 +615,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
         {/* ================================================================ */}
         {/* RIGHT SIDEBAR                                                     */}
         {/* ================================================================ */}
-        <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-6 lg:sticky lg:top-6 lg:self-start">
 
           {/* ── Match Score ──────────────────────────────────── */}
           <Card>
@@ -582,7 +626,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             </CardHeader>
             <CardContent>
               {match ? (
-                  <div className="flex items-start gap-4">
+                  <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-4 gap-y-4">
                     {/* Left: score ring + fit label */}
                     <div className="shrink-0">
                       <CircularScore
@@ -597,8 +641,8 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                         </p>
                       )}
                     </div>
-                  {/* Right: text + button */}
-                  <div className="flex flex-col gap-2 min-w-0 flex-1 pt-1 ml-2">
+                  {/* Row 1, column 2: match summary and readiness */}
+                  <div className="flex min-w-0 flex-col gap-2 pt-1">
                     <p className="text-xs text-muted-foreground leading-relaxed">
                       {matchScore >= 80
                         ? "You're a strong match for this role."
@@ -638,11 +682,13 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                         )}
                       </div>
                     )}
-                    {!explainData && (
+                  </div>
+                  {/* Row 2: detailed assessment CTA and supporting text */}
+                  {!explainData && (
+                    <div className="col-span-2 flex min-w-0 flex-col items-end gap-1 text-right">
                       <Button
                         variant="outline"
                         size="sm"
-                        className="mt-2 w-fit"
                         onClick={() => explainMutation.mutate()}
                         disabled={explainMutation.isPending}
                       >
@@ -651,13 +697,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                         )}
                         Get Detailed AI Assessment
                       </Button>
-                    )}
-                    {!explainData && (
-                      <p className="text-[11px] text-muted-foreground">
+                      <p className="self-stretch text-left text-[11px] text-muted-foreground">
                         Includes a structured skills-gap review and AI fit explanation.
                       </p>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-3">
@@ -740,7 +784,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
               {job.location && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Location</span>
-                  <span className="font-medium truncate max-w-40">{job.location}</span>
+                  <span className="min-w-0 text-right font-medium break-words">{job.location}</span>
                 </div>
               )}
               {salary && (
@@ -750,9 +794,9 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 </div>
               )}
               {match?.matched_skills && match.matched_skills.length > 0 && (
-                <div className="flex flex-col gap-1">
-                  <span className="text-muted-foreground text-xs">Tech Stack</span>
-                  <span className="font-medium text-xs leading-relaxed">
+                <div className="flex items-start justify-between gap-4">
+                  <span className="text-muted-foreground text-sm">Tech Stack</span>
+                  <span className="max-w-[65%] text-right font-medium text-sm leading-relaxed break-words">
                     {match.matched_skills.slice(0, 8).join(", ")}
                   </span>
                 </div>
@@ -762,17 +806,20 @@ export function JobDetailView({ jobId }: { jobId: number }) {
 
           {/* ── Application Status ───────────────────────────── */}
           <Card>
-            <CardHeader className="pb-3">
+            <CardHeader className="flex flex-row items-center justify-between gap-3 pb-3">
               <CardTitle className="text-sm font-medium">Application Status</CardTitle>
+              {existingApp && (
+                <Badge
+                  variant="secondary"
+                  className={`pointer-events-none text-xs font-normal w-fit ${STATUS_BADGE_CLASS[existingApp.status] ?? "bg-muted text-muted-foreground"}`}
+                >
+                  {APPLICATION_STATUS_LABELS[existingApp.status] ?? existingApp.status}
+                </Badge>
+              )}
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
               {existingApp ? (
                 <>
-                  <Badge
-                    className={`text-xs font-normal w-fit ${STATUS_BADGE_CLASS[existingApp.status] ?? "bg-muted text-muted-foreground"}`}
-                  >
-                    {APPLICATION_STATUS_LABELS[existingApp.status] ?? existingApp.status}
-                  </Badge>
                   {existingApp.status === "saved" && (
                     <p className="text-xs text-muted-foreground leading-relaxed">
                       Customize your resume and cover letter before applying.

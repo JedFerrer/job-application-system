@@ -511,7 +511,7 @@ export function JobsPanel() {
                                       scrollY: window.scrollY,
                                     }),
                                   );
-                                  router.push(`/dashboard/jobs/${jc.card.jobId}`);
+                                  router.push(`/jobs/${jc.card.jobId}`);
                                 }}
                                 topRightAction={
                                   savedJobIds.has(jc.card.jobId) ? null : (
