@@ -37,6 +37,8 @@ class UserJobMatch(Base):
     llm_score: Mapped[int | None] = mapped_column(Integer)
     llm_confidence: Mapped[float | None] = mapped_column(Float)
     llm_explanation: Mapped[str | None] = mapped_column(Text)
+    llm_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    llm_error: Mapped[str | None] = mapped_column(Text)
     matched_skills: Mapped[list[str] | None] = mapped_column(JSONB)
     missing_keywords: Mapped[list[str] | None] = mapped_column(JSONB)
     deterministic_match: Mapped[dict[str, object] | None] = mapped_column(JSONB)

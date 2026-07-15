@@ -16,6 +16,7 @@ const apiMocks = vi.hoisted(() => {
   };
   const matchesApi = {
     explain: vi.fn(),
+    skills: vi.fn(),
     rank: vi.fn(),
     list: vi.fn(),
   };
@@ -191,6 +192,7 @@ describe("JobDetailView readiness", () => {
     apiMocks.applicationsApi.create.mockReset();
     apiMocks.applicationsApi.update.mockReset();
     apiMocks.matchesApi.explain.mockReset();
+    apiMocks.matchesApi.skills.mockReset();
     apiMocks.matchesApi.rank.mockReset();
     apiMocks.matchesApi.list.mockReset();
     apiMocks.listAllApplications.mockReset();
@@ -220,6 +222,28 @@ describe("JobDetailView readiness", () => {
       match_reason: null,
     });
     apiMocks.listAllApplications.mockResolvedValue([]);
+    apiMocks.matchesApi.skills.mockResolvedValue({
+      job_id: 501,
+      vector_score: 87,
+      matched_skills: ["python", "fastapi"],
+      missing_keywords: ["kubernetes"],
+      readiness: {
+        decision: "apply",
+        reasons: ["Strong match score", "2 matched skills found"],
+        caveats: [],
+      },
+    });
+    queryClient.setQueryData(["match-skills", 501], {
+      job_id: 501,
+      vector_score: 87,
+      matched_skills: ["python", "fastapi"],
+      missing_keywords: ["kubernetes"],
+      readiness: {
+        decision: "apply",
+        reasons: ["Strong match score", "2 matched skills found"],
+        caveats: [],
+      },
+    });
 
     queryClient.setQueryData(
       ["job", 501],
@@ -276,7 +300,11 @@ describe("JobDetailView readiness", () => {
                 matched_skills: ["python", "fastapi"],
                 readiness: {
                   decision: "apply",
-                  reasons: ["Strong match score", "2 matched skills found"],
+                  reasons: [
+                    "Strong match score",
+                    "2 matched skills found",
+                    "Known gaps: kubernetes, graphql",
+                  ],
                   caveats: ["Detailed skill gaps are not available yet"],
                 },
                 posted_at: null,
@@ -311,15 +339,19 @@ describe("JobDetailView readiness", () => {
       );
       await Promise.resolve();
       await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await Promise.resolve();
     });
 
     expect(container.textContent).toContain("Ready to apply");
     expect(container.textContent).toContain("Strong match score");
     expect(container.textContent).toContain("2 matched skills found");
-    expect(container.textContent).toContain(
+    expect(container.textContent).toContain("Missingkubernetes");
+    expect(container.textContent).not.toContain(
       "Detailed skill gaps are not available yet",
     );
-    expect(container.textContent).toContain("View Match Details");
+    expect(container.textContent).toContain("Get Detailed AI Assessment");
+    expect(container.textContent).not.toContain("Known gaps: kubernetes, graphql");
     expect(container.textContent).not.toContain("Stretch fit");
   });
 });

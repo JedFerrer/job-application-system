@@ -289,6 +289,8 @@ class MatchingRepository:
         llm_score: int | None,
         llm_confidence: float | None,
         explanation: str | None,
+        llm_analyzed_at: datetime,
+        llm_error: str | None,
         matched_skills: list[str],
         missing_keywords: list[str],
         deterministic_match: dict[str, Any],
@@ -297,10 +299,27 @@ class MatchingRepository:
         match.llm_score = llm_score
         match.llm_confidence = llm_confidence
         match.llm_explanation = explanation
+        match.llm_analyzed_at = llm_analyzed_at
+        match.llm_error = llm_error
         match.matched_skills = matched_skills
         match.missing_keywords = missing_keywords
         match.deterministic_match = deterministic_match
         if confidence is not None:
             match.confidence = confidence
+        await self._session.flush()
+        return match
+
+    async def save_deterministic_match(
+        self,
+        *,
+        match: UserJobMatch,
+        matched_skills: list[str],
+        missing_keywords: list[str],
+        deterministic_match: dict[str, Any],
+    ) -> UserJobMatch:
+        """Persist free deterministic skill evidence without touching LLM fields."""
+        match.matched_skills = matched_skills
+        match.missing_keywords = missing_keywords
+        match.deterministic_match = deterministic_match
         await self._session.flush()
         return match

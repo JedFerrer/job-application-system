@@ -71,7 +71,19 @@ class MatchExplanation(BaseModel):
     confidence: str | None
     llm_score: int | None
     llm_confidence: float | None
+    llm_available: bool
+    llm_error: str | None
     explanation: str | None
+    matched_skills: list[str]
+    missing_keywords: list[str]
+    readiness: MatchReadiness
+
+
+class MatchSkillAnalysis(BaseModel):
+    """Deterministic skill evidence for one job, without an LLM assessment."""
+
+    job_id: int
+    vector_score: float
     matched_skills: list[str]
     missing_keywords: list[str]
     readiness: MatchReadiness

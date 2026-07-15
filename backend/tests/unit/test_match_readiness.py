@@ -189,3 +189,34 @@ async def test_explain_match_returns_cached_readiness() -> None:
     assert explanation.readiness.decision == "save"
     assert explanation.readiness.reasons[0] == "Strong match score"
     assert "Known gaps: kubernetes, graphql" in explanation.readiness.reasons
+
+
+@pytest.mark.asyncio
+async def test_analyze_skills_computes_and_persists_without_llm() -> None:
+    match = _match(matched_skills=None, missing_keywords=None, deterministic_match=None)
+    job = SimpleNamespace(description="Python FastAPI Kubernetes role")
+    profile = SimpleNamespace(parsed={"skills": ["Python", "FastAPI"]})
+    saved: dict[str, object] = {}
+
+    class FakeRepo:
+        async def get_match(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            return match
+
+        async def get_visible_job(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            return job
+
+        async def get_active_profile(self, user_id: int):  # noqa: ANN001
+            return profile
+
+        async def save_deterministic_match(self, **kwargs):  # noqa: ANN001
+            saved.update(kwargs)
+            match.matched_skills = kwargs["matched_skills"]
+            match.missing_keywords = kwargs["missing_keywords"]
+            match.deterministic_match = kwargs["deterministic_match"]
+            return match
+
+    analysis = await _service(FakeRepo()).analyze_skills(user_id=1, job_id=101)
+
+    assert analysis.matched_skills == ["python", "fastapi"]
+    assert analysis.missing_keywords == ["kubernetes"]
+    assert saved["deterministic_match"]

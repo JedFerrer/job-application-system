@@ -226,7 +226,17 @@ export interface MatchExplanation {
   confidence: string | null;
   llm_score: number | null;
   llm_confidence: number | null;
+  llm_available: boolean;
+  llm_error: string | null;
   explanation: string | null;
+  matched_skills: string[];
+  missing_keywords: string[];
+  readiness: MatchReadiness;
+}
+
+export interface MatchSkillAnalysis {
+  job_id: number;
+  vector_score: number;
   matched_skills: string[];
   missing_keywords: string[];
   readiness: MatchReadiness;

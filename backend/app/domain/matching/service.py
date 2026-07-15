@@ -10,6 +10,7 @@ Layer 3 (LLM explanation/score): selective, grounded by layer 2, cached on the
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from app.core.logging import get_logger
 from app.domain.matching.exceptions import (
@@ -21,6 +22,7 @@ from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.schemas import (
     MatchExplanation,
     MatchItem,
+    MatchSkillAnalysis,
     MatchListResponse,
     MatchReadiness,
     RankResponse,
@@ -156,7 +158,7 @@ class MatchingService:
             raise MatchNotFoundError(job_id)
 
         # Cache hit: return the stored explanation, no LLM cost.
-        if match.llm_explanation is not None:
+        if getattr(match, "llm_analyzed_at", None) is not None or match.llm_explanation is not None:
             return self._to_explanation(match)
 
         job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
@@ -176,6 +178,7 @@ class MatchingService:
             missing_keywords,
             explanation,
             conf_band,
+            llm_error,
         ) = await self._explain_with_llm(
             profile_parsed=dict(profile.parsed),
             job_description=job.description or "",
@@ -188,12 +191,44 @@ class MatchingService:
             llm_score=llm_score,
             llm_confidence=llm_confidence,
             explanation=explanation,
+            llm_analyzed_at=datetime.now(UTC),
+            llm_error=llm_error,
             matched_skills=report.matched_skills,
             missing_keywords=missing_keywords,
             deterministic_match=report_dict,
             confidence=conf_band,
         )
         return self._to_explanation(match)
+
+    async def analyze_skills(self, *, user_id: int, job_id: int) -> MatchSkillAnalysis:
+        """Return cached or freshly computed deterministic skill evidence."""
+        match = await self._repo.get_match(user_id=user_id, job_id=job_id)
+        if match is None:
+            raise MatchNotFoundError(job_id)
+
+        if (
+            match.deterministic_match is not None
+            and match.matched_skills is not None
+            and match.missing_keywords is not None
+        ):
+            return self._to_skill_analysis(match)
+
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
+        profile = await self._repo.get_active_profile(user_id)
+        if job is None or profile is None:
+            raise MatchNotFoundError(job_id)
+
+        report = compute_skill_match(
+            extract_known_skills(job.description or ""),
+            dict(profile.parsed),
+        )
+        await self._repo.save_deterministic_match(
+            match=match,
+            matched_skills=report.matched_skills,
+            missing_keywords=report.missing_skills,
+            deterministic_match=report_to_dict(report),
+        )
+        return self._to_skill_analysis(match)
 
     async def _explain_with_llm(
         self,
@@ -202,7 +237,7 @@ class MatchingService:
         job_description: str,
         report_dict: dict[str, object],
         deterministic_missing: list[str],
-    ) -> tuple[int | None, float | None, list[str], str | None, str | None]:
+    ) -> tuple[int | None, float | None, list[str], str | None, str | None, str | None]:
         user_payload = {
             "candidate_profile": profile_parsed,
             "job_description": job_description,
@@ -219,23 +254,23 @@ class MatchingService:
         except LLMUnavailableError:
             # Degrade gracefully: deterministic evidence still gives a result.
             logger.warning("matches.explain.llm_unavailable")
-            return None, None, deterministic_missing, None, None
+            return None, None, deterministic_missing, None, None, "LLM service unavailable"
 
         content = response.choices[0].message.content or "{}"
         try:
             data = json.loads(strip_code_fences(content))
         except json.JSONDecodeError:
             logger.warning("matches.explain.bad_json")
-            return None, None, deterministic_missing, None, None
+            return None, None, deterministic_missing, None, None, "LLM returned invalid JSON"
 
         return self._parse_llm_payload(data, deterministic_missing)
 
     @staticmethod
     def _parse_llm_payload(
         data: object, deterministic_missing: list[str]
-    ) -> tuple[int | None, float | None, list[str], str | None, str | None]:
+    ) -> tuple[int | None, float | None, list[str], str | None, str | None, str | None]:
         if not isinstance(data, dict):
-            return None, None, deterministic_missing, None, None
+            return None, None, deterministic_missing, None, None, "LLM returned an invalid response"
 
         score = data.get("score")
         llm_score = int(score) if isinstance(score, int | float) else None
@@ -264,7 +299,7 @@ class MatchingService:
         }
         llm_confidence = band_to_num.get(conf_band) if conf_band else None
 
-        return llm_score, llm_confidence, missing, explanation_str, conf_band
+        return llm_score, llm_confidence, missing, explanation_str, conf_band, None
 
     @staticmethod
     def _to_explanation(match: object) -> MatchExplanation:
@@ -275,7 +310,28 @@ class MatchingService:
             confidence=match.confidence,  # type: ignore[attr-defined]
             llm_score=match.llm_score,  # type: ignore[attr-defined]
             llm_confidence=match.llm_confidence,  # type: ignore[attr-defined]
+            llm_available=(
+                getattr(match, "llm_analyzed_at", None) is not None
+                and getattr(match, "llm_error", None) is None
+            )
+            or match.llm_explanation is not None,  # type: ignore[attr-defined]
+            llm_error=getattr(match, "llm_error", None),
             explanation=match.llm_explanation,  # type: ignore[attr-defined]
+            matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
+            missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
+            readiness=build_match_readiness(
+                score=match.llm_score if match.llm_score is not None else match.vector_score,  # type: ignore[attr-defined]
+                confidence=match.confidence,  # type: ignore[attr-defined]
+                matched_skills=match.matched_skills,  # type: ignore[attr-defined]
+                missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
+            ),
+        )
+
+    @staticmethod
+    def _to_skill_analysis(match: object) -> MatchSkillAnalysis:
+        return MatchSkillAnalysis(
+            job_id=match.job_id,  # type: ignore[attr-defined]
+            vector_score=match.vector_score,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
             readiness=build_match_readiness(

@@ -26,6 +26,7 @@ import type {
   MatchExplanation,
   MatchItem,
   MatchListResponse,
+  MatchSkillAnalysis,
   MatchReadinessDecision,
 } from "@/lib/types";
 import { useState, useMemo } from "react";
@@ -158,6 +159,8 @@ export function JobDetailView({ jobId }: { jobId: number }) {
           confidence: cached.confidence,
           llm_score: cached.llm_score,
           llm_confidence: null,
+          llm_available: false,
+          llm_error: null,
           explanation: null,
           matched_skills: cached.matched_skills ?? [],
           missing_keywords: [],
@@ -167,6 +170,14 @@ export function JobDetailView({ jobId }: { jobId: number }) {
     }
     return null;
   })();
+
+  const skillQuery = useQuery({
+    queryKey: ["match-skills", jobId],
+    queryFn: () => matchesApi.skills(jobId),
+    enabled: Boolean(matchSummary),
+    staleTime: 5 * 60_000,
+  });
+  const skillData = skillQuery.data ?? null;
 
   const explainMutation = useMutation({
     mutationFn: () => matchesApi.explain(jobId),
@@ -295,7 +306,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const postedLabel = job.posted_at ? formatRelativeDate(job.posted_at) : null;
   const salary = formatSalary(job.salary_min, job.salary_max, job.salary_currency);
   const matchScore = match ? (match.llm_score != null ? match.llm_score : match.vector_score) : 0;
-  const readiness = match?.readiness ?? null;
+  const quickMatchScore = match?.vector_score ?? null;
+  const hasDetailedScore = explainData != null && match?.llm_score != null;
+  const readiness = explainData?.readiness ?? skillData?.readiness ?? match?.readiness ?? null;
+  const analyzedMatchedSkills = explainData?.matched_skills ?? skillData?.matched_skills ?? match?.matched_skills ?? [];
+  const analyzedMissingSkills = explainData?.missing_keywords ?? skillData?.missing_keywords ?? [];
 
   return (
     <div className="flex flex-col gap-6 w-full">
@@ -561,7 +576,9 @@ export function JobDetailView({ jobId }: { jobId: number }) {
           {/* ── Match Score ──────────────────────────────────── */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium">Match Score</CardTitle>
+              <CardTitle className="text-sm font-medium">
+                {hasDetailedScore ? "Detailed Match" : "Quick Match"}
+              </CardTitle>
             </CardHeader>
             <CardContent>
               {match ? (
@@ -574,6 +591,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                         size="lg"
                         showConfidenceLabel={false}
                       />
+                      {hasDetailedScore && quickMatchScore != null && (
+                        <p className="mt-1 text-center text-[11px] text-muted-foreground">
+                          Quick: {Math.round(quickMatchScore)}%
+                        </p>
+                      )}
                     </div>
                   {/* Right: text + button */}
                   <div className="flex flex-col gap-2 min-w-0 flex-1 pt-1 ml-2">
@@ -584,6 +606,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                           ? "You match many of the key requirements for this role."
                           : "This role may require additional skills beyond your profile."}
                     </p>
+                    {explainData?.llm_error && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        Detailed AI assessment unavailable; deterministic skill results are shown.
+                      </p>
+                    )}
                     {readiness && (
                       <div className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2">
                         <div className="flex items-center gap-2">
@@ -594,11 +621,14 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                             {READINESS_LABELS[readiness.decision]}
                           </Badge>
                         </div>
-                        {readiness.reasons.length > 0 && (
+                        {readiness.reasons.filter((reason) => !reason.startsWith("Known gaps:")).length > 0 && (
                           <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                            {readiness.reasons.slice(0, 2).map((reason) => (
-                              <li key={reason}>{reason}</li>
-                            ))}
+                            {readiness.reasons
+                              .filter((reason) => !reason.startsWith("Known gaps:"))
+                              .slice(0, 2)
+                              .map((reason) => (
+                                <li key={reason}>{reason}</li>
+                              ))}
                           </ul>
                         )}
                         {readiness.caveats.length > 0 && (
@@ -619,8 +649,13 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                         {explainMutation.isPending && (
                           <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
                         )}
-                        View Match Details
+                        Get Detailed AI Assessment
                       </Button>
+                    )}
+                    {!explainData && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Includes a structured skills-gap review and AI fit explanation.
+                      </p>
                     )}
                   </div>
                 </div>
@@ -645,24 +680,24 @@ export function JobDetailView({ jobId }: { jobId: number }) {
               )}
 
               {/* Detailed explain section (shown after View Match Details is clicked) */}
-              {match && explainData && (
+              {match && (skillData || explainData) && (
                 <div className="flex flex-col gap-3 mt-4">
                   <Separator />
-                  {match.matched_skills.length > 0 && (
+                  {analyzedMatchedSkills.length > 0 && (
                     <div className="w-full">
                       <h4 className="text-xs font-medium text-muted-foreground mb-1.5">Matched</h4>
                       <div className="flex flex-wrap gap-1">
-                        {match.matched_skills.map((s) => (
+                        {analyzedMatchedSkills.map((s) => (
                           <Badge key={s} variant="secondary" className="text-xs font-normal">{s}</Badge>
                         ))}
                       </div>
                     </div>
                   )}
-                  {match.missing_keywords.length > 0 && (
+                  {analyzedMissingSkills.length > 0 && (
                     <div className="w-full">
                       <h4 className="text-xs font-medium text-muted-foreground mb-1.5">Missing</h4>
                       <div className="flex flex-wrap gap-1">
-                        {match.missing_keywords.map((kw) => (
+                        {analyzedMissingSkills.map((kw) => (
                           <Badge key={kw} variant="outline" className="text-xs font-normal border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300">{kw}</Badge>
                         ))}
                       </div>

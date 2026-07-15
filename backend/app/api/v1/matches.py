@@ -10,6 +10,7 @@ from app.api.deps import CurrentUser, MatchServiceDep
 from app.domain.matching.schemas import (
     MatchExplanation,
     MatchListResponse,
+    MatchSkillAnalysis,
     RankRequest,
     RankResponse,
     SkillsGapSummary,
@@ -72,6 +73,15 @@ async def skills_gap_summary(
 ) -> SkillsGapSummary:
     """Top recurring skill gaps across the user's matched jobs."""
     return await service.skills_gap_summary(user_id=current_user.id, top_n=top_n)
+
+
+@router.get("/{job_id}/skills", response_model=MatchSkillAnalysis)
+async def analyze_match_skills(
+    job_id: int,
+    current_user: CurrentUser,
+    service: MatchServiceDep,
+) -> MatchSkillAnalysis:
+    return await service.analyze_skills(user_id=current_user.id, job_id=job_id)
 
 
 @router.get("/{job_id}/explain", response_model=MatchExplanation)
