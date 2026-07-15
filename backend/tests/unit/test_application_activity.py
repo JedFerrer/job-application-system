@@ -86,8 +86,16 @@ def engine():
 async def clean_db(engine) -> None:  # noqa: ANN001
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
-        for table in ("application_events", "applications", "user_jobs", "jobs", "users"):
-            await db.execute(text(f"DELETE FROM {table}"))
+        for statement in (
+            text("DELETE FROM application_events"),
+            text("DELETE FROM applications"),
+            text("DELETE FROM user_jobs"),
+            text("DELETE FROM jobs"),
+            text("DELETE FROM candidate_profiles"),
+            text("DELETE FROM resumes"),
+            text("DELETE FROM users"),
+        ):
+            await db.execute(statement)
         await db.commit()
 
 
