@@ -12,9 +12,6 @@ running and migrated.  The database is enforced in backend/tests/conftest.py.
 from __future__ import annotations
 
 import pytest
-
-pytestmark = pytest.mark.integration
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -27,6 +24,8 @@ from app.core.config import get_settings
 from app.domain.resume.schemas import ParsedProfile
 from app.models.resume import CandidateProfile, Resume
 from app.models.user import User
+
+pytestmark = pytest.mark.integration
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -173,30 +172,30 @@ class TestProfileIntegration:
             await db.commit()
 
         app = _build_app(current_user=user)
-        client = TestClient(app)
+        with TestClient(app) as client:
 
-        resp = client.get("/resume/profile")
-        assert resp.status_code == 200, (
-            f"Expected 200 for empty profile, got {resp.status_code}. "
-            f"Body: {resp.text}"
-        )
-        assert resp.json() is None, (
-            f"Expected null body, got: {resp.text}"
-        )
+            resp = client.get("/resume/profile")
+            assert resp.status_code == 200, (
+                f"Expected 200 for empty profile, got {resp.status_code}. "
+                f"Body: {resp.text}"
+            )
+            assert resp.json() is None, (
+                f"Expected null body, got: {resp.text}"
+            )
 
-        # ── has profile ───────────────────────────────────────────────
-        async with session_factory() as db:
-            await _seed_profile(db, user_id=user.id)
-            await db.commit()
+            # ── has profile ───────────────────────────────────────────────
+            async with session_factory() as db:
+                await _seed_profile(db, user_id=user.id)
+                await db.commit()
 
-        resp = client.get("/resume/profile")
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}. Body: {resp.text}"
-        )
-        data = resp.json()
-        assert data is not None, "Expected non-null profile data"
-        assert isinstance(data["profile_id"], int)
-        assert isinstance(data["resume_id"], int)
-        assert data["profile"]["full_name"] == "Test User"
-        assert data["profile"]["headline"] == "Software Engineer"
-        assert "Python" in data["profile"]["skills"]
+            resp = client.get("/resume/profile")
+            assert resp.status_code == 200, (
+                f"Expected 200, got {resp.status_code}. Body: {resp.text}"
+            )
+            data = resp.json()
+            assert data is not None, "Expected non-null profile data"
+            assert isinstance(data["profile_id"], int)
+            assert isinstance(data["resume_id"], int)
+            assert data["profile"]["full_name"] == "Test User"
+            assert data["profile"]["headline"] == "Software Engineer"
+            assert "Python" in data["profile"]["skills"]
