@@ -231,6 +231,26 @@ class JobRepository:
             .values(status=status)
         )
 
+    async def archive_user_job(self, *, user_id: int, job_id: int) -> None:
+        """Atomically create or archive one user's relationship to a job.
+
+        Existing relationship metadata is intentionally preserved.  A newly
+        created relationship uses the generic ``match`` source so a visible
+        public job can be archived even when it was never linked to the user.
+        """
+        stmt = pg_insert(UserJob).values(
+            user_id=user_id,
+            job_id=job_id,
+            relationship_source="match",
+            status="archived",
+        )
+        await self._session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[UserJob.user_id, UserJob.job_id],
+                set_={"status": "archived"},
+            )
+        )
+
     async def mark_as_private_import(
         self, *, job_id: int, user_id: int, ingest_source: str = "manual"
     ) -> None:
@@ -302,6 +322,28 @@ class JobRepository:
                 Job.status == "active",
                 visibility_filter,
                 Job.id.not_in(archived_subq),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_archivable_by_id(
+        self, *, user_id: int, job_id: int
+    ) -> Job | None:
+        """Return an active job the user may archive.
+
+        This deliberately uses the job-detail visibility predicate without
+        excluding an already-archived relationship, so repeated archive
+        requests remain idempotent while invisible jobs still return no row.
+        """
+        visibility_filter = or_(
+            Job.visibility == "public",
+            Job.created_by_user_id == user_id,
+        )
+        result = await self._session.execute(
+            select(Job).where(
+                Job.id == job_id,
+                Job.status == "active",
+                visibility_filter,
             )
         )
         return result.scalar_one_or_none()

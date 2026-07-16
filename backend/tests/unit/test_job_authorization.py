@@ -28,7 +28,9 @@ from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
 from app.models.job import Job
+from app.models.application import Application
 from app.models.user import User
+from app.models.user_job import UserJob
 
 
 # ── DB fixtures (self-contained, same pattern as test_feed_separation.py) ─
@@ -205,6 +207,134 @@ async def test_archived_job_not_visible(engine) -> None:  # noqa: ANN001
         repo = JobRepository(db)
         job = await repo.get_visible_by_id(user_id=1, job_id=103)
         assert job is None
+
+
+async def test_archiving_is_user_scoped_and_preserves_application(engine) -> None:  # noqa: ANN001
+    """Archive creates a missing relationship without deleting applications."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=10, email="archive-a@test.com", name="A")
+        await _create_user(db, user_id=11, email="archive-b@test.com", name="B")
+        await _create_job(db, job_id=104)
+        repo = JobRepository(db)
+        await repo.link_user_jobs(11, [104])
+        app = await ApplicationService(
+            repository=ApplicationRepository(db),
+            job_repository=repo,
+        ).create(user_id=10, job_id=104)
+        await db.commit()
+
+    async with sf() as db:
+        await JobService(JobRepository(db)).archive_job(user_id=10, job_id=104)
+        await db.commit()
+
+        archived = await db.execute(
+            select(UserJob).where(UserJob.user_id == 10, UserJob.job_id == 104)
+        )
+        other_user = await db.execute(
+            select(UserJob).where(UserJob.user_id == 11, UserJob.job_id == 104)
+        )
+        application = await db.execute(
+            select(Application).where(Application.id == app.id)
+        )
+
+        archived_user_job = archived.scalar_one()
+        assert archived_user_job.status == "archived"
+        assert archived_user_job.relationship_source == "match"
+        assert other_user.scalar_one().status != "archived"
+        assert application.scalar_one().status == "saved"
+
+
+async def test_archive_is_idempotent_for_an_already_archived_job(engine) -> None:  # noqa: ANN001
+    """Repeated archive requests leave one archived relationship row."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="repeat@test.com", name="Repeat")
+        await _create_job(db, job_id=105)
+
+        service = JobService(JobRepository(db))
+        await service.archive_job(user_id=1, job_id=105)
+        await service.archive_job(user_id=1, job_id=105)
+        await db.commit()
+
+        rows = await db.execute(
+            select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == 105)
+        )
+        archived = rows.scalars().all()
+        assert len(archived) == 1
+        assert archived[0].status == "archived"
+
+
+async def test_archive_preserves_existing_import_relationship_metadata(engine) -> None:  # noqa: ANN001
+    """Archive changes only status when the user already imported the job."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="importer@test.com", name="Importer")
+        await _create_job(
+            db, job_id=106, visibility="private", created_by_user_id=1,
+        )
+        repo = JobRepository(db)
+        await repo.link_user_jobs(
+            1,
+            [106],
+            relationship_source="manual",
+            import_method="manual",
+            status="imported",
+        )
+        await JobService(repo).archive_job(user_id=1, job_id=106)
+        await db.commit()
+
+        row = await db.execute(
+            select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == 106)
+        )
+        archived = row.scalar_one()
+        assert archived.status == "archived"
+        assert archived.relationship_source == "manual"
+        assert archived.import_method == "manual"
+
+
+@pytest.mark.parametrize(
+    ("job_id", "status"),
+    [(99999, None), (107, "expired")],
+)
+async def test_archive_rejects_nonexistent_or_inactive_jobs(
+    engine, job_id: int, status: str | None
+) -> None:  # noqa: ANN001
+    """Archive never reports success or creates a row for an inaccessible job."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="missing@test.com", name="Missing")
+        if status is not None:
+            await _create_job(db, job_id=job_id, status=status)
+
+        with pytest.raises(JobNotFoundError):
+            await JobService(JobRepository(db)).archive_job(user_id=1, job_id=job_id)
+        await db.commit()
+
+        row = await db.execute(
+            select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == job_id)
+        )
+        assert row.scalar_one_or_none() is None
+
+
+async def test_archive_rejects_another_users_private_job(engine) -> None:  # noqa: ANN001
+    """Archive uses the same non-disclosing private-job visibility contract."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="owner-archive@test.com", name="Owner")
+        await _create_user(db, user_id=2, email="other-archive@test.com", name="Other")
+        await _create_job(
+            db, job_id=108, visibility="private", created_by_user_id=1,
+        )
+
+        with pytest.raises(JobNotFoundError):
+            await JobService(JobRepository(db)).archive_job(user_id=2, job_id=108)
+        await db.commit()
+
+        row = await db.execute(
+            select(UserJob).where(UserJob.user_id == 2, UserJob.job_id == 108)
+        )
+        assert row.scalar_one_or_none() is None
 
 
 async def test_nonexistent_job_returns_none(engine) -> None:  # noqa: ANN001

@@ -9,6 +9,8 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.repository import JobRepository
+from app.domain.jobs.service import JobService
 from app.domain.matching.repository import MatchingRepository
 from app.models.job import Job
 from app.models.user import User
@@ -248,3 +250,36 @@ async def test_public_matched_jobs_still_appear(engine) -> None:  # noqa: ANN001
         assert rows[0][0].title == "Public Role"
         assert next_cursor is None
         assert has_more is False
+
+
+async def test_archiving_public_match_without_user_job_excludes_only_that_user(engine) -> None:  # noqa: ANN001
+    """Archive creates the relationship needed to hide a previously unlinked match."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="archiver@test.com", name="Archiver")
+        await _create_user(db, user_id=2, email="viewer@test.com", name="Viewer")
+        await _create_job(
+            db,
+            job_id=402,
+            title="Archivable Public Role",
+            company="Open Corp",
+            visibility="public",
+            created_by_user_id=None,
+            ingest_source="scraper",
+        )
+        await _create_match(db, user_id=1, job_id=402)
+        await _create_match(db, user_id=2, job_id=402)
+        await db.commit()
+
+    async with sf() as db:
+        await JobService(JobRepository(db)).archive_job(user_id=1, job_id=402)
+        await db.commit()
+
+        matches = MatchingRepository(db)
+        archived_rows, archived_total, _, _ = await matches.list_matches(user_id=1, limit=50)
+        visible_rows, visible_total, _, _ = await matches.list_matches(user_id=2, limit=50)
+
+        assert archived_rows == []
+        assert archived_total == 0
+        assert [job.id for job, _ in visible_rows] == [402]
+        assert visible_total == 1

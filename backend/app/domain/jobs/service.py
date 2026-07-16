@@ -310,8 +310,16 @@ class JobService:
     async def archive_job(
         self, user_id: int, job_id: int
     ) -> None:
-        """Per-user archive — sets ``user_jobs.status = 'archived'``."""
-        await self._repo.set_user_job_status(user_id, job_id, "archived")
+        """Archive one active, visible job for this user.
+
+        The archive relationship is created when a public or owner-visible job
+        has not yet been linked to the user.  Inaccessible jobs use the same
+        non-disclosing not-found contract as job detail.
+        """
+        job = await self._repo.get_archivable_by_id(user_id=user_id, job_id=job_id)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        await self._repo.archive_user_job(user_id=user_id, job_id=job_id)
 
     async def get_job(self, *, user_id: int, job_id: int) -> JobResponse:
         """Fetch a single job, scoped to *user_id* visibility.
