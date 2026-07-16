@@ -10,13 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
-from app.domain.applications.exceptions import ApplicationNotFoundError
+from app.domain.applications.exceptions import (
+    ApplicationNotFoundError,
+    InvalidApplicationStatusTransitionError,
+)
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.schemas import ApplicationUpdate
 from app.domain.applications.service import ApplicationService
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
 from app.models.application_event import ApplicationEvent
+from app.models.application import Application
 from app.models.job import Job
 from app.models.user import User
 
@@ -124,6 +128,55 @@ async def test_application_create_defaults_next_actions_to_null(engine) -> None:
         assert result.next_action_note is None
         assert result.next_action_due_date is None
         assert result.next_action_completed_at is None
+
+
+async def test_application_create_is_idempotent_for_user_and_job(engine) -> None:  # noqa: ANN001
+    """Repeated saves return one existing ``saved`` application row."""
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=10, email="idempotent@test.com")
+        await _seed_public_job(db, job_id=110)
+
+    async with sf() as db:
+        svc = _service(db)
+        first = await svc.create(user_id=10, job_id=110)
+        second = await svc.create(user_id=10, job_id=110)
+        rows = await db.execute(
+            select(Application).where(
+                Application.user_id == 10, Application.job_id == 110
+            )
+        )
+
+        assert first.id == second.id
+        assert second.status == "saved"
+        assert len(rows.scalars().all()) == 1
+
+
+async def test_application_status_cannot_move_from_applied_back_to_saved(
+    engine,
+) -> None:  # noqa: ANN001
+    """The CRM permits saved -> applied but rejects a backward transition."""
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=11, email="transition@test.com")
+        await _seed_public_job(db, job_id=111)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=11, job_id=111)
+        applied = await svc.update(
+            user_id=11,
+            application_id=created.id,
+            payload=ApplicationUpdate(status="applied"),
+        )
+
+        assert applied.status == "applied"
+        with pytest.raises(InvalidApplicationStatusTransitionError):
+            await svc.update(
+                user_id=11,
+                application_id=created.id,
+                payload=ApplicationUpdate(status="saved"),
+            )
 
 
 async def test_application_update_can_set_clear_and_complete_next_action(

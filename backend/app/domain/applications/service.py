@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import date
 
 from app.core.logging import get_logger
-from app.domain.applications.exceptions import ApplicationNotFoundError
+from app.domain.applications.exceptions import (
+    ApplicationNotFoundError,
+    InvalidApplicationStatusTransitionError,
+)
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.schemas import (
     ApplicationActivityEvent,
@@ -57,6 +60,14 @@ class ApplicationService:
         )
         if application is None:
             raise ApplicationNotFoundError(application_id)
+
+        # Applications advance through the CRM pipeline; an applied record
+        # must not be silently downgraded by a retry or stale UI.
+        if application.status == "applied" and payload.status == "saved":
+            raise InvalidApplicationStatusTransitionError(
+                current_status=application.status,
+                requested_status=payload.status,
+            )
 
         previous_next_action = _next_action_snapshot(application)
         fields_set = payload.model_fields_set

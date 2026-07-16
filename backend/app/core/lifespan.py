@@ -10,7 +10,10 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.domain.applications.exceptions import ApplicationNotFoundError
+from app.domain.applications.exceptions import (
+    ApplicationNotFoundError,
+    InvalidApplicationStatusTransitionError,
+)
 from app.domain.auth.exceptions import (
     EmailAlreadyRegisteredError,
     GoogleAuthError,
@@ -137,6 +140,12 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=404,
             content={"detail": f"Application {exc.application_id} not found"},
         )
+
+    @app.exception_handler(InvalidApplicationStatusTransitionError)
+    async def _invalid_application_status_transition(
+        request: Request, exc: InvalidApplicationStatusTransitionError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(PreferenceNotFoundError)
     async def _preference_not_found(
