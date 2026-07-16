@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 const SETTINGS_TABS = [
   { href: "/settings/profile", label: "Profile" },
   { href: "/settings/preferences", label: "Preferences" },
+  { href: "/settings/readiness", label: "Readiness" },
   { href: "/settings/connected-apps", label: "Connected Apps" },
 ];
 

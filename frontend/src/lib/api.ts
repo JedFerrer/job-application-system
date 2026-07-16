@@ -18,6 +18,8 @@ import type {
   ParsedProfile,
   PreferenceResponse,
   PreferenceUpdate,
+  ReadinessPreferenceResponse,
+  ReadinessPreferenceUpdate,
   ProfileResponse,
   RankResponse,
   RefreshResponse,
@@ -323,6 +325,16 @@ export const preferencesApi = {
     }),
   refresh: () =>
     apiRequest<RefreshResponse>("/preferences/refresh", { method: "POST" }),
+};
+
+// ---- Readiness preferences -------------------------------------------------
+export const readinessPreferencesApi = {
+  get: () => apiRequest<ReadinessPreferenceResponse>("/readiness-preferences"),
+  upsert: (payload: ReadinessPreferenceUpdate) =>
+    apiRequest<ReadinessPreferenceResponse>("/readiness-preferences", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
 };
 
 // ---- Interview prep (Phase 2) -----------------------------------------------

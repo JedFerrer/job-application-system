@@ -416,6 +416,28 @@ export interface PreferenceUpdate {
   is_active?: boolean;
 }
 
+export interface ReadinessPreferenceResponse {
+  id: number;
+  user_id: number;
+  minimum_annual_salary: number | null;
+  salary_currency: string | null;
+  remote_only: boolean | null;
+  accepted_job_types: string[];
+  preferred_locations: string[];
+  blocked_keywords: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReadinessPreferenceUpdate {
+  minimum_annual_salary: number | null;
+  salary_currency: string | null;
+  remote_only: boolean | null;
+  accepted_job_types: string[];
+  preferred_locations: string[];
+  blocked_keywords: string[];
+}
+
 export interface RefreshResponse {
   task_id: string;
   dispatched_at: string;
