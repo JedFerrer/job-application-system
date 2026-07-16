@@ -8,6 +8,7 @@ import { JobDetailView } from "@/components/jobs/job-detail-view";
 const apiMocks = vi.hoisted(() => {
   const jobsApi = {
     get: vi.fn(),
+    archive: vi.fn(),
   };
   const applicationsApi = {
     list: vi.fn(),
@@ -250,6 +251,7 @@ describe("JobDetailView readiness", () => {
     toastMocks.success.mockReset();
     toastMocks.error.mockReset();
     apiMocks.jobsApi.get.mockReset();
+    apiMocks.jobsApi.archive.mockReset();
     apiMocks.applicationsApi.list.mockReset();
     apiMocks.applicationsApi.create.mockReset();
     apiMocks.applicationsApi.update.mockReset();
@@ -617,4 +619,150 @@ describe("JobDetailView readiness", () => {
     delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   });
 
+  it("opens Archive job confirmation from More actions without a mutation", async () => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <JobDetailView jobId={501} />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const moreActions = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("More actions"),
+    );
+    await act(async () => {
+      moreActions?.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+      await Promise.resolve();
+    });
+
+    const archiveMenuItems = [...document.querySelectorAll('[role="menuitem"]')].filter(
+      (item) => item.textContent?.includes("Archive job"),
+    );
+    expect(archiveMenuItems).toHaveLength(1);
+    await act(async () => {
+      archiveMenuItems[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.jobsApi.archive).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Archive this job?");
+    expect(document.body.textContent).toContain(
+      "This removes the job from your lists for you. It does not delete the job.",
+    );
+    expect(container.textContent).toContain("Suggested: Skip");
+    expect([...container.querySelectorAll("button")].filter(
+      (button) => button.textContent?.includes("Mark as Applied"),
+    )).toHaveLength(1);
+    expect([...container.querySelectorAll("button")].filter(
+      (button) => button.textContent?.includes("Save Job"),
+    )).toHaveLength(1);
+    const cancel = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Keep job",
+    );
+    await act(async () => {
+      cancel?.click();
+      await Promise.resolve();
+    });
+    expect(apiMocks.jobsApi.archive).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("Archive this job?");
+  });
+
+  it("archives once after confirmation and invalidates only job-list caches", async () => {
+    apiMocks.jobsApi.archive.mockResolvedValue(undefined);
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <JobDetailView jobId={501} />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const moreActions = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("More actions"),
+    );
+    await act(async () => {
+      moreActions?.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+      await Promise.resolve();
+      [...document.querySelectorAll('[role="menuitem"]')]
+        .find((item) => item.textContent?.includes("Archive job"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const confirm = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Archive job",
+    );
+    await act(async () => {
+      confirm?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.jobsApi.archive).toHaveBeenCalledTimes(1);
+    expect(apiMocks.jobsApi.archive).toHaveBeenCalledWith(501);
+    expect(routerMocks.push).toHaveBeenCalledWith("/dashboard/jobs");
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["job", 501] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["matches"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["jobs"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["imported-jobs"] });
+    expect(invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["applications"] });
+  });
+
+  it("keeps the confirmation open after archive failure and preserves application copy", async () => {
+    apiMocks.listAllApplications.mockResolvedValue([{ id: 702, job_id: 501, status: "saved" }]);
+    queryClient.setQueryData(["applications", "list"], [
+      { id: 702, job_id: 501, status: "saved" },
+    ]);
+    apiMocks.jobsApi.archive.mockRejectedValue(new apiMocks.ApiError("Archive failed", 500, null));
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <JobDetailView jobId={501} />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const moreActions = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("More actions"),
+    );
+    await act(async () => {
+      moreActions?.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+      await Promise.resolve();
+      [...document.querySelectorAll('[role="menuitem"]')]
+        .find((item) => item.textContent?.includes("Archive job"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain(
+      "Your saved application will remain available in Applications.",
+    );
+    const confirm = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Archive job",
+    );
+    await act(async () => {
+      confirm?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.jobsApi.archive).toHaveBeenCalledTimes(1);
+    expect(routerMocks.push).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Archive this job?");
+    expect(toastMocks.error).toHaveBeenCalledWith("Archive failed");
+  });
 });

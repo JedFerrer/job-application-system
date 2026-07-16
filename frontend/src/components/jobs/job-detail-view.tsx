@@ -17,6 +17,7 @@ import {
   FilePenLine,
   EllipsisVertical,
   ChevronDown,
+  Archive,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -52,6 +53,16 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -174,6 +185,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const [showInterviewPrep, setShowInterviewPrep] = useState(false);
   const [showTailorResume, setShowTailorResume] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("Description");
+  const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
 
   // Derive match summary from the matches-list cache — no API call needed.
   // Falls back to the explain result if the user has already triggered it.
@@ -280,6 +292,23 @@ export function JobDetailView({ jobId }: { jobId: number }) {
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Failed to update status"),
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: () => jobsApi.archive(jobId),
+    onSuccess: () => {
+      toast.success("Job archived");
+      setShowArchiveConfirm(false);
+      queryClient.invalidateQueries({ queryKey: ["job", jobId] });
+      queryClient.invalidateQueries({ queryKey: ["matches"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // Imported-list membership comes from UserJob relationship metadata,
+      // which is not included in the job-detail response.
+      queryClient.invalidateQueries({ queryKey: ["imported-jobs"] });
+      router.push("/dashboard/jobs");
+    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Failed to archive job"),
   });
 
   const analyzeMatchMutation = useMutation({
@@ -983,6 +1012,31 @@ export function JobDetailView({ jobId }: { jobId: number }) {
         open={showTailorResume}
         onOpenChange={setShowTailorResume}
       />
+      <AlertDialog open={showArchiveConfirm} onOpenChange={setShowArchiveConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive this job?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {existingApp
+                ? "This removes the job from your lists for you. Your saved application will remain available in Applications."
+                : "This removes the job from your lists for you. It does not delete the job."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={archiveMutation.isPending}>Keep job</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={archiveMutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                archiveMutation.mutate();
+              }}
+            >
+              {archiveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Archive job
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
