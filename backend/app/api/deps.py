@@ -28,6 +28,10 @@ from app.domain.interview.service import InterviewService
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
 from app.domain.matching.repository import MatchingRepository
+from app.domain.matching.readiness_preferences import (
+    ReadinessPreferenceRepository,
+    ReadinessPreferenceService,
+)
 from app.domain.matching.service import MatchingService
 from app.domain.preferences.repository import PreferenceRepository
 from app.domain.preferences.service import PreferenceService
@@ -147,10 +151,19 @@ JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 
 
 def get_match_service(db: DbSession) -> MatchingService:
-    return MatchingService(MatchingRepository(db))
+    return MatchingService(MatchingRepository(db), ReadinessPreferenceRepository(db))
 
 
 MatchServiceDep = Annotated[MatchingService, Depends(get_match_service)]
+
+
+def get_readiness_preference_service(db: DbSession) -> ReadinessPreferenceService:
+    return ReadinessPreferenceService(ReadinessPreferenceRepository(db))
+
+
+ReadinessPreferenceServiceDep = Annotated[
+    ReadinessPreferenceService, Depends(get_readiness_preference_service)
+]
 
 
 def get_preference_service(db: DbSession) -> PreferenceService:

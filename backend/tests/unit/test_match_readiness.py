@@ -15,6 +15,7 @@ pytestmark = pytest.mark.unit
 def _service(repo: object) -> MatchingService:
     service = MatchingService.__new__(MatchingService)
     service._repo = repo  # type: ignore[attr-defined]
+    service._readiness_repo = None  # type: ignore[attr-defined]
     return service
 
 

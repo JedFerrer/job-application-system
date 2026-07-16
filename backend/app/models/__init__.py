@@ -18,6 +18,7 @@ from app.models.user_job import UserJob
 from app.models.user_job_import import UserJobImport
 from app.models.user_job_match import UserJobMatch
 from app.models.user_job_preference import UserJobPreference
+from app.models.user_readiness_preference import UserReadinessPreference
 from app.models.user_scrape_query_subscription import UserScrapeQuerySubscription
 from app.models.web_refresh_session import WebRefreshSession
 
@@ -40,6 +41,7 @@ __all__ = [
     "UserJobImport",
     "UserJobMatch",
     "UserJobPreference",
+    "UserReadinessPreference",
     "UserScrapeQuerySubscription",
     "WebRefreshSession",
 ]

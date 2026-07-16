@@ -30,6 +30,7 @@ from app.domain.matching.schemas import (
     SkillsGapSummary,
 )
 from app.domain.matching.readiness import build_match_readiness
+from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
 from app.domain.matching.skill_matcher import (
     compute_skill_match,
     extract_known_skills,
@@ -55,8 +56,13 @@ def confidence_band(similarity: float) -> str:
 
 
 class MatchingService:
-    def __init__(self, repository: MatchingRepository) -> None:
+    def __init__(
+        self,
+        repository: MatchingRepository,
+        readiness_repository: ReadinessPreferenceRepository | None = None,
+    ) -> None:
         self._repo = repository
+        self._readiness_repo = readiness_repository
 
     async def rank_jobs(self, user_id: int, limit: int) -> RankResponse:
         profile = await self._repo.get_active_profile(user_id)
@@ -107,6 +113,11 @@ class MatchingService:
             source_type=source_type,
         )
         items: list[MatchItem] = []
+        readiness_preferences = (
+            await self._readiness_repo.get_for_user(user_id)
+            if self._readiness_repo is not None
+            else None
+        )
         for job, match in rows:
             items.append(
                 MatchItem(
@@ -128,7 +139,7 @@ class MatchingService:
                     confidence=match.confidence,
                     llm_score=match.llm_score,
                     matched_skills=match.matched_skills or None,
-                    readiness=self._build_readiness(match),
+                    readiness=self._build_readiness(match, job, readiness_preferences),
                     posted_at=job.posted_at,
                 )
             )
@@ -159,7 +170,7 @@ class MatchingService:
 
         # Cache hit: return the stored explanation, no LLM cost.
         if getattr(match, "llm_analyzed_at", None) is not None or match.llm_explanation is not None:
-            return self._to_explanation(match)
+            return await self._to_explanation(match, user_id)
 
         job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         profile = await self._repo.get_active_profile(user_id)
@@ -198,7 +209,7 @@ class MatchingService:
             deterministic_match=report_dict,
             confidence=conf_band,
         )
-        return self._to_explanation(match)
+        return await self._to_explanation(match, user_id)
 
     async def analyze_skills(self, *, user_id: int, job_id: int) -> MatchSkillAnalysis:
         """Return cached or freshly computed deterministic skill evidence."""
@@ -211,7 +222,7 @@ class MatchingService:
             and match.matched_skills is not None
             and match.missing_keywords is not None
         ):
-            return self._to_skill_analysis(match)
+            return await self._to_skill_analysis(match, user_id)
 
         job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         profile = await self._repo.get_active_profile(user_id)
@@ -228,7 +239,7 @@ class MatchingService:
             missing_keywords=report.missing_skills,
             deterministic_match=report_to_dict(report),
         )
-        return self._to_skill_analysis(match)
+        return await self._to_skill_analysis(match, user_id)
 
     async def _explain_with_llm(
         self,
@@ -301,9 +312,21 @@ class MatchingService:
 
         return llm_score, llm_confidence, missing, explanation_str, conf_band, None
 
-    @staticmethod
-    def _to_explanation(match: object) -> MatchExplanation:
+    async def _to_explanation(self, match: object, user_id: int) -> MatchExplanation:
         # ``match`` is a UserJobMatch; typed loosely to avoid a circular import.
+        job = None
+        prefs = None
+        if self._readiness_repo is not None:
+            job = await self._repo.get_visible_job(user_id=user_id, job_id=match.job_id)
+            prefs = await self._readiness_repo.get_for_user(user_id)
+        readiness = build_match_readiness(
+            score=match.llm_score if match.llm_score is not None else match.vector_score,
+            confidence=match.confidence,
+            matched_skills=match.matched_skills,
+            missing_keywords=match.missing_keywords,
+            job=job,
+            preferences=prefs,
+        )
         return MatchExplanation(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
@@ -319,34 +342,43 @@ class MatchingService:
             explanation=match.llm_explanation,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
-            readiness=build_match_readiness(
-                score=match.llm_score if match.llm_score is not None else match.vector_score,  # type: ignore[attr-defined]
-                confidence=match.confidence,  # type: ignore[attr-defined]
-                matched_skills=match.matched_skills,  # type: ignore[attr-defined]
-                missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
-            ),
+            readiness=readiness,
         )
 
-    @staticmethod
-    def _to_skill_analysis(match: object) -> MatchSkillAnalysis:
+    async def _to_skill_analysis(self, match: object, user_id: int) -> MatchSkillAnalysis:
+        job = None
+        prefs = None
+        if self._readiness_repo is not None:
+            job = await self._repo.get_visible_job(user_id=user_id, job_id=match.job_id)
+            prefs = await self._readiness_repo.get_for_user(user_id)
+        score = match.llm_score if match.llm_score is not None else match.vector_score
         return MatchSkillAnalysis(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
             readiness=build_match_readiness(
-                score=match.llm_score if match.llm_score is not None else match.vector_score,  # type: ignore[attr-defined]
+                score=score,  # type: ignore[arg-type]
                 confidence=match.confidence,  # type: ignore[attr-defined]
                 matched_skills=match.matched_skills,  # type: ignore[attr-defined]
                 missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
+                job=job,
+                preferences=prefs,
             ),
         )
 
     @staticmethod
-    def _build_readiness(match: object) -> MatchReadiness:
+    def _build_readiness(
+        match: object,
+        job: object | None = None,
+        preferences: object | None = None,
+    ) -> MatchReadiness:
+        score = match.llm_score if match.llm_score is not None else match.vector_score
         return build_match_readiness(
-            score=match.llm_score if match.llm_score is not None else match.vector_score,  # type: ignore[attr-defined]
+            score=score,  # type: ignore[arg-type]
             confidence=match.confidence,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills,  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
+            job=job,
+            preferences=preferences,
         )

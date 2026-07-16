@@ -27,6 +27,9 @@ class MatchReadiness(BaseModel):
     decision: Literal["apply", "save", "stretch", "skip"]
     reasons: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
+    deterministic_blockers: list[str] = Field(default_factory=list)
+    deterministic_warnings: list[str] = Field(default_factory=list)
+    decision_basis: Literal["score", "blocker"] = "score"
 
 
 class MatchItem(BaseModel):
