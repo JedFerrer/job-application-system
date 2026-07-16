@@ -181,6 +181,9 @@ export interface MatchReadiness {
   decision: MatchReadinessDecision;
   reasons: string[];
   caveats: string[];
+  deterministic_blockers: string[];
+  deterministic_warnings: string[];
+  decision_basis: "score" | "blocker";
 }
 
 export interface MatchItem {

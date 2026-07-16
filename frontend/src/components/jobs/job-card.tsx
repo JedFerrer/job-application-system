@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { stripMarkdown } from "@/lib/utils";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
 import type { MatchReadiness, MatchReadinessDecision } from "@/lib/types";
+import { getReadinessActionSuggestion } from "@/lib/readiness-actions";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -437,13 +438,25 @@ export function JobCard({
                   showConfidenceLabel={showConfidenceLabel}
                 />
                 {match.readiness && (
-                  <div className="mt-2 flex justify-center">
+                  <div className="mt-2 flex flex-col items-center">
                     <Badge
                       variant="outline"
                       className={`rounded-full font-normal text-[11px] ${READINESS_BADGE_CLASS[match.readiness.decision]}`}
                     >
                       {READINESS_LABELS[match.readiness.decision]}
                     </Badge>
+                    <p className="mt-1 max-w-full truncate text-center text-[10px] text-muted-foreground">
+                      {(match.readiness.deterministic_blockers ?? []).length > 0
+                        ? "Blocked by your rule"
+                        : (match.readiness.deterministic_warnings ?? []).length > 0
+                          ? "Needs review"
+                        : "Based on match score"}
+                    </p>
+                    {getReadinessActionSuggestion(match.readiness) && (
+                      <p className="max-w-full truncate text-center text-[10px] font-medium text-foreground/70">
+                        Suggested: {getReadinessActionSuggestion(match.readiness)?.label}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

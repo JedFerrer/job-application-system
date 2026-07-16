@@ -29,9 +29,14 @@ import type {
   MatchSkillAnalysis,
   MatchReadinessDecision,
 } from "@/lib/types";
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
 import { formatJobDescription } from "@/lib/utils";
+import {
+  getReadinessActionNavigationTarget,
+  getReadinessActionSuggestion,
+  type ReadinessActionNavigationTarget,
+} from "@/lib/readiness-actions";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
 import { InterviewPrepDialog } from "@/components/interview/interview-prep-dialog";
 import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
@@ -344,6 +349,35 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const quickMatchScore = match?.vector_score ?? null;
   const hasDetailedScore = explainData != null && match?.llm_score != null;
   const readiness = explainData?.readiness ?? skillData?.readiness ?? match?.readiness ?? null;
+  const readinessSuggestion = getReadinessActionSuggestion(readiness);
+  const hasApplySuggestionAssociation =
+    readinessSuggestion?.action === "apply" &&
+    !isApplied &&
+    !applyMutation.isPending;
+  const readinessNavigationTarget = getReadinessActionNavigationTarget(readinessSuggestion);
+  const navigationTargetIds: Record<ReadinessActionNavigationTarget, string> = {
+    apply: "crm-mark-applied-action",
+    save: "crm-save-action",
+    archive: "crm-archive-action",
+    readiness: "readiness-explanation",
+  };
+  const navigationTargetIsAvailable =
+    readinessNavigationTarget === "apply"
+      ? !isApplied && !applyMutation.isPending
+      : readinessNavigationTarget === "save"
+        ? !isSaved && !saveMutation.isPending
+        : readinessNavigationTarget === "readiness";
+  const navigateToSuggestedAction = () => {
+    if (!readinessNavigationTarget || !navigationTargetIsAvailable) return;
+
+    const target = document.getElementById(
+      navigationTargetIds[readinessNavigationTarget],
+    );
+    if (!target) return;
+
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.focus({ preventScroll: true });
+  };
   const analyzedMatchedSkills = explainData?.matched_skills ?? skillData?.matched_skills ?? match?.matched_skills ?? [];
   const analyzedMissingSkills = explainData?.missing_keywords ?? skillData?.missing_keywords ?? [];
 
@@ -447,10 +481,21 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             )}
             {/* Mark as Applied */}
             <Button
+              id="crm-mark-applied-action"
+              aria-describedby={
+                hasApplySuggestionAssociation
+                  ? "suggested-apply-action-description"
+                  : undefined
+              }
               variant={isApplied ? "secondary" : "outline"}
               size="sm"
               onClick={() => applyMutation.mutate()}
               disabled={applyMutation.isPending || isApplied}
+              className={
+                highlightedActionTarget === "crm-mark-applied-action"
+                  ? "ring-2 ring-ring ring-offset-2"
+                  : undefined
+              }
             >
               {applyMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
@@ -477,6 +522,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
               </Button>
             ) : (
               <Button
+                id="crm-save-action"
                 variant="outline"
                 size="sm"
                 onClick={() => saveMutation.mutate()}
@@ -513,6 +559,10 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 <DropdownMenuItem onClick={() => setShowInterviewPrep(true)}>
                   <MessagesSquare className="h-4 w-4" />
                   Interview Prep
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowArchiveConfirm(true)}>
+                  <Archive className="h-4 w-4" />
+                  Archive job
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -656,7 +706,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                       </p>
                     )}
                     {readiness && (
-                      <div className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2">
+                      <section
+                        id="readiness-explanation"
+                        tabIndex={-1}
+                        className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2"
+                      >
                         <div className="flex items-center gap-2">
                           <Badge
                             variant="outline"
@@ -665,9 +719,65 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                             {READINESS_LABELS[readiness.decision]}
                           </Badge>
                         </div>
-                        {readiness.reasons.filter((reason) => !reason.startsWith("Known gaps:")).length > 0 && (
+                        {readinessSuggestion && (
+                          <section className="mt-2 rounded-md border border-border/60 bg-background/70 px-2 py-1.5">
+                            <h3 className="text-xs font-medium text-foreground">Suggested next action</h3>
+                            <p className="mt-0.5 text-sm font-medium text-foreground">
+                              Suggested: {readinessSuggestion.label}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {readinessSuggestion.explanation}
+                            </p>
+                            {hasApplySuggestionAssociation && (
+                              <span
+                                id="suggested-apply-action-description"
+                                className="sr-only"
+                              >
+                                Suggested next action: Apply. Mark as Applied updates
+                                your application status.
+                              </span>
+                            )}
+                            {navigationTargetIsAvailable && (
+                              <button
+                                type="button"
+                                onClick={navigateToSuggestedAction}
+                                className="mt-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                aria-label={
+                                  readinessNavigationTarget === "readiness"
+                                    ? "View readiness explanation"
+                                    : `Go to ${readinessSuggestion.label.toLowerCase()} action`
+                                }
+                              >
+                                {readinessNavigationTarget === "readiness"
+                                  ? "View action"
+                                  : "Go to action"}
+                              </button>
+                            )}
+                          </section>
+                        )}
+                        {(readiness.deterministic_blockers ?? []).length > 0 && (
+                          <section className="mt-2 rounded-md border border-red-200 bg-red-50/60 px-2 py-1.5 dark:border-red-900/60 dark:bg-red-950/20">
+                            <h3 className="text-xs font-medium text-red-700 dark:text-red-300">Blocked by your rule</h3>
+                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-red-700 dark:text-red-300">
+                              {(readiness.deterministic_blockers ?? []).map((blocker) => (
+                                <li key={blocker}>{blocker}</li>
+                              ))}
+                            </ul>
+                          </section>
+                        )}
+                        {([...((readiness.deterministic_warnings ?? [])), ...(readiness.caveats ?? [])].length > 0) && (
+                          <section className="mt-2 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 dark:border-amber-900/60 dark:bg-amber-950/20">
+                            <h3 className="text-xs font-medium text-amber-700 dark:text-amber-300">Needs review</h3>
+                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-700 dark:text-amber-300">
+                              {[...(readiness.deterministic_warnings ?? []), ...(readiness.caveats ?? [])].map((item, index) => (
+                                <li key={`${item}-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          </section>
+                        )}
+                        {(readiness.reasons ?? []).filter((reason) => !reason.startsWith("Known gaps:")).length > 0 && (
                           <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                            {readiness.reasons
+                            {(readiness.reasons ?? [])
                               .filter((reason) => !reason.startsWith("Known gaps:"))
                               .slice(0, 2)
                               .map((reason) => (
@@ -680,7 +790,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                             {readiness.caveats.slice(0, 1).join(" ")}
                           </p>
                         )}
-                      </div>
+                      </section>
                     )}
                   </div>
                   {/* Row 2: detailed assessment CTA and supporting text */}
