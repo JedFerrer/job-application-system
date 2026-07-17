@@ -49,6 +49,15 @@ class _EmptyMatchService:
         )()
 
 
+class _SummaryMatchService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+
+    async def get_match_summary(self, *, user_id: int, job_id: int) -> None:
+        self.calls.append((user_id, job_id))
+        return None
+
+
 def test_invalid_cursor_returns_400() -> None:
     user = User(id=1, email="a@test.com", name="A", is_active=True)
     app = _build_app_with_overrides(current_user=user, match_service=_FailingMatchService())
@@ -101,3 +110,16 @@ def test_match_readiness_is_documented_in_openapi() -> None:
 
     assert "readiness" in match_item
     assert "readiness" in explanation
+
+
+def test_match_summary_returns_200_null_and_uses_current_user_scope() -> None:
+    user = User(id=42, email="scoped@test.com", name="Scoped", is_active=True)
+    service = _SummaryMatchService()
+    app = _build_app_with_overrides(current_user=user, match_service=service)
+    client = TestClient(app)
+
+    response = client.get("/matches/501/summary")
+
+    assert response.status_code == 200
+    assert response.json() is None
+    assert service.calls == [(42, 501)]

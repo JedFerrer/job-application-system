@@ -12,6 +12,8 @@ from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
 from app.domain.matching.repository import MatchingRepository
+from app.domain.matching.exceptions import MatchNotFoundError
+from app.domain.matching.service import MatchingService
 from app.models.job import Job
 from app.models.user import User
 from app.models.user_job import UserJob
@@ -250,6 +252,64 @@ async def test_public_matched_jobs_still_appear(engine) -> None:  # noqa: ANN001
         assert rows[0][0].title == "Public Role"
         assert next_cursor is None
         assert has_more is False
+
+
+async def test_match_summary_returns_only_the_current_users_persisted_match(engine) -> None:  # noqa: ANN001
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="owner@test.com", name="Owner")
+        await _create_user(db, user_id=2, email="other@test.com", name="Other")
+        await _create_job(
+            db,
+            job_id=450,
+            title="Public Role",
+            company="Open Corp",
+            visibility="public",
+            created_by_user_id=None,
+            ingest_source="scraper",
+        )
+        await _create_match(db, user_id=1, job_id=450, vector_score=91.0)
+        await db.commit()
+
+    async with sf() as db:
+        service = MatchingService(MatchingRepository(db))
+        summary = await service.get_match_summary(user_id=1, job_id=450)
+        assert summary is not None
+        assert summary.vector_score == 91.0
+        assert await service.get_match_summary(user_id=2, job_id=450) is None
+
+
+async def test_match_summary_rejects_private_and_archived_jobs(engine) -> None:  # noqa: ANN001
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="owner@test.com", name="Owner")
+        await _create_user(db, user_id=2, email="other@test.com", name="Other")
+        await _create_job(
+            db,
+            job_id=451,
+            title="Private Role",
+            company="Hidden Corp",
+            visibility="private",
+            created_by_user_id=1,
+            ingest_source="manual",
+        )
+        await _create_match(db, user_id=1, job_id=451)
+        await _link_user_job(
+            db,
+            user_id=1,
+            job_id=451,
+            relationship_source="manual",
+            import_method="manual",
+            status="archived",
+        )
+        await db.commit()
+
+    async with sf() as db:
+        service = MatchingService(MatchingRepository(db))
+        with pytest.raises(MatchNotFoundError):
+            await service.get_match_summary(user_id=1, job_id=451)
+        with pytest.raises(MatchNotFoundError):
+            await service.get_match_summary(user_id=2, job_id=451)
 
 
 async def test_archiving_public_match_without_user_job_excludes_only_that_user(engine) -> None:  # noqa: ANN001

@@ -25,6 +25,7 @@ from app.domain.matching.schemas import (
     MatchSkillAnalysis,
     MatchListResponse,
     MatchReadiness,
+    MatchSummary,
     RankResponse,
     SkillGapItem,
     SkillsGapSummary,
@@ -161,6 +162,31 @@ class MatchingService:
                 SkillGapItem(keyword=keyword, frequency=frequency) for keyword, frequency in pairs
             ],
             total_matches_considered=total,
+        )
+
+    async def get_match_summary(self, *, user_id: int, job_id: int) -> MatchSummary | None:
+        """Return existing match data only; never rank, recompute, or call an LLM."""
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
+        if job is None:
+            raise MatchNotFoundError(job_id)
+
+        match = await self._repo.get_match(user_id=user_id, job_id=job_id)
+        if match is None:
+            return None
+
+        readiness_preferences = (
+            await self._readiness_repo.get_for_user(user_id)
+            if self._readiness_repo is not None
+            else None
+        )
+        return MatchSummary(
+            job_id=job_id,
+            vector_score=match.vector_score,
+            confidence=match.confidence,
+            llm_score=match.llm_score,
+            matched_skills=match.matched_skills or [],
+            missing_keywords=match.missing_keywords or [],
+            readiness=self._build_readiness(match, job, readiness_preferences),
         )
 
     async def explain_match(self, *, user_id: int, job_id: int) -> MatchExplanation:

@@ -13,6 +13,7 @@ import type {
   Job,
   JobListResponse,
   MatchExplanation,
+  MatchSummary,
   MatchSkillAnalysis,
   MatchListResponse,
   ParsedProfile,
@@ -304,6 +305,8 @@ export const matchesApi = {
   },
   explain: (jobId: number) =>
     apiRequest<MatchExplanation>(`/matches/${jobId}/explain`),
+  summary: (jobId: number) =>
+    apiRequest<MatchSummary | null>(`/matches/${jobId}/summary`),
   skills: (jobId: number) =>
     apiRequest<MatchSkillAnalysis>(`/matches/${jobId}/skills`),
   skillsGapSummary: (topN = 5) =>

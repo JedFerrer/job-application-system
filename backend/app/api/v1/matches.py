@@ -11,6 +11,7 @@ from app.domain.matching.schemas import (
     MatchExplanation,
     MatchListResponse,
     MatchSkillAnalysis,
+    MatchSummary,
     RankRequest,
     RankResponse,
     SkillsGapSummary,
@@ -73,6 +74,16 @@ async def skills_gap_summary(
 ) -> SkillsGapSummary:
     """Top recurring skill gaps across the user's matched jobs."""
     return await service.skills_gap_summary(user_id=current_user.id, top_n=top_n)
+
+
+@router.get("/{job_id}/summary", response_model=MatchSummary | None)
+async def get_match_summary(
+    job_id: int,
+    current_user: CurrentUser,
+    service: MatchServiceDep,
+) -> MatchSummary | None:
+    """Read persisted match data for job detail without triggering analysis."""
+    return await service.get_match_summary(user_id=current_user.id, job_id=job_id)
 
 
 @router.get("/{job_id}/skills", response_model=MatchSkillAnalysis)

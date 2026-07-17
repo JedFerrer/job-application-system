@@ -237,6 +237,16 @@ export interface MatchExplanation {
   readiness: MatchReadiness;
 }
 
+export interface MatchSummary {
+  job_id: number;
+  vector_score: number;
+  confidence: string | null;
+  llm_score: number | null;
+  matched_skills: string[];
+  missing_keywords: string[];
+  readiness: MatchReadiness;
+}
+
 export interface MatchSkillAnalysis {
   job_id: number;
   vector_score: number;
