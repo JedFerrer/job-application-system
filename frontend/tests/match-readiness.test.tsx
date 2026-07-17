@@ -17,6 +17,7 @@ const apiMocks = vi.hoisted(() => {
   };
   const matchesApi = {
     explain: vi.fn(),
+    summary: vi.fn(),
     skills: vi.fn(),
     rank: vi.fn(),
     list: vi.fn(),
@@ -75,6 +76,16 @@ vi.mock("@/components/resume/tailor-resume-dialog", () => ({
   TailorResumeDialog: () => null,
 }));
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("JobCard readiness", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -92,7 +103,7 @@ describe("JobCard readiness", () => {
     container.remove();
   });
 
-  it("renders a compact readiness badge when readiness is present", async () => {
+  it("separates score and readiness when readiness is present", async () => {
     const job: JobCardData = {
       jobId: 1,
       title: "Backend Engineer",
@@ -130,17 +141,28 @@ describe("JobCard readiness", () => {
         <JobCard
           job={job}
           match={match}
+          compactMatchLayout
           hideExternalLink
           showConfidenceLabel={false}
+          onCardClick={() => undefined}
         />,
       );
       await Promise.resolve();
     });
 
     expect(container.textContent).toContain("Ready to apply");
-    expect(container.textContent).toContain("Based on match score");
-    expect(container.textContent).toContain("Suggested: Apply");
+    expect(container.textContent).not.toContain("Suggested: Apply");
     expect(container.textContent).not.toContain("Stretch fit");
+    expect(container.querySelector('[data-testid="match-readiness-summary"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="match-readiness-summary"]')?.textContent).toContain(
+      "Ready to apply",
+    );
+    expect(container.textContent).not.toContain("Match score");
+    expect(container.querySelector('[data-testid="match-readiness-summary"]')?.parentElement?.className).toContain(
+      "border",
+    );
+    expect(container.firstElementChild?.className).toContain("hover:border-primary/50");
+    expect(container.querySelector("p.line-clamp-2")).not.toBeNull();
   });
 
   it("summarizes blocker and warning readiness states in one line", async () => {
@@ -169,6 +191,7 @@ describe("JobCard readiness", () => {
           <JobCard
             job={job}
             match={{ score: 90, confidence: "strong", matchedSkills: [], readiness }}
+            compactMatchLayout
             hideExternalLink
             showConfidenceLabel={false}
           />,
@@ -186,7 +209,8 @@ describe("JobCard readiness", () => {
       decision_basis: "blocker",
     });
     expect(container.textContent).toContain("Blocked by your rule");
-    expect(container.textContent).toContain("Suggested: Skip");
+    expect(container.textContent).not.toContain("Suggested: Skip");
+    expect(container.textContent).not.toContain("Likely skip");
 
     await renderMatch({
       decision: "save",
@@ -197,7 +221,7 @@ describe("JobCard readiness", () => {
       decision_basis: "score",
     });
     expect(container.textContent).toContain("Needs review");
-    expect(container.textContent).toContain("Suggested: Review");
+    expect(container.textContent).not.toContain("Suggested: Review");
   });
 
   it("keeps JobCard usable when readiness is absent", async () => {
@@ -234,6 +258,51 @@ describe("JobDetailView readiness", () => {
   let root: Root;
   let queryClient: QueryClient;
 
+  const makeSummary = (
+    jobId: number,
+    marker: string,
+    vectorScore = 87,
+  ) => ({
+    job_id: jobId,
+    vector_score: vectorScore,
+    confidence: "moderate",
+    llm_score: null,
+    matched_skills: [`${marker}-matched`],
+    missing_keywords: [`${marker}-missing`],
+    readiness: {
+      decision: "skip" as const,
+      reasons: [`${marker} reason`],
+      caveats: [],
+      deterministic_blockers: [`${marker} blocker`],
+      deterministic_warnings: [],
+      decision_basis: "blocker" as const,
+    },
+  });
+
+  const renderJob = async (jobId: number) => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <JobDetailView jobId={jobId} />
+        </QueryClientProvider>,
+      );
+      for (let index = 0; index < 4; index += 1) {
+        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    });
+  };
+
+  const waitForCondition = async (condition: () => boolean) => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (condition()) return;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      });
+    }
+    expect(condition()).toBe(true);
+  };
+
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -256,6 +325,7 @@ describe("JobDetailView readiness", () => {
     apiMocks.applicationsApi.create.mockReset();
     apiMocks.applicationsApi.update.mockReset();
     apiMocks.matchesApi.explain.mockReset();
+    apiMocks.matchesApi.summary.mockReset();
     apiMocks.matchesApi.skills.mockReset();
     apiMocks.matchesApi.rank.mockReset();
     apiMocks.matchesApi.list.mockReset();
@@ -286,6 +356,22 @@ describe("JobDetailView readiness", () => {
       match_reason: null,
     });
     apiMocks.listAllApplications.mockResolvedValue([]);
+    apiMocks.matchesApi.summary.mockResolvedValue({
+      job_id: 501,
+      vector_score: 87,
+      confidence: "moderate",
+      llm_score: null,
+      matched_skills: ["python", "fastapi"],
+      missing_keywords: ["kubernetes"],
+      readiness: {
+        decision: "apply",
+        reasons: ["Strong match score", "2 matched skills found"],
+        caveats: ["Detailed skill gaps are not available yet"],
+        deterministic_blockers: ["Blocked keyword: contract"],
+        deterministic_warnings: ["Salary data needs review"],
+        decision_basis: "blocker",
+      },
+    });
     apiMocks.matchesApi.skills.mockResolvedValue({
       job_id: 501,
       vector_score: 87,
@@ -418,24 +504,32 @@ describe("JobDetailView readiness", () => {
     });
 
     expect(container.textContent).toContain("Ready to apply");
-    expect(container.textContent).toContain("Suggested next action");
+    expect(container.textContent).not.toContain("Suggested next action");
     expect(container.textContent).toContain("Suggested: Skip");
-    expect(container.textContent).toContain("Based on your rules");
+    expect(container.textContent).not.toContain("Based on your rules");
     expect(container.textContent).not.toContain("Go to action");
     expect(container.textContent).not.toContain("View action");
-    expect(container.textContent).toContain("Strong match score");
+    expect(container.textContent).not.toContain("Strong match score");
     expect(container.textContent).toContain("Blocked by your rule");
     expect(container.textContent).toContain("Blocked keyword: contract");
     expect(container.textContent).toContain("Needs review");
     expect(container.textContent).toContain("Salary data needs review");
-    expect(container.textContent).toContain("2 matched skills found");
-    expect(container.textContent).toContain("Missingkubernetes");
+    expect(container.textContent).toContain("Matched (2)pythonfastapi");
+    expect(container.textContent).toContain("Missing (1)kubernetes");
+    expect(container.textContent).not.toContain("matched skills found");
+    expect(container.textContent).not.toContain("Moderate match score");
     expect(container.textContent).toContain(
       "Detailed skill gaps are not available yet",
     );
     expect(container.textContent).toContain("Get Detailed AI Assessment");
     expect(container.textContent).not.toContain("Known gaps: kubernetes, graphql");
     expect(container.textContent).not.toContain("Stretch fit");
+    const scoreSummary = container.querySelector('[data-testid="match-score-summary"]');
+    const readinessExplanation = container.querySelector("#readiness-explanation");
+    const detailedAssessment = container.querySelector('[data-testid="match-detailed-assessment"]');
+    expect(scoreSummary?.parentElement?.className).toContain("flex-col");
+    expect(readinessExplanation?.parentElement).toBe(scoreSummary?.parentElement);
+    expect(detailedAssessment?.parentElement).toBe(scoreSummary?.parentElement);
     expect(
       [...container.querySelectorAll("button")].filter(
         (button) => button.textContent?.includes("Mark as Applied"),
@@ -448,7 +542,245 @@ describe("JobDetailView readiness", () => {
     ).toHaveLength(1);
   });
 
-  it("associates Suggested Apply with the existing control and preserves its mutation flow", async () => {
+  it("hydrates persisted Quick Match data from the summary API on a fresh load", async () => {
+    queryClient.removeQueries({ queryKey: ["matches"] });
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+    queryClient.removeQueries({ queryKey: ["match-skills", 501] });
+    apiMocks.matchesApi.summary.mockResolvedValue(makeSummary(501, "fresh-api"));
+
+    await renderJob(501);
+    await waitForCondition(() => container.textContent?.includes("fresh-api blocker") ?? false);
+
+    expect(apiMocks.matchesApi.summary).toHaveBeenCalledOnce();
+    expect(apiMocks.matchesApi.summary).toHaveBeenCalledWith(501);
+    expect(container.textContent).toContain("fresh-api blocker");
+    expect(container.textContent).toContain("Matched (1)fresh-api-matched");
+    expect(container.textContent).toContain("Missing (1)fresh-api-missing");
+  });
+
+  it("keeps cached match data visible while the persisted summary is pending", async () => {
+    const pendingSummary = deferred<ReturnType<typeof makeSummary> | null>();
+    apiMocks.matchesApi.summary.mockReturnValue(pendingSummary.promise);
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+
+    await renderJob(501);
+
+    expect(apiMocks.matchesApi.summary).toHaveBeenCalledWith(501);
+    expect(container.textContent).toContain("Blocked keyword: contract");
+    expect(container.textContent).not.toContain("No saved match analysis for this job yet.");
+
+    await act(async () => {
+      pendingSummary.resolve(makeSummary(501, "pending-complete"));
+      await pendingSummary.promise;
+      await Promise.resolve();
+    });
+  });
+
+  it("replaces cached match and skill data with a successful persisted summary", async () => {
+    const pendingSummary = deferred<ReturnType<typeof makeSummary> | null>();
+    apiMocks.matchesApi.summary.mockReturnValue(pendingSummary.promise);
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+
+    await renderJob(501);
+    expect(container.textContent).toContain("Blocked keyword: contract");
+
+    await act(async () => {
+      pendingSummary.resolve(makeSummary(501, "persisted", 64));
+      await pendingSummary.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("persisted blocker");
+    expect(container.textContent).toContain("Matched (1)persisted-matched");
+    expect(container.textContent).toContain("Missing (1)persisted-missing");
+    expect(container.textContent).not.toContain("Blocked keyword: contract");
+    expect(container.textContent).not.toContain("Missingkubernetes");
+  });
+
+  it("treats a successful null summary as authoritative and clears cached match data", async () => {
+    const pendingSummary = deferred<ReturnType<typeof makeSummary> | null>();
+    apiMocks.matchesApi.summary.mockReturnValue(pendingSummary.promise);
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+
+    await renderJob(501);
+    expect(container.textContent).toContain("Blocked keyword: contract");
+
+    await act(async () => {
+      pendingSummary.resolve(null);
+      await pendingSummary.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("No saved match analysis for this job yet.");
+    expect(container.textContent).toContain(
+      "Run Match Analysis to compare it with your active profile.",
+    );
+    expect(container.textContent).not.toContain("Blocked keyword: contract");
+  });
+
+  it("keeps cached data provisionally when summary refresh fails and offers retry", async () => {
+    apiMocks.matchesApi.summary.mockRejectedValue(new Error("summary unavailable"));
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+
+    await renderJob(501);
+    await waitForCondition(
+      () => container.textContent?.includes("Could not refresh saved match analysis.") ?? false,
+    );
+
+    expect(container.textContent).toContain("Blocked keyword: contract");
+    expect(container.textContent).toContain("Could not refresh saved match analysis.");
+    expect(container.textContent).toContain("Retry");
+    expect(container.textContent).not.toContain("No saved match analysis for this job yet.");
+  });
+
+  it("shows an error without claiming no saved match when no cache is available", async () => {
+    queryClient.removeQueries({ queryKey: ["matches"] });
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+    queryClient.removeQueries({ queryKey: ["match-skills", 501] });
+    apiMocks.matchesApi.summary.mockRejectedValue(new Error("summary unavailable"));
+
+    await renderJob(501);
+    await waitForCondition(
+      () => container.textContent?.includes("Could not load your saved match analysis.") ?? false,
+    );
+
+    expect(container.textContent).toContain("Could not load your saved match analysis.");
+    expect(container.textContent).toContain("Retry loading match");
+    expect(container.textContent).not.toContain("No saved match analysis for this job yet.");
+  });
+
+  it("surfaces a summary failure immediately despite the app retry default", async () => {
+    queryClient.setDefaultOptions({
+      queries: {
+        retry: 1,
+        retryDelay: 1_000,
+      },
+    });
+    queryClient.removeQueries({ queryKey: ["matches"] });
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+    queryClient.removeQueries({ queryKey: ["match-skills", 501] });
+    apiMocks.matchesApi.summary.mockRejectedValue(new Error("summary unavailable"));
+
+    await renderJob(501);
+    await waitForCondition(
+      () => container.textContent?.includes("Could not load your saved match analysis.") ?? false,
+    );
+
+    expect(apiMocks.matchesApi.summary).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("Retry loading match");
+    expect(container.textContent).not.toContain("Loading saved match analysis…");
+
+    const retry = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Retry loading match",
+    );
+    await act(async () => {
+      retry?.click();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(apiMocks.matchesApi.summary).toHaveBeenCalledTimes(2);
+  });
+
+  it("never lets a late Job A explanation override Job B", async () => {
+    const pendingExplanation = deferred<{
+      job_id: number;
+      vector_score: number;
+      confidence: string;
+      llm_score: number;
+      llm_confidence: number;
+      llm_available: boolean;
+      llm_error: null;
+      explanation: string;
+      matched_skills: string[];
+      missing_keywords: string[];
+      readiness: ReturnType<typeof makeSummary>["readiness"];
+    }>();
+    apiMocks.matchesApi.explain.mockReturnValue(pendingExplanation.promise);
+    apiMocks.matchesApi.summary.mockImplementation((requestedJobId: number) =>
+      Promise.resolve(makeSummary(requestedJobId, `job-${requestedJobId}`)),
+    );
+
+    await renderJob(501);
+    const assessmentButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Get Detailed AI Assessment"),
+    );
+    await act(async () => {
+      assessmentButton?.click();
+      await Promise.resolve();
+    });
+
+    const jobA = queryClient.getQueryData<Record<string, unknown>>(["job", 501]);
+    queryClient.setQueryData(["job", 502], {
+      ...jobA,
+      id: 502,
+      title: "Job B",
+      source_url: "https://example.com/job/502",
+    });
+    await renderJob(502);
+    await waitForCondition(() => container.textContent?.includes("job-502 blocker") ?? false);
+    expect(container.textContent).toContain("job-502 blocker");
+
+    await act(async () => {
+      pendingExplanation.resolve({
+        job_id: 501,
+        vector_score: 99,
+        confidence: "strong",
+        llm_score: 99,
+        llm_confidence: 0.99,
+        llm_available: true,
+        llm_error: null,
+        explanation: "JOB A EXPLANATION MUST NOT LEAK",
+        matched_skills: ["job-a-only-skill"],
+        missing_keywords: ["job-a-only-gap"],
+        readiness: makeSummary(501, "job-a").readiness,
+      });
+      await pendingExplanation.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("job-502 blocker");
+    expect(container.textContent).not.toContain("JOB A EXPLANATION MUST NOT LEAK");
+    expect(container.textContent).not.toContain("job-a-only-skill");
+    expect(container.textContent).not.toContain("job-a-only-gap");
+  });
+
+  it("refreshes the current persisted summary after Analyze Match succeeds", async () => {
+    queryClient.removeQueries({ queryKey: ["matches"] });
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+    queryClient.removeQueries({ queryKey: ["match-skills", 501] });
+    apiMocks.matchesApi.summary
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(makeSummary(501, "after-analyze"));
+    apiMocks.matchesApi.rank.mockResolvedValue({ ranked_count: 1 });
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    await renderJob(501);
+    await waitForCondition(
+      () => container.textContent?.includes("No saved match analysis for this job yet.") ?? false,
+    );
+    expect(container.textContent).toContain("No saved match analysis for this job yet.");
+
+    const analyzeButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Analyze Match",
+    );
+    await act(async () => {
+      analyzeButton?.click();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await Promise.resolve();
+    });
+    await waitForCondition(
+      () => container.textContent?.includes("after-analyze blocker") ?? false,
+    );
+
+    expect(apiMocks.matchesApi.rank).toHaveBeenCalledOnce();
+    expect(apiMocks.matchesApi.summary).toHaveBeenCalledTimes(2);
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["matches"] });
+    expect(container.textContent).toContain("after-analyze blocker");
+  });
+
+  it("keeps the existing Apply control singular and preserves its mutation flow", async () => {
     const readiness = {
       decision: "apply" as const,
       reasons: ["Strong match score"],
@@ -471,12 +803,6 @@ describe("JobDetailView readiness", () => {
       missing_keywords: [],
       readiness,
     });
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -487,21 +813,29 @@ describe("JobDetailView readiness", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
+    const applyControl = document.getElementById("crm-mark-applied-action");
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
     const navigation = [...container.querySelectorAll("button")].find(
       (button) => button.getAttribute("aria-label") === "Go to apply action",
     );
-    const applyControl = document.getElementById("crm-mark-applied-action");
+    expect(applyControl).toBeDefined();
     expect(navigation).toBeDefined();
-    expect(applyControl?.getAttribute("aria-describedby")).toBe(
-      "suggested-apply-action-description",
-    );
-    expect(container.textContent).toContain("Mark as Applied updates your application status.");
+    expect(applyControl?.getAttribute("aria-describedby")).toBeNull();
+    expect(container.textContent).not.toContain("Suggested next action");
+    expect(container.textContent).toContain("Suggested: Apply");
+    expect([...container.querySelectorAll("button")].filter(
+      (button) => button.textContent?.includes("Mark as Applied"),
+    )).toHaveLength(1);
     await act(async () => {
       navigation?.click();
     });
-
     expect(document.activeElement?.id).toBe("crm-mark-applied-action");
     expect(scrollIntoView).toHaveBeenCalledOnce();
+    expect(applyControl?.className).toContain("ring-2");
     expect(apiMocks.applicationsApi.create).not.toHaveBeenCalled();
     expect(apiMocks.applicationsApi.update).not.toHaveBeenCalled();
 
@@ -567,7 +901,7 @@ describe("JobDetailView readiness", () => {
     expect(container.textContent).not.toContain("Go to action");
   });
 
-  it("navigates Review to readiness explanation without a mutation", async () => {
+  it("shows warning details without presenting a second suggested action", async () => {
     const readiness = {
       decision: "save" as const,
       reasons: ["Review needed"],
@@ -590,11 +924,6 @@ describe("JobDetailView readiness", () => {
       missing_keywords: [],
       readiness,
     });
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: vi.fn(),
-    });
-
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -605,18 +934,15 @@ describe("JobDetailView readiness", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    const navigation = [...container.querySelectorAll("button")].find(
+    expect(container.textContent).toContain("Needs review");
+    expect(container.textContent).toContain("Remote status is unclear");
+    expect(container.textContent).not.toContain("Suggested next action");
+    expect(container.textContent).toContain("Suggested: Review");
+    expect([...container.querySelectorAll("button")].some(
       (button) => button.getAttribute("aria-label") === "View readiness explanation",
-    );
-    expect(navigation).toBeDefined();
-    await act(async () => {
-      navigation?.click();
-    });
-
-    expect(document.activeElement?.id).toBe("readiness-explanation");
+    )).toBe(true);
     expect(apiMocks.applicationsApi.create).not.toHaveBeenCalled();
     expect(apiMocks.applicationsApi.update).not.toHaveBeenCalled();
-    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   });
 
   it("opens Archive job confirmation from More actions without a mutation", async () => {

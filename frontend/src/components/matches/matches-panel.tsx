@@ -415,6 +415,7 @@ export function MatchesPanel() {
               key={match.job_id}
               job={card}
               match={matchData}
+              compactMatchLayout
               showConfidenceLabel={false}
               hideExternalLink
               onCardClick={() => {

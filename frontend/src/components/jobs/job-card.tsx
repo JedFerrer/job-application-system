@@ -15,8 +15,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { stripMarkdown } from "@/lib/utils";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
-import type { MatchReadiness, MatchReadinessDecision } from "@/lib/types";
-import { getReadinessActionSuggestion } from "@/lib/readiness-actions";
+import type { MatchReadiness } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -158,23 +157,36 @@ export const CONFIDENCE_TEXT: Record<string, string> = {
 
 const MAX_VISIBLE_SKILLS = 4;
 
-const READINESS_LABELS: Record<MatchReadinessDecision, string> = {
-  apply: "Ready to apply",
-  save: "Save for review",
-  stretch: "Stretch",
-  skip: "Likely skip",
-};
+function getCardReadinessSummary(readiness: MatchReadiness): {
+  label: string;
+  className: string;
+  textClassName: string;
+} {
+  if ((readiness.deterministic_blockers ?? []).length > 0) {
+    return {
+      label: "Blocked by your rule",
+      className:
+        "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300",
+      textClassName: "text-red-700 dark:text-red-300",
+    };
+  }
 
-const READINESS_BADGE_CLASS: Record<MatchReadinessDecision, string> = {
-  apply:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300",
-  save:
-    "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300",
-  stretch:
-    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300",
-  skip:
-    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-300",
-};
+  if ((readiness.deterministic_warnings ?? []).length > 0) {
+    return {
+      label: "Needs review",
+      className:
+        "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300",
+      textClassName: "text-amber-700 dark:text-amber-300",
+    };
+  }
+
+  return {
+    label: "Ready to apply",
+    className:
+      "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300",
+    textClassName: "text-emerald-700 dark:text-emerald-300",
+  };
+}
 
 /** Derive a 1-2 char avatar from the company name. */
 function companyInitials(company: string | null): string {
@@ -280,6 +292,8 @@ export interface JobCardProps {
   showConfidenceLabel?: boolean;
   /** If true, the save action shows a "Saved" state. */
   isSaved?: boolean;
+  /** Use the denser scan layout for ranked matches. */
+  compactMatchLayout?: boolean;
   /** Archive click handler (shows archive icon when provided). */
   onArchive?: () => void;
   /** Called when the card body is clicked — used to open the detail page. */
@@ -297,6 +311,7 @@ export function JobCard({
   isAnalyzing,
   showConfidenceLabel = true,
   isSaved,
+  compactMatchLayout = false,
   onArchive,
   onCardClick,
   children,
@@ -310,12 +325,22 @@ export function JobCard({
   const initials = companyInitials(job.company);
   const avatarClass = avatarBg(job.company ?? "");
 
-  const visibleSkills = match?.matchedSkills?.slice(0, MAX_VISIBLE_SKILLS) ?? [];
+  const visibleSkillLimit = compactMatchLayout ? 3 : MAX_VISIBLE_SKILLS;
+  const visibleSkills = match?.matchedSkills?.slice(0, visibleSkillLimit) ?? [];
   const extraCount = (match?.matchedSkills?.length ?? 0) - MAX_VISIBLE_SKILLS;
+  const readinessSummary = match?.readiness
+    ? getCardReadinessSummary(match.readiness)
+    : null;
 
   return (
     <Card
-      className={onCardClick ? "group transition-shadow hover:shadow-md cursor-pointer" : "group transition-shadow hover:shadow-md"}
+      className={
+        onCardClick
+          ? `group cursor-pointer transition-[border-color,box-shadow] hover:shadow-md ${
+              compactMatchLayout ? "hover:border-primary/50" : ""
+            }`
+          : "group transition-shadow hover:shadow-md"
+      }
       onClick={onCardClick}
     >
       <CardContent className="p-5">
@@ -384,21 +409,40 @@ export function JobCard({
 
               {/* Description + matched skills */}
               {job.description && (
-                <p className="text-sm text-muted-foreground/70 line-clamp-2 leading-relaxed mt-3">
+                <p
+                  className="mt-3 line-clamp-2 text-sm leading-relaxed text-muted-foreground/70"
+                >
                   {stripMarkdown(job.description)}
                 </p>
               )}
-              {match && !isAnalyzing && visibleSkills.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1 mt-2.5">
-                  {visibleSkills.map((skill) => (
-                    <Badge key={skill} variant="secondary" className="text-[11px] font-normal gap-1">
-                      <Check className="h-3 w-3 text-emerald-500" />
-                      {skill}
-                    </Badge>
-                  ))}
-                  {extraCount > 0 && (
-                    <Badge variant="outline" className="text-[11px] font-normal">
-                      +{extraCount} more
+              {match && !isAnalyzing && (visibleSkills.length > 0 || (readinessSummary && !compactMatchLayout)) && (
+                <div
+                  className={`mt-2.5 flex flex-wrap items-center gap-2 ${
+                    compactMatchLayout ? "" : "justify-between"
+                  }`}
+                >
+                  {visibleSkills.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      {visibleSkills.map((skill) => (
+                        <Badge key={skill} variant="secondary" className="text-[11px] font-normal gap-1">
+                          <Check className="h-3 w-3 text-emerald-500" />
+                          {skill}
+                        </Badge>
+                      ))}
+                      {extraCount > 0 && (
+                        <Badge variant="outline" className="text-[11px] font-normal">
+                          +{extraCount} more
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+                  {readinessSummary && !compactMatchLayout && (
+                    <Badge
+                      data-testid="match-readiness-summary"
+                      variant="outline"
+                      className={`rounded-full font-normal text-[11px] ${readinessSummary.className}`}
+                    >
+                      {readinessSummary.label}
                     </Badge>
                   )}
                 </div>
@@ -418,7 +462,10 @@ export function JobCard({
           </div>
 
           {/* ── Right: save + match score ───────────────────── */}
-          <div className="flex flex-col items-center gap-3 shrink-0 w-24" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="flex w-24 shrink-0 flex-col items-center gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="min-h-7 flex items-center">{topRightAction}</div>
             {onArchive && (
               <button
@@ -431,33 +478,21 @@ export function JobCard({
               </button>
             )}
             {match && !isAnalyzing && (
-              <div className="mt-2 rounded-lg border p-2">
+              <div
+                className="mt-2 flex flex-col items-center rounded-lg border px-2 py-2"
+              >
                 <CircularScore
                   score={match.score}
                   confidence={match.confidence}
                   showConfidenceLabel={showConfidenceLabel}
                 />
-                {match.readiness && (
-                  <div className="mt-2 flex flex-col items-center">
-                    <Badge
-                      variant="outline"
-                      className={`rounded-full font-normal text-[11px] ${READINESS_BADGE_CLASS[match.readiness.decision]}`}
-                    >
-                      {READINESS_LABELS[match.readiness.decision]}
-                    </Badge>
-                    <p className="mt-1 max-w-full truncate text-center text-[10px] text-muted-foreground">
-                      {(match.readiness.deterministic_blockers ?? []).length > 0
-                        ? "Blocked by your rule"
-                        : (match.readiness.deterministic_warnings ?? []).length > 0
-                          ? "Needs review"
-                        : "Based on match score"}
-                    </p>
-                    {getReadinessActionSuggestion(match.readiness) && (
-                      <p className="max-w-full truncate text-center text-[10px] font-medium text-foreground/70">
-                        Suggested: {getReadinessActionSuggestion(match.readiness)?.label}
-                      </p>
-                    )}
-                  </div>
+                {compactMatchLayout && readinessSummary && (
+                  <p
+                    data-testid="match-readiness-summary"
+                    className={`mt-1 max-w-full text-center text-[10px] leading-tight ${readinessSummary.textClassName}`}
+                  >
+                    {readinessSummary.label}
+                  </p>
                 )}
               </div>
             )}

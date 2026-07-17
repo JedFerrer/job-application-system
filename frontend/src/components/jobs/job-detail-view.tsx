@@ -28,9 +28,10 @@ import type {
   MatchItem,
   MatchListResponse,
   MatchSkillAnalysis,
+  MatchSummary,
   MatchReadinessDecision,
 } from "@/lib/types";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
 import { formatJobDescription } from "@/lib/utils";
 import {
@@ -155,7 +156,10 @@ function renderDescription(description: string | null | undefined) {
 }
 
 /** Derive a 1–2 sentence overview from available job data. */
-function deriveOverview(job: { title?: string | null } | undefined, match: MatchExplanation | null): string {
+function deriveOverview(
+  job: { title?: string | null } | undefined,
+  match: MatchExplanation | MatchSummary | null,
+): string {
   if (!job) return "";
   const role = job.title ?? "This role";
   const skills = match?.matched_skills?.slice(0, 5) ?? [];
@@ -186,13 +190,20 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const [showTailorResume, setShowTailorResume] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("Description");
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
+  const [highlightedActionTarget, setHighlightedActionTarget] = useState<string | null>(null);
 
-  // Derive match summary from the matches-list cache — no API call needed.
-  // Falls back to the explain result if the user has already triggered it.
-  // Computed on every render (cheap — getQueryData is O(1) cache lookup) so
-  // it picks up background cache updates from e.g. analyzeMatchMutation.
-  const matchSummary = ((): MatchExplanation | null => {
-    if (explainData) return explainData;
+  useEffect(() => {
+    if (!highlightedActionTarget) return;
+    const timeout = window.setTimeout(() => setHighlightedActionTarget(null), 1600);
+    return () => window.clearTimeout(timeout);
+  }, [highlightedActionTarget]);
+  useEffect(() => {
+    setExplainData(null);
+  }, [jobId]);
+
+  // The list cache gives immediate continuity when arriving from /matches.
+  // It is only a fast path; persisted data below restores this view after refresh.
+  const cachedMatchSummary = ((): MatchSummary | null => {
     // The matches page uses useInfiniteQuery with a query key that includes
     // filter values, e.g. ["matches", "", "", "", ...].  Use getQueriesData
     // with prefix matching to find all cached match pages regardless of which
@@ -210,10 +221,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
           vector_score: cached.vector_score,
           confidence: cached.confidence,
           llm_score: cached.llm_score,
-          llm_confidence: null,
-          llm_available: false,
-          llm_error: null,
-          explanation: null,
           matched_skills: cached.matched_skills ?? [],
           missing_keywords: [],
           readiness: cached.readiness,
@@ -223,10 +230,30 @@ export function JobDetailView({ jobId }: { jobId: number }) {
     return null;
   })();
 
+  const persistedMatchQuery = useQuery({
+    queryKey: ["match-summary", jobId],
+    queryFn: () => matchesApi.summary(jobId),
+    enabled: jobQuery.isSuccess,
+    // A saved summary is read-only. Surface a real server failure immediately
+    // so the user can retry explicitly instead of remaining in a loading state.
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+
+  // An explanation request may finish after navigation. Never let a response
+  // for the previous job participate in even one render of the current job.
+  const currentExplainData = explainData?.job_id === jobId ? explainData : null;
+  const matchSummary: MatchExplanation | MatchSummary | null = currentExplainData ?? (
+    persistedMatchQuery.isSuccess
+      ? persistedMatchQuery.data
+      : cachedMatchSummary
+  );
+  const summaryLoadError = persistedMatchQuery.isError;
+
   const skillQuery = useQuery({
     queryKey: ["match-skills", jobId],
     queryFn: () => matchesApi.skills(jobId),
-    enabled: Boolean(matchSummary),
+    enabled: Boolean(cachedMatchSummary),
     staleTime: 5 * 60_000,
   });
   const skillData = skillQuery.data ?? null;
@@ -313,10 +340,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
 
   const analyzeMatchMutation = useMutation({
     mutationFn: () => matchesApi.rank(100),
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success("Match analysis started");
       setExplainData(null);
       queryClient.invalidateQueries({ queryKey: ["matches"] });
+      await queryClient.refetchQueries({ queryKey: ["match-summary", jobId], type: "active" });
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Analysis failed"),
@@ -376,13 +404,13 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const salary = formatSalary(job.salary_min, job.salary_max, job.salary_currency);
   const matchScore = match ? (match.llm_score != null ? match.llm_score : match.vector_score) : 0;
   const quickMatchScore = match?.vector_score ?? null;
-  const hasDetailedScore = explainData != null && match?.llm_score != null;
-  const readiness = explainData?.readiness ?? skillData?.readiness ?? match?.readiness ?? null;
+  const hasDetailedScore = currentExplainData != null && match?.llm_score != null;
+  const readiness = currentExplainData?.readiness ?? (
+    persistedMatchQuery.isSuccess
+      ? match?.readiness
+      : skillData?.readiness ?? match?.readiness
+  ) ?? null;
   const readinessSuggestion = getReadinessActionSuggestion(readiness);
-  const hasApplySuggestionAssociation =
-    readinessSuggestion?.action === "apply" &&
-    !isApplied &&
-    !applyMutation.isPending;
   const readinessNavigationTarget = getReadinessActionNavigationTarget(readinessSuggestion);
   const navigationTargetIds: Record<ReadinessActionNavigationTarget, string> = {
     apply: "crm-mark-applied-action",
@@ -396,19 +424,24 @@ export function JobDetailView({ jobId }: { jobId: number }) {
       : readinessNavigationTarget === "save"
         ? !isSaved && !saveMutation.isPending
         : readinessNavigationTarget === "readiness";
-  const navigateToSuggestedAction = () => {
+  const navigateToReadinessAction = () => {
     if (!readinessNavigationTarget || !navigationTargetIsAvailable) return;
-
-    const target = document.getElementById(
-      navigationTargetIds[readinessNavigationTarget],
-    );
+    const target = document.getElementById(navigationTargetIds[readinessNavigationTarget]);
     if (!target) return;
-
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
+    setHighlightedActionTarget(navigationTargetIds[readinessNavigationTarget]);
   };
-  const analyzedMatchedSkills = explainData?.matched_skills ?? skillData?.matched_skills ?? match?.matched_skills ?? [];
-  const analyzedMissingSkills = explainData?.missing_keywords ?? skillData?.missing_keywords ?? [];
+  const analyzedMatchedSkills = currentExplainData?.matched_skills ?? (
+    persistedMatchQuery.isSuccess
+      ? match?.matched_skills
+      : skillData?.matched_skills ?? match?.matched_skills
+  ) ?? [];
+  const analyzedMissingSkills = currentExplainData?.missing_keywords ?? (
+    persistedMatchQuery.isSuccess
+      ? match?.missing_keywords
+      : skillData?.missing_keywords ?? match?.missing_keywords
+  ) ?? [];
 
   return (
     <div className="flex flex-col gap-6 w-full">
@@ -511,11 +544,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             {/* Mark as Applied */}
             <Button
               id="crm-mark-applied-action"
-              aria-describedby={
-                hasApplySuggestionAssociation
-                  ? "suggested-apply-action-description"
-                  : undefined
-              }
               variant={isApplied ? "secondary" : "outline"}
               size="sm"
               onClick={() => applyMutation.mutate()}
@@ -705,8 +733,11 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             </CardHeader>
             <CardContent>
               {match ? (
-                  <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-4 gap-y-4">
-                    {/* Left: score ring + fit label */}
+                <div className="flex flex-col gap-4">
+                  <div
+                    data-testid="match-score-summary"
+                    className="flex items-start gap-4"
+                  >
                     <div className="shrink-0">
                       <CircularScore
                         score={matchScore}
@@ -720,123 +751,115 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                         </p>
                       )}
                     </div>
-                  {/* Row 1, column 2: match summary and readiness */}
-                  <div className="flex min-w-0 flex-col gap-2 pt-1">
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {matchScore >= 80
-                        ? "You're a strong match for this role."
-                        : matchScore >= 50
-                          ? "You match many of the key requirements for this role."
-                          : "This role may require additional skills beyond your profile."}
-                    </p>
-                    {explainData?.llm_error && (
-                      <p className="text-xs text-amber-600 dark:text-amber-400">
-                        Detailed AI assessment unavailable; deterministic skill results are shown.
+                    <div className="min-w-0 pt-1">
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {matchScore >= 80
+                          ? "You're a strong match for this role."
+                          : matchScore >= 50
+                            ? "You match many of the key requirements for this role."
+                            : "This role may require additional skills beyond your profile."}
                       </p>
-                    )}
-                    {readiness && (
-                      <section
-                        id="readiness-explanation"
-                        tabIndex={-1}
-                        className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2"
-                      >
-                        <div className="flex items-center gap-2">
-                          <Badge
-                            variant="outline"
-                            className={`rounded-full text-[11px] font-normal ${READINESS_BADGE_CLASS[readiness.decision]}`}
-                          >
-                            {READINESS_LABELS[readiness.decision]}
-                          </Badge>
-                        </div>
-                        {readinessSuggestion && (
-                          <section className="mt-2 rounded-md border border-border/60 bg-background/70 px-2 py-1.5">
-                            <h3 className="text-xs font-medium text-foreground">Suggested next action</h3>
-                            <p className="mt-0.5 text-sm font-medium text-foreground">
-                              Suggested: {readinessSuggestion.label}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {readinessSuggestion.explanation}
-                            </p>
-                            {hasApplySuggestionAssociation && (
-                              <span
-                                id="suggested-apply-action-description"
-                                className="sr-only"
-                              >
-                                Suggested next action: Apply. Mark as Applied updates
-                                your application status.
-                              </span>
-                            )}
-                            {navigationTargetIsAvailable && (
-                              <button
-                                type="button"
-                                onClick={navigateToSuggestedAction}
-                                className="mt-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                aria-label={
-                                  readinessNavigationTarget === "readiness"
-                                    ? "View readiness explanation"
-                                    : `Go to ${readinessSuggestion.label.toLowerCase()} action`
-                                }
-                              >
-                                {readinessNavigationTarget === "readiness"
-                                  ? "View action"
-                                  : "Go to action"}
-                              </button>
-                            )}
-                          </section>
-                        )}
-                        {(readiness.deterministic_blockers ?? []).length > 0 && (
-                          <section className="mt-2 rounded-md border border-red-200 bg-red-50/60 px-2 py-1.5 dark:border-red-900/60 dark:bg-red-950/20">
-                            <h3 className="text-xs font-medium text-red-700 dark:text-red-300">Blocked by your rule</h3>
-                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-red-700 dark:text-red-300">
-                              {(readiness.deterministic_blockers ?? []).map((blocker) => (
-                                <li key={blocker}>{blocker}</li>
-                              ))}
-                            </ul>
-                          </section>
-                        )}
-                        {([...((readiness.deterministic_warnings ?? [])), ...(readiness.caveats ?? [])].length > 0) && (
-                          <section className="mt-2 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 dark:border-amber-900/60 dark:bg-amber-950/20">
-                            <h3 className="text-xs font-medium text-amber-700 dark:text-amber-300">Needs review</h3>
-                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-700 dark:text-amber-300">
-                              {[...(readiness.deterministic_warnings ?? []), ...(readiness.caveats ?? [])].map((item, index) => (
-                                <li key={`${item}-${index}`}>{item}</li>
-                              ))}
-                            </ul>
-                          </section>
-                        )}
-                        {(readiness.reasons ?? []).filter((reason) => !reason.startsWith("Known gaps:")).length > 0 && (
-                          <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                            {(readiness.reasons ?? [])
-                              .filter((reason) => !reason.startsWith("Known gaps:"))
-                              .slice(0, 2)
-                              .map((reason) => (
-                                <li key={reason}>{reason}</li>
-                              ))}
-                          </ul>
-                        )}
-                        {readiness.caveats.length > 0 && (
-                          <p className="mt-2 text-xs text-muted-foreground">
-                            {readiness.caveats.slice(0, 1).join(" ")}
-                          </p>
-                        )}
-                      </section>
-                    )}
+                      {currentExplainData?.llm_error && (
+                        <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                          Detailed AI assessment unavailable; deterministic skill results are shown.
+                        </p>
+                      )}
+                      {readiness && (
+                        <Badge
+                          variant="outline"
+                          className={`mt-3 rounded-full text-[11px] font-normal ${READINESS_BADGE_CLASS[readiness.decision]}`}
+                        >
+                          {READINESS_LABELS[readiness.decision]}
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                  {/* Row 2: detailed assessment CTA and supporting text */}
-                  {!explainData && (
-                    <div className="col-span-2 flex min-w-0 flex-col items-end gap-1 text-right">
+
+                  {summaryLoadError && (
+                    <div className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 text-xs text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
+                      <span>Could not refresh saved match analysis.</span>
+                      <button
+                        type="button"
+                        onClick={() => persistedMatchQuery.refetch()}
+                        className="shrink-0 underline underline-offset-2"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
+
+                  {readiness && (
+                    <section
+                      id="readiness-explanation"
+                      tabIndex={-1}
+                      className={`rounded-lg border border-border/70 bg-muted/30 p-3 ${
+                        highlightedActionTarget === "readiness-explanation"
+                          ? "ring-2 ring-ring ring-offset-2"
+                          : ""
+                      }`}
+                    >
+                      {readinessSuggestion && (
+                        <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-3">
+                          <p className="text-xs font-medium text-foreground">
+                            Suggested: {readinessSuggestion.label}
+                          </p>
+                          {navigationTargetIsAvailable && (
+                            <button
+                              type="button"
+                              onClick={navigateToReadinessAction}
+                              className="shrink-0 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                              aria-label={
+                                readinessNavigationTarget === "readiness"
+                                  ? "View readiness explanation"
+                                  : "Go to apply action"
+                              }
+                            >
+                              {readinessNavigationTarget === "readiness" ? "View action" : "Go to action"}
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {(readiness.deterministic_blockers ?? []).length > 0 && (
+                        <section className="mt-3 rounded-md border border-red-200 bg-red-50/60 px-2 py-1.5 dark:border-red-900/60 dark:bg-red-950/20">
+                          <h3 className="text-xs font-medium text-red-700 dark:text-red-300">Blocked by your rule</h3>
+                          <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-red-700 dark:text-red-300">
+                            {(readiness.deterministic_blockers ?? []).map((blocker) => (
+                              <li key={blocker}>{blocker}</li>
+                            ))}
+                          </ul>
+                        </section>
+                      )}
+
+                      {([...((readiness.deterministic_warnings ?? [])), ...(readiness.caveats ?? [])].length > 0) && (
+                        <section className="mt-3 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 dark:border-amber-900/60 dark:bg-amber-950/20">
+                          <h3 className="text-xs font-medium text-amber-700 dark:text-amber-300">Needs review</h3>
+                          <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-700 dark:text-amber-300">
+                            {[...(readiness.deterministic_warnings ?? []), ...(readiness.caveats ?? [])].map((item, index) => (
+                              <li key={`${item}-${index}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </section>
+                      )}
+
+                    </section>
+                  )}
+
+                  {!currentExplainData && (
+                    <div data-testid="match-detailed-assessment" className="flex flex-col gap-1">
                       <Button
                         variant="outline"
                         size="sm"
+                        className="w-full"
                         onClick={() => explainMutation.mutate()}
                         disabled={explainMutation.isPending}
                       >
                         {explainMutation.isPending && (
-                          <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
                         )}
                         Get Detailed AI Assessment
                       </Button>
-                      <p className="self-stretch text-left text-[11px] text-muted-foreground">
+                      <p className="text-[11px] text-muted-foreground">
                         Includes a structured skills-gap review and AI fit explanation.
                       </p>
                     </div>
@@ -845,8 +868,17 @@ export function JobDetailView({ jobId }: { jobId: number }) {
               ) : (
                 <div className="flex flex-col items-center gap-3">
                   <p className="text-xs text-muted-foreground text-center leading-relaxed">
-                    Run match analysis to see how this job fits your profile.
+                    {summaryLoadError
+                      ? "Could not load your saved match analysis."
+                      : persistedMatchQuery.isSuccess
+                        ? "No saved match analysis for this job yet."
+                        : "Loading saved match analysis…"}
                   </p>
+                  {summaryLoadError && (
+                    <Button variant="outline" size="sm" onClick={() => persistedMatchQuery.refetch()}>
+                      Retry loading match
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
@@ -859,35 +891,48 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                     )}
                     Analyze Match
                   </Button>
+                  {!summaryLoadError && persistedMatchQuery.isSuccess && (
+                    <p className="text-center text-[11px] text-muted-foreground">
+                      Run Match Analysis to compare it with your active profile.
+                    </p>
+                  )}
                 </div>
               )}
 
               {/* Detailed explain section (shown after View Match Details is clicked) */}
-              {match && (skillData || explainData) && (
-                <div className="flex flex-col gap-3 mt-4">
+              {match && (
+                analyzedMatchedSkills.length > 0 ||
+                analyzedMissingSkills.length > 0 ||
+                Boolean(currentExplainData?.explanation)
+              ) && (
+                <div className="mt-4 flex flex-col gap-3">
                   <Separator />
-                  {analyzedMatchedSkills.length > 0 && (
-                    <div className="w-full">
-                      <h4 className="text-xs font-medium text-muted-foreground mb-1.5">Matched</h4>
+                  <div className="w-full">
+                    <h4 className="text-xs font-medium text-muted-foreground mb-1.5">
+                      Matched ({analyzedMatchedSkills.length})
+                    </h4>
+                    {analyzedMatchedSkills.length > 0 && (
                       <div className="flex flex-wrap gap-1">
                         {analyzedMatchedSkills.map((s) => (
                           <Badge key={s} variant="secondary" className="text-xs font-normal">{s}</Badge>
                         ))}
                       </div>
-                    </div>
-                  )}
-                  {analyzedMissingSkills.length > 0 && (
-                    <div className="w-full">
-                      <h4 className="text-xs font-medium text-muted-foreground mb-1.5">Missing</h4>
+                    )}
+                  </div>
+                  <div className="w-full">
+                    <h4 className="text-xs font-medium text-muted-foreground mb-1.5">
+                      Missing ({analyzedMissingSkills.length})
+                    </h4>
+                    {analyzedMissingSkills.length > 0 && (
                       <div className="flex flex-wrap gap-1">
                         {analyzedMissingSkills.map((kw) => (
                           <Badge key={kw} variant="outline" className="text-xs font-normal border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300">{kw}</Badge>
                         ))}
                       </div>
-                    </div>
-                  )}
-                  {match.explanation && (
-                    <p className="text-xs text-muted-foreground leading-relaxed">{match.explanation}</p>
+                    )}
+                  </div>
+                  {currentExplainData?.explanation && (
+                    <p className="text-xs text-muted-foreground leading-relaxed">{currentExplainData.explanation}</p>
                   )}
                 </div>
               )}
