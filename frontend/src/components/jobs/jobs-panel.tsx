@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bookmark, Briefcase, Link2, Loader2, Search } from "lucide-react";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
@@ -55,6 +55,8 @@ function useDebounce<T>(value: T, delay: number): [T, (v: T) => void] {
 export function JobsPanel() {
   const queryClient = useQueryClient();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const archiveState = searchParams.get("archive_state") === "archived" ? "archived" : "active";
   const [filterSource, setFilterSource] = useState("");
   const [filterJobType, setFilterJobType] = useState("");
   const [filterLocationInput, setFilterLocationInput] = useState("");
@@ -100,7 +102,7 @@ export function JobsPanel() {
   }, []);
 
   const jobsQuery = useInfiniteQuery({
-    queryKey: ["jobs", filterSearch, filterSource, filterJobType, filterLocation, filterCompany, filterSourceType, filterShiftType, filterRemote],
+    queryKey: ["jobs", archiveState, filterSearch, filterSource, filterJobType, filterLocation, filterCompany, filterSourceType, filterShiftType, filterRemote],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       jobsApi.list({
@@ -114,6 +116,7 @@ export function JobsPanel() {
         sourceType: filterSourceType || undefined,
         shiftType: filterShiftType || undefined,
         isRemote: filterRemote || undefined,
+        archiveState,
       }),
     getNextPageParam: (lastPage, allPages) => {
       const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
@@ -196,6 +199,25 @@ export function JobsPanel() {
       toast.error(err instanceof ApiError ? err.message : "Save failed"),
   });
 
+  const restoreMutation = useMutation({
+    mutationFn: (jobId: number) => jobsApi.restore(jobId),
+    onSuccess: () => {
+      toast.success("Job restored");
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["imported-jobs"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Failed to restore job"),
+  });
+
+  const setArchiveState = (state: "active" | "archived") => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (state === "archived") params.set("archive_state", "archived");
+    else params.delete("archive_state");
+    const query = params.toString();
+    router.replace(query ? `/dashboard/jobs?${query}` : "/dashboard/jobs");
+  };
+
   const [showImport, setShowImport] = useState(false);
   const [importUrl, setImportUrl] = useState("");
   const [importTitle, setImportTitle] = useState("");
@@ -271,6 +293,10 @@ export function JobsPanel() {
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-col gap-3">
+        <div className="flex items-center gap-1 self-start rounded-md border bg-muted p-1" role="group" aria-label="Job archive state">
+          <Button size="sm" variant={archiveState === "active" ? "secondary" : "ghost"} onClick={() => setArchiveState("active")}>Active</Button>
+          <Button size="sm" variant={archiveState === "archived" ? "secondary" : "ghost"} onClick={() => setArchiveState("archived")}>Archived</Button>
+        </div>
         {/* ── Full-width search bar ─────────────────────────── */}
         <div className="flex gap-2 py-3 border-y border-border">
           <Input
@@ -495,7 +521,8 @@ export function JobsPanel() {
                                 job={jc.card}
                                 sourceLabel={jc.sourceLabel}
                                 hideExternalLink
-                                isSaved={savedJobIds.has(jc.card.jobId)}
+                                isSaved={archiveState === "active" && savedJobIds.has(jc.card.jobId)}
+                                isArchived={archiveState === "archived"}
                                 onCardClick={() => {
                                   sessionStorage.setItem(
                                     SESSION_KEY,
@@ -514,7 +541,18 @@ export function JobsPanel() {
                                   router.push(`/jobs/${jc.card.jobId}`);
                                 }}
                                 topRightAction={
-                                  savedJobIds.has(jc.card.jobId) ? null : (
+                                  archiveState === "archived" ? (
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      disabled={restoreMutation.isPending}
+                                      onClick={() => restoreMutation.mutate(jc.card.jobId)}
+                                      className="h-7 px-2.5 text-xs"
+                                    >
+                                      {restoreMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+                                      Restore job
+                                    </Button>
+                                  ) : savedJobIds.has(jc.card.jobId) ? null : (
                                     <Button
                                       size="sm"
                                       variant="secondary"

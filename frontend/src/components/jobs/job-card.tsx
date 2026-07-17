@@ -296,6 +296,8 @@ export interface JobCardProps {
   compactMatchLayout?: boolean;
   /** Archive click handler (shows archive icon when provided). */
   onArchive?: () => void;
+  /** Marks a card displayed in the current user's archived jobs view. */
+  isArchived?: boolean;
   /** Called when the card body is clicked — used to open the detail page. */
   onCardClick?: () => void;
   /** Action buttons rendered in the footer. */
@@ -313,6 +315,7 @@ export function JobCard({
   isSaved,
   compactMatchLayout = false,
   onArchive,
+  isArchived = false,
   onCardClick,
   children,
 }: JobCardProps) {
@@ -403,6 +406,11 @@ export function JobCard({
                 {sourceLabel && (
                   <Badge variant="secondary" className="rounded-full font-normal text-[11px]">
                     {sourceLabel}
+                  </Badge>
+                )}
+                {isArchived && (
+                  <Badge variant="secondary" className="rounded-full font-normal text-[11px]">
+                    Archived
                   </Badge>
                 )}
               </div>

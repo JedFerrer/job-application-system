@@ -36,6 +36,7 @@ def _decode_cursor(cursor: str) -> tuple[datetime, int]:
     ts_str, id_str = raw.rsplit("|", 1)
     return datetime.fromisoformat(ts_str).replace(tzinfo=UTC), int(id_str)
 
+
 from app.models.job import Job
 from app.models.user_job import UserJob
 from app.models.user_job_import import UserJobImport
@@ -75,9 +76,7 @@ class JobRepository:
             "shift_type",
             "company_logo",
         ):
-            update_cols[col] = func.coalesce(
-                stmt.excluded[col], getattr(Job, col)
-            )
+            update_cols[col] = func.coalesce(stmt.excluded[col], getattr(Job, col))
         upsert: Any = stmt.on_conflict_do_update(
             index_elements=[Job.fingerprint],
             set_=update_cols,
@@ -115,14 +114,14 @@ class JobRepository:
             }
             for job_id in job_ids
         ]
-        stmt = pg_insert(UserJob).values(rows).on_conflict_do_nothing(
-            index_elements=[UserJob.user_id, UserJob.job_id]
+        stmt = (
+            pg_insert(UserJob)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=[UserJob.user_id, UserJob.job_id])
         )
         await self._session.execute(stmt)
 
-    async def link_recent_jobs_batch(
-        self, *, user_ids: list[int], since: datetime
-    ) -> int:
+    async def link_recent_jobs_batch(self, *, user_ids: list[int], since: datetime) -> int:
         """Link every user in *user_ids* to every job fetched since *since*.
 
         Used after a shared scrape ingest so all subscribers see the results.
@@ -131,9 +130,7 @@ class JobRepository:
         if not user_ids:
             return 0
 
-        result = await self._session.execute(
-            select(Job.id).where(Job.fetched_at >= since)
-        )
+        result = await self._session.execute(select(Job.id).where(Job.fetched_at >= since))
         job_ids = [row for row in result.scalars().all()]
         if not job_ids:
             return 0
@@ -149,8 +146,10 @@ class JobRepository:
                 }
                 for jid in job_ids
             ]
-            stmt = pg_insert(UserJob).values(rows).on_conflict_do_nothing(
-                index_elements=[UserJob.user_id, UserJob.job_id]
+            stmt = (
+                pg_insert(UserJob)
+                .values(rows)
+                .on_conflict_do_nothing(index_elements=[UserJob.user_id, UserJob.job_id])
             )
             r = await self._session.execute(stmt)
             total += r.rowcount or 0
@@ -195,9 +194,7 @@ class JobRepository:
 
     async def set_embedding(self, job_id: int, embedding: list[float]) -> None:
         await self._session.execute(
-            update(Job)
-            .where(Job.id == job_id)
-            .values(description_embedding=embedding)
+            update(Job).where(Job.id == job_id).values(description_embedding=embedding)
         )
 
     async def set_embed_error(self, job_id: int, error: str) -> None:
@@ -221,9 +218,7 @@ class JobRepository:
             update(Job).where(Job.id == job_id).values(shift_type=shift_type)
         )
 
-    async def set_user_job_status(
-        self, user_id: int, job_id: int, status: str
-    ) -> None:
+    async def set_user_job_status(self, user_id: int, job_id: int, status: str) -> None:
         """Update the per-user relationship status (e.g. mark as archived)."""
         await self._session.execute(
             update(UserJob)
@@ -293,9 +288,7 @@ class JobRepository:
         """
         return await self._session.get(Job, job_id)
 
-    async def get_visible_by_id(
-        self, *, user_id: int, job_id: int
-    ) -> Job | None:
+    async def get_visible_by_id(self, *, user_id: int, job_id: int) -> Job | None:
         """Return *job_id* only if it is visible to *user_id*.
 
         Visibility rules (same predicate as :meth:`list_jobs`):
@@ -326,9 +319,7 @@ class JobRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_archivable_by_id(
-        self, *, user_id: int, job_id: int
-    ) -> Job | None:
+    async def get_archivable_by_id(self, *, user_id: int, job_id: int) -> Job | None:
         """Return an active job the user may archive.
 
         This deliberately uses the job-detail visibility predicate without
@@ -348,16 +339,35 @@ class JobRepository:
         )
         return result.scalar_one_or_none()
 
-    async def find_by_source_url(self, url: str) -> Job | None:
-        """Find a job by its source URL (exact match)."""
+    async def get_restorable_by_id(self, *, user_id: int, job_id: int) -> Job | None:
+        """Return an active, visible job archived by this user, if any."""
+        visibility_filter = or_(
+            Job.visibility == "public",
+            Job.created_by_user_id == user_id,
+        )
         result = await self._session.execute(
-            select(Job).where(Job.source_url == url).limit(1)
+            select(Job)
+            .join(UserJob, UserJob.job_id == Job.id)
+            .where(
+                Job.id == job_id,
+                Job.status == "active",
+                visibility_filter,
+                UserJob.user_id == user_id,
+                UserJob.status == "archived",
+            )
         )
         return result.scalar_one_or_none()
 
-    async def find_by_source_id(
-        self, source: str, source_job_id: str
-    ) -> int | None:
+    async def restore_user_job(self, *, user_id: int, job_id: int) -> None:
+        """Set one existing archived relationship back to the default state."""
+        await self.set_user_job_status(user_id, job_id, "new")
+
+    async def find_by_source_url(self, url: str) -> Job | None:
+        """Find a job by its source URL (exact match)."""
+        result = await self._session.execute(select(Job).where(Job.source_url == url).limit(1))
+        return result.scalar_one_or_none()
+
+    async def find_by_source_id(self, source: str, source_job_id: str) -> int | None:
         """Look up a job_id from job_source_links by (source, source_job_id)."""
         from app.models.job_source_link import JobSourceLink
 
@@ -384,6 +394,7 @@ class JobRepository:
         shift_type: str | None = None,
         source_type: str | None = None,
         imported_only: bool = False,
+        archive_state: str = "active",
         cursor: str | None = None,
         limit: int = 50,
     ) -> tuple[list[Job], int, str | None]:
@@ -394,8 +405,8 @@ class JobRepository:
         - Private jobs (``visibility = 'private'``) are visible ONLY to their
           ``created_by_user_id``.
 
-        Per-user archiving is respected: jobs where ``user_jobs.status =
-        'archived'`` for this user are excluded.
+        ``archive_state='active'`` excludes this user's archived jobs (the
+        default); ``archive_state='archived'`` returns only those jobs.
         """
         # LEFT JOIN user_jobs so we can filter per-user status and enrich with
         # relationship metadata.
@@ -433,41 +444,29 @@ class JobRepository:
         elif source_type == "imported":
             filters.append(Job.visibility == "private")
         elif source_type == "manual":
-            filters.append(
-                and_(Job.visibility == "private", Job.ingest_source == "manual")
-            )
+            filters.append(and_(Job.visibility == "private", Job.ingest_source == "manual"))
         elif source_type == "extension":
-            filters.append(
-                and_(Job.visibility == "private", Job.ingest_source == "extension")
-            )
+            filters.append(and_(Job.visibility == "private", Job.ingest_source == "extension"))
         if imported_only:
             filters.append(Job.visibility == "private")
 
-        # Exclude jobs the user has explicitly archived
-        archived_subq = (
-            select(UserJob.job_id)
-            .where(
-                UserJob.user_id == user_id,
-                UserJob.status == "archived",
-            )
-            .scalar_subquery()
+        archived_job_ids = select(UserJob.job_id).where(
+            UserJob.user_id == user_id,
+            UserJob.status == "archived",
         )
-        filters.append(Job.id.not_in(archived_subq))
+        if archive_state == "archived":
+            filters.append(Job.id.in_(archived_job_ids))
+        else:
+            filters.append(Job.id.not_in(archived_job_ids))
 
-        count_stmt = (
-            select(func.count())
-            .select_from(Job)
-            .where(*filters)
-        )
+        count_stmt = select(func.count()).select_from(Job).where(*filters)
         total = int((await self._session.execute(count_stmt)).scalar_one())
 
         # Cursor-based pagination using compound key (sort_ts, id)
         sort_ts = func.coalesce(Job.last_seen_at, Job.scraped_at, Job.fetched_at)
         if cursor:
             cursor_ts, cursor_id = _decode_cursor(cursor)
-            filters.append(
-                tuple_(sort_ts, Job.id) < (cursor_ts, cursor_id)
-            )
+            filters.append(tuple_(sort_ts, Job.id) < (cursor_ts, cursor_id))
 
         list_stmt = (
             select(Job)
@@ -510,9 +509,7 @@ class JobRepository:
 
         if cursor:
             cursor_ts, cursor_id = _decode_cursor(cursor)
-            filters.append(
-                tuple_(UserJob.created_at, Job.id) < (cursor_ts, cursor_id)
-            )
+            filters.append(tuple_(UserJob.created_at, Job.id) < (cursor_ts, cursor_id))
 
         count_stmt = (
             select(func.count())

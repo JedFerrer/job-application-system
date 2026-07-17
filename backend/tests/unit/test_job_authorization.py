@@ -46,9 +46,7 @@ def engine():
 @pytest.fixture(autouse=True)
 async def clean_db(engine) -> None:  # noqa: ANN001
     """Truncate all user-data tables before each test."""
-    session_factory = async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False
-    )
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     tables = [
         "user_job_matches",
         "user_jobs",
@@ -141,7 +139,10 @@ async def test_owner_can_access_private_job(engine) -> None:  # noqa: ANN001
     async with sf() as db:
         await _create_user(db, user_id=1, email="owner@test.com", name="Owner")
         await _create_job(
-            db, job_id=100, visibility="private", created_by_user_id=1,
+            db,
+            job_id=100,
+            visibility="private",
+            created_by_user_id=1,
         )
 
     async with sf() as db:
@@ -160,7 +161,10 @@ async def test_non_owner_cannot_access_private_job(engine) -> None:  # noqa: ANN
         await _create_user(db, user_id=1, email="owner@test.com", name="Owner")
         await _create_user(db, user_id=2, email="other@test.com", name="Other")
         await _create_job(
-            db, job_id=101, visibility="private", created_by_user_id=1,
+            db,
+            job_id=101,
+            visibility="private",
+            created_by_user_id=1,
         )
 
     async with sf() as db:
@@ -176,7 +180,10 @@ async def test_any_user_can_access_public_job(engine) -> None:  # noqa: ANN001
         await _create_user(db, user_id=1, email="a@test.com", name="User A")
         await _create_user(db, user_id=2, email="b@test.com", name="User B")
         await _create_job(
-            db, job_id=102, visibility="public", created_by_user_id=None,
+            db,
+            job_id=102,
+            visibility="public",
+            created_by_user_id=None,
         )
 
     async with sf() as db:
@@ -195,7 +202,10 @@ async def test_archived_job_not_visible(engine) -> None:  # noqa: ANN001
     async with sf() as db:
         await _create_user(db, user_id=1, email="owner@test.com", name="Owner")
         await _create_job(
-            db, job_id=103, visibility="private", created_by_user_id=1,
+            db,
+            job_id=103,
+            visibility="private",
+            created_by_user_id=1,
         )
         # Link the job to the user, then archive it.
         repo = JobRepository(db)
@@ -234,9 +244,7 @@ async def test_archiving_is_user_scoped_and_preserves_application(engine) -> Non
         other_user = await db.execute(
             select(UserJob).where(UserJob.user_id == 11, UserJob.job_id == 104)
         )
-        application = await db.execute(
-            select(Application).where(Application.id == app.id)
-        )
+        application = await db.execute(select(Application).where(Application.id == app.id))
 
         archived_user_job = archived.scalar_one()
         assert archived_user_job.status == "archived"
@@ -257,9 +265,7 @@ async def test_archive_is_idempotent_for_an_already_archived_job(engine) -> None
         await service.archive_job(user_id=1, job_id=105)
         await db.commit()
 
-        rows = await db.execute(
-            select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == 105)
-        )
+        rows = await db.execute(select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == 105))
         archived = rows.scalars().all()
         assert len(archived) == 1
         assert archived[0].status == "archived"
@@ -271,7 +277,10 @@ async def test_archive_preserves_existing_import_relationship_metadata(engine) -
     async with sf() as db:
         await _create_user(db, user_id=1, email="importer@test.com", name="Importer")
         await _create_job(
-            db, job_id=106, visibility="private", created_by_user_id=1,
+            db,
+            job_id=106,
+            visibility="private",
+            created_by_user_id=1,
         )
         repo = JobRepository(db)
         await repo.link_user_jobs(
@@ -284,9 +293,7 @@ async def test_archive_preserves_existing_import_relationship_metadata(engine) -
         await JobService(repo).archive_job(user_id=1, job_id=106)
         await db.commit()
 
-        row = await db.execute(
-            select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == 106)
-        )
+        row = await db.execute(select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == 106))
         archived = row.scalar_one()
         assert archived.status == "archived"
         assert archived.relationship_source == "manual"
@@ -324,17 +331,113 @@ async def test_archive_rejects_another_users_private_job(engine) -> None:  # noq
         await _create_user(db, user_id=1, email="owner-archive@test.com", name="Owner")
         await _create_user(db, user_id=2, email="other-archive@test.com", name="Other")
         await _create_job(
-            db, job_id=108, visibility="private", created_by_user_id=1,
+            db,
+            job_id=108,
+            visibility="private",
+            created_by_user_id=1,
         )
 
         with pytest.raises(JobNotFoundError):
             await JobService(JobRepository(db)).archive_job(user_id=2, job_id=108)
         await db.commit()
 
-        row = await db.execute(
-            select(UserJob).where(UserJob.user_id == 2, UserJob.job_id == 108)
-        )
+        row = await db.execute(select(UserJob).where(UserJob.user_id == 2, UserJob.job_id == 108))
         assert row.scalar_one_or_none() is None
+
+
+async def test_archived_list_and_restore_are_user_scoped_and_preserve_applications(engine) -> None:  # noqa: ANN001
+    """Archived listings and restores operate only on the caller's relationship."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="restore-a@test.com", name="A")
+        await _create_user(db, user_id=2, email="restore-b@test.com", name="B")
+        await _create_job(db, job_id=109, title="Archived public")
+        await _create_job(
+            db, job_id=110, visibility="private", created_by_user_id=1, title="Archived private"
+        )
+        await _create_job(db, job_id=111, title="Active public")
+        repo = JobRepository(db)
+        await repo.link_user_jobs(1, [109, 110])
+        app = await ApplicationService(
+            repository=ApplicationRepository(db), job_repository=repo
+        ).create(user_id=1, job_id=109)
+        await repo.set_user_job_status(1, 109, "archived")
+        await repo.set_user_job_status(1, 110, "archived")
+        await db.commit()
+
+    async with sf() as db:
+        service = JobService(JobRepository(db))
+        active = await service.list_jobs(user_id=1)
+        archived = await service.list_jobs(user_id=1, archive_state="archived")
+        other_archived = await service.list_jobs(user_id=2, archive_state="archived")
+        assert {job.id for job in active.items} == {111}
+        assert {job.id for job in archived.items} == {109, 110}
+        assert other_archived.items == []
+
+        await service.restore_job(user_id=1, job_id=109)
+        await db.commit()
+
+        restored = await db.execute(
+            select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == 109)
+        )
+        application = await db.execute(select(Application).where(Application.id == app.id))
+        applications = await db.execute(select(Application).where(Application.job_id == 109))
+        assert restored.scalar_one().status == "new"
+        assert application.scalar_one().status == "saved"
+        assert len(applications.scalars().all()) == 1
+        assert {job.id for job in (await service.list_jobs(user_id=1)).items} == {109, 111}
+        assert {
+            job.id for job in (await service.list_jobs(user_id=1, archive_state="archived")).items
+        } == {110}
+
+
+@pytest.mark.parametrize("job_id", [99999, 112, 113, 114])
+async def test_restore_rejects_non_archived_or_invisible_jobs(engine, job_id: int) -> None:  # noqa: ANN001
+    """Restore uses the same non-disclosing contract as archive and detail."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="restore-owner@test.com", name="Owner")
+        await _create_user(db, user_id=2, email="restore-other@test.com", name="Other")
+        await _create_job(db, job_id=112, title="Not archived")
+        await _create_job(
+            db, job_id=113, visibility="private", created_by_user_id=2, title="Other private"
+        )
+        await _create_job(db, job_id=114, status="expired", title="Inactive archived")
+        repo = JobRepository(db)
+        await repo.link_user_jobs(1, [112, 114])
+        await repo.link_user_jobs(2, [113])
+        await repo.set_user_job_status(2, 113, "archived")
+        await repo.set_user_job_status(1, 114, "archived")
+        with pytest.raises(JobNotFoundError):
+            await JobService(repo).restore_job(user_id=1, job_id=job_id)
+
+
+async def test_restore_preserves_archived_import_metadata(engine) -> None:  # noqa: ANN001
+    """Restoring an imported job changes only its per-user status."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="restore-import@test.com", name="Importer")
+        await _create_job(
+            db, job_id=115, visibility="private", created_by_user_id=1, title="Imported job"
+        )
+        repo = JobRepository(db)
+        await repo.link_user_jobs(
+            1,
+            [115],
+            relationship_source="manual",
+            import_method="manual",
+            status="archived",
+        )
+        await JobService(repo).restore_job(user_id=1, job_id=115)
+        await db.commit()
+
+        restored = await db.execute(
+            select(UserJob).where(UserJob.user_id == 1, UserJob.job_id == 115)
+        )
+        relationship = restored.scalar_one()
+        assert relationship.status == "new"
+        assert relationship.relationship_source == "manual"
+        assert relationship.import_method == "manual"
 
 
 async def test_nonexistent_job_returns_none(engine) -> None:  # noqa: ANN001
@@ -356,7 +459,10 @@ async def test_service_get_job_owner_sees_private(engine) -> None:  # noqa: ANN0
     async with sf() as db:
         await _create_user(db, user_id=1, email="owner@test.com", name="Owner")
         await _create_job(
-            db, job_id=200, visibility="private", created_by_user_id=1,
+            db,
+            job_id=200,
+            visibility="private",
+            created_by_user_id=1,
         )
 
     async with sf() as db:
@@ -372,7 +478,10 @@ async def test_service_get_job_non_owner_gets_404(engine) -> None:  # noqa: ANN0
         await _create_user(db, user_id=1, email="owner@test.com", name="Owner")
         await _create_user(db, user_id=2, email="other@test.com", name="Other")
         await _create_job(
-            db, job_id=201, visibility="private", created_by_user_id=1,
+            db,
+            job_id=201,
+            visibility="private",
+            created_by_user_id=1,
         )
 
     async with sf() as db:
@@ -391,7 +500,10 @@ async def test_application_creation_rejects_other_user_private_job(engine) -> No
         await _create_user(db, user_id=1, email="owner@test.com", name="Owner")
         await _create_user(db, user_id=2, email="other@test.com", name="Other")
         await _create_job(
-            db, job_id=300, visibility="private", created_by_user_id=1,
+            db,
+            job_id=300,
+            visibility="private",
+            created_by_user_id=1,
         )
 
     async with sf() as db:
@@ -409,7 +521,10 @@ async def test_application_creation_succeeds_for_public_job(engine) -> None:  # 
     async with sf() as db:
         await _create_user(db, user_id=1, email="a@test.com", name="User A")
         await _create_job(
-            db, job_id=301, visibility="public", created_by_user_id=None,
+            db,
+            job_id=301,
+            visibility="public",
+            created_by_user_id=None,
         )
 
     async with sf() as db:

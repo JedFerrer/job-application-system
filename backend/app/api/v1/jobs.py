@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 
@@ -29,6 +29,7 @@ logger = get_logger(__name__)
 # Background task
 # ---------------------------------------------------------------------------
 
+
 async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> None:
     """Runs after 202 is returned: scrapes sources, upserts, embeds."""
     store = TaskStore(get_redis())
@@ -40,7 +41,9 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
     try:
         async with async_session_factory() as db:
             try:
-                from app.domain.jobs.service import JobService  # local to avoid module-level cycle  # noqa: PLC0415
+                from app.domain.jobs.service import (
+                    JobService,
+                )  # local to avoid module-level cycle  # noqa: PLC0415
 
                 service = JobService(JobRepository(db), user_timezone=settings.user_timezone)
                 result = await service.ingest(
@@ -85,6 +88,7 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_jobs(
     payload: IngestRequest,
@@ -120,11 +124,16 @@ async def list_jobs(
     job_type: str | None = None,
     location: str | None = None,
     company: str | None = Query(default=None, description="Company name filter (ILIKE)"),
-    q: str | None = Query(default=None, description="Free-text search across title, company, description"),
+    q: str | None = Query(
+        default=None, description="Free-text search across title, company, description"
+    ),
     min_salary: float | None = Query(default=None, ge=0),
     shift_type: str | None = Query(default=None, description="day | night | mid | flexible"),
-    source_type: str | None = Query(default=None, description="global | imported | manual | extension"),
+    source_type: str | None = Query(
+        default=None, description="global | imported | manual | extension"
+    ),
     imported_only: bool = False,
+    archive_state: Literal["active", "archived"] = "active",
     cursor: str | None = Query(default=None, description="Cursor for next page"),
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> JobListResponse:
@@ -140,6 +149,7 @@ async def list_jobs(
         shift_type=shift_type,
         source_type=source_type,
         imported_only=imported_only,
+        archive_state=archive_state,
         cursor=cursor,
         limit=limit,
     )
@@ -153,9 +163,7 @@ async def list_imported_jobs(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> JobListResponse:
     """Jobs imported by the current user (manual + extension)."""
-    return await service.list_imported_jobs(
-        user_id=current_user.id, cursor=cursor, limit=limit
-    )
+    return await service.list_imported_jobs(user_id=current_user.id, cursor=cursor, limit=limit)
 
 
 @router.post("/import", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
@@ -186,3 +194,12 @@ async def archive_job(
     """Per-user archive — only affects the current user's view of this job."""
     await service.archive_job(current_user.id, job_id)
 
+
+@router.patch("/{job_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
+async def restore_job(
+    job_id: int,
+    current_user: CurrentUser,
+    service: JobServiceDep,
+) -> None:
+    """Restore one of the current user's archived jobs to the active feed."""
+    await service.restore_job(current_user.id, job_id)

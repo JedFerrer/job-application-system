@@ -231,6 +231,7 @@ export const jobsApi = {
       sourceType?: string;
       shiftType?: string;
       importedOnly?: boolean;
+      archiveState?: "active" | "archived";
       cursor?: string;
       limit?: number;
     } = {},
@@ -246,6 +247,7 @@ export const jobsApi = {
     if (opts.sourceType) qs.set("source_type", opts.sourceType);
     if (opts.shiftType) qs.set("shift_type", opts.shiftType);
     if (opts.importedOnly) qs.set("imported_only", "true");
+    if (opts.archiveState) qs.set("archive_state", opts.archiveState);
     if (opts.cursor) qs.set("cursor", opts.cursor);
     qs.set("limit", String(opts.limit ?? 50));
     return apiRequest<JobListResponse>(`/jobs?${qs.toString()}`);
@@ -253,6 +255,9 @@ export const jobsApi = {
   /** Per-user archive (affects only the current user). */
   archive: (jobId: number) =>
     apiRequest<void>(`/jobs/${jobId}/archive`, { method: "PATCH" }),
+  /** Restore a per-user archived job relationship to the active feed. */
+  restore: (jobId: number) =>
+    apiRequest<void>(`/jobs/${jobId}/restore`, { method: "PATCH" }),
   importJob: (payload: { url: string; title: string; company?: string; description?: string }) =>
     apiRequest<Job>("/jobs/import", {
       method: "POST",

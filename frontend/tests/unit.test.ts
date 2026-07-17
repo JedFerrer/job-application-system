@@ -368,6 +368,21 @@ describe("jobsApi.listImported", () => {
   });
 });
 
+describe("jobsApi archive state", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("sends archive_state and restores using the scoped endpoint", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 25, next_cursor: null });
+    await jobsApi.list({ archiveState: "archived", limit: 25 });
+    expect(lastUrl(fm).searchParams.get("archive_state")).toBe("archived");
+
+    fm.mockResolvedValueOnce({ ok: true, status: 204, json: async () => null });
+    await jobsApi.restore(42);
+    expect(lastUrl(fm).pathname).toBe("/api/backend/jobs/42/restore");
+    expect(fm.mock.lastCall?.[1]).toMatchObject({ method: "PATCH" });
+  });
+});
+
 
 describe("matchesApi.list", () => {
   afterEach(() => { vi.unstubAllGlobals(); });

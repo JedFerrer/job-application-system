@@ -40,7 +40,7 @@ logger = get_logger(__name__)
 ProgressFn = Callable[..., Awaitable[None]]
 
 _h2t = html2text.HTML2Text()
-_h2t.body_width = 0          # don't wrap lines
+_h2t.body_width = 0  # don't wrap lines
 _h2t.ignore_links = False
 _h2t.ignore_images = True
 _h2t.ignore_emphasis = False
@@ -63,6 +63,7 @@ def _normalise_description(raw: str | None) -> str | None:
         md = _h2t.handle(raw)
         # Collapse excessive blank lines.
         import re
+
         md = re.sub(r"\n{3,}", "\n\n", md)
         return md.strip()
     except Exception:
@@ -113,9 +114,9 @@ class JobService:
 
         for source in sources:
             # Human-friendly name for progress messages (one site per adapter).
-            source_name = (
-                getattr(source, "_sites", None) or [getattr(source, "name", "source")]
-            )[0]
+            source_name = (getattr(source, "_sites", None) or [getattr(source, "name", "source")])[
+                0
+            ]
 
             await _emit(
                 status="running",
@@ -195,16 +196,12 @@ class JobService:
             sources=sorted(used_sources),
         )
 
-    async def link_recent_jobs_batch(
-        self, *, user_ids: list[int], since: datetime
-    ) -> int:
+    async def link_recent_jobs_batch(self, *, user_ids: list[int], since: datetime) -> int:
         """Link all *user_ids* to jobs fetched since *since*.
 
         Used after a shared scrape so every subscriber sees the results.
         """
-        return await self._repo.link_recent_jobs_batch(
-            user_ids=user_ids, since=since
-        )
+        return await self._repo.link_recent_jobs_batch(user_ids=user_ids, since=since)
 
     async def _upsert(self, post: RawJobPost, shift_type: str | None = None) -> tuple[int, bool]:
         fingerprint = job_fingerprint(post.company, post.title, post.location)
@@ -255,6 +252,7 @@ class JobService:
         shift_type: str | None = None,
         source_type: str | None = None,
         imported_only: bool = False,
+        archive_state: str = "active",
         cursor: str | None = None,
         limit: int = 50,
     ) -> JobListResponse:
@@ -270,6 +268,7 @@ class JobService:
             shift_type=shift_type,
             source_type=source_type,
             imported_only=imported_only,
+            archive_state=archive_state,
             cursor=cursor,
             limit=limit,
         )
@@ -307,9 +306,7 @@ class JobService:
             next_cursor=next_cursor,
         )
 
-    async def archive_job(
-        self, user_id: int, job_id: int
-    ) -> None:
+    async def archive_job(self, user_id: int, job_id: int) -> None:
         """Archive one active, visible job for this user.
 
         The archive relationship is created when a public or owner-visible job
@@ -320,6 +317,13 @@ class JobService:
         if job is None:
             raise JobNotFoundError(job_id)
         await self._repo.archive_user_job(user_id=user_id, job_id=job_id)
+
+    async def restore_job(self, user_id: int, job_id: int) -> None:
+        """Restore an archived job without touching applications."""
+        job = await self._repo.get_restorable_by_id(user_id=user_id, job_id=job_id)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        await self._repo.restore_user_job(user_id=user_id, job_id=job_id)
 
     async def get_job(self, *, user_id: int, job_id: int) -> JobResponse:
         """Fetch a single job, scoped to *user_id* visibility.
@@ -333,9 +337,7 @@ class JobService:
             raise JobNotFoundError(job_id)
         return JobResponse.model_validate(job)
 
-    async def import_job(
-        self, payload: JobImportRequest, *, user_id: int
-    ) -> JobResponse:
+    async def import_job(self, payload: JobImportRequest, *, user_id: int) -> JobResponse:
         """Manually import a single job posting.
 
         Privacy: new jobs are created with ``visibility='private'`` and
@@ -359,12 +361,11 @@ class JobService:
 
         # If this is a brand-new job, mark it as private to the importing user.
         if was_inserted:
-            await self._repo.mark_as_private_import(
-                job_id=job_id, user_id=user_id
-            )
+            await self._repo.mark_as_private_import(job_id=job_id, user_id=user_id)
             if payload.description:
                 # Dispatch async embedding via Celery — don't block the response.
                 from app.workers.job_imports import embed_imported_job  # noqa: PLC0415
+
                 embed_imported_job.delay(job_id, user_id)
             relationship_source = "manual"
             import_method = "manual"
