@@ -23,18 +23,18 @@ def _build_app_with_overrides(*, current_user: User, match_service: object) -> F
         return current_user
 
     app.dependency_overrides[get_current_user] = _override_get_current_user
-    app.dependency_overrides[get_match_service] = lambda: match_service  # type: ignore[assignment]
+    app.dependency_overrides[get_match_service] = lambda: match_service
     return app
 
 
 class _FailingMatchService:
-    async def list_matches(self, **kwargs):  # noqa: ANN001
+    async def list_matches(self, **kwargs: object) -> object:  # noqa: ANN001
         assert kwargs["cursor"] == "bad-cursor"
         raise ValueError("bad cursor")
 
 
 class _EmptyMatchService:
-    async def list_matches(self, **kwargs):  # noqa: ANN001
+    async def list_matches(self, **kwargs: object) -> object:  # noqa: ANN001
         return type(
             "Resp",
             (),
@@ -56,6 +56,19 @@ class _SummaryMatchService:
     async def get_match_summary(self, *, user_id: int, job_id: int) -> None:
         self.calls.append((user_id, job_id))
         return None
+
+
+class _EvidenceMatchService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+
+    async def get_match_evidence(self, *, user_id: int, job_id: int) -> object:  # noqa: ANN201
+        self.calls.append((user_id, job_id))
+        return {
+            "job_id": job_id,
+            "skills": {},
+            "experience_requirements": [],
+        }
 
 
 def test_invalid_cursor_returns_400() -> None:
@@ -123,3 +136,17 @@ def test_match_summary_returns_200_null_and_uses_current_user_scope() -> None:
     assert response.status_code == 200
     assert response.json() is None
     assert service.calls == [(42, 501)]
+
+
+def test_match_evidence_is_documented_and_user_scoped() -> None:
+    user = User(id=42, email="scoped@test.com", name="Scoped", is_active=True)
+    service = _EvidenceMatchService()
+    app = _build_app_with_overrides(current_user=user, match_service=service)
+    client = TestClient(app)
+
+    response = client.get("/matches/501/evidence")
+
+    assert response.status_code == 200
+    assert service.calls == [(42, 501)]
+    schema = client.get("/openapi.json").json()
+    assert "MatchEvidence" in schema["components"]["schemas"]

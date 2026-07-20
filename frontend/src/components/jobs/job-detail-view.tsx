@@ -25,6 +25,7 @@ import { ApiError, applicationsApi, jobsApi, listAllApplications, matchesApi } f
 import type {
   ApplicationListItem,
   MatchExplanation,
+  MatchEvidence,
   MatchItem,
   MatchListResponse,
   MatchSkillAnalysis,
@@ -159,6 +160,77 @@ function deriveOverview(
   return `${role} role${skillText}.`;
 }
 
+function EvidenceDisclosure({
+  evidence,
+  isLoading,
+  isError,
+  onRetry,
+  isOpen,
+  onToggle,
+}: {
+  evidence: MatchEvidence | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  onRetry: () => void;
+  isOpen: boolean;
+  onToggle: (open: boolean) => void;
+}) {
+  const groups = [
+    ["Required", evidence?.skills.required],
+    ["Preferred", evidence?.skills.preferred],
+    ["Unclassified", evidence?.skills.unclassified],
+  ] as const;
+  const hasSkillEvidence = groups.some(([, group]) =>
+    Boolean(group && (group.matched.length > 0 || group.missing.length > 0)),
+  );
+
+  return (
+    <details
+      className="rounded-lg border border-border/70 bg-muted/20 p-3"
+      open={isOpen}
+      onToggle={(event) => onToggle(event.currentTarget.open)}
+    >
+      <summary className="cursor-pointer text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+        Evidence
+      </summary>
+      <div className="mt-3 flex flex-col gap-4 text-xs">
+        {isLoading && <p className="text-muted-foreground">Loading source-based evidence…</p>}
+        {isError && (
+          <div className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
+            <span>Could not load evidence.</span>
+            <button type="button" onClick={onRetry} className="underline underline-offset-2">Retry</button>
+          </div>
+        )}
+        {evidence && !hasSkillEvidence && evidence.experience_requirements.length === 0 && (
+          <p className="text-muted-foreground">No deterministic evidence was found for this job.</p>
+        )}
+        {groups.map(([label, group]) => {
+          if (!group || (group.matched.length === 0 && group.missing.length === 0)) return null;
+          return (
+            <section key={label} className="space-y-2">
+              <h3 className="font-medium text-foreground">{label} skills</h3>
+              {[...group.matched.map((item) => ({ ...item, status: "Matched" })), ...group.missing.map((item) => ({ ...item, status: "Missing" }))].map((item) => (
+                <div key={`${item.status}-${item.skill}`} className="rounded-md border border-border/60 bg-background/60 p-2 leading-relaxed">
+                  <p className="font-medium">{item.status}: {item.skill}</p>
+                  <p className="mt-1 text-muted-foreground"><span className="font-medium text-foreground">Job requirement:</span> {item.job_excerpt}</p>
+                  {item.profile_excerpt && <p className="mt-1 text-muted-foreground"><span className="font-medium text-foreground">Profile evidence:</span> {item.profile_excerpt}</p>}
+                </div>
+              ))}
+            </section>
+          );
+        })}
+        {evidence?.experience_requirements.map((item, index) => (
+          <section key={`${item.job_excerpt}-${index}`} className="rounded-md border border-border/60 bg-background/60 p-2 leading-relaxed">
+            <h3 className="font-medium text-foreground">Experience requirement: {item.assessment === "meets" ? "Meets" : item.assessment === "may_not_meet" ? "May not meet" : "Needs review"}</h3>
+            <p className="mt-1 text-muted-foreground"><span className="font-medium text-foreground">Job requirement:</span> {item.job_excerpt}</p>
+            {item.profile_years_experience !== null && <p className="mt-1 text-muted-foreground">Profile reports {item.profile_years_experience} years of total experience.</p>}
+          </section>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -178,6 +250,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const [showCoverLetter, setShowCoverLetter] = useState(false);
   const [showInterviewPrep, setShowInterviewPrep] = useState(false);
   const [showTailorResume, setShowTailorResume] = useState(false);
+  const [evidenceOpenJobId, setEvidenceOpenJobId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("Description");
   const [highlightedActionTarget, setHighlightedActionTarget] = useState<string | null>(null);
 
@@ -188,6 +261,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   }, [highlightedActionTarget]);
   useEffect(() => {
     setExplainData(null);
+    setEvidenceOpenJobId(null);
   }, [jobId]);
 
   // The list cache gives immediate continuity when arriving from /matches.
@@ -246,6 +320,15 @@ export function JobDetailView({ jobId }: { jobId: number }) {
     staleTime: 5 * 60_000,
   });
   const skillData = skillQuery.data ?? null;
+
+  const evidenceOpen = evidenceOpenJobId === jobId;
+  const evidenceQuery = useQuery({
+    queryKey: ["match-evidence", jobId],
+    queryFn: () => matchesApi.evidence(jobId),
+    enabled: evidenceOpen,
+    staleTime: 0,
+    retry: false,
+  });
 
   const explainMutation = useMutation({
     mutationFn: () => matchesApi.explain(jobId),
@@ -432,6 +515,16 @@ export function JobDetailView({ jobId }: { jobId: number }) {
       ? match?.missing_keywords
       : skillData?.missing_keywords ?? match?.missing_keywords
   ) ?? [];
+  const evidenceDisclosure = (
+    <EvidenceDisclosure
+      evidence={evidenceQuery.data}
+      isLoading={evidenceQuery.isLoading}
+      isError={evidenceQuery.isError}
+      onRetry={() => evidenceQuery.refetch()}
+      isOpen={evidenceOpen}
+      onToggle={(open) => setEvidenceOpenJobId(open ? jobId : null)}
+    />
+  );
 
   return (
     <div className="flex flex-col gap-6 w-full">
@@ -838,6 +931,8 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                     </section>
                   )}
 
+                  {evidenceDisclosure}
+
                   {!currentExplainData && (
                     <div data-testid="match-detailed-assessment" className="flex flex-col gap-1">
                       <Button
@@ -872,6 +967,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                       Retry loading match
                     </Button>
                   )}
+                  {evidenceDisclosure}
                   <Button
                     variant="outline"
                     size="sm"

@@ -19,6 +19,7 @@ const apiMocks = vi.hoisted(() => {
     explain: vi.fn(),
     summary: vi.fn(),
     skills: vi.fn(),
+    evidence: vi.fn(),
     rank: vi.fn(),
     list: vi.fn(),
   };
@@ -327,6 +328,7 @@ describe("JobDetailView readiness", () => {
     apiMocks.matchesApi.explain.mockReset();
     apiMocks.matchesApi.summary.mockReset();
     apiMocks.matchesApi.skills.mockReset();
+    apiMocks.matchesApi.evidence.mockReset();
     apiMocks.matchesApi.rank.mockReset();
     apiMocks.matchesApi.list.mockReset();
     apiMocks.listAllApplications.mockReset();
@@ -487,6 +489,130 @@ describe("JobDetailView readiness", () => {
     });
     queryClient.clear();
     container.remove();
+  });
+
+  it("loads deterministic evidence only when the disclosure opens", async () => {
+    apiMocks.matchesApi.evidence.mockResolvedValue({
+      job_id: 501,
+      skills: {
+        required: {
+          matched: [{ skill: "python", job_excerpt: "Required: Python", profile_excerpt: "Python" }],
+          missing: [{ skill: "kubernetes", job_excerpt: "Required: Kubernetes", profile_excerpt: null }],
+        },
+        preferred: { matched: [], missing: [] },
+        unclassified: { matched: [], missing: [] },
+      },
+      experience_requirements: [{
+        years_required: 5,
+        scope: "total_experience",
+        skill: null,
+        job_excerpt: "5 years of experience",
+        assessment: "may_not_meet",
+        profile_years_experience: 3,
+      }],
+    });
+
+    await renderJob(501);
+    expect(apiMocks.matchesApi.evidence).not.toHaveBeenCalled();
+
+    const disclosure = [...container.querySelectorAll("summary")].find(
+      (summary) => summary.textContent === "Evidence",
+    );
+    await act(async () => {
+      disclosure?.click();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(apiMocks.matchesApi.evidence).toHaveBeenCalledWith(501);
+    await waitForCondition(() => container.textContent?.includes("Required skills") ?? false);
+    expect(container.textContent).toContain("Required skills");
+    expect(container.textContent).toContain("Matched: python");
+    expect(container.textContent).toContain("Missing: kubernetes");
+    expect(container.textContent).toContain("May not meet");
+    expect(container.textContent).not.toContain("Preferred skills");
+  });
+
+  it("resets Evidence for a newly navigated job without fetching it", async () => {
+    apiMocks.matchesApi.evidence.mockImplementation((jobId: number) => Promise.resolve({
+      job_id: jobId,
+      skills: {
+        required: {
+          matched: [{ skill: `skill-${jobId}`, job_excerpt: `Required: skill-${jobId}`, profile_excerpt: `profile-${jobId}` }],
+          missing: [],
+        },
+        preferred: { matched: [], missing: [] },
+        unclassified: { matched: [], missing: [] },
+      },
+      experience_requirements: [],
+    }));
+
+    await renderJob(501);
+    const jobADisclosure = container.querySelector("details");
+    expect(jobADisclosure?.open).toBe(false);
+    await act(async () => {
+      jobADisclosure?.querySelector("summary")?.click();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(apiMocks.matchesApi.evidence).toHaveBeenCalledWith(501);
+    await waitForCondition(() => container.textContent?.includes("skill-501") ?? false);
+    expect(container.textContent).toContain("skill-501");
+
+    const jobA = queryClient.getQueryData<Record<string, unknown>>(["job", 501]);
+    queryClient.setQueryData(["job", 502], { ...jobA, id: 502, title: "Job B" });
+    queryClient.setQueryData(["match-summary", 502], makeSummary(502, "job-b"));
+    await renderJob(502);
+    const jobBDisclosure = container.querySelector("details");
+    expect(jobBDisclosure?.open).toBe(false);
+    expect(apiMocks.matchesApi.evidence).not.toHaveBeenCalledWith(502);
+
+    await act(async () => {
+      jobBDisclosure?.querySelector("summary")?.click();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(apiMocks.matchesApi.evidence).toHaveBeenCalledWith(502);
+    await waitForCondition(() => container.textContent?.includes("skill-502") ?? false);
+    expect(container.textContent).toContain("skill-502");
+    expect(container.textContent).not.toContain("skill-501");
+  });
+
+  it("shows lazy Evidence without a persisted match summary", async () => {
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+    apiMocks.matchesApi.summary.mockResolvedValue(null);
+    apiMocks.matchesApi.evidence.mockResolvedValue({
+      job_id: 501,
+      skills: {
+        required: {
+          matched: [{ skill: "python", job_excerpt: "Required: Python", profile_excerpt: "Python" }],
+          missing: [],
+        },
+        preferred: { matched: [], missing: [] },
+        unclassified: { matched: [], missing: [] },
+      },
+      experience_requirements: [],
+    });
+
+    await renderJob(501);
+    await waitForCondition(
+      () => container.textContent?.includes("No saved match analysis for this job yet.") ?? false,
+    );
+    expect(container.textContent).toContain("No saved match analysis for this job yet.");
+    expect(container.textContent).toContain("Analyze Match");
+    const disclosure = container.querySelector("details");
+    expect(disclosure?.open).toBe(false);
+    expect(apiMocks.matchesApi.evidence).not.toHaveBeenCalled();
+
+    await act(async () => {
+      disclosure?.querySelector("summary")?.click();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(apiMocks.matchesApi.evidence).toHaveBeenCalledWith(501);
+    await waitForCondition(() => container.textContent?.includes("Matched: python") ?? false);
+    expect(container.textContent).toContain("Matched: python");
   });
 
   it("renders readiness details in the Match Score card", async () => {

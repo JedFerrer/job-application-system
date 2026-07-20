@@ -18,23 +18,30 @@ from app.domain.matching.exceptions import (
     NoActiveProfileError,
 )
 from app.domain.matching.prompts import MATCH_EXPLANATION_PROMPT
+from app.domain.matching.readiness import build_match_readiness
+from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.schemas import (
+    ClassifiedSkillEvidence,
+    ExperienceRequirement,
+    MatchEvidence,
     MatchExplanation,
     MatchItem,
-    MatchSkillAnalysis,
     MatchListResponse,
     MatchReadiness,
+    MatchSkillAnalysis,
     MatchSummary,
     RankResponse,
+    SkillEvidence,
+    SkillEvidenceGroup,
     SkillGapItem,
     SkillsGapSummary,
 )
-from app.domain.matching.readiness import build_match_readiness
-from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
 from app.domain.matching.skill_matcher import (
+    classify_job_skills,
     compute_skill_match,
     extract_known_skills,
+    parse_experience_requirements,
     report_to_dict,
 )
 from app.infrastructure.llm_client import LLMUnavailableError, llm_chat_completion
@@ -267,6 +274,72 @@ class MatchingService:
         )
         return await self._to_skill_analysis(match, user_id)
 
+    async def get_match_evidence(self, *, user_id: int, job_id: int) -> MatchEvidence:
+        """Build fresh, user-scoped deterministic evidence without persistence."""
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
+        profile = await self._repo.get_active_profile(user_id)
+        if job is None or profile is None:
+            raise MatchNotFoundError(job_id)
+
+        profile_parsed = dict(profile.parsed)
+        groups: dict[str, SkillEvidenceGroup] = {}
+        for classification, observed in classify_job_skills(job.description or "").items():
+            report = compute_skill_match([item.skill for item in observed], profile_parsed)
+            matched = set(report.matched_skills)
+            groups[classification] = SkillEvidenceGroup(
+                matched=[
+                    SkillEvidence(
+                        skill=item.skill,
+                        job_excerpt=item.job_excerpt,
+                        profile_excerpt=report.evidence[item.skill],
+                    )
+                    for item in observed
+                    if item.skill in matched
+                ],
+                missing=[
+                    SkillEvidence(skill=item.skill, job_excerpt=item.job_excerpt)
+                    for item in observed
+                    if item.skill not in matched
+                ],
+            )
+
+        profile_years_raw = profile_parsed.get("years_experience")
+        profile_years = (
+            float(profile_years_raw)
+            if isinstance(profile_years_raw, int | float)
+            else None
+        )
+        experience = []
+        for requirement in parse_experience_requirements(job.description or ""):
+            if requirement.scope == "skill_specific" or profile_years is None:
+                assessment = "needs_review"
+            elif profile_years < requirement.years_required:
+                assessment = "may_not_meet"
+            else:
+                assessment = "meets"
+            experience.append(
+                ExperienceRequirement(
+                    years_required=requirement.years_required,
+                    scope=requirement.scope,
+                    skill=requirement.skill,
+                    job_excerpt=requirement.job_excerpt,
+                    assessment=assessment,
+                    profile_years_experience=(
+                        profile_years if requirement.scope == "total_experience" else None
+                    ),
+                )
+            )
+
+        return MatchEvidence(
+            job_id=job_id,
+            skills=ClassifiedSkillEvidence(
+                required=groups.get("required", SkillEvidenceGroup()),
+                preferred=groups.get("preferred", SkillEvidenceGroup()),
+                unclassified=groups.get("unclassified", SkillEvidenceGroup()),
+            ),
+            experience_requirements=experience,
+        )
+
     async def _explain_with_llm(
         self,
         *,
@@ -343,13 +416,15 @@ class MatchingService:
         job = None
         prefs = None
         if self._readiness_repo is not None:
-            job = await self._repo.get_visible_job(user_id=user_id, job_id=match.job_id)
+            job = await self._repo.get_visible_job(
+                user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
+            )
             prefs = await self._readiness_repo.get_for_user(user_id)
         readiness = build_match_readiness(
-            score=match.llm_score if match.llm_score is not None else match.vector_score,
-            confidence=match.confidence,
-            matched_skills=match.matched_skills,
-            missing_keywords=match.missing_keywords,
+            score=match.llm_score if match.llm_score is not None else match.vector_score,  # type: ignore[attr-defined]
+            confidence=match.confidence,  # type: ignore[attr-defined]
+            matched_skills=match.matched_skills,  # type: ignore[attr-defined]
+            missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
             job=job,
             preferences=prefs,
         )
@@ -375,16 +450,18 @@ class MatchingService:
         job = None
         prefs = None
         if self._readiness_repo is not None:
-            job = await self._repo.get_visible_job(user_id=user_id, job_id=match.job_id)
+            job = await self._repo.get_visible_job(
+                user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
+            )
             prefs = await self._readiness_repo.get_for_user(user_id)
-        score = match.llm_score if match.llm_score is not None else match.vector_score
+        score = match.llm_score if match.llm_score is not None else match.vector_score  # type: ignore[attr-defined]
         return MatchSkillAnalysis(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
             readiness=build_match_readiness(
-                score=score,  # type: ignore[arg-type]
+                score=score,
                 confidence=match.confidence,  # type: ignore[attr-defined]
                 matched_skills=match.matched_skills,  # type: ignore[attr-defined]
                 missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
@@ -399,9 +476,9 @@ class MatchingService:
         job: object | None = None,
         preferences: object | None = None,
     ) -> MatchReadiness:
-        score = match.llm_score if match.llm_score is not None else match.vector_score
+        score = match.llm_score if match.llm_score is not None else match.vector_score  # type: ignore[attr-defined]
         return build_match_readiness(
-            score=score,  # type: ignore[arg-type]
+            score=score,
             confidence=match.confidence,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills,  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]

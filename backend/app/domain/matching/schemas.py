@@ -104,6 +104,46 @@ class MatchSkillAnalysis(BaseModel):
     readiness: MatchReadiness
 
 
+class SkillEvidence(BaseModel):
+    """One deterministic skill observation with bounded source excerpts."""
+
+    skill: str
+    job_excerpt: str
+    profile_excerpt: str | None = None
+
+
+class SkillEvidenceGroup(BaseModel):
+    """Matched and missing known skills in one requirement classification."""
+
+    matched: list[SkillEvidence] = Field(default_factory=list)
+    missing: list[SkillEvidence] = Field(default_factory=list)
+
+
+class ClassifiedSkillEvidence(BaseModel):
+    required: SkillEvidenceGroup = Field(default_factory=SkillEvidenceGroup)
+    preferred: SkillEvidenceGroup = Field(default_factory=SkillEvidenceGroup)
+    unclassified: SkillEvidenceGroup = Field(default_factory=SkillEvidenceGroup)
+
+
+class ExperienceRequirement(BaseModel):
+    """A cautious assessment of one explicit years-of-experience statement."""
+
+    years_required: float
+    scope: Literal["total_experience", "skill_specific"]
+    skill: str | None = None
+    job_excerpt: str
+    assessment: Literal["meets", "may_not_meet", "needs_review"]
+    profile_years_experience: float | None = None
+
+
+class MatchEvidence(BaseModel):
+    """Fresh, filtered deterministic evidence for one visible job."""
+
+    job_id: int
+    skills: ClassifiedSkillEvidence = Field(default_factory=ClassifiedSkillEvidence)
+    experience_requirements: list[ExperienceRequirement] = Field(default_factory=list)
+
+
 class SkillGapItem(BaseModel):
     """One missing skill and how many of the user's matched jobs require it."""
 
