@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileText, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
-import { ApiError, applicationsApi, jobsApi } from "@/lib/api";
+import { ApiError, applicationsApi, jobsApi, listAllApplications } from "@/lib/api";
 import type { Job } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -75,6 +75,13 @@ export function ImportedJobsPanel() {
   );
   const total = jobsQuery.data?.pages[0]?.total ?? 0;
 
+  const { data: appData } = useQuery({
+    queryKey: ["applications", "list"],
+    queryFn: listAllApplications,
+    staleTime: 30_000,
+  });
+  const applicationsByJobId = new Map((appData ?? []).map((application) => [application.job_id, application]));
+
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
@@ -107,8 +114,9 @@ export function ImportedJobsPanel() {
 
   const saveAppMutation = useMutation({
     mutationFn: (jobId: number) => applicationsApi.create(jobId),
-    onSuccess: () => {
-      toast.success("Saved to applications");
+    onSuccess: (application) => {
+      if (application.status === "saved") toast.success("Saved to applications");
+      else toast.error(`Job is already tracked as ${application.status}`);
       queryClient.invalidateQueries({ queryKey: ["applications"] });
     },
     onError: (err) =>
@@ -143,6 +151,8 @@ export function ImportedJobsPanel() {
         )}
         <div className="flex flex-col gap-3">
           {allJobs.map((job) => {
+            const application = applicationsByJobId.get(job.id);
+            const canSave = !application || application.status === "closed";
             const match: JobCardMatch | null =
               job.match_score != null
                 ? {
@@ -181,14 +191,16 @@ export function ImportedJobsPanel() {
                   <FileText className="h-4 w-4" />
                   Cover letter
                 </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => saveAppMutation.mutate(job.id)}
-                >
-                  <Plus className="h-4 w-4" />
-                  Save to applications
-                </Button>
+                {canSave && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => saveAppMutation.mutate(job.id)}
+                  >
+                    <Plus className="h-4 w-4" />
+                    Save to applications
+                  </Button>
+                )}
               </JobCard>
             );
           })}

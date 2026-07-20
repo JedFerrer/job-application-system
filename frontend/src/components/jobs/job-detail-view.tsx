@@ -54,16 +54,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -189,7 +179,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const [showInterviewPrep, setShowInterviewPrep] = useState(false);
   const [showTailorResume, setShowTailorResume] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("Description");
-  const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
   const [highlightedActionTarget, setHighlightedActionTarget] = useState<string | null>(null);
 
   useEffect(() => {
@@ -282,8 +271,9 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   // ---- Mutations -----------------------------------------------------------
   const saveMutation = useMutation({
     mutationFn: () => applicationsApi.create(jobId),
-    onSuccess: () => {
-      toast.success("Saved to applications");
+    onSuccess: (application) => {
+      if (application.status === "saved") toast.success("Saved to applications");
+      else toast.error(`Job is already tracked as ${application.status}`);
       queryClient.invalidateQueries({ queryKey: ["applications"] });
     },
     onError: (err) =>
@@ -293,7 +283,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const unsaveMutation = useMutation({
     mutationFn: async () => {
       if (existingApp) {
-        await applicationsApi.update(existingApp.id, { status: "closed" });
+        await applicationsApi.delete(existingApp.id);
       }
     },
     onSuccess: () => {
@@ -325,7 +315,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
     mutationFn: () => jobsApi.archive(jobId),
     onSuccess: () => {
       toast.success("Job archived");
-      setShowArchiveConfirm(false);
       queryClient.invalidateQueries({ queryKey: ["job", jobId] });
       queryClient.invalidateQueries({ queryKey: ["matches"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -398,6 +387,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const job = jobQuery.data!;
   const match = matchSummary;
   const isSaved = existingApp?.status === "saved";
+  const canSave = !existingApp || existingApp.status === "closed";
   const isApplied = existingApp?.status === "applied" || existingApp?.status === "interview" || existingApp?.status === "offer";
 
   const postedLabel = job.posted_at ? formatRelativeDate(job.posted_at) : null;
@@ -422,7 +412,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
     readinessNavigationTarget === "apply"
       ? !isApplied && !applyMutation.isPending
       : readinessNavigationTarget === "save"
-        ? !isSaved && !saveMutation.isPending
+        ? canSave && !saveMutation.isPending
         : readinessNavigationTarget === "readiness";
   const navigateToReadinessAction = () => {
     if (!readinessNavigationTarget || !navigationTargetIsAvailable) return;
@@ -548,6 +538,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
               size="sm"
               onClick={() => applyMutation.mutate()}
               disabled={applyMutation.isPending || isApplied}
+              title={isApplied ? "Application already marked as applied" : "Mark this job as applied"}
               className={
                 highlightedActionTarget === "crm-mark-applied-action"
                   ? "ring-2 ring-ring ring-offset-2"
@@ -556,9 +547,9 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             >
               {applyMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-              ) : isApplied ? (
+              ) : (
                 <CheckCircle className="h-4 w-4 mr-1.5" />
-              ) : null}
+              )}
               {isApplied ? "Applied" : "Mark as Applied"}
             </Button>
 
@@ -569,6 +560,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 size="sm"
                 onClick={() => unsaveMutation.mutate()}
                 disabled={unsaveMutation.isPending}
+                title="Remove this job from saved applications"
               >
                 {unsaveMutation.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
@@ -577,13 +569,14 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 )}
                 Saved
               </Button>
-            ) : (
+            ) : canSave ? (
               <Button
                 id="crm-save-action"
                 variant="outline"
                 size="sm"
                 onClick={() => saveMutation.mutate()}
                 disabled={saveMutation.isPending}
+                title="Save this job to applications"
               >
                 {saveMutation.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
@@ -592,13 +585,13 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 )}
                 Save Job
               </Button>
-            )}
+            ) : null}
 
             {/* More actions dropdown — push to the right */}
             <div className="ml-auto">
             <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-1.5">
+                <Button variant="outline" size="sm" className="gap-1.5" title="Open more job actions">
                   <EllipsisVertical className="h-4 w-4" />
                   More actions
                   <ChevronDown className="h-3.5 w-3.5" />
@@ -617,7 +610,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                   <MessagesSquare className="h-4 w-4" />
                   Interview Prep
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowArchiveConfirm(true)}>
+                <DropdownMenuItem onClick={() => archiveMutation.mutate()}>
                   <Archive className="h-4 w-4" />
                   Archive job
                 </DropdownMenuItem>
@@ -1057,31 +1050,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
         open={showTailorResume}
         onOpenChange={setShowTailorResume}
       />
-      <AlertDialog open={showArchiveConfirm} onOpenChange={setShowArchiveConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Archive this job?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {existingApp
-                ? "This removes the job from your lists for you. Your saved application will remain available in Applications."
-                : "This removes the job from your lists for you. It does not delete the job."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={archiveMutation.isPending}>Keep job</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={archiveMutation.isPending}
-              onClick={(event) => {
-                event.preventDefault();
-                archiveMutation.mutate();
-              }}
-            >
-              {archiveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              Archive job
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

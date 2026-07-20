@@ -118,7 +118,7 @@ describe("JobsPanel archived view", () => {
       [...container.querySelectorAll("div")].some((element) => element.textContent === "Archived"),
     ).toBe(false);
     expect(container.textContent).not.toContain("Restore job");
-    expect(container.textContent).not.toContain("Archive job");
+    expect(container.textContent).toContain("Archive job");
 
     const archivedToggle = [...container.querySelectorAll("button")].find(
       (button) => button.textContent === "Archived",
@@ -158,5 +158,50 @@ describe("JobsPanel archived view", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["jobs"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["imported-jobs"] });
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["applications"] });
+  });
+
+  it("derives active save UI from application status and follows refreshed data", async () => {
+    navigationMocks.search = "archive_state=active";
+    apiMocks.jobsApi.list.mockResolvedValue({ ...emptyPage, items: [archivedJob], total: 1 });
+    apiMocks.listAllApplications.mockResolvedValue([
+      { id: 1, job_id: archivedJob.id, status: "closed" },
+    ]);
+    apiMocks.applicationsApi.create.mockResolvedValue({
+      id: 1, job_id: archivedJob.id, status: "saved",
+    });
+    renderPanel();
+    await waitForText(container, "Archived engineer");
+
+    const saveButton = [...container.querySelectorAll("button")].find(
+      (button) => button.getAttribute("aria-label") === "Save job",
+    ) as HTMLButtonElement;
+    expect(saveButton).toBeDefined();
+    act(() => saveButton.click());
+    await flush();
+    expect(apiMocks.applicationsApi.create).toHaveBeenCalledWith(archivedJob.id);
+    expect(toastMocks.success).toHaveBeenCalledWith("Saved to applications");
+
+    act(() => {
+      queryClient.setQueryData(["applications", "list"], [
+        { id: 1, job_id: archivedJob.id, status: "saved" },
+      ]);
+    });
+    await flush();
+    expect([...container.querySelectorAll("button")].some(
+      (button) => button.getAttribute("aria-label") === "Save job",
+    )).toBe(false);
+  });
+
+  it("does not show Save for active CRM application statuses", async () => {
+    navigationMocks.search = "archive_state=active";
+    apiMocks.jobsApi.list.mockResolvedValue({ ...emptyPage, items: [archivedJob], total: 1 });
+    apiMocks.listAllApplications.mockResolvedValue([
+      { id: 1, job_id: archivedJob.id, status: "applied" },
+    ]);
+    renderPanel();
+    await waitForText(container, "Archived engineer");
+    expect([...container.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Save",
+    )).toBe(false);
   });
 });

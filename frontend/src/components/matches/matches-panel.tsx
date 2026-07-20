@@ -8,9 +8,9 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Bookmark, Loader2, RefreshCw, Search, Sparkles } from "lucide-react";
+import { Archive, Bookmark, Loader2, RefreshCw, Search, Sparkles } from "lucide-react";
 import { toast } from "sonner";
-import { ApiError, applicationsApi, listAllApplications, matchesApi } from "@/lib/api";
+import { ApiError, applicationsApi, jobsApi, listAllApplications, matchesApi } from "@/lib/api";
 import type { MatchItem } from "@/lib/types";
 
 const PAGE_SIZE = 20;
@@ -173,29 +173,46 @@ export function MatchesPanel() {
 
   const saveAppMutation = useMutation({
     mutationFn: (jobId: number) => applicationsApi.create(jobId),
-    onSuccess: (_data, jobId) => {
-      toast.success("Saved to applications");
-      setSavedJobIds((prev) => new Set(prev).add(jobId));
+    onSuccess: (application) => {
+      if (application.status === "saved") toast.success("Saved to applications");
+      else toast.error(`Job is already tracked as ${application.status}`);
       queryClient.invalidateQueries({ queryKey: ["applications"] });
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Save failed"),
   });
 
-  const [savedJobIds, setSavedJobIds] = useState<Set<number>>(new Set());
+  const unsaveAppMutation = useMutation({
+    mutationFn: (applicationId: number) => applicationsApi.delete(applicationId),
+    onSuccess: () => {
+      toast.success("Removed from saved");
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Unsave failed"),
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (jobId: number) => jobsApi.archive(jobId),
+    onSuccess: () => {
+      toast.success("Job archived");
+      queryClient.invalidateQueries({ queryKey: ["matches"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Failed to archive job"),
+  });
+
   // Uses listAllApplications to avoid the first-50 limitation.
   const { data: appData } = useQuery({
     queryKey: ["applications", "list"],
     queryFn: listAllApplications,
     staleTime: 30_000,
   });
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (appData && !seededRef.current) {
-      setSavedJobIds(new Set(appData.map((a) => a.job_id)));
-      seededRef.current = true;
-    }
-  }, [appData]);
+  const savedJobIds = new Set(
+    (appData ?? []).filter((a) => a.status === "saved").map((a) => a.job_id),
+  );
+  const applicationsByJobId = new Map((appData ?? []).map((a) => [a.job_id, a]));
 
   return (
     <div className="flex flex-col gap-6">
@@ -426,17 +443,49 @@ export function MatchesPanel() {
                 router.push(`/jobs/${match.job_id}`);
               }}
               topRightAction={
-                savedJobIds.has(match.job_id) ? null : (
+                <div className="flex items-center gap-1">
+                {savedJobIds.has(match.job_id) ? (
                   <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => saveAppMutation.mutate(match.job_id)}
-                    className="h-7 px-2.5 text-xs hover:bg-secondary-foreground/10 transition-colors"
+                    size="icon"
+                    variant="ghost"
+                    aria-label="Unsave job"
+                    title="Unsave job"
+                    disabled={unsaveAppMutation.isPending}
+                    onClick={() => {
+                      const application = applicationsByJobId.get(match.job_id);
+                      if (application?.status === "saved") {
+                        unsaveAppMutation.mutate(application.id);
+                      }
+                    }}
+                    className="h-7 w-7 self-end bg-blue-100 text-blue-600 hover:bg-blue-200 hover:text-blue-700 dark:bg-blue-900/30 dark:hover:bg-blue-900/50"
                   >
-                    <Bookmark className="h-3.5 w-3.5 mr-1" />
-                    Save
+                    <Bookmark className="h-4 w-4 fill-current" />
                   </Button>
-                )
+                ) : (applicationsByJobId.get(match.job_id) != null &&
+                  applicationsByJobId.get(match.job_id)?.status !== "closed") ? null : (
+                  <Button
+                    size="icon"
+                    variant="secondary"
+                    aria-label="Save job"
+                    title="Save job"
+                    onClick={() => saveAppMutation.mutate(match.job_id)}
+                    className="h-7 w-7 self-end p-0 hover:bg-secondary-foreground/10 transition-colors"
+                  >
+                    <Bookmark className="h-4 w-4" />
+                  </Button>
+                )}
+                <Button
+                  size="icon"
+                  variant="outline"
+                  title="Archive job"
+                  disabled={archiveMutation.isPending}
+                  onClick={() => archiveMutation.mutate(match.job_id)}
+                  className="h-7 w-7 p-0"
+                >
+                  {archiveMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+                  <Archive className="h-4 w-4" />
+                </Button>
+                </div>
               }
             />
           );

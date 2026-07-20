@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bookmark, Briefcase, Link2, Loader2, Search } from "lucide-react";
+import { Archive, Bookmark, Briefcase, Link2, Loader2, Search } from "lucide-react";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, jobsApi, listAllApplications } from "@/lib/api";
@@ -171,8 +171,6 @@ export function JobsPanel() {
     prevJobCountRef.current = allJobs.length;
   }, [allJobs.length]);
 
-  const [savedJobIds, setSavedJobIds] = useState<Set<number>>(new Set());
-
   // Fetch existing applications to know which jobs are already saved.
   // Uses listAllApplications to avoid the first-50 limitation.
   const { data: appData } = useQuery({
@@ -180,23 +178,45 @@ export function JobsPanel() {
     queryFn: listAllApplications,
     staleTime: 30_000,
   });
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (appData && !seededRef.current) {
-      setSavedJobIds(new Set(appData.map((a) => a.job_id)));
-      seededRef.current = true;
-    }
-  }, [appData]);
+  const savedJobIds = useMemo(
+    () => new Set((appData ?? []).filter((a) => a.status === "saved").map((a) => a.job_id)),
+    [appData],
+  );
+  const applicationsByJobId = useMemo(
+    () => new Map((appData ?? []).map((a) => [a.job_id, a])),
+    [appData],
+  );
 
   const saveAppMutation = useMutation({
     mutationFn: (jobId: number) => applicationsApi.create(jobId),
-    onSuccess: (_data, jobId) => {
-      toast.success("Saved to applications");
-      setSavedJobIds((prev) => new Set(prev).add(jobId));
+    onSuccess: (application) => {
+      if (application.status === "saved") toast.success("Saved to applications");
+      else toast.error(`Job is already tracked as ${application.status}`);
       queryClient.invalidateQueries({ queryKey: ["applications"] });
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Save failed"),
+  });
+
+  const unsaveAppMutation = useMutation({
+    mutationFn: (applicationId: number) => applicationsApi.delete(applicationId),
+    onSuccess: () => {
+      toast.success("Removed from saved");
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Unsave failed"),
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (jobId: number) => jobsApi.archive(jobId),
+    onSuccess: () => {
+      toast.success("Job archived");
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["matches"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof ApiError ? err.message : "Failed to archive job"),
   });
 
   const restoreMutation = useMutation({
@@ -293,10 +313,6 @@ export function JobsPanel() {
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-col gap-3">
-        <div className="flex items-center gap-1 self-start rounded-md border bg-muted p-1" role="group" aria-label="Job archive state">
-          <Button size="sm" variant={archiveState === "active" ? "secondary" : "ghost"} onClick={() => setArchiveState("active")}>Active</Button>
-          <Button size="sm" variant={archiveState === "archived" ? "secondary" : "ghost"} onClick={() => setArchiveState("archived")}>Archived</Button>
-        </div>
         {/* ── Full-width search bar ─────────────────────────── */}
         <div className="flex gap-2 py-3 border-y border-border">
           <Input
@@ -327,7 +343,7 @@ export function JobsPanel() {
         <div className="flex gap-6">
           {/* ── Filter sidebar ──────────────────────────────── */}
           <aside className="w-72 shrink-0 self-start rounded-lg border bg-card p-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-medium">Filters</h3>
               {(filterSource || filterJobType || filterLocationInput || filterCompanyInput || filterSourceType || filterShiftType || filterRemote || filterSearch || searchValue) && (
                 <button
@@ -451,6 +467,10 @@ export function JobsPanel() {
                   <span className="text-muted-foreground">({total})</span>
                 ) : null}
               </h2>
+              <div className="flex items-center gap-1 rounded-md border bg-muted p-1" role="group" aria-label="Job archive state">
+                  <Button size="sm" title="Show active jobs" variant={archiveState === "active" ? "default" : "ghost"} onClick={() => setArchiveState("active")}>Active</Button>
+                  <Button size="sm" title="Show archived jobs" variant={archiveState === "archived" ? "default" : "ghost"} onClick={() => setArchiveState("archived")}>Archived</Button>
+              </div>
               <Button
                 size="sm"
                 variant="outline"
@@ -516,11 +536,14 @@ export function JobsPanel() {
                         <div className="pb-3">
                           {(() => {
                             const jc = jobCards[vi.index]!;
+                            const application = applicationsByJobId.get(jc.card.jobId);
+                            const canSave = !application || application.status === "closed";
                             return (
                               <JobCard
                                 job={jc.card}
                                 sourceLabel={jc.sourceLabel}
                                 hideExternalLink
+                                highlightOnHover
                                 isSaved={archiveState === "active" && savedJobIds.has(jc.card.jobId)}
                                 isArchived={archiveState === "archived"}
                                 onCardClick={() => {
@@ -543,25 +566,59 @@ export function JobsPanel() {
                                 topRightAction={
                                   archiveState === "archived" ? (
                                     <Button
-                                      size="sm"
+                                      size="icon"
                                       variant="secondary"
                                       disabled={restoreMutation.isPending}
+                                      title="Restore job"
                                       onClick={() => restoreMutation.mutate(jc.card.jobId)}
                                       className="h-7 px-2.5 text-xs"
                                     >
                                       {restoreMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
                                       Restore job
                                     </Button>
-                                  ) : savedJobIds.has(jc.card.jobId) ? null : (
+                                  ) : (
+                                    <div className="flex items-center gap-1">
+                                    {savedJobIds.has(jc.card.jobId) ? (
+                                      <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      aria-label="Unsave job"
+                                      title="Unsave job"
+                                      disabled={unsaveAppMutation.isPending}
+                                      onClick={() => {
+                                        const application = applicationsByJobId.get(jc.card.jobId);
+                                        if (application?.status === "saved") {
+                                          unsaveAppMutation.mutate(application.id);
+                                        }
+                                      }}
+                                      className="h-7 w-7 self-end bg-blue-100 text-blue-600 hover:bg-blue-200 hover:text-blue-700 dark:bg-blue-900/30 dark:hover:bg-blue-900/50"
+                                    >
+                                      <Bookmark className="h-4 w-4 fill-current" />
+                                      </Button>
+                                    ) : !canSave ? null : (
+                                    <Button
+                                      size="icon"
+                                      variant="secondary"
+                                      aria-label="Save job"
+                                      title="Save job"
+                                      onClick={() => saveAppMutation.mutate(jc.card.jobId)}
+                                      className="h-7 w-7 self-end p-0 hover:bg-secondary-foreground/10 transition-colors"
+                                    >
+                                      <Bookmark className="h-4 w-4" />
+                                    </Button>
+                                    )}
                                     <Button
                                       size="sm"
-                                      variant="secondary"
-                                      onClick={() => saveAppMutation.mutate(jc.card.jobId)}
-                                      className="h-7 px-2.5 text-xs hover:bg-secondary-foreground/10 transition-colors"
+                                      variant="outline"
+                                      title="Archive job"
+                                      disabled={archiveMutation.isPending}
+                                      onClick={() => archiveMutation.mutate(jc.card.jobId)}
+                                      className="h-7 w-7 p-0"
                                     >
-                                      <Bookmark className="h-3.5 w-3.5 mr-1" />
-                                      Save
+                                      {archiveMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+                                      <Archive className="h-4 w-4" />
                                     </Button>
+                                    </div>
                                   )
                                 }
                               />

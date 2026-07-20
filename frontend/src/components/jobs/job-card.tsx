@@ -2,7 +2,7 @@
 
 import { type ReactNode, useState } from "react";
 import {
-  Archive,
+  ArchiveX,
   ArrowUpRight,
   Building2,
   Calendar,
@@ -300,6 +300,8 @@ export interface JobCardProps {
   isArchived?: boolean;
   /** Called when the card body is clicked — used to open the detail page. */
   onCardClick?: () => void;
+  /** Adds a stronger hover border for the primary Jobs feed. */
+  highlightOnHover?: boolean;
   /** Action buttons rendered in the footer. */
   children?: ReactNode;
 }
@@ -317,6 +319,7 @@ export function JobCard({
   onArchive,
   isArchived = false,
   onCardClick,
+  highlightOnHover = false,
   children,
 }: JobCardProps) {
   const [logoError, setLogoError] = useState(false);
@@ -340,9 +343,13 @@ export function JobCard({
       className={
         onCardClick
           ? `group cursor-pointer transition-[border-color,box-shadow] hover:shadow-md ${
+              highlightOnHover ? "hover:border-primary/60 dark:hover:border-primary/70" : ""
+            } ${
               compactMatchLayout ? "hover:border-primary/50" : ""
             }`
-          : "group transition-shadow hover:shadow-md"
+          : `group transition-[border-color,box-shadow] hover:shadow-md ${
+              highlightOnHover ? "hover:border-primary/60 dark:hover:border-primary/70" : ""
+            }`
       }
       onClick={onCardClick}
     >
@@ -374,42 +381,42 @@ export function JobCard({
 
               {/* Metadata pills */}
               <div className="flex flex-wrap gap-1.5 mt-2.5">
-                <Badge variant="outline" className="rounded-full font-normal text-[11px] gap-1">
+                <Badge variant="outline" className="rounded-full font-normal text-[11px] gap-1 border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
                   <SourceIcon source={job.source} />
                   {SOURCE_LABELS[job.source] ?? job.source}
                 </Badge>
                 {job.location && (
-                  <Badge variant="outline" className="rounded-full font-normal text-[11px] gap-1 border-slate-200 dark:border-slate-500/30 bg-slate-50 dark:bg-slate-500/10 text-slate-700 dark:text-slate-300">
+                  <Badge variant="outline" className="rounded-full font-normal text-[11px] gap-1 border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
                     <MapPin className="h-3 w-3" />
                     {job.location}
                   </Badge>
                 )}
                 {job.isRemote && (
-                  <Badge variant="outline" className="rounded-full font-normal text-[11px] border-indigo-200 dark:border-indigo-500/30 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300">
+                  <Badge variant="outline" className="rounded-full font-normal text-[11px] border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-400/35 dark:bg-violet-500/10 dark:text-violet-200">
                     Remote
                   </Badge>
                 )}
                 {job.jobType && (
-                  <Badge variant="outline" className="rounded-full font-normal text-[11px] capitalize border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300">
+                  <Badge variant="outline" className="rounded-full font-normal text-[11px] capitalize border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-400/35 dark:bg-sky-500/10 dark:text-sky-200">
                     {job.jobType}
                   </Badge>
                 )}
                 {salary && (
-                  <Badge variant="outline" className="rounded-full font-normal text-[11px] border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                  <Badge variant="outline" className="rounded-full font-normal text-[11px] border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-400/35 dark:bg-emerald-500/10 dark:text-emerald-200">
                     {salary}
                   </Badge>
                 )}
-                <Badge variant="outline" className="rounded-full font-normal text-[11px] gap-1">
+                <Badge variant="outline" className="rounded-full font-normal text-[11px] gap-1 border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
                   <Calendar className="h-3 w-3" />
                   {postedLabel ?? "Recently"}
                 </Badge>
                 {sourceLabel && (
-                  <Badge variant="secondary" className="rounded-full font-normal text-[11px]">
+                  <Badge variant="outline" className="rounded-full font-normal text-[11px] border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
                     {sourceLabel}
                   </Badge>
                 )}
                 {isArchived && (
-                  <Badge variant="secondary" className="rounded-full font-normal text-[11px]">
+                  <Badge variant="outline" className="rounded-full font-normal text-[11px] border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/35 dark:bg-amber-500/10 dark:text-amber-200">
                     Archived
                   </Badge>
                 )}
@@ -463,9 +470,6 @@ export function JobCard({
               {importedLabel && (
                 <p className="text-xs text-muted-foreground/50 mt-1">{importedLabel}</p>
               )}
-              {isSaved && (
-                <p className="text-xs text-muted-foreground mt-1.5">✓ Saved to applications</p>
-              )}
             </div>
           </div>
 
@@ -474,15 +478,16 @@ export function JobCard({
             className="flex w-24 shrink-0 flex-col items-center gap-3"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="min-h-7 flex items-center">{topRightAction}</div>
+            <div className="min-h-7 w-full flex items-center justify-end">{topRightAction}</div>
             {onArchive && (
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onArchive(); }}
                 title="Archive job"
-                className="text-muted-foreground/60 hover:text-foreground transition-colors"
+                className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
               >
-                <Archive className="h-4 w-4" />
+                <ArchiveX className="h-4 w-4" />
+                Archive job
               </button>
             )}
             {match && !isAnalyzing && (

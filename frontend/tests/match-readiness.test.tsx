@@ -945,7 +945,7 @@ describe("JobDetailView readiness", () => {
     expect(apiMocks.applicationsApi.update).not.toHaveBeenCalled();
   });
 
-  it("opens Archive job confirmation from More actions without a mutation", async () => {
+  it("archives immediately from More actions", async () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -975,11 +975,8 @@ describe("JobDetailView readiness", () => {
       await Promise.resolve();
     });
 
-    expect(apiMocks.jobsApi.archive).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("Archive this job?");
-    expect(document.body.textContent).toContain(
-      "This removes the job from your lists for you. It does not delete the job.",
-    );
+    expect(apiMocks.jobsApi.archive).toHaveBeenCalledWith(501);
+    expect(document.body.textContent).not.toContain("Archive this job?");
     expect(container.textContent).toContain("Suggested: Skip");
     expect([...container.querySelectorAll("button")].filter(
       (button) => button.textContent?.includes("Mark as Applied"),
@@ -987,18 +984,9 @@ describe("JobDetailView readiness", () => {
     expect([...container.querySelectorAll("button")].filter(
       (button) => button.textContent?.includes("Save Job"),
     )).toHaveLength(1);
-    const cancel = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent?.trim() === "Keep job",
-    );
-    await act(async () => {
-      cancel?.click();
-      await Promise.resolve();
-    });
-    expect(apiMocks.jobsApi.archive).not.toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain("Archive this job?");
   });
 
-  it("archives once after confirmation and invalidates only job-list caches", async () => {
+  it("archives once and invalidates only job-list caches", async () => {
     apiMocks.jobsApi.archive.mockResolvedValue(undefined);
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
     await act(async () => {
@@ -1025,14 +1013,7 @@ describe("JobDetailView readiness", () => {
       await Promise.resolve();
     });
 
-    const confirm = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent?.trim() === "Archive job",
-    );
-    await act(async () => {
-      confirm?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
     expect(apiMocks.jobsApi.archive).toHaveBeenCalledTimes(1);
     expect(apiMocks.jobsApi.archive).toHaveBeenCalledWith(501);
@@ -1044,7 +1025,7 @@ describe("JobDetailView readiness", () => {
     expect(invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["applications"] });
   });
 
-  it("keeps the confirmation open after archive failure and preserves application copy", async () => {
+  it("reports archive failure and preserves application copy", async () => {
     apiMocks.listAllApplications.mockResolvedValue([{ id: 702, job_id: 501, status: "saved" }]);
     queryClient.setQueryData(["applications", "list"], [
       { id: 702, job_id: 501, status: "saved" },
@@ -1074,21 +1055,10 @@ describe("JobDetailView readiness", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain(
-      "Your saved application will remain available in Applications.",
-    );
-    const confirm = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent?.trim() === "Archive job",
-    );
-    await act(async () => {
-      confirm?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
     expect(apiMocks.jobsApi.archive).toHaveBeenCalledTimes(1);
     expect(routerMocks.push).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("Archive this job?");
     expect(toastMocks.error).toHaveBeenCalledWith("Archive failed");
   });
 });
