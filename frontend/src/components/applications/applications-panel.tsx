@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   useInfiniteQuery,
   useMutation,
@@ -9,10 +10,12 @@ import {
 } from "@tanstack/react-query";
 import {
   ChevronDown,
+  BookmarkX,
   Check,
   FileText,
   History,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   StickyNote,
@@ -45,6 +48,13 @@ import {
   CardContent,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const PAGE_SIZE = 25;
 
@@ -208,6 +218,42 @@ export function ApplicationsPanel() {
     },
   });
 
+  const unsaveMutation = useMutation({
+    mutationFn: (id: number) => applicationsApi.delete(id),
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ["applications", "infinite"] });
+      const prev = queryClient.getQueryData<{
+        pages: ApplicationListResponse[];
+        pageParams: (string | null)[];
+      }>(["applications", "infinite"]);
+      queryClient.setQueryData<{
+        pages: ApplicationListResponse[];
+        pageParams: (string | null)[];
+      }>(["applications", "infinite"], (old) =>
+        old
+          ? {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                items: page.items.filter((application) => application.id !== id),
+              })),
+            }
+          : old,
+      );
+      return { prev };
+    },
+    onSuccess: () => toast.success("Removed from saved"),
+    onError: (err, _id, context) => {
+      if (context?.prev) {
+        queryClient.setQueryData(["applications", "infinite"], context.prev);
+      }
+      toast.error(err instanceof ApiError ? err.message : "Unsave failed");
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+    },
+  });
+
   const applicationUpdateMutation = useMutation({
     mutationFn: ({ id, payload }: { id: number; payload: ApplicationUpdate }) =>
       applicationsApi.update(id, payload),
@@ -320,7 +366,7 @@ export function ApplicationsPanel() {
       <div className="flex flex-wrap items-center gap-2">
         <Badge
           variant={filterStatus === null ? "default" : "outline"}
-          className="cursor-pointer"
+          className="cursor-pointer min-h-9 px-3"
           onClick={() => setFilterStatus(null)}
         >
           All ({total})
@@ -333,7 +379,7 @@ export function ApplicationsPanel() {
                 ? STATUS_BADGE_VARIANT[status]
                 : "outline"
             }
-            className="cursor-pointer capitalize"
+            className="cursor-pointer capitalize min-h-9 px-3"
             onClick={() =>
               setFilterStatus(filterStatus === status ? null : status)
             }
@@ -368,9 +414,9 @@ export function ApplicationsPanel() {
                   <tr className="border-b text-left text-muted-foreground">
                     <th className="px-4 py-3 font-medium">Job</th>
                     <th className="px-4 py-3 font-medium">Company</th>
-                    <th className="px-4 py-3 font-medium">Status</th>
                     <th className="px-4 py-3 font-medium">Next action</th>
                     <th className="px-4 py-3 font-medium">Cover letter</th>
+                    <th className="px-4 py-3 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -381,6 +427,8 @@ export function ApplicationsPanel() {
                       onStatusChange={(status) =>
                         statusMutation.mutate({ id: app.id, status })
                       }
+                      onUnsave={() => unsaveMutation.mutate(app.id)}
+                      isUnsaving={unsaveMutation.isPending && unsaveMutation.variables === app.id}
                       onApplicationUpdate={(payload) =>
                         applicationUpdateMutation.mutateAsync({
                           id: app.id,
@@ -425,14 +473,19 @@ export function ApplicationsPanel() {
 function ApplicationRow({
   app,
   onStatusChange,
+  onUnsave,
+  isUnsaving,
   onApplicationUpdate,
   onCoverLetterClick,
 }: {
   app: ApplicationListItem;
   onStatusChange: (status: ApplicationStatus) => void;
+  onUnsave: () => void;
+  isUnsaving: boolean;
   onApplicationUpdate: (payload: ApplicationUpdate) => Promise<unknown>;
   onCoverLetterClick: () => void;
 }) {
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [nextActionMode, setNextActionMode] = useState<"edit" | "new" | null>(
     null,
   );
@@ -574,33 +627,15 @@ function ApplicationRow({
     <>
       <tr className="border-b last:border-0">
         <td className="px-4 py-3">
-          <a
-            href={app.source_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-medium hover:underline"
-          >
+          <Link href={`/jobs/${app.job_id}`} className="font-medium hover:underline">
             {app.job_title}
-          </a>
+          </Link>
           {app.location && (
             <p className="text-xs text-muted-foreground">{app.location}</p>
           )}
         </td>
         <td className="px-4 py-3 text-muted-foreground">
           {app.company ?? "—"}
-        </td>
-        <td className="px-4 py-3">
-          <select
-            value={app.status}
-            onChange={(e) => onStatusChange(e.target.value as ApplicationStatus)}
-            className="rounded-md border border-input bg-background px-2 py-1 text-sm capitalize"
-          >
-            {APPLICATION_STATUSES.map((s) => (
-              <option key={s} value={s} className="capitalize">
-                {s}
-              </option>
-            ))}
-          </select>
         </td>
         <td className="px-4 py-3">
           <div className="flex flex-col gap-2">
@@ -728,6 +763,47 @@ function ApplicationRow({
             <FileText className="h-3.5 w-3.5" />
             {app.cover_letter_id != null ? "View / Edit" : "Create"}
           </Button>
+        </td>
+        <td className="px-4 py-3 text-right align-top">
+          <DropdownMenu onOpenChange={(open) => { if (!open) setStatusMenuOpen(false); }}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Application actions">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {app.status === "saved" && (
+                <DropdownMenuItem onSelect={onUnsave} disabled={isUnsaving}>
+                  <BookmarkX className="h-4 w-4" />
+                  Unsave
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault();
+                  setStatusMenuOpen(true);
+                }}
+              >
+                Change status
+              </DropdownMenuItem>
+              {statusMenuOpen && (
+                <>
+                  <DropdownMenuSeparator />
+                  {APPLICATION_STATUSES.map((status) => (
+                    <DropdownMenuItem
+                      key={status}
+                      onSelect={() => {
+                        onStatusChange(status);
+                        setStatusMenuOpen(false);
+                      }}
+                    >
+                      {status === app.status ? "✓ " : ""}{status}
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </td>
       </tr>
       {isEditing && (

@@ -513,6 +513,21 @@ describe("applicationsApi.update", () => {
   });
 });
 
+describe("applicationsApi.delete", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("deletes an application without sending a status mutation", async () => {
+    const fm = mockFetch(undefined, 204);
+    await applicationsApi.delete(7);
+    const call = fm.mock.lastCall;
+    if (!call) throw new Error("fetch was not called");
+    const init = call[1] as RequestInit | undefined;
+    expect(lastUrl(fm).pathname).toBe("/api/backend/applications/7");
+    expect(init?.method).toBe("DELETE");
+    expect(init?.body).toBeUndefined();
+  });
+});
+
 describe("listAllApplications", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 

@@ -410,6 +410,10 @@ export const applicationsApi = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+  delete: (id: number) =>
+    apiRequest<void>(`/applications/${id}`, {
+      method: "DELETE",
+    }),
 };
 
 /** Fetch all application pages via cursor pagination.

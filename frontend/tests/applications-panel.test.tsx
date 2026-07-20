@@ -9,6 +9,7 @@ const apiMocks = vi.hoisted(() => {
   const applicationsApi = {
     list: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
     create: vi.fn(),
     listDueNextActions: vi.fn(),
     getActivity: vi.fn(),
@@ -157,6 +158,7 @@ describe("ApplicationsPanel CRM polish", () => {
     toastMocks.error.mockReset();
     apiMocks.applicationsApi.list.mockReset();
     apiMocks.applicationsApi.update.mockReset();
+    apiMocks.applicationsApi.delete.mockReset();
     apiMocks.applicationsApi.create.mockReset();
     apiMocks.applicationsApi.listDueNextActions.mockReset();
     apiMocks.applicationsApi.getActivity.mockReset();
@@ -220,6 +222,9 @@ describe("ApplicationsPanel CRM polish", () => {
         return updated;
       },
     );
+    apiMocks.applicationsApi.delete.mockImplementation(async (id: number) => {
+      applications = applications.filter((app) => app.id !== id);
+    });
     apiMocks.applicationsApi.getActivity.mockImplementation(
       async (id: number) => ({
         application_id: id,
@@ -264,6 +269,18 @@ describe("ApplicationsPanel CRM polish", () => {
       await Promise.resolve();
     });
   }
+
+  it("replaces the status column with row actions", async () => {
+    await renderPanel();
+    const savedRow = findRowByJobTitle(container, "Platform Engineer");
+    const appliedRow = findRowByJobTitle(container, "Senior Backend Engineer");
+    const actionsButton = savedRow.querySelector(
+      'button[aria-label="Application actions"]',
+    ) as HTMLButtonElement;
+    expect(actionsButton).toBeDefined();
+    expect(container.textContent).not.toContain("Status");
+    expect(appliedRow.querySelector('button[aria-label="Application actions"]')).toBeDefined();
+  });
 
   it("shows completed details and creates a fresh active next action", async () => {
     await renderPanel();
