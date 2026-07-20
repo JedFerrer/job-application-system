@@ -11,16 +11,16 @@ from app.domain.applications.exceptions import (
 )
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.schemas import (
+    MANUAL_NEXT_ACTION_EVENT_CLEARED,
+    MANUAL_NEXT_ACTION_EVENT_COMPLETED,
+    MANUAL_NEXT_ACTION_EVENT_CREATED,
+    MANUAL_NEXT_ACTION_EVENT_UPDATED,
     ApplicationActivityEvent,
     ApplicationActivityResponse,
     ApplicationListItem,
     ApplicationListResponse,
     ApplicationResponse,
     ApplicationUpdate,
-    MANUAL_NEXT_ACTION_EVENT_COMPLETED,
-    MANUAL_NEXT_ACTION_EVENT_CREATED,
-    MANUAL_NEXT_ACTION_EVENT_CLEARED,
-    MANUAL_NEXT_ACTION_EVENT_UPDATED,
 )
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
@@ -60,14 +60,6 @@ class ApplicationService:
         )
         if application is None:
             raise ApplicationNotFoundError(application_id)
-
-        # Applications advance through the CRM pipeline; an applied record
-        # must not be silently downgraded by a retry or stale UI.
-        if application.status == "applied" and payload.status == "saved":
-            raise InvalidApplicationStatusTransitionError(
-                current_status=application.status,
-                requested_status=payload.status,
-            )
 
         previous_next_action = _next_action_snapshot(application)
         fields_set = payload.model_fields_set
@@ -109,6 +101,19 @@ class ApplicationService:
                     ),
                 )
         return ApplicationResponse.model_validate(updated)
+
+    async def delete(self, *, user_id: int, application_id: int) -> None:
+        application = await self._repo.get(
+            user_id=user_id, application_id=application_id
+        )
+        if application is None:
+            raise ApplicationNotFoundError(application_id)
+        if application.status != "saved":
+            raise InvalidApplicationStatusTransitionError(
+                current_status=application.status,
+                requested_status="unsaved",
+            )
+        await self._repo.delete(application=application)
 
     async def list_activity(
         self, *, user_id: int, application_id: int, limit: int = 10

@@ -64,6 +64,15 @@ async def update_application(
     )
 
 
+@router.delete("/{application_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_application(
+    application_id: int,
+    current_user: CurrentUser,
+    service: ApplicationServiceDep,
+) -> None:
+    await service.delete(user_id=current_user.id, application_id=application_id)
+
+
 @router.get("/{application_id}/activity", response_model=ApplicationActivityResponse)
 async def list_application_activity(
     application_id: int,

@@ -5,14 +5,14 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.applications.schemas import MANUAL_NEXT_ACTION_EVENT_TYPES
 from app.models.application import Application
 from app.models.application_event import ApplicationEvent
 from app.models.job import Job
-from app.domain.applications.schemas import MANUAL_NEXT_ACTION_EVENT_TYPES
 
 
 class ApplicationRepository:
@@ -30,7 +30,13 @@ class ApplicationRepository:
         )
         upsert: Any = stmt.on_conflict_do_update(
             index_elements=[Application.user_id, Application.job_id],
-            set_={"updated_at": datetime.now(UTC)},
+            set_={
+                "status": case(
+                    (Application.status == "closed", "saved"),
+                    else_=Application.status,
+                ),
+                "updated_at": datetime.now(UTC),
+            },
         ).returning(Application)
         result = await self._session.execute(upsert)
         application: Application = result.scalar_one()
@@ -44,6 +50,12 @@ class ApplicationRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def delete(self, *, application: Application) -> None:
+        await self._session.execute(
+            delete(Application).where(Application.id == application.id)
+        )
+        await self._session.flush()
 
     async def create_event(
         self,

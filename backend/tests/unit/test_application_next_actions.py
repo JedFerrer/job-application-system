@@ -19,8 +19,8 @@ from app.domain.applications.schemas import ApplicationUpdate
 from app.domain.applications.service import ApplicationService
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
-from app.models.application_event import ApplicationEvent
 from app.models.application import Application
+from app.models.application_event import ApplicationEvent
 from app.models.job import Job
 from app.models.user import User
 
@@ -152,10 +152,121 @@ async def test_application_create_is_idempotent_for_user_and_job(engine) -> None
         assert len(rows.scalars().all()) == 1
 
 
-async def test_application_status_cannot_move_from_applied_back_to_saved(
+@pytest.mark.parametrize(
+    ("status", "job_id"),
+    [("applied", 120), ("interview", 121), ("offer", 122), ("rejected", 123), ("paused", 124)],
+)
+async def test_application_create_does_not_downgrade_existing_status(
+    engine, status: str, job_id: int
+) -> None:  # noqa: ANN001
+    """Re-saving preserves every non-closed CRM status, including future values."""
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=12, email=f"status-{status}@test.com")
+        await _seed_public_job(db, job_id=job_id)
+
+    async with sf() as db:
+        await db.execute(
+            insert(Application).values(user_id=12, job_id=job_id, status=status)
+        )
+        await db.flush()
+        result = await _service(db).create(user_id=12, job_id=job_id)
+        rows = await db.execute(
+            select(Application).where(Application.user_id == 12, Application.job_id == job_id)
+        )
+        persisted = rows.scalars().all()
+
+        assert result.status == status
+        assert len(persisted) == 1
+        assert persisted[0].status == status
+
+
+async def test_application_create_reopens_closed_application_without_duplicate(
     engine,
 ) -> None:  # noqa: ANN001
-    """The CRM permits saved -> applied but rejects a backward transition."""
+    """Re-saving a closed application reactivates its existing row as saved."""
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=13, email="closed@test.com")
+        await _seed_public_job(db, job_id=130)
+
+    async with sf() as db:
+        created = await _service(db).create(user_id=13, job_id=130)
+        await _service(db).update(
+            user_id=13,
+            application_id=created.id,
+            payload=ApplicationUpdate(status="closed"),
+        )
+        reopened = await _service(db).create(user_id=13, job_id=130)
+        rows = await db.execute(
+            select(Application).where(Application.user_id == 13, Application.job_id == 130)
+        )
+        persisted = rows.scalars().all()
+
+        assert reopened.id == created.id
+        assert reopened.status == "saved"
+        assert len(persisted) == 1
+        assert persisted[0].status == "saved"
+
+
+async def test_application_delete_removes_saved_row_and_allows_resave(engine) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=14, email="unsave@test.com")
+        await _seed_public_job(db, job_id=140)
+
+    async with sf() as db:
+        svc = _service(db)
+        created = await svc.create(user_id=14, job_id=140)
+        await svc.delete(user_id=14, application_id=created.id)
+        missing = await db.get(Application, created.id)
+        recreated = await svc.create(user_id=14, job_id=140)
+
+        assert missing is None
+        assert recreated.status == "saved"
+        assert recreated.id != created.id
+
+
+@pytest.mark.parametrize(
+    "status", ["applied", "interview", "offer", "rejected", "closed", "paused"]
+)
+async def test_application_delete_rejects_non_saved_status(engine, status: str) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=15, email=f"cannot-unsave-{status}@test.com")
+        await _seed_public_job(db, job_id=150)
+
+    async with sf() as db:
+        await db.execute(insert(Application).values(user_id=15, job_id=150, status=status))
+        await db.commit()
+        application = (
+            await db.execute(select(Application).where(Application.user_id == 15))
+        ).scalar_one()
+
+        with pytest.raises(InvalidApplicationStatusTransitionError):
+            await _service(db).delete(user_id=15, application_id=application.id)
+
+        assert await db.get(Application, application.id) is not None
+
+
+async def test_application_delete_is_user_scoped(engine) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=16, email="owner@test.com")
+        await _seed_user(db, user_id=17, email="other@test.com")
+        await _seed_public_job(db, job_id=160)
+
+    async with sf() as db:
+        created = await _service(db).create(user_id=16, job_id=160)
+        with pytest.raises(ApplicationNotFoundError):
+            await _service(db).delete(user_id=17, application_id=created.id)
+
+
+@pytest.mark.parametrize("starting_status", ["applied", "interview", "offer", "rejected"])
+async def test_application_status_can_be_manually_changed_back_to_saved(
+    engine, starting_status: str
+) -> None:  # noqa: ANN001
+    """The Applications page permits an explicit status change to saved."""
     sf = _sf(engine)
     async with sf() as db:
         await _seed_user(db, user_id=11, email="transition@test.com")
@@ -164,19 +275,20 @@ async def test_application_status_cannot_move_from_applied_back_to_saved(
     async with sf() as db:
         svc = _service(db)
         created = await svc.create(user_id=11, job_id=111)
-        applied = await svc.update(
+        current = await svc.update(
             user_id=11,
             application_id=created.id,
-            payload=ApplicationUpdate(status="applied"),
+            payload=ApplicationUpdate(status=starting_status),
         )
 
-        assert applied.status == "applied"
-        with pytest.raises(InvalidApplicationStatusTransitionError):
-            await svc.update(
-                user_id=11,
-                application_id=created.id,
-                payload=ApplicationUpdate(status="saved"),
-            )
+        assert current.status == starting_status
+        saved = await svc.update(
+            user_id=11,
+            application_id=created.id,
+            payload=ApplicationUpdate(status="saved"),
+        )
+
+        assert saved.status == "saved"
 
 
 async def test_application_update_can_set_clear_and_complete_next_action(
