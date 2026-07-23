@@ -1,0 +1,7 @@
+.venv
+__pycache__
+*.pyc
+.git
+celerybeat-schedule*
+docker-compose.yml
+Dockerfile

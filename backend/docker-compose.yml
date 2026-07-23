@@ -25,6 +25,21 @@ services:
       timeout: 5s
       retries: 10
 
+  db_test:
+    image: pgvector/pgvector:pg17
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: job_app_test
+    volumes:
+      - pgdata_test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d job_app_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build: .
     env_file:
@@ -72,7 +87,8 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/job_app
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_test:5432/job_app_test
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_test:5432/job_app_test
       REDIS_URL: redis://redis:6379/0
       ENVIRONMENT: development
     volumes:
@@ -80,7 +96,7 @@ services:
       - ./migrations:/app/migrations
       - ./tests:/app/tests
     depends_on:
-      db:
+      db_test:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -90,3 +106,4 @@ services:
 
 volumes:
   pgdata:
+  pgdata_test:
