@@ -41,6 +41,14 @@ class IngestResponse(BaseModel):
     embedded_job_ids: list[int] = Field(default_factory=list, exclude=True)
 
 
+class EmployerSummary(BaseModel):
+    """Related active catalog jobs for the detail job's exact employer name."""
+
+    company: str
+    company_logo: str | None = None
+    job_count: int
+
+
 class JobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -68,6 +76,7 @@ class JobResponse(BaseModel):
     # Match data (populated for /imported endpoint)
     match_score: float | None = None
     match_reason: dict[str, object] | None = None
+    employer_summary: EmployerSummary | None = None
 
 
 class JobListResponse(BaseModel):

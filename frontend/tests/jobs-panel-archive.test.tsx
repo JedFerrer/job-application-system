@@ -127,6 +127,32 @@ describe("JobsPanel archived view", () => {
     expect(navigationMocks.replace).toHaveBeenCalledWith("/dashboard/jobs?archive_state=archived");
   });
 
+  it("honors an exact-company link and clears it when the company filter is edited", async () => {
+    navigationMocks.search = "company_exact=Acme%20Corp";
+    apiMocks.jobsApi.list.mockResolvedValue({ ...emptyPage, items: [archivedJob], total: 1 });
+    renderPanel();
+    await waitForText(container, "Archived engineer");
+
+    expect(apiMocks.jobsApi.list).toHaveBeenCalledWith(expect.objectContaining({
+      companyExact: "Acme Corp",
+      company: undefined,
+    }));
+    const companyInput = [...container.querySelectorAll("input")].find(
+      (input) => input.value === "Acme Corp",
+    ) as HTMLInputElement;
+    expect(companyInput).toBeDefined();
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(companyInput, "Acme");
+      companyInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(navigationMocks.replace).toHaveBeenCalledWith("/dashboard/jobs");
+  });
+
   it("shows archived cards, disables Restore while pending, then removes the card with scoped invalidation", async () => {
     navigationMocks.search = "archive_state=archived";
     apiMocks.jobsApi.list.mockResolvedValueOnce({ ...emptyPage, items: [archivedJob], total: 1 });

@@ -33,6 +33,16 @@ from app.models.user_job_import import UserJobImport
 from app.models.user_job_match import UserJobMatch
 
 
+def _normalize_company_name(company: str) -> str:
+    """Normalize case and any run of whitespace for exact employer matching."""
+    return " ".join(company.split()).casefold()
+
+
+def _normalized_company_expression(column: Any) -> Any:
+    """PostgreSQL equivalent of :func:`_normalize_company_name`."""
+    return func.lower(func.regexp_replace(func.btrim(column), r"\s+", " ", "g"))
+
+
 @dataclass(frozen=True)
 class ExpiredJobPurgeBatch:
     """One committed page of expired-job purge work."""
@@ -529,6 +539,7 @@ class JobRepository:
         job_type: str | None = None,
         location_contains: str | None = None,
         company_contains: str | None = None,
+        company_exact: str | None = None,
         shift_type: str | None = None,
         source_type: str | None = None,
         imported_only: bool = False,
@@ -575,7 +586,18 @@ class JobRepository:
             filters.append(func.lower(Job.job_type) == job_type.lower())
         if location_contains is not None:
             filters.append(Job.location.ilike(f"%{location_contains}%"))
-        if company_contains is not None:
+        if company_exact is not None:
+            # ``company_exact`` powers the public employer-card link.  Keep its
+            # destination count aligned with the public-only summary and avoid
+            # surfacing a user's similarly named private imports in that view.
+            filters.extend(
+                [
+                    Job.visibility == "public",
+                    _normalized_company_expression(Job.company)
+                    == _normalize_company_name(company_exact),
+                ]
+            )
+        elif company_contains is not None:
             filters.append(Job.company.ilike(f"%{company_contains}%"))
         if source_type == "global":
             filters.append(Job.visibility == "public")
@@ -627,6 +649,29 @@ class JobRepository:
             )
 
         return rows, total, next_cursor
+
+    async def count_active_public_jobs_by_company(self, *, user_id: int, company: str) -> int:
+        """Count active public, non-archived catalog jobs for an exact company name.
+
+        This deliberately mirrors the default Jobs feed's active/archive rules,
+        while limiting the result to public jobs so private imports cannot be
+        inferred from a detail page.
+        """
+        normalized_company = _normalize_company_name(company)
+        if not normalized_company:
+            return 0
+
+        archived_job_ids = select(UserJob.job_id).where(
+            UserJob.user_id == user_id,
+            UserJob.status == "archived",
+        )
+        statement = select(func.count()).select_from(Job).where(
+            Job.status == "active",
+            Job.visibility == "public",
+            Job.id.not_in(archived_job_ids),
+            _normalized_company_expression(Job.company) == normalized_company,
+        )
+        return int((await self._session.execute(statement)).scalar_one())
 
     async def list_imported_jobs(
         self,

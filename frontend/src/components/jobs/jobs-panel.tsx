@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Bookmark, Briefcase, Link2, Loader2, Search } from "lucide-react";
@@ -44,23 +44,23 @@ function useDebounce<T>(value: T, delay: number): [T, (v: T) => void] {
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [value, delay]);
 
-  const flush = (v: T) => {
+  const flush = useCallback((v: T) => {
     if (timerRef.current) clearTimeout(timerRef.current);
     setDebounced(v);
-  };
+  }, []);
 
   return [debounced, flush];
 }
-
 export function JobsPanel() {
   const queryClient = useQueryClient();
   const router = useRouter();
   const searchParams = useSearchParams();
   const archiveState = searchParams.get("archive_state") === "archived" ? "archived" : "active";
+  const companyExact = searchParams.get("company_exact")?.trim() || "";
   const [filterSource, setFilterSource] = useState("");
   const [filterJobType, setFilterJobType] = useState("");
   const [filterLocationInput, setFilterLocationInput] = useState("");
-  const [filterCompanyInput, setFilterCompanyInput] = useState("");
+  const [filterCompanyInput, setFilterCompanyInput] = useState(companyExact);
   const [filterSourceType, setFilterSourceType] = useState("");
   const [filterShiftType, setFilterShiftType] = useState("");
   const [filterRemote, setFilterRemote] = useState(false);
@@ -71,11 +71,22 @@ export function JobsPanel() {
   const [filterLocation, flushLocation] = useDebounce(filterLocationInput, 500);
   const [filterCompany, flushCompany] = useDebounce(filterCompanyInput, 500);
 
+  useEffect(() => {
+    if (!companyExact) return;
+    setFilterCompanyInput(companyExact);
+    flushCompany(companyExact);
+  }, [companyExact, flushCompany]);
+
   // Restore saved filter state and scroll position on mount (back from detail)
   const restoredRef = useRef(false);
   useEffect(() => {
     if (restoredRef.current) return;
     const raw = sessionStorage.getItem(SESSION_KEY);
+    if (companyExact) {
+      restoredRef.current = true;
+      sessionStorage.removeItem(SESSION_KEY);
+      return;
+    }
     if (!raw) return;
     try {
       const saved = JSON.parse(raw);
@@ -99,10 +110,10 @@ export function JobsPanel() {
       sessionStorage.removeItem(SESSION_KEY);
     } catch { /* ignore corrupted state */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only; guarded by restoredRef
-  }, []);
+  }, [companyExact]);
 
   const jobsQuery = useInfiniteQuery({
-    queryKey: ["jobs", archiveState, filterSearch, filterSource, filterJobType, filterLocation, filterCompany, filterSourceType, filterShiftType, filterRemote],
+    queryKey: ["jobs", archiveState, filterSearch, filterSource, filterJobType, filterLocation, filterCompany, companyExact, filterSourceType, filterShiftType, filterRemote],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       jobsApi.list({
@@ -112,7 +123,8 @@ export function JobsPanel() {
         source: filterSource || undefined,
         jobType: filterJobType || undefined,
         location: filterLocation || undefined,
-        company: filterCompany || undefined,
+        company: companyExact ? undefined : filterCompany || undefined,
+        companyExact: companyExact || undefined,
         sourceType: filterSourceType || undefined,
         shiftType: filterShiftType || undefined,
         isRemote: filterRemote || undefined,
@@ -129,12 +141,11 @@ export function JobsPanel() {
   const allJobs = jobsQuery.data?.pages.flatMap((p) => p.items) ?? [];
   const total = jobsQuery.data?.pages[0]?.total ?? 0;
 
-  // Pre-compute card data and source labels — avoids re-creating objects on every render
+  // Pre-compute card data — avoids re-creating objects on every render
   const jobCards = useMemo(
     () =>
       allJobs.map((job) => ({
         card: toJobCardData(job),
-        sourceLabel: jobSourceLabel(job),
       })),
     [allJobs],
   );
@@ -437,7 +448,10 @@ export function JobsPanel() {
               <label className="text-xs text-muted-foreground">Company</label>
               <Input
                 value={filterCompanyInput}
-                onChange={(e) => setFilterCompanyInput(e.target.value)}
+                onChange={(e) => {
+                  if (companyExact) router.replace("/dashboard/jobs");
+                  setFilterCompanyInput(e.target.value);
+                }}
                 placeholder="Company name…"
                 className="h-8 text-sm"
               />
@@ -541,7 +555,6 @@ export function JobsPanel() {
                             return (
                               <JobCard
                                 job={jc.card}
-                                sourceLabel={jc.sourceLabel}
                                 hideExternalLink
                                 highlightOnHover
                                 isSaved={archiveState === "active" && savedJobIds.has(jc.card.jobId)}
@@ -617,6 +630,7 @@ export function JobsPanel() {
                                     >
                                       {archiveMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
                                       <Archive className="h-4 w-4" />
+                                      <span className="sr-only">Archive job</span>
                                     </Button>
                                     </div>
                                   )
@@ -726,7 +740,6 @@ export function JobsPanel() {
     </div>
   );
 }
-
 // ---- Helpers -----------------------------------------------------------------
 
 /** Map a Job API object to the shared JobCardData shape. */
@@ -749,11 +762,4 @@ function toJobCardData(job: Job): JobCardData {
     importedAt: job.imported_at,
     companyLogo: job.company_logo,
   };
-}
-
-function jobSourceLabel(job: Job): string | null {
-  if (job.ingest_source === "manual") return "Manual Import";
-  if (job.ingest_source === "extension") return "Extension Import";
-  if (job.visibility === "public") return "Global";
-  return null;
 }

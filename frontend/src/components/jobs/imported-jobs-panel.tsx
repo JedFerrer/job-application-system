@@ -171,7 +171,6 @@ export function ImportedJobsPanel() {
               <JobCard
                 key={job.id}
                 job={toJobCardData(job)}
-                sourceLabel={job.ingest_source === "extension" ? "Extension" : "Manual"}
                 match={match}
                 isAnalyzing={job.match_score == null}
                 onArchive={() => archiveMutation.mutate(job.id)}

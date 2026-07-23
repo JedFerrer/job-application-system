@@ -20,6 +20,7 @@ import {
   getNextActionState,
 } from "../src/lib/next-actions";
 import { stripMarkdown } from "../src/lib/utils";
+import { formatSkillLabel } from "../src/lib/skill-display";
 
 describe("formatSalary", () => {
   it("returns empty string for null inputs", () => {
@@ -113,6 +114,19 @@ describe("stripMarkdown", () => {
 
   it("removes HTML tags", () => {
     expect(stripMarkdown("<p>text</p>")).toBe("text");
+  });
+});
+
+describe("formatSkillLabel", () => {
+  it("uses familiar labels for canonical skill keys", () => {
+    expect(formatSkillLabel("node.js")).toBe("Node.js");
+    expect(formatSkillLabel("ci/cd")).toBe("CI/CD");
+    expect(formatSkillLabel("rest_api")).toBe("REST API");
+    expect(formatSkillLabel("postgresql")).toBe("PostgreSQL");
+  });
+
+  it("humanizes unknown normalized skill keys", () => {
+    expect(formatSkillLabel("data-engineering")).toBe("Data Engineering");
   });
 });
 

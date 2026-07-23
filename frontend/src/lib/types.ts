@@ -167,6 +167,13 @@ export interface Job {
   imported_at: string | null;
   match_score?: number | null;
   match_reason?: Record<string, unknown> | null;
+  employer_summary?: EmployerSummary | null;
+}
+
+export interface EmployerSummary {
+  company: string;
+  company_logo: string | null;
+  job_count: number;
 }
 
 export interface JobListResponse {
@@ -252,6 +259,7 @@ export interface MatchSummary {
   confidence: string | null;
   llm_score: number | null;
   llm_confidence?: number | null;
+  explanation?: string | null;
   matched_skills: string[];
   missing_keywords: string[];
   readiness: MatchReadiness;

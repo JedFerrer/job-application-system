@@ -450,6 +450,38 @@ async def test_nonexistent_job_returns_none(engine) -> None:  # noqa: ANN001
         assert job is None
 
 
+async def test_exact_company_count_and_filter_match_visible_public_jobs(engine) -> None:  # noqa: ANN001
+    """Employer counts use the same exact-normalized public feed rule."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="u@test.com", name="User")
+        await _create_user(db, user_id=2, email="other@test.com", name="Other")
+        await _create_job(db, job_id=10, company="Acme   Corp", title="Platform Engineer")
+        await _create_job(db, job_id=11, company=" acme corp ", title="Backend Engineer")
+        await _create_job(db, job_id=12, company="Acme Corporation")
+        await _create_job(db, job_id=13, company="Acme Corp", status="expired")
+        await _create_job(
+            db,
+            job_id=14,
+            company="Acme Corp",
+            visibility="private",
+            created_by_user_id=2,
+        )
+
+    async with sf() as db:
+        repo = JobRepository(db)
+        count = await repo.count_active_public_jobs_by_company(user_id=1, company=" ACME Corp ")
+        rows, total, _ = await repo.list_jobs(user_id=1, company_exact="Acme Corp")
+
+        assert count == 2
+        assert total == 2
+        assert {job.id for job in rows} == {10, 11}
+
+        await repo.archive_user_job(user_id=1, job_id=10)
+        await db.commit()
+        assert await repo.count_active_public_jobs_by_company(user_id=1, company="Acme Corp") == 1
+
+
 # ── JobService.get_job — service-level tests ──────────────────────────────
 
 

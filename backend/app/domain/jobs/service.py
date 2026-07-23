@@ -22,6 +22,7 @@ from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import (
+    EmployerSummary,
     IngestRequest,
     IngestResponse,
     JobImportRequest,
@@ -276,6 +277,7 @@ class JobService:
         job_type: str | None = None,
         location_contains: str | None = None,
         company_contains: str | None = None,
+        company_exact: str | None = None,
         shift_type: str | None = None,
         source_type: str | None = None,
         imported_only: bool = False,
@@ -292,6 +294,7 @@ class JobService:
             job_type=job_type,
             location_contains=location_contains,
             company_contains=company_contains,
+            company_exact=company_exact,
             shift_type=shift_type,
             source_type=source_type,
             imported_only=imported_only,
@@ -362,7 +365,24 @@ class JobService:
         job = await self._repo.get_visible_by_id(user_id=user_id, job_id=job_id)
         if job is None:
             raise JobNotFoundError(job_id)
-        return JobResponse.model_validate(job)
+        response = JobResponse.model_validate(job)
+        # Keep the label and URL human-readable while the repository performs
+        # the case-insensitive normalized comparison.
+        company = " ".join((job.company or "").split())
+        if job.visibility != "public" or job.ingest_source in {"manual", "extension"} or not company:
+            return response
+
+        job_count = await self._repo.count_active_public_jobs_by_company(
+            user_id=user_id,
+            company=company,
+        )
+        if job_count >= 2:
+            response.employer_summary = EmployerSummary(
+                company=company,
+                company_logo=job.company_logo,
+                job_count=job_count,
+            )
+        return response
 
     async def import_job(self, payload: JobImportRequest, *, user_id: int) -> JobResponse:
         """Manually import a single job posting.

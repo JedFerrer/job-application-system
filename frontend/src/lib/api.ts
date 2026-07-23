@@ -229,6 +229,7 @@ export const jobsApi = {
       jobType?: string;
       location?: string;
       company?: string;
+      companyExact?: string;
       minSalary?: number;
       sourceType?: string;
       shiftType?: string;
@@ -245,6 +246,7 @@ export const jobsApi = {
     if (opts.jobType) qs.set("job_type", opts.jobType);
     if (opts.location) qs.set("location", opts.location);
     if (opts.company) qs.set("company", opts.company);
+    if (opts.companyExact) qs.set("company_exact", opts.companyExact);
     if (opts.minSalary !== undefined) qs.set("min_salary", String(opts.minSalary));
     if (opts.sourceType) qs.set("source_type", opts.sourceType);
     if (opts.shiftType) qs.set("shift_type", opts.shiftType);

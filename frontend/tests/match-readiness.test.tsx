@@ -128,6 +128,7 @@ describe("JobCard readiness", () => {
       score: 87,
       confidence: "strong",
       matchedSkills: ["python", "fastapi"],
+      scoreLabel: "Relevance",
       readiness: {
         decision: "apply",
         reasons: ["Strong match score", "2 matched skills found"],
@@ -160,6 +161,10 @@ describe("JobCard readiness", () => {
       "Ready to apply",
     );
     expect(container.textContent).not.toContain("Match score");
+    expect(container.textContent).toContain("Relevance");
+    expect(container.querySelector('[data-testid="match-why-recommended"]')?.textContent).toBe(
+      "Why recommended: Python, FastAPI",
+    );
     expect(container.querySelector('[data-testid="match-readiness-summary"]')?.parentElement?.className).toContain(
       "border",
     );
@@ -365,6 +370,7 @@ describe("JobDetailView readiness", () => {
       vector_score: 87,
       confidence: "moderate",
       llm_score: null,
+      explanation: null,
       matched_skills: ["python", "fastapi"],
       missing_keywords: ["kubernetes"],
       readiness: {
@@ -498,8 +504,8 @@ describe("JobDetailView readiness", () => {
       job_id: 501,
       skills: {
         required: {
-          matched: [{ skill: "python", job_excerpt: "Required: Python", profile_excerpt: "Python" }],
-          missing: [{ skill: "kubernetes", job_excerpt: "Required: Kubernetes", profile_excerpt: null }],
+          matched: [{ skill: "python", job_excerpt: "* Required: **Python** end\\-to\\-end", profile_excerpt: "* Python\\* project" }],
+          missing: [{ skill: "kubernetes", job_excerpt: "* Required: **Kubernetes**", profile_excerpt: null }],
         },
         preferred: { matched: [], missing: [] },
         unclassified: { matched: [], missing: [] },
@@ -508,7 +514,7 @@ describe("JobDetailView readiness", () => {
         years_required: 5,
         scope: "total_experience",
         skill: null,
-        job_excerpt: "5 years of experience",
+        job_excerpt: "* 5 years of **experience**",
         assessment: "may_not_meet",
         profile_years_experience: 3,
       }],
@@ -532,6 +538,10 @@ describe("JobDetailView readiness", () => {
     expect(container.textContent).toContain("Matched: python");
     expect(container.textContent).toContain("Missing: kubernetes");
     expect(container.textContent).toContain("May not meet");
+    expect(container.textContent).toContain("Required: Python end-to-end");
+    expect(container.textContent).not.toContain("**");
+    expect(container.textContent).not.toContain("*");
+    expect(container.textContent).not.toContain("\\-");
     expect(container.textContent).not.toContain("Preferred skills");
   });
 
@@ -608,30 +618,43 @@ describe("JobDetailView readiness", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.textContent).toContain("Ready to apply");
+    expect(container.textContent).not.toContain("Ready to apply");
     expect(container.textContent).not.toContain("Suggested next action");
-    expect(container.textContent).toContain("Suggested: Skip");
-    expect(container.textContent).not.toContain("Based on your rules");
+    expect(container.textContent).toContain("Application recommendation");
+    expect(container.textContent).toContain("Based on your preferences and readiness rules");
+    expect(container.textContent).toContain("Skip");
     expect(container.textContent).not.toContain("Go to action");
     expect(container.textContent).not.toContain("View action");
     expect(container.textContent).not.toContain("Strong match score");
-    expect(container.textContent).toContain("Blocked by your rule");
+    expect(container.textContent).toContain("Why we recommend skipping");
     expect(container.textContent).toContain("Blocked keyword: contract");
-    expect(container.textContent).toContain("Needs review");
+    expect(container.textContent).toContain("What to review");
     expect(container.textContent).toContain("Salary data needs review");
-    expect(container.textContent).toContain("Matched (2)pythonfastapi");
-    expect(container.textContent).toContain("Missing (1)kubernetes");
+    expect(container.textContent).toContain("Matched skills (2)PythonFastAPI");
+    expect(container.textContent).toContain("Skill gaps (1)Kubernetes");
     expect(container.textContent).not.toContain("matched skills found");
     expect(container.textContent).not.toContain("Moderate match score");
     expect(container.textContent).toContain(
       "Detailed skill gaps are not available yet",
     );
-    expect(container.textContent).toContain("Get Detailed AI Assessment");
+    expect(container.textContent).toContain("Get AI fit review");
     expect(container.textContent).not.toContain("Known gaps: kubernetes, graphql");
     expect(container.textContent).not.toContain("Stretch fit");
+    const matchedHeading = [...container.querySelectorAll("h4")].find((node) =>
+      node.textContent?.startsWith("Matched skills (2)"),
+    );
+    const evidence = container.querySelector("details");
+    expect(matchedHeading?.compareDocumentPosition(evidence as Node) ?? 0).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     const scoreSummary = container.querySelector('[data-testid="match-score-summary"]');
     const readinessExplanation = container.querySelector("#readiness-explanation");
     const detailedAssessment = container.querySelector('[data-testid="match-detailed-assessment"]');
+    const recommendationBadge = [...(readinessExplanation?.querySelectorAll("[class]") ?? [])].find(
+      (node) => node.textContent === "Skip" && node.className.includes("rounded-full"),
+    );
+    expect(scoreSummary?.textContent).not.toContain("Skip");
+    expect(recommendationBadge?.className).toContain("text-red-700");
     expect(scoreSummary?.parentElement?.className).toContain("flex-col");
     expect(readinessExplanation?.parentElement).toBe(scoreSummary?.parentElement);
     expect(detailedAssessment?.parentElement).toBe(scoreSummary?.parentElement);
@@ -647,6 +670,72 @@ describe("JobDetailView readiness", () => {
     ).toHaveLength(1);
   });
 
+  it("shows the More jobs card only when the job includes an employer summary", async () => {
+    const jobWithEmployerSummary = {
+      id: 501,
+      title: "Backend Engineer",
+      company: "Acme",
+      location: "Remote",
+      is_remote: true,
+      job_type: "fulltime",
+      description: "Build APIs",
+      salary_min: null,
+      salary_max: null,
+      salary_currency: null,
+      source: "test",
+      source_url: "https://example.com/job/501",
+      posted_at: null,
+      fetched_at: "2026-07-14T00:00:00Z",
+      shift_type: null,
+      company_logo: null,
+      visibility: "public",
+      ingest_source: "scraper",
+      created_by_user_id: null,
+      imported_at: null,
+      employer_summary: {
+        company: "Acme Corp",
+        company_logo: null,
+        job_count: 4,
+      },
+    };
+    apiMocks.jobsApi.get.mockResolvedValue(jobWithEmployerSummary);
+    queryClient.setQueryData(["job", 501], jobWithEmployerSummary);
+
+    await renderJob(501);
+
+    expect(container.textContent).toContain("More jobs");
+    expect(container.textContent).toContain("4 jobs in your catalog");
+    const companyLink = [...container.querySelectorAll("a")].find(
+      (link) => link.textContent?.includes("Acme Corp"),
+    );
+    expect(companyLink?.getAttribute("href")).toBe("/dashboard/jobs?company_exact=Acme%20Corp");
+    expect(container.textContent).toContain("AC");
+  });
+
+  it("does not show the More jobs card without an employer summary", async () => {
+    await renderJob(501);
+
+    expect(container.textContent).not.toContain("More jobs");
+  });
+
+  it("renders the employer logo when the summary supplies one", async () => {
+    const jobWithEmployerLogo = {
+      ...(queryClient.getQueryData<Record<string, unknown>>(["job", 501]) ?? {}),
+      employer_summary: {
+        company: "Acme Corp",
+        company_logo: "https://cdn.example.com/acme-logo.png",
+        job_count: 4,
+      },
+    };
+    apiMocks.jobsApi.get.mockResolvedValue(jobWithEmployerLogo);
+    queryClient.setQueryData(["job", 501], jobWithEmployerLogo);
+
+    await renderJob(501);
+
+    const logo = container.querySelector('img[src="https://cdn.example.com/acme-logo.png"]');
+    expect(logo).not.toBeNull();
+  });
+
   it("hydrates persisted Quick Match data from the summary API on a fresh load", async () => {
     queryClient.removeQueries({ queryKey: ["matches"] });
     queryClient.removeQueries({ queryKey: ["match-summary", 501] });
@@ -659,8 +748,45 @@ describe("JobDetailView readiness", () => {
     expect(apiMocks.matchesApi.summary).toHaveBeenCalledOnce();
     expect(apiMocks.matchesApi.summary).toHaveBeenCalledWith(501);
     expect(container.textContent).toContain("fresh-api blocker");
-    expect(container.textContent).toContain("Matched (1)fresh-api-matched");
-    expect(container.textContent).toContain("Missing (1)fresh-api-missing");
+    expect(container.textContent).toContain("Matched skills (1)Fresh Api Matched");
+    expect(container.textContent).toContain("Skill gaps (1)Fresh Api Missing");
+  });
+
+  it("keeps profile relevance separate from a saved AI fit review", async () => {
+    apiMocks.matchesApi.summary.mockResolvedValue({
+      ...makeSummary(501, "ai-review", 87),
+      llm_score: 96,
+      llm_confidence: 0.9,
+      explanation: "Your backend experience and Python skills align well with this role.",
+    });
+
+    await renderJob(501);
+    await waitForCondition(
+      () => container.querySelector('[data-testid="ai-fit-review"]') !== null,
+    );
+
+    expect(container.textContent).toContain("Profile relevance");
+    expect(container.querySelector('[data-testid="match-score-summary"]')?.textContent).toContain("87%");
+    expect(container.querySelector('[data-testid="ai-fit-review"]')?.textContent).toContain("AI fit review");
+    expect(container.querySelector('[data-testid="ai-fit-review"]')?.textContent).toContain("Strong skills fit");
+    expect(container.querySelector('[data-testid="ai-fit-review"]')?.textContent).toContain("Skills and experience only");
+    expect(container.querySelector('[data-testid="ai-fit-review"]')?.textContent).toContain(
+      "Your backend experience and Python skills align well with this role.",
+    );
+    expect(container.querySelector('[data-testid="ai-fit-review"]')?.textContent).toContain("Matched skills (1)");
+    expect(container.querySelector('[data-testid="ai-fit-review"]')?.textContent).toContain("Skill gaps (1)");
+    expect(container.textContent).not.toContain("Detailed Match");
+    expect(container.textContent).not.toContain("Quick:");
+    expect(container.querySelector('[data-testid="match-detailed-assessment"]')).toBeNull();
+    expect(container.textContent).not.toContain("Includes a structured skills-gap review");
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    expect(container.querySelector('[id="job-detail-tab-skills"]')).toBeNull();
+    expect(container.querySelector('[id="job-detail-tab-notes"]')).toBeNull();
+    const aiReview = container.querySelector('[data-testid="ai-fit-review"]');
+    const evidence = container.querySelector("details");
+    expect(aiReview?.compareDocumentPosition(evidence as Node) ?? 0).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   it("keeps cached match data visible while the persisted summary is pending", async () => {
@@ -696,8 +822,8 @@ describe("JobDetailView readiness", () => {
     });
 
     expect(container.textContent).toContain("persisted blocker");
-    expect(container.textContent).toContain("Matched (1)persisted-matched");
-    expect(container.textContent).toContain("Missing (1)persisted-missing");
+    expect(container.textContent).toContain("Matched skills (1)Persisted Matched");
+    expect(container.textContent).toContain("Skill gaps (1)Persisted Missing");
     expect(container.textContent).not.toContain("Blocked keyword: contract");
     expect(container.textContent).not.toContain("Missingkubernetes");
   });
@@ -808,7 +934,7 @@ describe("JobDetailView readiness", () => {
 
     await renderJob(501);
     const assessmentButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Get Detailed AI Assessment"),
+        (button) => button.textContent?.includes("Get AI fit review"),
     );
     await act(async () => {
       assessmentButton?.click();
@@ -959,7 +1085,8 @@ describe("JobDetailView readiness", () => {
     expect(navigation).toBeDefined();
     expect(applyControl?.getAttribute("aria-describedby")).toBeNull();
     expect(container.textContent).not.toContain("Suggested next action");
-    expect(container.textContent).toContain("Suggested: Apply");
+    expect(container.textContent).toContain("Application recommendation");
+    expect(container.textContent).toContain("Apply");
     expect([...container.querySelectorAll("button")].filter(
       (button) => button.textContent?.includes("Mark as Applied"),
     )).toHaveLength(1);
@@ -1067,12 +1194,13 @@ describe("JobDetailView readiness", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.textContent).toContain("Needs review");
+    expect(container.textContent).toContain("What to review");
     expect(container.textContent).toContain("Remote status is unclear");
     expect(container.textContent).not.toContain("Suggested next action");
-    expect(container.textContent).toContain("Suggested: Review");
+    expect(container.textContent).toContain("Application recommendation");
+    expect(container.textContent).toContain("Review");
     expect([...container.querySelectorAll("button")].some(
-      (button) => button.getAttribute("aria-label") === "View readiness explanation",
+      (button) => button.getAttribute("aria-label") === "Review recommendation details",
     )).toBe(true);
     expect(apiMocks.applicationsApi.create).not.toHaveBeenCalled();
     expect(apiMocks.applicationsApi.update).not.toHaveBeenCalled();
@@ -1110,7 +1238,8 @@ describe("JobDetailView readiness", () => {
 
     expect(apiMocks.jobsApi.archive).toHaveBeenCalledWith(501);
     expect(document.body.textContent).not.toContain("Archive this job?");
-    expect(container.textContent).toContain("Suggested: Skip");
+    expect(container.textContent).toContain("Application recommendation");
+    expect(container.textContent).toContain("Skip");
     expect([...container.querySelectorAll("button")].filter(
       (button) => button.textContent?.includes("Mark as Applied"),
     )).toHaveLength(1);

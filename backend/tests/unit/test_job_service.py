@@ -19,6 +19,7 @@ def mock_repo() -> AsyncMock:
     """Return a mock JobRepository with a get_visible_by_id method."""
     repo = AsyncMock()
     repo.get_visible_by_id = AsyncMock()
+    repo.count_active_public_jobs_by_company = AsyncMock(return_value=0)
     return repo
 
 
@@ -55,6 +56,117 @@ async def test_get_job_returns_job_response(service: JobService, mock_repo: Asyn
     assert result.title == "Senior Engineer"
     assert result.company == "Acme Corp"
     assert result.source_url == "https://example.com/job/1"
+
+
+async def test_get_job_includes_employer_summary_for_multiple_public_jobs(
+    service: JobService, mock_repo: AsyncMock
+) -> None:
+    from app.models.job import Job
+
+    job = Job(
+        id=1,
+        fingerprint="abc1234567890def",
+        title="Senior Engineer",
+        company="  Acme   Corp ",
+        location="Manila",
+        source="linkedin",
+        source_url="https://example.com/job/1",
+        raw_response={},
+        fetched_at=__import__("datetime").datetime(2026, 1, 1),
+        visibility="public",
+        ingest_source="scraper",
+    )
+    mock_repo.get_visible_by_id.return_value = job
+    mock_repo.count_active_public_jobs_by_company.return_value = 4
+
+    result = await service.get_job(user_id=1, job_id=1)
+
+    mock_repo.count_active_public_jobs_by_company.assert_awaited_once_with(
+        user_id=1,
+        company="Acme Corp",
+    )
+    assert result.employer_summary is not None
+    assert result.employer_summary.company == "Acme Corp"
+    assert result.employer_summary.job_count == 4
+
+
+async def test_get_job_omits_employer_summary_for_private_jobs(
+    service: JobService, mock_repo: AsyncMock
+) -> None:
+    from app.models.job import Job
+
+    job = Job(
+        id=1,
+        fingerprint="abc1234567890def",
+        title="Senior Engineer",
+        company="Acme Corp",
+        location="Manila",
+        source="manual",
+        source_url="https://example.com/job/1",
+        raw_response={},
+        fetched_at=__import__("datetime").datetime(2026, 1, 1),
+        visibility="private",
+        ingest_source="manual",
+    )
+    mock_repo.get_visible_by_id.return_value = job
+
+    result = await service.get_job(user_id=1, job_id=1)
+
+    mock_repo.count_active_public_jobs_by_company.assert_not_awaited()
+    assert result.employer_summary is None
+
+
+async def test_get_job_omits_employer_summary_for_a_single_related_job(
+    service: JobService, mock_repo: AsyncMock
+) -> None:
+    from app.models.job import Job
+
+    job = Job(
+        id=1,
+        fingerprint="abc1234567890def",
+        title="Senior Engineer",
+        company="Acme Corp",
+        location="Manila",
+        source="linkedin",
+        source_url="https://example.com/job/1",
+        raw_response={},
+        fetched_at=__import__("datetime").datetime(2026, 1, 1),
+        visibility="public",
+        ingest_source="scraper",
+    )
+    mock_repo.get_visible_by_id.return_value = job
+    mock_repo.count_active_public_jobs_by_company.return_value = 1
+
+    result = await service.get_job(user_id=1, job_id=1)
+
+    mock_repo.count_active_public_jobs_by_company.assert_awaited_once()
+    assert result.employer_summary is None
+
+
+async def test_get_job_omits_employer_summary_for_a_blank_company(
+    service: JobService, mock_repo: AsyncMock
+) -> None:
+    from app.models.job import Job
+
+    job = Job(
+        id=1,
+        fingerprint="abc1234567890def",
+        title="Senior Engineer",
+        company="   ",
+        location="Manila",
+        source="linkedin",
+        source_url="https://example.com/job/1",
+        raw_response={},
+        fetched_at=__import__("datetime").datetime(2026, 1, 1),
+        visibility="public",
+        ingest_source="scraper",
+    )
+    mock_repo.get_visible_by_id.return_value = job
+
+    result = await service.get_job(user_id=1, job_id=1)
+
+    mock_repo.count_active_public_jobs_by_company.assert_not_awaited()
+    assert result.employer_summary is None
 
 
 async def test_get_job_raises_not_found(service: JobService, mock_repo: AsyncMock) -> None:

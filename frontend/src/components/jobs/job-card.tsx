@@ -14,6 +14,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { stripMarkdown } from "@/lib/utils";
+import { formatSkillLabel } from "@/lib/skill-display";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
 import type { MatchReadiness } from "@/lib/types";
 
@@ -44,6 +45,7 @@ export interface JobCardMatch {
   score: number;
   confidence: string | null;       // "strong" | "moderate" | "stretch" | "weak"
   matchedSkills: string[] | null;
+  scoreLabel?: string;
   readiness?: MatchReadiness | null;
 }
 
@@ -60,7 +62,7 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 /** Simple branded icon per job source — recognisable 14×14 SVG marks. */
-function SourceIcon({ source }: { source: string }) {
+export function SourceIcon({ source }: { source: string }) {
   const s = source.toLowerCase();
   // LinkedIn — blue rounded square, white "in"
   if (s === "linkedin") return <BrandLinkedIn />;
@@ -220,11 +222,14 @@ export function CircularScore({
   confidence,
   size = "sm",
   showConfidenceLabel = true,
+  label = "Match",
 }: {
   score: number;
   confidence: string | null;
   size?: "sm" | "lg";
   showConfidenceLabel?: boolean;
+  /** Short visual label displayed inside the score ring. */
+  label?: string;
 }) {
   const pct = Math.round(score);
   const isLg = size === "lg";
@@ -238,7 +243,12 @@ export function CircularScore({
 
   return (
     <div className="flex flex-col items-center gap-1 shrink-0">
-      <div className="relative" style={{ width: svgSize, height: svgSize }}>
+      <div
+        className="relative"
+        style={{ width: svgSize, height: svgSize }}
+        role="img"
+        aria-label={`${pct}% ${label === "Fit" ? "Profile relevance score" : label}`}
+      >
         <svg width={svgSize} height={svgSize} viewBox={`0 0 ${svgSize} ${svgSize}`} className="-rotate-90">
           <circle
             cx={svgSize / 2} cy={svgSize / 2} r={radius}
@@ -260,7 +270,7 @@ export function CircularScore({
           <span className={`${textSize} font-bold tabular-nums leading-none ${textColor}`}>
             {pct}%
           </span>
-          <span className="text-[10px] text-white leading-tight mt-0.5">Match</span>
+            <span className="text-[10px] text-white leading-tight mt-0.5">{label}</span>
         </div>
       </div>
       {showConfidenceLabel && confidence && (
@@ -280,8 +290,6 @@ export interface JobCardProps {
   job: JobCardData;
   /** Match data — only shown when provided. */
   match?: JobCardMatch | null;
-  /** Top-right label badge. E.g. "Global", "Manual Import". */
-  sourceLabel?: string | null;
   /** Optional action rendered in the top-right button area. */
   topRightAction?: ReactNode;
   /** Hide the external-link footer when true. */
@@ -309,7 +317,6 @@ export interface JobCardProps {
 export function JobCard({
   job,
   match,
-  sourceLabel,
   topRightAction,
   hideExternalLink,
   isAnalyzing,
@@ -410,11 +417,6 @@ export function JobCard({
                   <Calendar className="h-3 w-3" />
                   {postedLabel ?? "Recently"}
                 </Badge>
-                {sourceLabel && (
-                  <Badge variant="outline" className="rounded-full font-normal text-[11px] border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
-                    {sourceLabel}
-                  </Badge>
-                )}
                 {isArchived && (
                   <Badge variant="outline" className="rounded-full font-normal text-[11px] border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/35 dark:bg-amber-500/10 dark:text-amber-200">
                     Archived
@@ -430,18 +432,24 @@ export function JobCard({
                   {stripMarkdown(job.description)}
                 </p>
               )}
-              {match && !isAnalyzing && (visibleSkills.length > 0 || (readinessSummary && !compactMatchLayout)) && (
+              {match && !isAnalyzing && (compactMatchLayout || visibleSkills.length > 0 || (readinessSummary && !compactMatchLayout)) && (
                 <div
                   className={`mt-2.5 flex flex-wrap items-center gap-2 ${
                     compactMatchLayout ? "" : "justify-between"
                   }`}
                 >
-                  {visibleSkills.length > 0 && (
+                  {compactMatchLayout ? (
+                    <p data-testid="match-why-recommended" className="text-xs text-muted-foreground">
+                      {visibleSkills.length > 0
+                        ? `Why recommended: ${visibleSkills.map(formatSkillLabel).join(", ")}`
+                        : "Why recommended: based on your profile and this job description"}
+                    </p>
+                  ) : visibleSkills.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1">
                       {visibleSkills.map((skill) => (
                         <Badge key={skill} variant="secondary" className="text-[11px] font-normal gap-1">
                           <Check className="h-3 w-3 text-emerald-500" />
-                          {skill}
+                          {formatSkillLabel(skill)}
                         </Badge>
                       ))}
                       {extraCount > 0 && (
@@ -498,6 +506,7 @@ export function JobCard({
                   score={match.score}
                   confidence={match.confidence}
                   showConfidenceLabel={showConfidenceLabel}
+                  label={match.scoreLabel}
                 />
                 {compactMatchLayout && readinessSummary && (
                   <p

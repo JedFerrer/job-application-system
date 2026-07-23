@@ -130,6 +130,10 @@ async def list_jobs(
     job_type: str | None = None,
     location: str | None = None,
     company: str | None = Query(default=None, description="Company name filter (ILIKE)"),
+    company_exact: str | None = Query(
+        default=None,
+        description="Exact company name filter (case- and whitespace-normalized)",
+    ),
     q: str | None = Query(
         default=None, description="Free-text search across title, company, description"
     ),
@@ -152,6 +156,7 @@ async def list_jobs(
         job_type=job_type,
         location_contains=location,
         company_contains=company,
+        company_exact=company_exact,
         shift_type=shift_type,
         source_type=source_type,
         imported_only=imported_only,
