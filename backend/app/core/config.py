@@ -102,9 +102,14 @@ class Settings(BaseSettings):
     # Jobs whose ``posted_at`` (or ``created_at`` when posted_at is NULL) is
     # older than this are archived by the nightly maintenance task.
     job_archive_after_days: int = 30
+    # Expired, unreferenced jobs are permanently removed after this retention
+    # window. Jobs with any user-created content are retained indefinitely.
+    job_purge_after_days: int = 90
+    job_purge_batch_size: int = Field(default=500, ge=1, le=5_000)
     # Celery Beat cron expressions (minute hour day month day-of-week).
     scrape_schedule_cron: str = "0 6 * * *"
     archive_schedule_cron: str = "0 2 * * *"
+    purge_schedule_cron: str = "0 3 * * *"
     match_ranking_schedule_cron: str = "30 6 * * *"
 
     # --- Shift detection ---

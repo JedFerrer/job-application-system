@@ -26,6 +26,7 @@ from app.domain.extension.repository import ExtensionRepository
 from app.domain.interview.repository import InterviewRepository
 from app.domain.interview.service import InterviewService
 from app.domain.jobs.repository import JobRepository
+from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.jobs.service import JobService
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.readiness_preferences import (
@@ -137,7 +138,12 @@ ResumeServiceDep = Annotated[ResumeService, Depends(get_resume_service)]
 
 
 def get_job_service(db: DbSession) -> JobService:
-    return JobService(JobRepository(db), user_timezone=get_settings().user_timezone)
+    job_repository = JobRepository(db)
+    return JobService(
+        job_repository,
+        user_timezone=get_settings().user_timezone,
+        embedding_coordinator=JobEmbeddingCoordinator(job_repository, get_redis()),
+    )
 
 
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
@@ -151,7 +157,11 @@ JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 
 
 def get_match_service(db: DbSession) -> MatchingService:
-    return MatchingService(MatchingRepository(db), ReadinessPreferenceRepository(db))
+    return MatchingService(
+        MatchingRepository(db),
+        ReadinessPreferenceRepository(db),
+        JobEmbeddingCoordinator(JobRepository(db), get_redis()),
+    )
 
 
 MatchServiceDep = Annotated[MatchingService, Depends(get_match_service)]

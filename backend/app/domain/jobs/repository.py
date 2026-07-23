@@ -12,16 +12,42 @@ Visibility rules:
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, func, literal_column, or_, select, update, tuple_
-from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
+from sqlalchemy import and_, delete, exists, func, literal_column, or_, select, tuple_, update
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.application import Application
+from app.models.application_event import ApplicationEvent
+from app.models.application_form_session import ApplicationFormSession
+from app.models.cover_letter import CoverLetter
+from app.models.interview_prep import InterviewPrep
 from app.models.job import Job
+from app.models.resume import TailoredResumeDraft
 from app.models.user_job import UserJob
 from app.models.user_job_import import UserJobImport
+from app.models.user_job_match import UserJobMatch
+
+
+@dataclass(frozen=True)
+class ExpiredJobPurgeBatch:
+    """One committed page of expired-job purge work."""
+
+    scanned: int
+    protected: int
+    purged: int
+    next_cursor: tuple[datetime, int] | None
+
+    def totals(self) -> dict[str, int]:
+        return {
+            "scanned": self.scanned,
+            "protected": self.protected,
+            "purged": self.purged,
+        }
 
 
 def _encode_cursor(sort_ts: datetime, job_id: int) -> str:
@@ -37,14 +63,13 @@ def _decode_cursor(cursor: str) -> tuple[datetime, int]:
     return datetime.fromisoformat(ts_str).replace(tzinfo=UTC), int(id_str)
 
 
-from app.models.job import Job
-from app.models.user_job import UserJob
-from app.models.user_job_import import UserJobImport
-
-
 class JobRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def commit(self) -> None:
+        """Persist a coordinated embedding before its Redis lock is released."""
+        await self._session.commit()
 
     async def upsert_job(self, values: dict[str, object]) -> tuple[int, bool]:
         """Insert a job or merge into an existing fingerprint.
@@ -84,6 +109,16 @@ class JobRepository:
         result = await self._session.execute(upsert)
         row = result.one()
         return int(row.id), bool(row.inserted)
+
+    async def get_description_by_fingerprint(
+        self, fingerprint: str
+    ) -> tuple[bool, str | None]:
+        """Return whether a deduplicated job exists and its stored description."""
+        result = await self._session.execute(
+            select(Job.description).where(Job.fingerprint == fingerprint)
+        )
+        row = result.first()
+        return (row is not None, None if row is None else row[0])
 
     async def link_user_jobs(
         self,
@@ -194,7 +229,15 @@ class JobRepository:
 
     async def set_embedding(self, job_id: int, embedding: list[float]) -> None:
         await self._session.execute(
-            update(Job).where(Job.id == job_id).values(description_embedding=embedding)
+            update(Job)
+            .where(Job.id == job_id)
+            .values(
+                description_embedding=embedding,
+                status="active",
+                raw_response=func.coalesce(Job.raw_response, func.cast("{}", JSONB)).op("-")(
+                    "embed_error"
+                ),
+            )
         )
 
     async def set_embed_error(self, job_id: int, error: str) -> None:
@@ -277,9 +320,104 @@ class JobRepository:
                 Job.status == "active",
                 func.coalesce(Job.posted_at, Job.fetched_at) < cutoff,
             )
-            .values(status="expired")
+            .values(status="expired", expired_at=datetime.now(UTC))
         )
-        return int(result.rowcount or 0)
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
+    async def purge_expired_unreferenced(
+        self,
+        *,
+        cutoff: datetime,
+        batch_size: int,
+        after: tuple[datetime, int] | None = None,
+    ) -> ExpiredJobPurgeBatch:
+        """Permanently delete one bounded batch of expired, unreferenced jobs.
+
+        User-created records intentionally protect a job from purge. Automatic
+        match rows do not protect it and are deleted immediately before the job
+        because their foreign key does not cascade.
+        """
+        candidate_filters = [
+                Job.status == "expired",
+                Job.expired_at.is_not(None),
+                Job.expired_at < cutoff,
+        ]
+        if after is not None:
+            expired_at, job_id = after
+            candidate_filters.append(
+                or_(
+                    Job.expired_at > expired_at,
+                    and_(Job.expired_at == expired_at, Job.id > job_id),
+                )
+            )
+        candidate_stmt = (
+            select(Job.id, Job.expired_at)
+            .where(*candidate_filters)
+            .order_by(Job.expired_at.asc(), Job.id.asc())
+            .limit(batch_size)
+            # Lock each candidate parent row. A concurrent insert of durable
+            # user content must take a conflicting FK key-share lock, so it
+            # either commits before our protection recheck or waits until the
+            # purge commits. This prevents ON DELETE SET NULL relationships
+            # from being silently detached during a purge.
+            .with_for_update(skip_locked=True)
+        )
+        candidate_rows = list((await self._session.execute(candidate_stmt)).all())
+        if not candidate_rows:
+            return ExpiredJobPurgeBatch(0, 0, 0, None)
+
+        candidate_ids = [int(row.id) for row in candidate_rows]
+        last_expired_at = candidate_rows[-1].expired_at
+        assert last_expired_at is not None
+        next_cursor = (
+            (last_expired_at, int(candidate_rows[-1].id))
+            if len(candidate_ids) == batch_size
+            else None
+        )
+
+        protected = or_(
+            exists(select(1).where(Application.job_id == Job.id)),
+            exists(select(1).where(UserJob.job_id == Job.id)),
+            exists(
+                select(1).where(
+                    UserJobMatch.job_id == Job.id,
+                    UserJobMatch.origin == "manual",
+                )
+            ),
+            exists(select(1).where(UserJobImport.job_id == Job.id)),
+            exists(select(1).where(CoverLetter.job_id == Job.id)),
+            exists(select(1).where(InterviewPrep.job_id == Job.id)),
+            exists(select(1).where(TailoredResumeDraft.job_id == Job.id)),
+            exists(select(1).where(ApplicationEvent.job_id == Job.id)),
+            exists(select(1).where(ApplicationFormSession.job_id == Job.id)),
+        )
+        eligible_stmt = select(Job.id).where(Job.id.in_(candidate_ids), ~protected)
+        eligible_ids = list((await self._session.execute(eligible_stmt)).scalars().all())
+        deleted_ids: list[int] = []
+        if eligible_ids:
+            await self._session.execute(
+                delete(UserJobMatch).where(
+                    UserJobMatch.job_id.in_(eligible_ids),
+                    UserJobMatch.origin == "automatic",
+                )
+            )
+            # Recheck protection in the deletion statement. The candidate row
+            # lock above handles concurrent FK inserts; this second predicate
+            # also protects rows that became durable user content between the
+            # eligibility read and this write.
+            result = await self._session.execute(
+                delete(Job)
+                .where(Job.id.in_(eligible_ids), ~protected)
+                .returning(Job.id)
+            )
+            deleted_ids = [int(job_id) for job_id in result.scalars().all()]
+
+        return ExpiredJobPurgeBatch(
+            scanned=len(candidate_ids),
+            protected=len(candidate_ids) - len(deleted_ids),
+            purged=len(deleted_ids),
+            next_cursor=next_cursor,
+        )
 
     async def get_by_id(self, job_id: int) -> Job | None:
         """Raw PK lookup — no visibility or ownership checks.

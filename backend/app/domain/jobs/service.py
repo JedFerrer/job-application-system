@@ -10,15 +10,15 @@ without changes.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
-from anyio import to_thread
-
 import html2text
+from anyio import to_thread
 
 from app.core.logging import get_logger
 from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import (
@@ -29,10 +29,8 @@ from app.domain.jobs.schemas import (
     JobResponse,
 )
 from app.domain.jobs.shift_detector import ShiftDetector, classify_shift_llm
-from app.infrastructure.embeddings import embed_text
 from app.infrastructure.job_sources.base import JobQuery, RawJobPost
 from app.infrastructure.job_sources.registry import build_sources
-from app.models.job import Job
 
 logger = get_logger(__name__)
 
@@ -71,9 +69,15 @@ def _normalise_description(raw: str | None) -> str | None:
 
 
 class JobService:
-    def __init__(self, repository: JobRepository, user_timezone: str = "Asia/Manila") -> None:
+    def __init__(
+        self,
+        repository: JobRepository,
+        user_timezone: str = "Asia/Manila",
+        embedding_coordinator: JobEmbeddingCoordinator | None = None,
+    ) -> None:
         self._repo = repository
         self._shift = ShiftDetector(user_timezone)
+        self._embedding_coordinator = embedding_coordinator
 
     async def ingest(
         self,
@@ -111,6 +115,7 @@ class JobService:
         # Every job touched this run (new or refreshed) is linked to the user
         # so it appears in their scoped feed.
         linked_job_ids: set[int] = set()
+        embedded_job_ids: list[int] = []
 
         for source in sources:
             # Human-friendly name for progress messages (one site per adapter).
@@ -138,7 +143,7 @@ class JobService:
 
             fetched += len(posts)
             # Separate upsert pass so we can batch-emit progress before embedding.
-            to_embed: list[tuple[int, str]] = []
+            to_embed: list[tuple[int, str, bool]] = []
             # LLM shift fallback: new jobs where regex found no shift keyword.
             to_classify: list[tuple[int, str, str]] = []
             for post in posts:
@@ -146,16 +151,18 @@ class JobService:
                     continue
                 used_sources.add(post.source)
                 shift_type = self._shift.detect_regex(post.title, post.description)
-                job_id, was_inserted = await self._upsert(post, shift_type=shift_type)
+                job_id, was_inserted, description_changed = await self._upsert(
+                    post, shift_type=shift_type
+                )
                 linked_job_ids.add(job_id)
                 if was_inserted:
                     inserted += 1
-                    if post.description:
-                        to_embed.append((job_id, post.description))
-                        if shift_type is None:
-                            to_classify.append((job_id, post.title, post.description))
                 else:
                     updated += 1
+                if (was_inserted or description_changed) and post.description:
+                    to_embed.append((job_id, post.description, description_changed))
+                    if was_inserted and shift_type is None:
+                        to_classify.append((job_id, post.title, post.description))
 
             if to_embed:
                 await _emit(
@@ -165,9 +172,10 @@ class JobService:
                     updated=updated,
                     embedded=embedded,
                 )
-                for job_id, description in to_embed:
-                    if await self._embed_job(job_id, description):
+                for job_id, description, force_reembed in to_embed:
+                    if await self._embed_job(job_id, description, force=force_reembed):
                         embedded += 1
+                        embedded_job_ids.append(job_id)
 
             # LLM shift classification for new jobs where regex returned None.
             # Best-effort: failures are logged and skipped, never crash ingest.
@@ -194,6 +202,7 @@ class JobService:
             updated=updated,
             embedded=embedded,
             sources=sorted(used_sources),
+            embedded_job_ids=embedded_job_ids,
         )
 
     async def link_recent_jobs_batch(self, *, user_ids: list[int], since: datetime) -> int:
@@ -203,11 +212,16 @@ class JobService:
         """
         return await self._repo.link_recent_jobs_batch(user_ids=user_ids, since=since)
 
-    async def _upsert(self, post: RawJobPost, shift_type: str | None = None) -> tuple[int, bool]:
+    async def _upsert(
+        self, post: RawJobPost, shift_type: str | None = None
+    ) -> tuple[int, bool, bool]:
         fingerprint = job_fingerprint(post.company, post.title, post.location)
 
         # Convert HTML descriptions to markdown for consistent formatting.
         description = _normalise_description(post.description)
+        exists, previous_description = await self._repo.get_description_by_fingerprint(
+            fingerprint
+        )
 
         values: dict[str, object] = {
             "fingerprint": fingerprint,
@@ -227,10 +241,23 @@ class JobService:
             "company_logo": post.company_logo,
             "raw_response": post.raw,
         }
-        return await self._repo.upsert_job(values)
+        job_id, was_inserted = await self._repo.upsert_job(values)
+        description_changed = (
+            exists and description is not None and description != previous_description
+        )
+        return job_id, was_inserted, description_changed
 
-    async def _embed_job(self, job_id: int, description: str) -> bool:
+    async def _embed_job(self, job_id: int, description: str, *, force: bool = False) -> bool:
+        if self._embedding_coordinator is not None:
+            try:
+                result = await self._embedding_coordinator.ensure_embedding(job_id, force=force)
+            except Exception:  # noqa: BLE001 - embedding remains best-effort during ingest
+                logger.warning("jobs.embed.failed", job_id=job_id, exc_info=True)
+                return False
+            return result.status == "ready"
         try:
+            from app.infrastructure.embeddings import embed_text  # noqa: PLC0415
+
             embedding = await embed_text(description)
         except Exception:  # noqa: BLE001 - embedding is best-effort during ingest
             logger.warning("jobs.embed.failed", job_id=job_id, exc_info=True)

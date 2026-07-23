@@ -42,6 +42,35 @@ async def _archive_old_jobs_async() -> dict[str, int]:
     return {"archived": archived}
 
 
+async def _purge_expired_jobs_async() -> dict[str, int]:
+    settings = get_settings()
+    cutoff = datetime.now(UTC) - timedelta(days=settings.job_purge_after_days)
+    totals = {"scanned": 0, "protected": 0, "purged": 0}
+    cursor: tuple[datetime, int] | None = None
+
+    while True:
+        async with _worker_session_factory() as db:
+            try:
+                batch = await JobRepository(db).purge_expired_unreferenced(
+                    cutoff=cutoff,
+                    batch_size=settings.job_purge_batch_size,
+                    after=cursor,
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+
+        for key, value in batch.totals().items():
+            totals[key] += value
+        if batch.next_cursor is None:
+            break
+        cursor = batch.next_cursor
+
+    logger.info("purge.done", **totals, cutoff=cutoff.isoformat())
+    return totals
+
+
 @celery_app.task(
     name="archive_old_jobs",
     soft_time_limit=300,
@@ -50,3 +79,13 @@ async def _archive_old_jobs_async() -> dict[str, int]:
 def archive_old_jobs() -> dict[str, int]:
     """Archive postings older than ``job_archive_after_days``."""
     return asyncio.run(_archive_old_jobs_async())
+
+
+@celery_app.task(
+    name="purge_expired_jobs",
+    soft_time_limit=300,
+    time_limit=420,
+)
+def purge_expired_jobs() -> dict[str, int]:
+    """Permanently remove expired jobs past retention with no user content."""
+    return asyncio.run(_purge_expired_jobs_async())

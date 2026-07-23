@@ -37,6 +37,8 @@ class IngestResponse(BaseModel):
     updated: int
     embedded: int
     sources: list[str]
+    # Worker-only handoff; deliberately omitted from public ingestion responses.
+    embedded_job_ids: list[int] = Field(default_factory=list, exclude=True)
 
 
 class JobResponse(BaseModel):

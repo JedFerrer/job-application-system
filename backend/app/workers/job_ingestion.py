@@ -32,6 +32,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import IngestRequest
 from app.domain.jobs.service import JobService
@@ -147,8 +148,12 @@ async def _scrape_single_query_async(
     now = datetime.now(UTC)
 
     totals = {"inserted": 0, "updated": 0, "subscribers": 0}
+    subscriber_ids: list[int] = []
+    embedded_job_ids: list[int] = []
 
-    redis: aioredis.Redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    redis: aioredis.Redis = aioredis.from_url(  # type: ignore[no-untyped-call]
+        settings.redis_url, decode_responses=True
+    )
     try:
         async with _get_worker_session_factory()() as db:
             query_repo = ScrapeQueryRepository(db)
@@ -183,7 +188,9 @@ async def _scrape_single_query_async(
             )
 
             service = JobService(
-                JobRepository(db), user_timezone=settings.user_timezone
+                JobRepository(db),
+                user_timezone=settings.user_timezone,
+                embedding_coordinator=JobEmbeddingCoordinator(JobRepository(db), redis),
             )
 
             # Record the moment before ingest so we can link subscribers to
@@ -215,11 +222,13 @@ async def _scrape_single_query_async(
 
             # Link every subscriber to the jobs fetched in this run.
             subscriber_ids = await sub_repo.get_subscribers(query_id)
+            link_count = 0
             if subscriber_ids:
                 link_count = await service.link_recent_jobs_batch(
                     user_ids=subscriber_ids, since=scrape_start
                 )
-                totals["subscribers"] = link_count
+            totals["subscribers"] = link_count
+            embedded_job_ids = result_obj.embedded_job_ids
 
             # Mark the query as scraped with a fresh next_scrape_at.
             ttl_seconds = _query_ttl_seconds(effective_sources)
@@ -240,15 +249,11 @@ async def _scrape_single_query_async(
 
     logger.info("scrape.done", query_id=query_id, **totals)
 
-    # Re-rank matches for every subscriber so new jobs surface immediately.
-    if totals["subscribers"] > 0:
-        from app.workers.match_ranking import run_match_ranking_for_all_users
+    # Score only jobs embedded by this scrape for the affected subscribers.
+    if subscriber_ids and embedded_job_ids:
+        from app.workers.match_ranking import run_incremental_match_ranking
 
-        async with _get_worker_session_factory()() as db:
-            sub_repo = SubscriptionRepository(db)
-            subscriber_ids = await sub_repo.get_subscribers(query_id)
-        for uid in subscriber_ids:
-            run_match_ranking_for_all_users.delay(uid)
+        run_incremental_match_ranking.delay(subscriber_ids, embedded_job_ids)
 
     return totals
 
@@ -275,7 +280,9 @@ def scrape_single_query(query_id: str, force: bool = False) -> dict[str, int]:
     """
     settings = get_settings()
     lock_key = f"lock:scrape_query:{query_id}"
-    r = _sync_redis.from_url(settings.redis_url, decode_responses=True)
+    r = _sync_redis.from_url(  # type: ignore[no-untyped-call]
+        settings.redis_url, decode_responses=True
+    )
 
     acquired = r.set(lock_key, "1", nx=True, ex=1600)
     if not acquired:
@@ -302,7 +309,6 @@ async def _scrape_user_on_demand_async(user_id: int) -> dict[str, int]:
     subscriptions and dispatch one forced scrape per subscribed query.
     """
     async with _get_worker_session_factory()() as db:
-        sub_repo = SubscriptionRepository(db)
         result = await db.execute(
             select(distinct(UserScrapeQuerySubscription.scrape_query_id)).where(
                 UserScrapeQuerySubscription.user_id == user_id

@@ -71,6 +71,10 @@ celery_app.conf.beat_schedule = {
         "task": "archive_old_jobs",
         "schedule": _crontab(settings.archive_schedule_cron),
     },
+    "purge-expired-jobs": {
+        "task": "purge_expired_jobs",
+        "schedule": _crontab(settings.purge_schedule_cron),
+    },
 }
 
 celery_app.autodiscover_tasks(["app.workers"])

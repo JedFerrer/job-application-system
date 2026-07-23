@@ -10,6 +10,7 @@ from app.api.deps import CurrentUser, JobServiceDep, TaskStoreDep
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.domain.jobs.repository import JobRepository
+from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.jobs.schemas import (
     IngestRequest,
     IngestResponse,
@@ -45,7 +46,12 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
                     JobService,
                 )  # local to avoid module-level cycle  # noqa: PLC0415
 
-                service = JobService(JobRepository(db), user_timezone=settings.user_timezone)
+                repository = JobRepository(db)
+                service = JobService(
+                    repository,
+                    user_timezone=settings.user_timezone,
+                    embedding_coordinator=JobEmbeddingCoordinator(repository, get_redis()),
+                )
                 result = await service.ingest(
                     request,
                     default_sources=settings.enabled_job_sources,

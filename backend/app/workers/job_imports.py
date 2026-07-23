@@ -9,16 +9,17 @@ from __future__ import annotations
 
 import asyncio
 
+import redis.asyncio as aioredis
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.jobs.repository import JobRepository
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
-from app.infrastructure.embeddings import embed_text
 from app.models.user_job import UserJob
 from app.workers.celery_app import celery_app
 
@@ -54,19 +55,11 @@ def embed_imported_job(self, job_id: int, user_id: int) -> None:
         async with factory() as db:
             job_repo = JobRepository(db)
 
-            # Fetch the job to get its description.
-            job = await job_repo.get_by_id(job_id)
-            if job is None or not job.description:
-                logger.warning(
-                    "embed_imported_job.skipped",
-                    job_id=job_id,
-                    reason="job missing or no description",
-                )
-                return
-
-            # Generate and store the embedding.
+            redis = aioredis.from_url(  # type: ignore[no-untyped-call]
+                get_settings().redis_url, decode_responses=True
+            )
             try:
-                embedding = await embed_text(job.description)
+                result = await JobEmbeddingCoordinator(job_repo, redis).ensure_embedding(job_id)
             except Exception as exc:
                 # If we have retries left, Celery will re-queue with backoff.
                 if self.request.retries < self.max_retries:
@@ -76,7 +69,7 @@ def embed_imported_job(self, job_id: int, user_id: int) -> None:
                         attempt=self.request.retries + 1,
                         max_retries=self.max_retries,
                     )
-                    raise self.retry(exc=exc)
+                    raise self.retry(exc=exc) from exc
                 # All retries exhausted — flag the job so admins can see it.
                 logger.error(
                     "embed_imported_job.all_retries_exhausted",
@@ -86,8 +79,12 @@ def embed_imported_job(self, job_id: int, user_id: int) -> None:
                 await job_repo.set_embed_error(job_id, str(exc)[:500])
                 await db.commit()
                 return
+            finally:
+                await redis.aclose()
 
-            await job_repo.set_embedding(job_id, embedding)
+            if result.status != "ready":
+                logger.warning("embed_imported_job.skipped", job_id=job_id, reason=result.status)
+                return
             logger.info("embed_imported_job.embedded", job_id=job_id)
 
             # Run match scoring so this job appears in /matches.
