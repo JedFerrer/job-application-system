@@ -58,7 +58,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { SkillsGapSummary } from "@/components/matches/skills-gap-summary";
 import { JobCard, type JobCardData, type JobCardMatch } from "@/components/jobs/job-card";
-import { getDisplayMatchConfidence } from "@/lib/match-display";
+import { getQuickMatchConfidence } from "@/lib/match-display";
 
 export function MatchesPanel() {
   const queryClient = useQueryClient();
@@ -490,9 +490,10 @@ export function MatchesPanel() {
             companyLogo: match.company_logo,
           };
           const matchData: JobCardMatch = {
-            score: match.llm_score ?? match.vector_score,
-            confidence: getDisplayMatchConfidence(match),
+            score: match.vector_score,
+            confidence: getQuickMatchConfidence(match.vector_score),
             matchedSkills: match.matched_skills,
+            scoreLabel: "Fit",
             readiness: match.readiness,
           };
 

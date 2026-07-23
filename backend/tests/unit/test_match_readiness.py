@@ -234,6 +234,28 @@ async def test_explain_match_returns_cached_readiness() -> None:
     assert "Known gaps: kubernetes, graphql" in explanation.readiness.reasons
 
 
+@pytest.mark.asyncio
+async def test_match_summary_includes_saved_ai_explanation() -> None:
+    match = _match(
+        llm_score=84,
+        llm_confidence=0.9,
+        llm_explanation="Strong Python and API experience for this role.",
+        missing_keywords=[],
+    )
+
+    class FakeRepo:
+        async def get_visible_job(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            return SimpleNamespace()
+
+        async def get_match(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            return match
+
+    summary = await _service(FakeRepo()).get_match_summary(user_id=1, job_id=101)
+
+    assert summary is not None
+    assert summary.explanation == "Strong Python and API experience for this role."
+
+
 def test_readiness_uses_llm_confidence_with_a_saved_llm_score() -> None:
     match = _match(
         vector_score=39.45,

@@ -36,8 +36,8 @@ class MatchingRepository:
 
     async def rank_jobs_by_vector(
         self, embedding: list[float], limit: int, *, user_id: int
-    ) -> list[tuple[int, float]]:
-        """Return ``(job_id, similarity)`` ordered by cosine similarity desc.
+    ) -> list[tuple[int, float, str | None]]:
+        """Return ``(job_id, similarity, description)`` ordered by similarity.
 
         Only includes jobs the user is allowed to see: public jobs + their own
         private imports.
@@ -48,7 +48,7 @@ class MatchingRepository:
             UserJobMatch.origin == "manual",
         )
         stmt = (
-            select(Job.id, (1 - distance).label("similarity"))
+            select(Job.id, (1 - distance).label("similarity"), Job.description)
             .where(
                 Job.description_embedding.is_not(None),
                 Job.id.not_in(manual_job_ids),
@@ -61,7 +61,10 @@ class MatchingRepository:
             .limit(limit)
         )
         result = await self._session.execute(stmt)
-        return [(int(row.id), float(row.similarity)) for row in result.all()]
+        return [
+            (int(row.id), float(row.similarity), row.description)
+            for row in result.all()
+        ]
 
     async def upsert_match(
         self,
@@ -71,14 +74,24 @@ class MatchingRepository:
         vector_score: float,
         confidence: str | None,
         origin: str = "automatic",
+        matched_skills: list[str] | None = None,
+        missing_keywords: list[str] | None = None,
+        deterministic_match: dict[str, Any] | None = None,
     ) -> None:
-        stmt = pg_insert(UserJobMatch).values(
-            user_id=user_id,
-            job_id=job_id,
-            vector_score=vector_score,
-            confidence=confidence,
-            origin=origin,
-        )
+        values: dict[str, Any] = {
+            "user_id": user_id,
+            "job_id": job_id,
+            "vector_score": vector_score,
+            "confidence": confidence,
+            "origin": origin,
+        }
+        if deterministic_match is not None:
+            values.update(
+                matched_skills=matched_skills,
+                missing_keywords=missing_keywords,
+                deterministic_match=deterministic_match,
+            )
+        stmt = pg_insert(UserJobMatch).values(**values)
         stmt = stmt.on_conflict_do_update(
             index_elements=[UserJobMatch.user_id, UserJobMatch.job_id],
             set_={
@@ -90,6 +103,15 @@ class MatchingRepository:
                     else_="automatic",
                 ),
                 "updated_at": datetime.now(UTC),
+                **(
+                    {
+                        "matched_skills": matched_skills,
+                        "missing_keywords": missing_keywords,
+                        "deterministic_match": deterministic_match,
+                    }
+                    if deterministic_match is not None
+                    else {}
+                ),
             },
         )
         await self._session.execute(stmt)

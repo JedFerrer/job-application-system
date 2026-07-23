@@ -38,13 +38,17 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
 
     class FakeRepository:
         async def get_active_profile(self, user_id: int) -> object:
-            return SimpleNamespace(id=3, embedding=[0.1, 0.2])
+            return SimpleNamespace(
+                id=3,
+                embedding=[0.1, 0.2],
+                parsed={"skills": ["Python"], "work_history": []},
+            )
 
         async def rank_jobs_by_vector(
             self, embedding: list[float], limit: int, *, user_id: int
-        ) -> list[tuple[int, float]]:
+        ) -> list[tuple[int, float, str]]:
             assert limit == 200
-            return [(job_id, 0.7) for job_id in automatic_ids]
+            return [(job_id, 0.7, "Python services") for job_id in automatic_ids]
 
         async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
             return manual_ids
@@ -65,3 +69,6 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
     assert response.ranked == 200
     assert len(automatic_calls) == 200
     assert len(manual_refresh_calls) == len(manual_ids)
+    assert automatic_calls[0]["matched_skills"] == ["python"]
+    assert automatic_calls[0]["missing_keywords"] == []
+    assert automatic_calls[0]["deterministic_match"] is not None

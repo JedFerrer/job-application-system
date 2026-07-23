@@ -23,8 +23,8 @@ from app.infrastructure.database import Base
 class UserJobMatch(Base):
     """Cached match between the active candidate profile and a job.
 
-    ``vector_score`` (layer 1) is always present after ranking; ``llm_*`` and
-    ``deterministic_match`` are populated lazily when a match is explained.
+    ``vector_score`` and deterministic skill evidence are refreshed during
+    ranking; ``llm_*`` fields are populated lazily when a match is explained.
     """
 
     __tablename__ = "user_job_matches"

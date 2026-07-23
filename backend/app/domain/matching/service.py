@@ -85,13 +85,20 @@ class MatchingService:
             raise NoActiveProfileError
         embedding = list(profile.embedding)
         ranked = await self._repo.rank_jobs_by_vector(embedding, limit, user_id=user_id)
-        for job_id, similarity in ranked:
+        profile_parsed = dict(profile.parsed)
+        for job_id, similarity, job_description in ranked:
+            report = compute_skill_match(
+                extract_known_skills(job_description or ""), profile_parsed
+            )
             await self._repo.upsert_match(
                 user_id=user_id,
                 job_id=job_id,
                 vector_score=round(similarity * 100, 2),
                 confidence=confidence_band(similarity),
                 origin="automatic",
+                matched_skills=report.matched_skills,
+                missing_keywords=report.missing_skills,
+                deterministic_match=report_to_dict(report),
             )
         # Manual analyses are retained outside top-K, but profile changes and
         # nightly refreshes must still update their embedding-based score.
@@ -265,6 +272,7 @@ class MatchingService:
             confidence=match.confidence,
             llm_score=match.llm_score,
             llm_confidence=match.llm_confidence,
+            explanation=match.llm_explanation,
             matched_skills=match.matched_skills or [],
             missing_keywords=match.missing_keywords or [],
             readiness=self._build_readiness(match, job, readiness_preferences),

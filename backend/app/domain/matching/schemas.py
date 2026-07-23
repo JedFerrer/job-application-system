@@ -99,6 +99,7 @@ class MatchSummary(BaseModel):
     confidence: str | None
     llm_score: int | None
     llm_confidence: float | None = None
+    explanation: str | None = None
     matched_skills: list[str]
     missing_keywords: list[str]
     readiness: MatchReadiness

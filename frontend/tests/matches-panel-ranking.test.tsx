@@ -24,7 +24,11 @@ vi.mock("@/lib/api", () => api);
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("sonner", () => ({ toast }));
 vi.mock("@/components/matches/skills-gap-summary", () => ({ SkillsGapSummary: () => null }));
-vi.mock("@/components/jobs/job-card", () => ({ JobCard: () => null }));
+vi.mock("@/components/jobs/job-card", () => ({
+  JobCard: ({ match }: { match: { score: number; confidence: string; scoreLabel?: string } }) => (
+    <div data-testid="job-card-score">{`${match.score}|${match.confidence}|${match.scoreLabel}`}</div>
+  ),
+}));
 
 const emptyMatches = {
   items: [], total: 0, limit: 20, offset: 0, next_cursor: null, has_more: false,
@@ -110,5 +114,46 @@ describe("MatchesPanel ranking task", () => {
     await flushReact();
 
     expect(toast.message).toHaveBeenCalledWith("Rankings were refreshed recently. Try again in 2 minutes.");
+  });
+
+  it("shows the quick vector score and relevance label even after an AI review exists", async () => {
+    api.matchesApi.list.mockResolvedValue({
+      items: [{
+        job_id: 1,
+        title: "Backend Engineer",
+        company: "Acme",
+        location: "Remote",
+        is_remote: true,
+        job_type: "fulltime",
+        description: "Build APIs",
+        shift_type: null,
+        salary_min: null,
+        salary_max: null,
+        salary_currency: null,
+        source: "test",
+        source_url: "https://example.com/job/1",
+        company_logo: null,
+        vector_score: 80,
+        confidence: "weak",
+        llm_score: 95,
+        llm_confidence: 0.9,
+        matched_skills: ["python"],
+        readiness: { decision: "apply", reasons: [], caveats: [], deterministic_blockers: [], deterministic_warnings: [], decision_basis: "score" },
+        posted_at: null,
+      }],
+      total: 1,
+      limit: 20,
+      offset: 0,
+      next_cursor: null,
+      has_more: false,
+    });
+    render();
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector('[data-testid="job-card-score"]')?.textContent).toBe(
+      "80|strong|Fit",
+    );
   });
 });
