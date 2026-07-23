@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from app.domain.jobs.exceptions import JobNotFoundError
-from app.domain.jobs.schemas import JobResponse
+from app.domain.jobs.schemas import IngestRequest, JobResponse
 from app.domain.jobs.service import JobService
+from app.infrastructure.job_sources.base import RawJobPost
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
@@ -62,3 +63,42 @@ async def test_get_job_raises_not_found(service: JobService, mock_repo: AsyncMoc
 
     with pytest.raises(JobNotFoundError):
         await service.get_job(user_id=1, job_id=999)
+
+
+@pytest.mark.asyncio
+async def test_changed_description_is_forced_into_incremental_embedding_handoff() -> None:
+    post = RawJobPost(
+        source="indeed",
+        source_url="https://example.test/jobs/9",
+        title="Engineer",
+        company="Acme",
+        description="New materially changed description",
+    )
+
+    class Source:
+        name = "indeed"
+
+        def fetch(self, query: object) -> list[RawJobPost]:
+            return [post]
+
+    repository = AsyncMock()
+    repository.get_description_by_fingerprint.return_value = (True, "Old description")
+    repository.upsert_job.return_value = (9, False)
+
+    class Coordinator:
+        async def ensure_embedding(self, job_id: int, *, force: bool = False) -> object:
+            assert job_id == 9
+            assert force is True
+            return type("Result", (), {"status": "ready"})()
+
+    service = JobService(repository, embedding_coordinator=Coordinator())  # type: ignore[arg-type]
+    with patch("app.domain.jobs.service.build_sources", return_value=[Source()]):
+        result = await service.ingest(
+            IngestRequest(search_term="Engineer"),
+            default_sources=["indeed"],
+            default_country="USA",
+            default_results=10,
+            proxies=None,
+        )
+
+    assert result.embedded_job_ids == [9]
