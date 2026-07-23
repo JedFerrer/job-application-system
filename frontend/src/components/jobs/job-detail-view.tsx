@@ -34,6 +34,7 @@ import type {
 } from "@/lib/types";
 import { useEffect, useMemo, useState } from "react";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
+import { getDisplayMatchConfidence } from "@/lib/match-display";
 import { formatJobDescription } from "@/lib/utils";
 import {
   getReadinessActionNavigationTarget,
@@ -284,6 +285,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
           vector_score: cached.vector_score,
           confidence: cached.confidence,
           llm_score: cached.llm_score,
+          llm_confidence: cached.llm_confidence,
           matched_skills: cached.matched_skills ?? [],
           missing_keywords: [],
           readiness: cached.readiness,
@@ -411,12 +413,15 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   });
 
   const analyzeMatchMutation = useMutation({
-    mutationFn: () => matchesApi.rank(100),
-    onSuccess: async () => {
-      toast.success("Match analysis started");
+    mutationFn: () => matchesApi.analyze(jobId),
+    retry: (failureCount, error) =>
+      error instanceof ApiError && error.status === 409 && failureCount < 3,
+    retryDelay: 1_000,
+    onSuccess: (summary) => {
+      toast.success("Match analysis complete");
       setExplainData(null);
+      queryClient.setQueryData(["match-summary", jobId], summary);
       queryClient.invalidateQueries({ queryKey: ["matches"] });
-      await queryClient.refetchQueries({ queryKey: ["match-summary", jobId], type: "active" });
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Analysis failed"),
@@ -477,7 +482,8 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const salary = formatSalary(job.salary_min, job.salary_max, job.salary_currency);
   const matchScore = match ? (match.llm_score != null ? match.llm_score : match.vector_score) : 0;
   const quickMatchScore = match?.vector_score ?? null;
-  const hasDetailedScore = currentExplainData != null && match?.llm_score != null;
+  const hasDetailedScore = match?.llm_score != null;
+  const matchConfidence = match ? getDisplayMatchConfidence(match) : null;
   const readiness = currentExplainData?.readiness ?? (
     persistedMatchQuery.isSuccess
       ? match?.readiness
@@ -786,7 +792,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                       {analyzeMatchMutation.isPending && (
                         <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
                       )}
-                      Analyze Match
+                      {analyzeMatchMutation.isPending ? "Preparing Match…" : "Analyze Match"}
                     </Button>
                   )}
                 </div>
@@ -827,7 +833,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                     <div className="shrink-0">
                       <CircularScore
                         score={matchScore}
-                        confidence={match.confidence}
+                        confidence={matchConfidence}
                         size="lg"
                         showConfidenceLabel={false}
                       />
@@ -967,7 +973,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                       Retry loading match
                     </Button>
                   )}
-                  {evidenceDisclosure}
                   <Button
                     variant="outline"
                     size="sm"
@@ -978,7 +983,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                     {analyzeMatchMutation.isPending && (
                       <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
                     )}
-                    Analyze Match
+                    {analyzeMatchMutation.isPending ? "Preparing Match…" : "Analyze Match"}
                   </Button>
                   {!summaryLoadError && persistedMatchQuery.isSuccess && (
                     <p className="text-center text-[11px] text-muted-foreground">

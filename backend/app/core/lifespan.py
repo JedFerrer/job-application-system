@@ -35,6 +35,9 @@ from app.domain.interview.exceptions import InterviewGenerationError
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.matching.exceptions import (
     MatchNotFoundError,
+    MatchPreparingError,
+    MatchNotReadyError,
+    MatchUnavailableError,
     NoActiveProfileError,
 )
 from app.domain.preferences.exceptions import (
@@ -112,6 +115,34 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=404,
             content={"detail": f"No match found for job {exc.job_id}"},
+        )
+
+    @app.exception_handler(MatchNotReadyError)
+    async def _match_not_ready(
+        request: Request, exc: MatchNotReadyError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Job is still being prepared for matching"},
+        )
+
+    @app.exception_handler(MatchPreparingError)
+    async def _match_preparing(
+        request: Request, exc: MatchPreparingError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Preparing this job for matching. Please retry shortly."},
+            headers={"Retry-After": "1"},
+        )
+
+    @app.exception_handler(MatchUnavailableError)
+    async def _match_unavailable(
+        request: Request, exc: MatchUnavailableError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "This job has no description available for matching"},
         )
 
     @app.exception_handler(CoverLetterNotFoundError)

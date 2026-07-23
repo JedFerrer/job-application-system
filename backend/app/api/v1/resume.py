@@ -7,8 +7,9 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 
-from app.api.deps import CurrentUser, JobRepositoryDep, ResumeServiceDep, TaskStoreDep
+from app.api.deps import CurrentUser, DbSession, JobRepositoryDep, ResumeServiceDep, TaskStoreDep
 from app.core.logging import get_logger
+from app.domain.matching.ranking_dispatch import RankingDispatcher
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeParseError,
@@ -40,6 +41,11 @@ _ALLOWED_CONTENT_TYPES = {
 }
 
 
+async def _enqueue_match_ranking(user_id: int) -> None:
+    """Coalesce a post-profile refresh after the transaction commits."""
+    await RankingDispatcher(get_redis(), TaskStore(get_redis())).schedule_profile_refresh(user_id)
+
+
 # ---------------------------------------------------------------------------
 # Background task
 # ---------------------------------------------------------------------------
@@ -67,6 +73,8 @@ async def _run_resume_bg(
                     progress=_progress,
                 )
                 await db.commit()
+                if result.matching_profile_changed:
+                    await _enqueue_match_ranking(user_id)
             except (UnsupportedResumeFormatError, ResumeParseError):
                 await db.rollback()
                 raise
@@ -208,10 +216,17 @@ async def update_profile(
     payload: ProfileUpdate,
     current_user: CurrentUser,
     service: ResumeServiceDep,
+    db: DbSession,
+    background_tasks: BackgroundTasks,
 ) -> ProfileResponse:
-    return await service.update_profile(
+    response = await service.update_profile(
         user_id=current_user.id, profile=payload.profile
     )
+    # Commit before dispatching so the Celery worker always sees the new embedding.
+    await db.commit()
+    if response.matching_profile_changed:
+        background_tasks.add_task(_enqueue_match_ranking, current_user.id)
+    return response
 
 
 @router.get("/tailor/{job_id}", response_model=TailoredResume)

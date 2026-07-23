@@ -104,6 +104,7 @@ class ResumeResponse(BaseModel):
     filename: str
     is_active: bool
     profile: ParsedProfile
+    matching_profile_changed: bool = True
 
 
 class ProfileResponse(BaseModel):
@@ -114,6 +115,7 @@ class ProfileResponse(BaseModel):
     profile_id: int
     resume_id: int
     profile: ParsedProfile
+    matching_profile_changed: bool = False
 
 
 class ProfileUpdate(BaseModel):

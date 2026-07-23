@@ -34,6 +34,7 @@ class UserJobMatch(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
     vector_score: Mapped[float] = mapped_column(Float)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, server_default="automatic")
     llm_score: Mapped[int | None] = mapped_column(Integer)
     llm_confidence: Mapped[float | None] = mapped_column(Float)
     llm_explanation: Mapped[str | None] = mapped_column(Text)

@@ -14,13 +14,54 @@ pytestmark = pytest.mark.unit
 
 def _service(repo: object) -> MatchingService:
     service = MatchingService.__new__(MatchingService)
-    service._repo = repo  # type: ignore[attr-defined]
+    service._repo = repo  # type: ignore[attr-defined,assignment]
     service._readiness_repo = None  # type: ignore[attr-defined]
+    service._embedding_coordinator = None  # type: ignore[attr-defined]
     return service
 
 
+@pytest.mark.asyncio
+async def test_analyze_job_embeds_an_unembedded_visible_job_without_llm() -> None:
+    job = SimpleNamespace(description="Python role", description_embedding=None)
+    profile = SimpleNamespace(id=3, embedding=[0.1, 0.2])
+    upserted: dict[str, object] = {}
+
+    class FakeRepository:
+        async def get_active_profile(self, user_id: int):  # noqa: ANN001
+            return profile
+
+        async def get_visible_job(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            return job
+
+        async def score_visible_job(self, **kwargs: object) -> float:  # noqa: ANN003
+            assert kwargs["job_id"] == 101
+            return 0.72
+
+        async def upsert_match(self, **kwargs: object) -> None:  # noqa: ANN003
+            for key, value in kwargs.items():
+                upserted[key] = value
+
+    class FakeCoordinator:
+        async def ensure_embedding(self, job_id: int):  # noqa: ANN001
+            assert job_id == 101
+            return SimpleNamespace(status="ready")
+
+    service = _service(FakeRepository())
+    service._embedding_coordinator = FakeCoordinator()  # type: ignore[attr-defined,assignment]
+
+    async def _summary(*, user_id: int, job_id: int):  # noqa: ANN001
+        return SimpleNamespace(job_id=job_id)
+
+    service.get_match_summary = _summary  # type: ignore[method-assign]
+    summary = await service.analyze_job(user_id=1, job_id=101)
+
+    assert summary.job_id == 101
+    assert upserted["origin"] == "manual"
+    assert upserted["vector_score"] == 72.0
+
+
 def _match(**kwargs: object) -> SimpleNamespace:
-    base = {
+    base: dict[str, object] = {
         "job_id": 101,
         "vector_score": 88.0,
         "llm_score": None,
@@ -31,7 +72,8 @@ def _match(**kwargs: object) -> SimpleNamespace:
         "missing_keywords": None,
         "deterministic_match": None,
     }
-    base.update(kwargs)
+    for key, value in kwargs.items():
+        base[key] = value
     return SimpleNamespace(**base)
 
 
@@ -190,6 +232,21 @@ async def test_explain_match_returns_cached_readiness() -> None:
     assert explanation.readiness.decision == "save"
     assert explanation.readiness.reasons[0] == "Strong match score"
     assert "Known gaps: kubernetes, graphql" in explanation.readiness.reasons
+
+
+def test_readiness_uses_llm_confidence_with_a_saved_llm_score() -> None:
+    match = _match(
+        vector_score=39.45,
+        confidence="weak",
+        llm_score=80,
+        llm_confidence=0.9,
+        missing_keywords=[],
+    )
+
+    readiness = MatchingService._build_readiness(match)
+
+    assert readiness.decision == "apply"
+    assert readiness.reasons[0] == "Strong match score"
 
 
 @pytest.mark.asyncio

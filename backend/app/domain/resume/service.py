@@ -130,7 +130,15 @@ class ResumeService:
 
         await _emit(message="Embedding profile…")
         summary_text = build_summary_text(profile)
-        embedding = await embed_text(summary_text)
+        previous_profile = await self._repository.get_active_profile(user_id)
+        matching_profile_changed = (
+            previous_profile is None or summary_text != previous_profile.summary_text
+        )
+        if matching_profile_changed:
+            embedding = await embed_text(summary_text)
+        else:
+            assert previous_profile is not None
+            embedding = previous_profile.embedding
 
         await self._repository.deactivate_existing(user_id)
         resume = await self._repository.add_resume(
@@ -149,6 +157,7 @@ class ResumeService:
             filename=resume.filename,
             is_active=resume.is_active,
             profile=profile,
+            matching_profile_changed=matching_profile_changed,
         )
 
     async def get_profile(self, user_id: int) -> ProfileResponse:
@@ -170,18 +179,28 @@ class ResumeService:
             raise ProfileNotFoundError(user_id)
 
         summary_text = build_summary_text(profile)
-        embedding = await embed_text(summary_text)
+        matching_profile_changed = summary_text != profile_row.summary_text
+        if matching_profile_changed:
+            embedding = await embed_text(summary_text)
+        else:
+            embedding = profile_row.embedding
         await self._repository.update_profile_parsed(
             profile=profile_row,
             parsed=profile.model_dump(),
             summary_text=summary_text,
             embedding=embedding,
         )
-        logger.info("profile_updated", user_id=user_id, profile_id=profile_row.id)
+        logger.info(
+            "profile_updated",
+            user_id=user_id,
+            profile_id=profile_row.id,
+            matching_profile_changed=matching_profile_changed,
+        )
         return ProfileResponse(
             profile_id=profile_row.id,
             resume_id=profile_row.resume_id,
             profile=profile,
+            matching_profile_changed=matching_profile_changed,
         )
 
     # -- saved tailored drafts ---------------------------------------------

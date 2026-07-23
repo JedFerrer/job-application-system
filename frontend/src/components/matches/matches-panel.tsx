@@ -14,6 +14,7 @@ import { ApiError, applicationsApi, jobsApi, listAllApplications, matchesApi } f
 import type { MatchItem } from "@/lib/types";
 
 const PAGE_SIZE = 20;
+const RANK_TASK_STORAGE_KEY = "match_ranking_task_id";
 
 function dedupeByJobId(matches: MatchItem[]): MatchItem[] {
   const seen = new Set<number>();
@@ -57,6 +58,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { SkillsGapSummary } from "@/components/matches/skills-gap-summary";
 import { JobCard, type JobCardData, type JobCardMatch } from "@/components/jobs/job-card";
+import { getDisplayMatchConfidence } from "@/lib/match-display";
 
 export function MatchesPanel() {
   const queryClient = useQueryClient();
@@ -73,6 +75,11 @@ export function MatchesPanel() {
   const [filterSourceType, setFilterSourceType] = useState("");
   const [filterSearch, setFilterSearch] = useState("");
   const [searchValue, setSearchValue] = useState("");
+  const [rankTaskId, setRankTaskId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return sessionStorage.getItem(RANK_TASK_STORAGE_KEY);
+  });
+  const rankCompletionHandled = useRef<string | null>(null);
 
   const [filterLocation, flushLocation] = useDebounce(filterLocationInput, 500);
   const [filterCompany, flushCompany] = useDebounce(filterCompanyInput, 500);
@@ -161,15 +168,75 @@ export function MatchesPanel() {
     return () => observer.disconnect();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const setRankingTask = (taskId: string | null) => {
+    setRankTaskId(taskId);
+    if (taskId) sessionStorage.setItem(RANK_TASK_STORAGE_KEY, taskId);
+    else sessionStorage.removeItem(RANK_TASK_STORAGE_KEY);
+  };
+
   const rankMutation = useMutation({
-    mutationFn: () => matchesApi.rank(100),
+    mutationFn: () => matchesApi.rank(),
     onSuccess: (res) => {
-      toast.success(`Ranked ${res.ranked} jobs`);
-      queryClient.invalidateQueries({ queryKey: ["matches"] });
+      if (res.task_id) setRankingTask(res.task_id);
+      if (res.state === "active") {
+        toast.message("Match rankings are already refreshing");
+      } else if (res.state === "cooldown") {
+        const minutes = Math.max(1, Math.ceil((res.retry_after_seconds ?? 0) / 60));
+        toast.message(`Rankings were refreshed recently. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`);
+      } else {
+        toast.message("Match ranking queued");
+      }
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Ranking failed"),
   });
+
+  const rankTaskQuery = useQuery({
+    queryKey: ["match-ranking-task", rankTaskId],
+    queryFn: () => matchesApi.getRankTaskStatus(rankTaskId!),
+    enabled: !!rankTaskId,
+    refetchInterval: (query) => {
+      const current = query.state.data?.status;
+      return current === "queued" || current === "running" ? 1_000 : false;
+    },
+    retry: (failureCount, error) =>
+      !(error instanceof ApiError && error.status === 404) && failureCount < 3,
+  });
+
+  useEffect(() => {
+    if (
+      !rankTaskId ||
+      !(rankTaskQuery.error instanceof ApiError) ||
+      rankTaskQuery.error.status !== 404
+    ) {
+      return;
+    }
+    setRankingTask(null);
+  }, [rankTaskId, rankTaskQuery.error]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const task = rankTaskQuery.data;
+    if (!rankTaskId || !task || rankCompletionHandled.current === rankTaskId) return;
+    if (task.status === "done") {
+      rankCompletionHandled.current = rankTaskId;
+      setRankingTask(null);
+      toast.success("Match rankings refreshed");
+      queryClient.invalidateQueries({ queryKey: ["matches"] });
+    } else if (task.status === "failed") {
+      rankCompletionHandled.current = rankTaskId;
+      setRankingTask(null);
+      toast.error(task.error ?? "Ranking failed. Please try again.");
+    } else if (task.status === "skipped") {
+      rankCompletionHandled.current = rankTaskId;
+      setRankingTask(null);
+      toast.message(task.message);
+    }
+  }, [queryClient, rankTaskId, rankTaskQuery.data]);
+
+  const rankingInProgress =
+    rankMutation.isPending ||
+    rankTaskQuery.data?.status === "queued" ||
+    rankTaskQuery.data?.status === "running";
 
   const saveAppMutation = useMutation({
     mutationFn: (jobId: number) => applicationsApi.create(jobId),
@@ -373,14 +440,16 @@ export function MatchesPanel() {
             </p>
             <Button
               onClick={() => rankMutation.mutate()}
-              disabled={rankMutation.isPending}
+              disabled={rankingInProgress}
             >
-              {rankMutation.isPending ? (
+              {rankingInProgress ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              {rankMutation.isPending ? "Ranking…" : "Rank matches"}
+              {rankingInProgress
+                ? rankTaskQuery.data?.status === "queued" ? "Refresh queued…" : "Refreshing…"
+                : "Refresh Match Rankings"}
             </Button>
           </div>
 
@@ -394,7 +463,7 @@ export function MatchesPanel() {
                 <Sparkles className="h-10 w-10 text-amber-400" />
                 <p>
                   No matches yet. Make sure you have an active profile and ingested
-                  jobs, then click "Rank matches".
+                  jobs, then click "Refresh Match Rankings".
                 </p>
               </CardContent>
             </Card>
@@ -422,7 +491,7 @@ export function MatchesPanel() {
           };
           const matchData: JobCardMatch = {
             score: match.llm_score ?? match.vector_score,
-            confidence: match.confidence,
+            confidence: getDisplayMatchConfidence(match),
             matchedSkills: match.matched_skills,
             readiness: match.readiness,
           };

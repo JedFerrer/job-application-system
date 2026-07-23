@@ -11,12 +11,20 @@ from pydantic import BaseModel, ConfigDict, Field
 class RankRequest(BaseModel):
     """Body for ``POST /matches/rank``."""
 
-    limit: int = Field(default=100, ge=1, le=500)
+    limit: int = Field(default=200, ge=1, le=500)
 
 
 class RankResponse(BaseModel):
     ranked: int
     profile_id: int
+
+
+class RankTaskResponse(BaseModel):
+    """Accepted or coalesced user-scoped match-ranking request."""
+
+    task_id: str | None
+    state: Literal["queued", "active", "cooldown"]
+    retry_after_seconds: int | None = None
 
 
 class MatchReadiness(BaseModel):
@@ -52,6 +60,7 @@ class MatchItem(BaseModel):
     vector_score: float
     confidence: str | None
     llm_score: int | None
+    llm_confidence: float | None = None
     matched_skills: list[str] | None = None
     readiness: MatchReadiness
     posted_at: datetime | None
@@ -89,6 +98,7 @@ class MatchSummary(BaseModel):
     vector_score: float
     confidence: str | None
     llm_score: int | None
+    llm_confidence: float | None = None
     matched_skills: list[str]
     missing_keywords: list[str]
     readiness: MatchReadiness

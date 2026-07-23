@@ -11,10 +11,15 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Literal
 
 from app.core.logging import get_logger
+from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.matching.exceptions import (
     MatchNotFoundError,
+    MatchNotReadyError,
+    MatchPreparingError,
+    MatchUnavailableError,
     NoActiveProfileError,
 )
 from app.domain.matching.prompts import MATCH_EXPLANATION_PROMPT
@@ -68,9 +73,11 @@ class MatchingService:
         self,
         repository: MatchingRepository,
         readiness_repository: ReadinessPreferenceRepository | None = None,
+        embedding_coordinator: JobEmbeddingCoordinator | None = None,
     ) -> None:
         self._repo = repository
         self._readiness_repo = readiness_repository
+        self._embedding_coordinator = embedding_coordinator
 
     async def rank_jobs(self, user_id: int, limit: int) -> RankResponse:
         profile = await self._repo.get_active_profile(user_id)
@@ -84,9 +91,74 @@ class MatchingService:
                 job_id=job_id,
                 vector_score=round(similarity * 100, 2),
                 confidence=confidence_band(similarity),
+                origin="automatic",
             )
+        # Manual analyses are retained outside top-K, but profile changes and
+        # nightly refreshes must still update their embedding-based score.
+        await self.rank_job_ids(
+            user_id=user_id,
+            job_ids=await self._repo.list_manual_match_job_ids(user_id=user_id),
+            limit=limit,
+        )
+        await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
         logger.info("matches.ranked", user_id=user_id, count=len(ranked))
         return RankResponse(ranked=len(ranked), profile_id=profile.id)
+
+    async def analyze_job(self, *, user_id: int, job_id: int) -> MatchSummary:
+        """Score and save one visible job without batch ranking or an LLM call."""
+        profile = await self._repo.get_active_profile(user_id)
+        if profile is None or profile.embedding is None:
+            raise NoActiveProfileError
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
+        if job is None:
+            raise MatchNotFoundError(job_id)
+        if job.description_embedding is None:
+            if self._embedding_coordinator is None:
+                raise MatchNotReadyError(job_id)
+            embedding_result = await self._embedding_coordinator.ensure_embedding(job_id)
+            if embedding_result.status == "pending":
+                raise MatchPreparingError(job_id)
+            if embedding_result.status == "unavailable":
+                raise MatchUnavailableError(job_id)
+        similarity = await self._repo.score_visible_job(
+            user_id=user_id, job_id=job_id, embedding=list(profile.embedding)
+        )
+        if similarity is None:
+            raise MatchNotReadyError(job_id)
+        await self._repo.upsert_match(
+            user_id=user_id,
+            job_id=job_id,
+            vector_score=round(similarity * 100, 2),
+            confidence=confidence_band(similarity),
+            origin="manual",
+        )
+        summary = await self.get_match_summary(user_id=user_id, job_id=job_id)
+        if summary is None:
+            raise MatchNotFoundError(job_id)
+        return summary
+
+    async def rank_job_ids(self, *, user_id: int, job_ids: list[int], limit: int) -> int:
+        """Incrementally score embedded jobs for one user without a full scan."""
+        profile = await self._repo.get_active_profile(user_id)
+        if profile is None or profile.embedding is None:
+            raise NoActiveProfileError
+        ranked = 0
+        for job_id in job_ids:
+            similarity = await self._repo.score_visible_job(
+                user_id=user_id, job_id=job_id, embedding=list(profile.embedding)
+            )
+            if similarity is None:
+                continue
+            await self._repo.upsert_match(
+                user_id=user_id,
+                job_id=job_id,
+                vector_score=round(similarity * 100, 2),
+                confidence=confidence_band(similarity),
+                origin="automatic",
+            )
+            ranked += 1
+        await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
+        return ranked
 
     async def list_matches(
         self,
@@ -146,6 +218,7 @@ class MatchingService:
                     vector_score=match.vector_score,
                     confidence=match.confidence,
                     llm_score=match.llm_score,
+                    llm_confidence=match.llm_confidence,
                     matched_skills=match.matched_skills or None,
                     readiness=self._build_readiness(match, job, readiness_preferences),
                     posted_at=job.posted_at,
@@ -191,6 +264,7 @@ class MatchingService:
             vector_score=match.vector_score,
             confidence=match.confidence,
             llm_score=match.llm_score,
+            llm_confidence=match.llm_confidence,
             matched_skills=match.matched_skills or [],
             missing_keywords=match.missing_keywords or [],
             readiness=self._build_readiness(match, job, readiness_preferences),
@@ -312,7 +386,7 @@ class MatchingService:
         experience = []
         for requirement in parse_experience_requirements(job.description or ""):
             if requirement.scope == "skill_specific" or profile_years is None:
-                assessment = "needs_review"
+                assessment: Literal["meets", "may_not_meet", "needs_review"] = "needs_review"
             elif profile_years < requirement.years_required:
                 assessment = "may_not_meet"
             else:
@@ -420,14 +494,7 @@ class MatchingService:
                 user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
             )
             prefs = await self._readiness_repo.get_for_user(user_id)
-        readiness = build_match_readiness(
-            score=match.llm_score if match.llm_score is not None else match.vector_score,  # type: ignore[attr-defined]
-            confidence=match.confidence,  # type: ignore[attr-defined]
-            matched_skills=match.matched_skills,  # type: ignore[attr-defined]
-            missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
-            job=job,
-            preferences=prefs,
-        )
+        readiness = self._build_readiness(match, job, prefs)
         return MatchExplanation(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
@@ -454,20 +521,12 @@ class MatchingService:
                 user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
             )
             prefs = await self._readiness_repo.get_for_user(user_id)
-        score = match.llm_score if match.llm_score is not None else match.vector_score  # type: ignore[attr-defined]
         return MatchSkillAnalysis(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
-            readiness=build_match_readiness(
-                score=score,
-                confidence=match.confidence,  # type: ignore[attr-defined]
-                matched_skills=match.matched_skills,  # type: ignore[attr-defined]
-                missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
-                job=job,
-                preferences=prefs,
-            ),
+            readiness=self._build_readiness(match, job, prefs),
         )
 
     @staticmethod
@@ -477,11 +536,25 @@ class MatchingService:
         preferences: object | None = None,
     ) -> MatchReadiness:
         score = match.llm_score if match.llm_score is not None else match.vector_score  # type: ignore[attr-defined]
+        confidence = match.confidence  # type: ignore[attr-defined]
+        if match.llm_score is not None and match.llm_confidence is not None:  # type: ignore[attr-defined]
+            confidence = _confidence_band_from_llm_confidence(match.llm_confidence)  # type: ignore[attr-defined]
         return build_match_readiness(
             score=score,
-            confidence=match.confidence,  # type: ignore[attr-defined]
+            confidence=confidence,
             matched_skills=match.matched_skills,  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
             job=job,
             preferences=preferences,
         )
+
+
+def _confidence_band_from_llm_confidence(confidence: float) -> str:
+    """Convert the persisted LLM confidence number to the UI/readiness band."""
+    if confidence >= 0.8:
+        return "strong"
+    if confidence >= 0.65:
+        return "moderate"
+    if confidence >= 0.5:
+        return "stretch"
+    return "weak"

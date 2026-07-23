@@ -24,6 +24,7 @@ import type {
   ReadinessPreferenceUpdate,
   ProfileResponse,
   RankResponse,
+  RankTaskResponse,
   RefreshResponse,
   ResumeResponse,
   SkillsGapSummary,
@@ -277,11 +278,11 @@ export const jobsApi = {
 
 // ---- Matches ----------------------------------------------------------------
 export const matchesApi = {
-  rank: (limit = 100) =>
-    apiRequest<RankResponse>("/matches/rank", {
-      method: "POST",
-      body: JSON.stringify({ limit }),
-    }),
+  rank: () => apiRequest<RankTaskResponse>("/matches/rank", { method: "POST" }),
+  getRankTaskStatus: (taskId: string) =>
+    apiRequest<TaskStatus>(`/matches/tasks/${taskId}`),
+  analyze: (jobId: number) =>
+    apiRequest<MatchSummary>(`/matches/${jobId}/analyze`, { method: "POST" }),
   list: (
     opts: {
       limit?: number;

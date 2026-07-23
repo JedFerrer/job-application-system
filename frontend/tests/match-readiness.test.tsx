@@ -20,6 +20,7 @@ const apiMocks = vi.hoisted(() => {
     summary: vi.fn(),
     skills: vi.fn(),
     evidence: vi.fn(),
+    analyze: vi.fn(),
     rank: vi.fn(),
     list: vi.fn(),
   };
@@ -329,6 +330,7 @@ describe("JobDetailView readiness", () => {
     apiMocks.matchesApi.summary.mockReset();
     apiMocks.matchesApi.skills.mockReset();
     apiMocks.matchesApi.evidence.mockReset();
+    apiMocks.matchesApi.analyze.mockReset();
     apiMocks.matchesApi.rank.mockReset();
     apiMocks.matchesApi.list.mockReset();
     apiMocks.listAllApplications.mockReset();
@@ -578,41 +580,18 @@ describe("JobDetailView readiness", () => {
     expect(container.textContent).not.toContain("skill-501");
   });
 
-  it("shows lazy Evidence without a persisted match summary", async () => {
+  it("keeps Evidence hidden without a persisted match summary", async () => {
     queryClient.removeQueries({ queryKey: ["match-summary", 501] });
     apiMocks.matchesApi.summary.mockResolvedValue(null);
-    apiMocks.matchesApi.evidence.mockResolvedValue({
-      job_id: 501,
-      skills: {
-        required: {
-          matched: [{ skill: "python", job_excerpt: "Required: Python", profile_excerpt: "Python" }],
-          missing: [],
-        },
-        preferred: { matched: [], missing: [] },
-        unclassified: { matched: [], missing: [] },
-      },
-      experience_requirements: [],
-    });
-
     await renderJob(501);
     await waitForCondition(
       () => container.textContent?.includes("No saved match analysis for this job yet.") ?? false,
     );
     expect(container.textContent).toContain("No saved match analysis for this job yet.");
     expect(container.textContent).toContain("Analyze Match");
-    const disclosure = container.querySelector("details");
-    expect(disclosure?.open).toBe(false);
+    expect(container.textContent).not.toContain("Evidence");
+    expect(container.querySelector("details")).toBeNull();
     expect(apiMocks.matchesApi.evidence).not.toHaveBeenCalled();
-
-    await act(async () => {
-      disclosure?.querySelector("summary")?.click();
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    expect(apiMocks.matchesApi.evidence).toHaveBeenCalledWith(501);
-    await waitForCondition(() => container.textContent?.includes("Matched: python") ?? false);
-    expect(container.textContent).toContain("Matched: python");
   });
 
   it("renders readiness details in the Match Score card", async () => {
@@ -871,14 +850,13 @@ describe("JobDetailView readiness", () => {
     expect(container.textContent).not.toContain("job-a-only-gap");
   });
 
-  it("refreshes the current persisted summary after Analyze Match succeeds", async () => {
+  it("analyzes and displays the current job without batch ranking", async () => {
     queryClient.removeQueries({ queryKey: ["matches"] });
     queryClient.removeQueries({ queryKey: ["match-summary", 501] });
     queryClient.removeQueries({ queryKey: ["match-skills", 501] });
     apiMocks.matchesApi.summary
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(makeSummary(501, "after-analyze"));
-    apiMocks.matchesApi.rank.mockResolvedValue({ ranked_count: 1 });
+      .mockResolvedValueOnce(null);
+    apiMocks.matchesApi.analyze.mockResolvedValue(makeSummary(501, "after-analyze"));
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
 
     await renderJob(501);
@@ -900,10 +878,39 @@ describe("JobDetailView readiness", () => {
       () => container.textContent?.includes("after-analyze blocker") ?? false,
     );
 
-    expect(apiMocks.matchesApi.rank).toHaveBeenCalledOnce();
-    expect(apiMocks.matchesApi.summary).toHaveBeenCalledTimes(2);
+    expect(apiMocks.matchesApi.analyze).toHaveBeenCalledWith(501);
+    expect(apiMocks.matchesApi.rank).not.toHaveBeenCalled();
+    expect(apiMocks.matchesApi.summary).toHaveBeenCalledOnce();
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["matches"] });
     expect(container.textContent).toContain("after-analyze blocker");
+  });
+
+  it("retries a preparing analysis once before showing the saved summary", async () => {
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+    apiMocks.matchesApi.summary.mockResolvedValueOnce(null);
+    apiMocks.matchesApi.analyze
+      .mockRejectedValueOnce(new apiMocks.ApiError("Preparing this job", 409, null))
+      .mockResolvedValueOnce(makeSummary(501, "prepared-match"));
+
+    await renderJob(501);
+    await waitForCondition(
+      () => container.textContent?.includes("No saved match analysis for this job yet.") ?? false,
+    );
+    const analyzeButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Analyze Match",
+    );
+    analyzeButton?.click();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_050));
+    });
+    await waitForCondition(() => apiMocks.matchesApi.analyze.mock.calls.length === 2);
+    await waitForCondition(
+      () => container.textContent?.includes("prepared-match blocker") ?? false,
+    );
+
+    expect(apiMocks.matchesApi.analyze).toHaveBeenCalledTimes(2);
+    expect(apiMocks.matchesApi.rank).not.toHaveBeenCalled();
   });
 
   it("keeps the existing Apply control singular and preserves its mutation flow", async () => {

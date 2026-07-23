@@ -94,8 +94,12 @@ export function ProfilePanel() {
 
   const editMutation = useMutation({
     mutationFn: (p: ParsedProfile) => resumeApi.updateProfile(p),
-    onSuccess: () => {
-      toast.success("Profile updated");
+    onSuccess: (response) => {
+      toast.success(
+        response.matching_profile_changed
+          ? "Profile updated. Match rankings will update shortly."
+          : "Profile updated",
+      );
       queryClient.invalidateQueries({ queryKey: ["profile"] });
       setEditing(false);
     },

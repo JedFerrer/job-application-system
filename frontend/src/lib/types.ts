@@ -24,7 +24,7 @@ export interface TaskQueued {
 
 export interface TaskStatus {
   type: string;
-  status: "queued" | "running" | "done" | "failed";
+  status: "queued" | "running" | "done" | "failed" | "skipped";
   message: string;
   // Ingest-specific counters (updated incrementally)
   fetched?: number;
@@ -34,7 +34,7 @@ export interface TaskStatus {
   sources?: string[];
   // Terminal fields
   error?: string | null;
-  result?: IngestResponse | ResumeResponse | null;
+  result?: IngestResponse | ResumeResponse | RankResponse | null;
 }
 
 // ---- Resume (Phase 1) -------------------------------------------------------
@@ -71,12 +71,14 @@ export interface ResumeResponse {
   filename: string;
   is_active: boolean;
   profile: ParsedProfile;
+  matching_profile_changed?: boolean;
 }
 
 export interface ProfileResponse {
   profile_id: number;
   resume_id: number;
   profile: ParsedProfile;
+  matching_profile_changed?: boolean;
 }
 
 export interface TailoredWorkItem {
@@ -204,6 +206,7 @@ export interface MatchItem {
   vector_score: number;
   confidence: string | null;
   llm_score: number | null;
+  llm_confidence?: number | null;
   matched_skills: string[] | null;
   readiness: MatchReadiness;
   posted_at: string | null;
@@ -221,6 +224,12 @@ export interface MatchListResponse {
 export interface RankResponse {
   ranked: number;
   profile_id: number;
+}
+
+export interface RankTaskResponse {
+  task_id: string | null;
+  state: "queued" | "active" | "cooldown";
+  retry_after_seconds?: number | null;
 }
 
 export interface MatchExplanation {
@@ -242,6 +251,7 @@ export interface MatchSummary {
   vector_score: number;
   confidence: string | null;
   llm_score: number | null;
+  llm_confidence?: number | null;
   matched_skills: string[];
   missing_keywords: string[];
   readiness: MatchReadiness;

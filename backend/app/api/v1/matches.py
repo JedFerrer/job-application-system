@@ -4,30 +4,57 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import CurrentUser, MatchServiceDep
+from app.api.deps import CurrentUser, MatchServiceDep, TaskStoreDep
+from app.domain.matching.ranking_dispatch import RankingDispatcher
 from app.domain.matching.schemas import (
     MatchEvidence,
     MatchExplanation,
     MatchListResponse,
     MatchSkillAnalysis,
     MatchSummary,
-    RankRequest,
-    RankResponse,
+    RankTaskResponse,
     SkillsGapSummary,
 )
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
 
-@router.post("/rank", response_model=RankResponse)
+@router.post("/rank", response_model=RankTaskResponse, status_code=status.HTTP_202_ACCEPTED)
 async def rank_matches(
     current_user: CurrentUser,
+    task_store: TaskStoreDep,
+) -> RankTaskResponse:
+    """Queue the fixed 200-job automatic match refresh for the current user."""
+    from app.infrastructure.redis_client import get_redis
+
+    result = await RankingDispatcher(get_redis(), task_store).request_manual_refresh(
+        current_user.id
+    )
+    return RankTaskResponse(**result.__dict__)
+
+
+@router.get("/tasks/{task_id}")
+async def get_ranking_task(
+    task_id: str,
+    current_user: CurrentUser,
+    task_store: TaskStoreDep,
+) -> dict[str, object]:
+    task = await task_store.get(task_id)
+    if task is None or task.get("user_id") != current_user.id:
+        raise HTTPException(status_code=404, detail="Task not found or expired")
+    return task
+
+
+@router.post("/{job_id}/analyze", response_model=MatchSummary)
+async def analyze_match(
+    job_id: int,
+    current_user: CurrentUser,
     service: MatchServiceDep,
-    payload: RankRequest = RankRequest(),
-) -> RankResponse:
-    return await service.rank_jobs(current_user.id, payload.limit)
+) -> MatchSummary:
+    """Persist an embedding-based match for one visible job without an LLM call."""
+    return await service.analyze_job(user_id=current_user.id, job_id=job_id)
 
 
 @router.get("", response_model=MatchListResponse)

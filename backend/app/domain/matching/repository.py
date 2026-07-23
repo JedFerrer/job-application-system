@@ -7,7 +7,7 @@ import binascii
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, tuple_
+from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,10 +43,15 @@ class MatchingRepository:
         private imports.
         """
         distance = Job.description_embedding.cosine_distance(embedding)
+        manual_job_ids = select(UserJobMatch.job_id).where(
+            UserJobMatch.user_id == user_id,
+            UserJobMatch.origin == "manual",
+        )
         stmt = (
             select(Job.id, (1 - distance).label("similarity"))
             .where(
                 Job.description_embedding.is_not(None),
+                Job.id.not_in(manual_job_ids),
                 or_(
                     Job.visibility == "public",
                     Job.created_by_user_id == user_id,
@@ -65,22 +70,76 @@ class MatchingRepository:
         job_id: int,
         vector_score: float,
         confidence: str | None,
+        origin: str = "automatic",
     ) -> None:
         stmt = pg_insert(UserJobMatch).values(
             user_id=user_id,
             job_id=job_id,
             vector_score=vector_score,
             confidence=confidence,
+            origin=origin,
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=[UserJobMatch.user_id, UserJobMatch.job_id],
             set_={
                 "vector_score": stmt.excluded.vector_score,
                 "confidence": stmt.excluded.confidence,
+                "origin": case(
+                    (stmt.excluded.origin == "manual", "manual"),
+                    (UserJobMatch.origin == "manual", "manual"),
+                    else_="automatic",
+                ),
                 "updated_at": datetime.now(UTC),
             },
         )
         await self._session.execute(stmt)
+
+    async def score_visible_job(
+        self, *, user_id: int, job_id: int, embedding: list[float]
+    ) -> float | None:
+        """Return one visible job's vector similarity, if it is embedded."""
+        distance = Job.description_embedding.cosine_distance(embedding)
+        archived_subq = (
+            select(UserJob.job_id)
+            .where(UserJob.user_id == user_id, UserJob.status == "archived")
+            .scalar_subquery()
+        )
+        result = await self._session.execute(
+            select((1 - distance).label("similarity")).where(
+                Job.id == job_id,
+                Job.status == "active",
+                Job.description_embedding.is_not(None),
+                or_(Job.visibility == "public", Job.created_by_user_id == user_id),
+                Job.id.not_in(archived_subq),
+            )
+        )
+        value = result.scalar_one_or_none()
+        return float(value) if value is not None else None
+
+    async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
+        """Keep only the highest scoring automatic rows; never delete manual rows."""
+        keep = (
+            select(UserJobMatch.id)
+            .where(UserJobMatch.user_id == user_id, UserJobMatch.origin == "automatic")
+            .order_by(UserJobMatch.vector_score.desc(), UserJobMatch.job_id.desc())
+            .limit(limit)
+        )
+        await self._session.execute(
+            delete(UserJobMatch).where(
+                UserJobMatch.user_id == user_id,
+                UserJobMatch.origin == "automatic",
+                UserJobMatch.id.not_in(keep),
+            )
+        )
+
+    async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
+        result = await self._session.execute(
+            select(UserJobMatch.job_id).where(
+                UserJobMatch.user_id == user_id,
+                UserJobMatch.origin == "manual",
+            )
+        )
+        return [int(job_id) for job_id in result.scalars().all()]
 
     async def list_matches(
         self,
