@@ -21,6 +21,21 @@ class MatchingRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @staticmethod
+    def _matchable_job_predicate(*, user_id: int) -> tuple[Any, ...]:
+        """Return the shared eligibility predicate for automatic matching."""
+        archived_subquery = (
+            select(UserJob.job_id)
+            .where(UserJob.user_id == user_id, UserJob.status == "archived")
+            .scalar_subquery()
+        )
+        return (
+            Job.status == "active",
+            Job.description_embedding.is_not(None),
+            or_(Job.visibility == "public", Job.created_by_user_id == user_id),
+            Job.id.not_in(archived_subquery),
+        )
+
     async def get_active_profile(self, user_id: int) -> CandidateProfile | None:
         """Return the user's active candidate profile (with embedding)."""
         result = await self._session.execute(
@@ -50,12 +65,8 @@ class MatchingRepository:
         stmt = (
             select(Job.id, (1 - distance).label("similarity"), Job.description)
             .where(
-                Job.description_embedding.is_not(None),
                 Job.id.not_in(manual_job_ids),
-                or_(
-                    Job.visibility == "public",
-                    Job.created_by_user_id == user_id,
-                ),
+                *self._matchable_job_predicate(user_id=user_id),
             )
             .order_by(distance)
             .limit(limit)
@@ -121,18 +132,10 @@ class MatchingRepository:
     ) -> float | None:
         """Return one visible job's vector similarity, if it is embedded."""
         distance = Job.description_embedding.cosine_distance(embedding)
-        archived_subq = (
-            select(UserJob.job_id)
-            .where(UserJob.user_id == user_id, UserJob.status == "archived")
-            .scalar_subquery()
-        )
         result = await self._session.execute(
             select((1 - distance).label("similarity")).where(
                 Job.id == job_id,
-                Job.status == "active",
-                Job.description_embedding.is_not(None),
-                or_(Job.visibility == "public", Job.created_by_user_id == user_id),
-                Job.id.not_in(archived_subq),
+                *self._matchable_job_predicate(user_id=user_id),
             )
         )
         value = result.scalar_one_or_none()
@@ -140,9 +143,14 @@ class MatchingRepository:
 
     async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
         """Keep only the highest scoring automatic rows; never delete manual rows."""
-        keep = (
+        eligible_automatic = (
             select(UserJobMatch.id)
+            .join(Job, UserJobMatch.job_id == Job.id)
             .where(UserJobMatch.user_id == user_id, UserJobMatch.origin == "automatic")
+            .where(*self._matchable_job_predicate(user_id=user_id))
+        )
+        keep = (
+            eligible_automatic
             .order_by(UserJobMatch.vector_score.desc(), UserJobMatch.job_id.desc())
             .limit(limit)
         )
@@ -150,6 +158,7 @@ class MatchingRepository:
             delete(UserJobMatch).where(
                 UserJobMatch.user_id == user_id,
                 UserJobMatch.origin == "automatic",
+                UserJobMatch.id.in_(eligible_automatic),
                 UserJobMatch.id.not_in(keep),
             )
         )
@@ -184,24 +193,10 @@ class MatchingRepository:
         Imported jobs without match scores are excluded; they belong in
         /imported, not /matches, until analysis completes.
         """
-        visibility_filter = or_(
-            Job.visibility == "public",
-            Job.created_by_user_id == user_id,
-        )
-        archived_subq = (
-            select(UserJob.job_id)
-            .where(
-                UserJob.user_id == user_id,
-                UserJob.status == "archived",
-            )
-            .scalar_subquery()
-        )
         filters: list[Any] = [
             UserJobMatch.user_id == user_id,
             UserJobMatch.vector_score.is_not(None),
-            Job.status == "active",
-            visibility_filter,
-            Job.id.not_in(archived_subq),
+            *self._matchable_job_predicate(user_id=user_id),
         ]
 
         if q:

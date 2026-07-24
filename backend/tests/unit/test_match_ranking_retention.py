@@ -24,10 +24,41 @@ async def test_vector_ranking_query_excludes_manual_match_rows() -> None:
     await repository.rank_jobs_by_vector([0.1, 0.2], 200, user_id=7)
 
     statement = session.execute.await_args.args[0]
-    sql = str(statement.compile(dialect=postgresql.dialect()))
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    bound_values = list(compiled.params.values())
     assert "user_job_matches.origin" in sql
     assert "user_job_matches.user_id" in sql
     assert "NOT IN" in sql
+    assert "jobs.status =" in sql
+    assert "active" in bound_values
+    assert "jobs.description_embedding IS NOT NULL" in sql
+    assert "jobs.visibility =" in sql
+    assert "jobs.created_by_user_id" in sql
+    assert "user_jobs.status =" in sql
+    assert "archived" in bound_values
+
+
+@pytest.mark.asyncio
+async def test_pruning_query_only_targets_eligible_automatic_rows() -> None:
+    session = AsyncMock()
+    repository = MatchingRepository(session)
+
+    await repository.prune_automatic_matches(user_id=7, limit=200)
+
+    statement = session.execute.await_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    bound_values = list(compiled.params.values())
+    assert "DELETE FROM user_job_matches" in sql
+    assert "user_job_matches.origin =" in sql
+    assert "automatic" in bound_values
+    assert "user_job_matches.id IN" in sql
+    assert "jobs.status =" in sql
+    assert "active" in bound_values
+    assert "jobs.description_embedding IS NOT NULL" in sql
+    assert "user_jobs.status =" in sql
+    assert "archived" in bound_values
 
 
 @pytest.mark.asyncio

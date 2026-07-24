@@ -77,6 +77,7 @@ async def _create_job(
             created_by_user_id=created_by_user_id,
             ingest_source=ingest_source,
             status="active",
+            description_embedding=[0.0] * 1536,
             raw_response={},
         )
     )
