@@ -28,6 +28,7 @@ from app.domain.matching.readiness import build_match_readiness
 from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.schemas import (
+    ClassifiedMatchSkills,
     ClassifiedSkillEvidence,
     ExperienceRequirement,
     MatchEvidence,
@@ -280,6 +281,7 @@ class MatchingService:
             matched_skills=match.matched_skills or [],
             missing_keywords=match.missing_keywords or [],
             readiness=self._build_readiness(match, job, readiness_preferences),
+            classified_skills=await self._load_classified_skills(user_id, job_id),
         )
 
     async def explain_match(self, *, user_id: int, job_id: int) -> MatchExplanation:
@@ -300,6 +302,9 @@ class MatchingService:
         jd_skills = extract_known_skills(job.description or "")
         report = compute_skill_match(jd_skills, dict(profile.parsed))
         report_dict = report_to_dict(report)
+        classified_skills = await self._load_classified_skills(user_id, job_id)
+        if classified_skills is not None:
+            report_dict["classified_skills"] = classified_skills.model_dump()
 
         # Layer 3: LLM explanation grounded by layer 2.
         (
@@ -486,6 +491,7 @@ class MatchingService:
             "candidate_profile": profile_parsed,
             "job_description": job_description,
             "deterministic_skill_report": report_dict,
+            "classified_skills": report_dict.get("classified_skills", {}),
         }
         messages = [
             {"role": "system", "content": MATCH_EXPLANATION_PROMPT},
@@ -524,12 +530,8 @@ class MatchingService:
             confidence if isinstance(confidence, str) and confidence in _VALID_CONFIDENCE else None
         )
 
-        raw_missing = data.get("missing_keywords")
-        missing = (
-            [str(k) for k in raw_missing]
-            if isinstance(raw_missing, list)
-            else deterministic_missing
-        )
+        # The LLM may explain the deterministic gaps, but may not redefine them.
+        missing = deterministic_missing
 
         explanation = data.get("explanation")
         explanation_str = explanation if isinstance(explanation, str) else None
@@ -571,6 +573,9 @@ class MatchingService:
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
             readiness=readiness,
+            classified_skills=await self._load_classified_skills(
+                user_id, match.job_id  # type: ignore[attr-defined]
+            ),
         )
 
     async def _to_skill_analysis(self, match: object, user_id: int) -> MatchSkillAnalysis:
@@ -587,6 +592,36 @@ class MatchingService:
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
             readiness=self._build_readiness(match, job, prefs),
+            classified_skills=await self._load_classified_skills(
+                user_id, match.job_id  # type: ignore[attr-defined]
+            ),
+        )
+
+    async def _load_classified_skills(
+        self, user_id: int, job_id: int
+    ) -> ClassifiedMatchSkills | None:
+        """Return additive classified output when the persisted-evidence path is wired."""
+        if getattr(self, "_mention_repo", None) is None:
+            return None
+        try:
+            evidence = await self.get_match_evidence(user_id=user_id, job_id=job_id)
+        except MatchNotFoundError:
+            # Classified output is additive: do not make legacy cached output
+            # unavailable when a profile has been removed since matching.
+            return None
+        return self._classified_skills_from_evidence(evidence)
+
+    @staticmethod
+    def _classified_skills_from_evidence(evidence: MatchEvidence) -> ClassifiedMatchSkills:
+        def _labels(group: SkillEvidenceGroup) -> list[str]:
+            return [item.skill for item in [*group.matched, *group.missing]]
+
+        return ClassifiedMatchSkills(
+            required_matched_skills=[item.skill for item in evidence.skills.required.matched],
+            required_missing_skills=[item.skill for item in evidence.skills.required.missing],
+            preferred_matched_skills=[item.skill for item in evidence.skills.preferred.matched],
+            preferred_missing_skills=[item.skill for item in evidence.skills.preferred.missing],
+            unclassified_skills=_labels(evidence.skills.unclassified),
         )
 
     @staticmethod

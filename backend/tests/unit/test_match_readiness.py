@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.domain.matching.readiness import build_match_readiness
+from app.domain.matching.schemas import (
+    ClassifiedSkillEvidence,
+    MatchEvidence,
+    SkillEvidence,
+    SkillEvidenceGroup,
+)
 from app.domain.matching.service import MatchingService
 
 pytestmark = pytest.mark.unit
@@ -300,3 +308,114 @@ async def test_analyze_skills_computes_and_persists_without_llm() -> None:
     assert analysis.matched_skills == ["python", "fastapi"]
     assert analysis.missing_keywords == ["kubernetes"]
     assert saved["deterministic_match"]
+
+
+@pytest.mark.asyncio
+async def test_cached_match_outputs_add_classified_skills_without_changing_flat_fields() -> None:
+    match = _match(missing_keywords=["legacy-gap"])
+    service = _service(object())
+    service._mention_repo = object()  # type: ignore[attr-defined]
+    service.get_match_evidence = AsyncMock(  # type: ignore[method-assign]
+        return_value=MatchEvidence(
+            job_id=101,
+            skills=ClassifiedSkillEvidence(
+                required=SkillEvidenceGroup(
+                    matched=[SkillEvidence(skill="python", job_excerpt="Required Python")],
+                    missing=[SkillEvidence(skill="kubernetes", job_excerpt="Required Kubernetes")],
+                ),
+                preferred=SkillEvidenceGroup(
+                    missing=[SkillEvidence(skill="docker", job_excerpt="Preferred Docker")]
+                ),
+                unclassified=SkillEvidenceGroup(
+                    matched=[SkillEvidence(skill="graphql", job_excerpt="GraphQL")]
+                ),
+            ),
+        )
+    )
+
+    explanation = await service._to_explanation(match, user_id=1)
+    analysis = await service._to_skill_analysis(match, user_id=1)
+
+    assert explanation.missing_keywords == ["legacy-gap"]
+    assert analysis.missing_keywords == ["legacy-gap"]
+    assert explanation.classified_skills is not None
+    assert explanation.classified_skills.model_dump() == {
+        "required_matched_skills": ["python"],
+        "required_missing_skills": ["kubernetes"],
+        "preferred_matched_skills": [],
+        "preferred_missing_skills": ["docker"],
+        "unclassified_skills": ["graphql"],
+    }
+    assert analysis.classified_skills == explanation.classified_skills
+
+
+@pytest.mark.asyncio
+async def test_match_summary_adds_classified_skills_when_evidence_is_available() -> None:
+    match = _match(missing_keywords=["legacy-gap"])
+
+    class FakeRepo:
+        async def get_visible_job(self, **kwargs: object) -> object:  # noqa: ANN001
+            return SimpleNamespace()
+
+        async def get_match(self, **kwargs: object) -> object:  # noqa: ANN001
+            return match
+
+    service = _service(FakeRepo())
+    service._mention_repo = object()  # type: ignore[attr-defined]
+    service.get_match_evidence = AsyncMock(  # type: ignore[method-assign]
+        return_value=MatchEvidence(
+            job_id=101,
+            skills=ClassifiedSkillEvidence(
+                required=SkillEvidenceGroup(
+                    missing=[SkillEvidence(skill="kubernetes", job_excerpt="Required")]
+                )
+            ),
+        )
+    )
+
+    summary = await service.get_match_summary(user_id=1, job_id=101)
+
+    assert summary is not None
+    assert summary.missing_keywords == ["legacy-gap"]
+    assert summary.classified_skills is not None
+    assert summary.classified_skills.required_missing_skills == ["kubernetes"]
+
+
+@pytest.mark.asyncio
+async def test_llm_receives_deterministic_classified_skills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def fake_completion(**kwargs: object) -> tuple[object, object]:
+        captured.extend(kwargs["messages"])  # type: ignore[arg-type,index]
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"score": 80}'))]
+        ), None
+
+    monkeypatch.setattr("app.domain.matching.service.llm_chat_completion", fake_completion)
+    service = _service(object())
+    classified = {"required_missing_skills": ["kubernetes"]}
+
+    await service._explain_with_llm(
+        profile_parsed={},
+        job_description="Job text",
+        report_dict={"classified_skills": classified},
+        deterministic_missing=["kubernetes"],
+    )
+
+    payload = json.loads(captured[1]["content"])
+    assert payload["classified_skills"] == classified
+
+
+def test_llm_missing_keywords_cannot_override_deterministic_gaps() -> None:
+    _, _, missing, _, _, _ = MatchingService._parse_llm_payload(
+        {
+            "score": 80,
+            "confidence": "strong",
+            "missing_keywords": ["invented-skill", "preferred-only-skill"],
+        },
+        ["required-gap"],
+    )
+
+    assert missing == ["required-gap"]

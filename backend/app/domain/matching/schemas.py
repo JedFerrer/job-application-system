@@ -75,6 +75,16 @@ class MatchListResponse(BaseModel):
     has_more: bool = False
 
 
+class ClassifiedMatchSkills(BaseModel):
+    """Deterministic classified job-skill results, additive to legacy fields."""
+
+    required_matched_skills: list[str] = Field(default_factory=list)
+    required_missing_skills: list[str] = Field(default_factory=list)
+    preferred_matched_skills: list[str] = Field(default_factory=list)
+    preferred_missing_skills: list[str] = Field(default_factory=list)
+    unclassified_skills: list[str] = Field(default_factory=list)
+
+
 class MatchExplanation(BaseModel):
     """Layer-2 (deterministic) + layer-3 (LLM) match detail for one job."""
 
@@ -89,6 +99,7 @@ class MatchExplanation(BaseModel):
     matched_skills: list[str]
     missing_keywords: list[str]
     readiness: MatchReadiness
+    classified_skills: ClassifiedMatchSkills | None = None
 
 
 class MatchSummary(BaseModel):
@@ -103,6 +114,7 @@ class MatchSummary(BaseModel):
     matched_skills: list[str]
     missing_keywords: list[str]
     readiness: MatchReadiness
+    classified_skills: ClassifiedMatchSkills | None = None
 
 
 class MatchSkillAnalysis(BaseModel):
@@ -113,6 +125,7 @@ class MatchSkillAnalysis(BaseModel):
     matched_skills: list[str]
     missing_keywords: list[str]
     readiness: MatchReadiness
+    classified_skills: ClassifiedMatchSkills | None = None
 
 
 class SkillEvidence(BaseModel):

@@ -149,6 +149,26 @@ def test_match_readiness_is_documented_in_openapi() -> None:
     assert "readiness" in explanation
 
 
+def test_classified_skills_are_optional_and_additive_in_openapi() -> None:
+    user = User(id=1, email="a@test.com", name="A", is_active=True)
+    app = _build_app_with_overrides(current_user=user, match_service=_EmptyMatchService())
+    schema = TestClient(app).get("/openapi.json").json()
+
+    for response_name in ("MatchSummary", "MatchExplanation", "MatchSkillAnalysis"):
+        response_schema = schema["components"]["schemas"][response_name]
+        assert "classified_skills" in response_schema["properties"]
+        assert "classified_skills" not in response_schema.get("required", [])
+
+    classified = schema["components"]["schemas"]["ClassifiedMatchSkills"]["properties"]
+    assert set(classified) == {
+        "required_matched_skills",
+        "required_missing_skills",
+        "preferred_matched_skills",
+        "preferred_missing_skills",
+        "unclassified_skills",
+    }
+
+
 def test_match_summary_returns_200_null_and_uses_current_user_scope() -> None:
     user = User(id=42, email="scoped@test.com", name="Scoped", is_active=True)
     service = _SummaryMatchService()

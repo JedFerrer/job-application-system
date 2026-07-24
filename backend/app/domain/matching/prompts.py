@@ -11,9 +11,10 @@ MATCH_EXPLANATION_PROMPT = """\
 You are a precise technical recruiter. Compare the CANDIDATE PROFILE to the JOB \
 DESCRIPTION and grade the fit.
 
-Use the DETERMINISTIC SKILL REPORT as ground truth for which required skills are \
-present or missing. Do NOT invent skills the JD does not require, and do NOT mark \
-a skill missing if the report already matched it.
+Use the DETERMINISTIC SKILL REPORT and CLASSIFIED SKILLS as ground truth. Required \
+gaps are deterministic; preferred gaps are upside only and must not be treated as \
+blockers; unclassified skills are evidence only. You may explain this evidence, but \
+must not override its classifications or invent a missing skill.
 
 Return ONLY valid JSON with exactly these keys:
 {
