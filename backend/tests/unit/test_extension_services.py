@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -169,7 +170,7 @@ class FakeJobRepository:
             if job.get("fingerprint") == fp:
                 # Merge
                 for key in ("title", "company", "location", "description", "source", "source_url", "raw_response"):
-                    if values.get(key) is not None and job.get(key) is None:
+                    if values.get(key) is not None:
                         job[key] = values[key]
                 return jid, False
 
@@ -177,6 +178,15 @@ class FakeJobRepository:
         self._next_id += 1
         self.jobs[jid] = {**values, "id": jid}
         return jid, True
+
+    async def get_description_by_fingerprint(
+        self, fingerprint: str
+    ) -> tuple[bool, str | None]:
+        for job in self.jobs.values():
+            if job.get("fingerprint") == fingerprint:
+                description = job.get("description")
+                return True, description if isinstance(description, str) else None
+        return False, None
 
     async def link_user_jobs(
         self,
@@ -425,6 +435,60 @@ class TestJobImport:
             "source": "linkedin",
         }
         return ExtensionJobImportRequest(**(defaults | overrides))
+
+    def _service_with_mentions(
+        self,
+    ) -> tuple[FakeJobRepository, FakeExtensionRepository, ExtensionJobImportService, AsyncMock]:
+        job_repo = FakeJobRepository()
+        ext_repo = FakeExtensionRepository()
+        mention_service = AsyncMock()
+        svc = ExtensionJobImportService(
+            job_repository=job_repo,  # type: ignore[arg-type]
+            extension_repository=ext_repo,  # type: ignore[arg-type]
+            skill_mention_service=mention_service,
+        )
+        return job_repo, ext_repo, svc, mention_service
+
+    @pytest.mark.asyncio
+    async def test_new_extension_import_refreshes_mentions(self) -> None:
+        _, _, svc, mention_service = self._service_with_mentions()
+
+        result = await svc.import_job(user_id=42, request=self._request())
+
+        mention_service.refresh_for_description.assert_awaited_once_with(
+            job_id=result.job_id, description="Build APIs with FastAPI"
+        )
+
+    @pytest.mark.asyncio
+    async def test_changed_extension_description_refreshes_mentions(self) -> None:
+        _, _, svc, mention_service = self._service_with_mentions()
+        first = await svc.import_job(user_id=42, request=self._request())
+        await svc.import_job(
+            user_id=42,
+            request=self._request(description="Build APIs with Python"),
+        )
+
+        assert first.job_id == 1
+        assert mention_service.refresh_for_description.await_count == 2
+        mention_service.refresh_for_description.assert_awaited_with(
+            job_id=first.job_id, description="Build APIs with Python"
+        )
+
+    @pytest.mark.asyncio
+    async def test_source_id_link_does_not_refresh_or_overwrite_description(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        job_repo, _, svc, mention_service = self._service_with_mentions()
+        monkeypatch.setattr(
+            "app.domain.extension.extension_job_import_service.extract_source_id",
+            lambda *_: ("linkedin", "123"),
+        )
+        svc._lookup_by_source_id = AsyncMock(return_value=55)
+
+        await svc.import_job(user_id=42, request=self._request())
+
+        mention_service.refresh_for_description.assert_not_awaited()
+        assert not job_repo.jobs
 
     @pytest.mark.asyncio
     async def test_import_creates_job_and_user_link(self) -> None:

@@ -25,14 +25,16 @@ from app.domain.cover_letters.service import CoverLetterService
 from app.domain.extension.repository import ExtensionRepository
 from app.domain.interview.repository import InterviewRepository
 from app.domain.interview.service import InterviewService
-from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
+from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
-from app.domain.matching.repository import MatchingRepository
+from app.domain.matching.job_skill_mention_repository import JobSkillMentionRepository
+from app.domain.matching.job_skill_mentions import JobSkillMentionService
 from app.domain.matching.readiness_preferences import (
     ReadinessPreferenceRepository,
     ReadinessPreferenceService,
 )
+from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
 from app.domain.preferences.repository import PreferenceRepository
 from app.domain.preferences.service import PreferenceService
@@ -143,6 +145,9 @@ def get_job_service(db: DbSession) -> JobService:
         job_repository,
         user_timezone=get_settings().user_timezone,
         embedding_coordinator=JobEmbeddingCoordinator(job_repository, get_redis()),
+        skill_mention_service=JobSkillMentionService(
+            JobSkillMentionRepository(db)
+        ),
     )
 
 
@@ -259,6 +264,9 @@ def get_extension_job_import_service(db: DbSession) -> ExtensionJobImportService
     return ExtensionJobImportService(
         job_repository=JobRepository(db),
         extension_repository=ExtensionRepository(db),
+        skill_mention_service=JobSkillMentionService(
+            JobSkillMentionRepository(db)
+        ),
     )
 
 

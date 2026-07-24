@@ -22,6 +22,7 @@ from app.domain.extension.schemas import (
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.source_id_extractor import extract_source_id
+from app.domain.matching.job_skill_mentions import JobSkillMentionService
 from app.infrastructure.embeddings import embed_text
 
 logger = get_logger("extension_job_import")
@@ -33,9 +34,11 @@ class ExtensionJobImportService:
         *,
         job_repository: JobRepository,
         extension_repository: ExtensionRepository,
+        skill_mention_service: JobSkillMentionService | None = None,
     ) -> None:
         self._jobs = job_repository
         self._ext = extension_repository
+        self._skill_mention_service = skill_mention_service
 
     async def import_job(
         self,
@@ -66,6 +69,7 @@ class ExtensionJobImportService:
         # ── Dedup fallback: fingerprint ────────────────────────────────
         if existing_job_id is None:
             fp = job_fingerprint(request.company, request.title, request.location)
+            exists, previous_description = await self._jobs.get_description_by_fingerprint(fp)
             values: dict[str, object] = {
                 "fingerprint": fp,
                 "title": request.title,
@@ -76,9 +80,23 @@ class ExtensionJobImportService:
                 "source_url": request.source_url,
             }
             job_id, was_inserted = await self._jobs.upsert_job(values)
+            description_changed = (
+                was_inserted
+                or (
+                    exists
+                    and request.description is not None
+                    and request.description != previous_description
+                )
+            )
         else:
             job_id = existing_job_id
             was_inserted = False
+            description_changed = False
+
+        if description_changed and self._skill_mention_service is not None:
+            await self._skill_mention_service.refresh_for_description(
+                job_id=job_id, description=request.description
+            )
 
         # ── Privacy: mark new jobs as private ──────────────────────────
         if was_inserted:

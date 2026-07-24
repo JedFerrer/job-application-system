@@ -9,8 +9,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from app.api.deps import CurrentUser, JobServiceDep, TaskStoreDep
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
+from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import (
     IngestRequest,
     IngestResponse,
@@ -18,6 +18,8 @@ from app.domain.jobs.schemas import (
     JobListResponse,
     JobResponse,
 )
+from app.domain.matching.job_skill_mention_repository import JobSkillMentionRepository
+from app.domain.matching.job_skill_mentions import JobSkillMentionService
 from app.infrastructure.database import async_session_factory
 from app.infrastructure.redis_client import get_redis
 from app.infrastructure.task_store import TaskStore
@@ -51,6 +53,9 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
                     repository,
                     user_timezone=settings.user_timezone,
                     embedding_coordinator=JobEmbeddingCoordinator(repository, get_redis()),
+                    skill_mention_service=JobSkillMentionService(
+                        JobSkillMentionRepository(db)
+                    ),
                 )
                 result = await service.ingest(
                     request,

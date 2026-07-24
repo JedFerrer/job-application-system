@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.domain.jobs.exceptions import JobNotFoundError
-from app.domain.jobs.schemas import IngestRequest, JobResponse
+from app.domain.jobs.schemas import IngestRequest, JobImportRequest, JobResponse
 from app.domain.jobs.service import JobService
 from app.infrastructure.job_sources.base import RawJobPost
 
@@ -196,6 +196,7 @@ async def test_changed_description_is_forced_into_incremental_embedding_handoff(
     repository = AsyncMock()
     repository.get_description_by_fingerprint.return_value = (True, "Old description")
     repository.upsert_job.return_value = (9, False)
+    mention_service = AsyncMock()
 
     class Coordinator:
         async def ensure_embedding(self, job_id: int, *, force: bool = False) -> object:
@@ -203,7 +204,11 @@ async def test_changed_description_is_forced_into_incremental_embedding_handoff(
             assert force is True
             return type("Result", (), {"status": "ready"})()
 
-    service = JobService(repository, embedding_coordinator=Coordinator())  # type: ignore[arg-type]
+    service = JobService(
+        repository,
+        embedding_coordinator=Coordinator(),
+        skill_mention_service=mention_service,
+    )  # type: ignore[arg-type]
     with patch("app.domain.jobs.service.build_sources", return_value=[Source()]):
         result = await service.ingest(
             IngestRequest(search_term="Engineer"),
@@ -214,3 +219,118 @@ async def test_changed_description_is_forced_into_incremental_embedding_handoff(
         )
 
     assert result.embedded_job_ids == [9]
+    mention_service.refresh_for_description.assert_awaited_once_with(
+        job_id=9, description="New materially changed description"
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_description_refreshes_mentions_without_waiting_for_embedding() -> None:
+    post = RawJobPost(
+        source="indeed",
+        source_url="https://example.test/jobs/new",
+        title="Engineer",
+        company="Acme",
+        description="Python role",
+    )
+
+    class Source:
+        name = "indeed"
+
+        def fetch(self, query: object) -> list[RawJobPost]:
+            return [post]
+
+    repository = AsyncMock()
+    repository.get_description_by_fingerprint.return_value = (False, None)
+    repository.upsert_job.return_value = (10, True)
+    mention_service = AsyncMock()
+
+    with patch("app.domain.jobs.service.build_sources", return_value=[Source()]):
+        await JobService(
+            repository, skill_mention_service=mention_service
+        ).ingest(
+            IngestRequest(search_term="Engineer"),
+            default_sources=["indeed"],
+            default_country="USA",
+            default_results=10,
+            proxies=None,
+        )
+
+    mention_service.refresh_for_description.assert_awaited_once_with(
+        job_id=10, description="Python role"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unchanged_description_does_not_refresh_mentions() -> None:
+    post = RawJobPost(
+        source="indeed",
+        source_url="https://example.test/jobs/unchanged",
+        title="Engineer",
+        company="Acme",
+        description="Same description",
+    )
+
+    class Source:
+        name = "indeed"
+
+        def fetch(self, query: object) -> list[RawJobPost]:
+            return [post]
+
+    repository = AsyncMock()
+    repository.get_description_by_fingerprint.return_value = (True, "Same description")
+    repository.upsert_job.return_value = (11, False)
+    mention_service = AsyncMock()
+
+    with patch("app.domain.jobs.service.build_sources", return_value=[Source()]):
+        await JobService(
+            repository, skill_mention_service=mention_service
+        ).ingest(
+            IngestRequest(search_term="Engineer"),
+            default_sources=["indeed"],
+            default_country="USA",
+            default_results=10,
+            proxies=None,
+        )
+
+    mention_service.refresh_for_description.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_import_refreshes_mentions_without_creating_application() -> None:
+    from app.models.job import Job
+
+    repository = AsyncMock()
+    repository.get_description_by_fingerprint.return_value = (False, None)
+    repository.upsert_job.return_value = (12, True)
+    repository.get_by_id.return_value = Job(
+        id=12,
+        fingerprint="manual-test-00001",
+        title="Engineer",
+        company="Acme",
+        source="manual",
+        source_url="https://example.test/manual",
+        raw_response={},
+        fetched_at=__import__("datetime").datetime(2026, 1, 1),
+        visibility="private",
+        ingest_source="manual",
+    )
+    mention_service = AsyncMock()
+
+    with patch("app.workers.job_imports.embed_imported_job.delay"):
+        result = await JobService(
+            repository, skill_mention_service=mention_service
+        ).import_job(
+            JobImportRequest(
+                url="https://example.test/manual",
+                title="Engineer",
+                company="Acme",
+                description="Python role",
+            ),
+            user_id=42,
+        )
+
+    assert result.id == 12
+    mention_service.refresh_for_description.assert_awaited_once_with(
+        job_id=12, description="Python role"
+    )

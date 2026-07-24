@@ -36,6 +36,8 @@ from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import IngestRequest
 from app.domain.jobs.service import JobService
+from app.domain.matching.job_skill_mention_repository import JobSkillMentionRepository
+from app.domain.matching.job_skill_mentions import JobSkillMentionService
 from app.domain.scraping.repository import ScrapeQueryRepository, SubscriptionRepository
 from app.models.scrape_query import ScrapeQuery
 from app.models.user_scrape_query_subscription import UserScrapeQuerySubscription
@@ -191,6 +193,9 @@ async def _scrape_single_query_async(
                 JobRepository(db),
                 user_timezone=settings.user_timezone,
                 embedding_coordinator=JobEmbeddingCoordinator(JobRepository(db), redis),
+                skill_mention_service=JobSkillMentionService(
+                    JobSkillMentionRepository(db)
+                ),
             )
 
             # Record the moment before ingest so we can link subscribers to

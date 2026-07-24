@@ -30,6 +30,7 @@ from app.domain.jobs.schemas import (
     JobResponse,
 )
 from app.domain.jobs.shift_detector import ShiftDetector, classify_shift_llm
+from app.domain.matching.job_skill_mentions import JobSkillMentionService
 from app.infrastructure.job_sources.base import JobQuery, RawJobPost
 from app.infrastructure.job_sources.registry import build_sources
 
@@ -75,10 +76,12 @@ class JobService:
         repository: JobRepository,
         user_timezone: str = "Asia/Manila",
         embedding_coordinator: JobEmbeddingCoordinator | None = None,
+        skill_mention_service: JobSkillMentionService | None = None,
     ) -> None:
         self._repo = repository
         self._shift = ShiftDetector(user_timezone)
         self._embedding_coordinator = embedding_coordinator
+        self._skill_mention_service = skill_mention_service
 
     async def ingest(
         self,
@@ -160,6 +163,12 @@ class JobService:
                     inserted += 1
                 else:
                     updated += 1
+                if was_inserted or description_changed:
+                    if self._skill_mention_service is not None:
+                        await self._skill_mention_service.refresh_for_description(
+                            job_id=job_id,
+                            description=_normalise_description(post.description),
+                        )
                 if (was_inserted or description_changed) and post.description:
                     to_embed.append((job_id, post.description, description_changed))
                     if was_inserted and shift_type is None:
@@ -392,6 +401,9 @@ class JobService:
         fingerprint, we link to it instead of creating a duplicate.
         """
         fingerprint = job_fingerprint(payload.company, payload.title, None)
+        exists, previous_description = await self._repo.get_description_by_fingerprint(
+            fingerprint
+        )
 
         # Check if a public job with this fingerprint already exists.
         # If so, link the user to the existing public job (no duplicate).
@@ -405,6 +417,18 @@ class JobService:
             "raw_response": {"imported_from": payload.url},
         }
         job_id, was_inserted = await self._repo.upsert_job(values)
+        description_changed = (
+            was_inserted
+            or (
+                exists
+                and payload.description is not None
+                and payload.description != previous_description
+            )
+        )
+        if description_changed and self._skill_mention_service is not None:
+            await self._skill_mention_service.refresh_for_description(
+                job_id=job_id, description=payload.description
+            )
 
         # If this is a brand-new job, mark it as private to the importing user.
         if was_inserted:
