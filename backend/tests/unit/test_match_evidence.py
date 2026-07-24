@@ -18,6 +18,12 @@ def _service(repo: object) -> MatchingService:
     return service
 
 
+def _persisted_service(repo: object, mention_repo: object) -> MatchingService:
+    service = _service(repo)
+    service._mention_repo = mention_repo  # type: ignore[attr-defined]
+    return service
+
+
 @pytest.mark.asyncio
 async def test_evidence_is_fresh_and_does_not_read_or_write_match_cache() -> None:
     job = SimpleNamespace(
@@ -81,3 +87,73 @@ async def test_evidence_keeps_public_skill_shape_after_catalog_extraction() -> N
 
     assert set(required) == {"skill", "job_excerpt", "profile_excerpt"}
     assert {"skill_id", "start_offset", "end_offset", "analyzer_version"}.isdisjoint(required)
+
+
+@pytest.mark.asyncio
+async def test_evidence_prefers_persisted_classified_mentions() -> None:
+    job = SimpleNamespace(description="Required: stale direct text")
+    profile = SimpleNamespace(parsed={"skills": ["Python", "Docker"]})
+
+    class FakeRepo:
+        async def get_visible_job(self, **kwargs: object) -> object:  # noqa: ANN001
+            return job
+
+        async def get_active_profile(self, user_id: int) -> object:  # noqa: ANN001
+            return profile
+
+    class FakeMentionRepo:
+        async def list_for_job(self, job_id: int) -> list[object]:  # noqa: ANN001
+            return [
+                SimpleNamespace(
+                    canonical_label="python",
+                    classification="required",
+                    job_excerpt="Must know Python",
+                    start_offset=9,
+                    id=1,
+                ),
+                SimpleNamespace(
+                    canonical_label="docker",
+                    classification="preferred",
+                    job_excerpt="Docker is a plus",
+                    start_offset=0,
+                    id=2,
+                ),
+                SimpleNamespace(
+                    canonical_label="unlisted skill",
+                    classification="unclassified",
+                    job_excerpt="Unclassified evidence",
+                    start_offset=0,
+                    id=3,
+                ),
+            ]
+
+    result = await _persisted_service(FakeRepo(), FakeMentionRepo()).get_match_evidence(
+        user_id=1, job_id=2
+    )
+
+    assert [item.skill for item in result.skills.required.matched] == ["python"]
+    assert [item.skill for item in result.skills.preferred.matched] == ["docker"]
+    assert [item.skill for item in result.skills.unclassified.missing] == ["unlisted skill"]
+    assert result.skills.required.matched[0].job_excerpt == "Must know Python"
+    assert result.skills.required.matched[0].profile_excerpt is not None
+    assert result.skills.unclassified.missing[0].profile_excerpt is None
+
+
+@pytest.mark.asyncio
+async def test_evidence_falls_back_when_no_persisted_mentions_exist() -> None:
+    class FakeRepo:
+        async def get_visible_job(self, **kwargs: object) -> object:  # noqa: ANN001
+            return SimpleNamespace(description="Required: Python")
+
+        async def get_active_profile(self, user_id: int) -> object:  # noqa: ANN001
+            return SimpleNamespace(parsed={"skills": ["Python"]})
+
+    class EmptyMentionRepo:
+        async def list_for_job(self, job_id: int) -> list[object]:  # noqa: ANN001
+            return []
+
+    result = await _persisted_service(FakeRepo(), EmptyMentionRepo()).get_match_evidence(
+        user_id=1, job_id=2
+    )
+
+    assert [item.skill for item in result.skills.required.matched] == ["python"]

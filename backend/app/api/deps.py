@@ -166,6 +166,7 @@ def get_match_service(db: DbSession) -> MatchingService:
         MatchingRepository(db),
         ReadinessPreferenceRepository(db),
         JobEmbeddingCoordinator(JobRepository(db), get_redis()),
+        mention_repository=JobSkillMentionRepository(db),
     )
 
 

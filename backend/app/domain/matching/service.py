@@ -22,6 +22,7 @@ from app.domain.matching.exceptions import (
     MatchUnavailableError,
     NoActiveProfileError,
 )
+from app.domain.matching.job_skill_mention_repository import JobSkillMentionRepository
 from app.domain.matching.prompts import MATCH_EXPLANATION_PROMPT
 from app.domain.matching.readiness import build_match_readiness
 from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
@@ -51,6 +52,7 @@ from app.domain.matching.skill_matcher import (
 )
 from app.infrastructure.llm_client import LLMUnavailableError, llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
+from app.models.job_skill_mention import JobSkillMention
 
 logger = get_logger(__name__)
 
@@ -74,10 +76,12 @@ class MatchingService:
         repository: MatchingRepository,
         readiness_repository: ReadinessPreferenceRepository | None = None,
         embedding_coordinator: JobEmbeddingCoordinator | None = None,
+        mention_repository: JobSkillMentionRepository | None = None,
     ) -> None:
         self._repo = repository
         self._readiness_repo = readiness_repository
         self._embedding_coordinator = embedding_coordinator
+        self._mention_repo = mention_repository
 
     async def rank_jobs(self, user_id: int, limit: int) -> RankResponse:
         profile = await self._repo.get_active_profile(user_id)
@@ -365,25 +369,59 @@ class MatchingService:
 
         profile_parsed = dict(profile.parsed)
         groups: dict[str, SkillEvidenceGroup] = {}
-        for classification, observed in classify_job_skills(job.description or "").items():
-            report = compute_skill_match([item.skill for item in observed], profile_parsed)
-            matched = set(report.matched_skills)
-            groups[classification] = SkillEvidenceGroup(
-                matched=[
-                    SkillEvidence(
-                        skill=item.skill,
-                        job_excerpt=item.job_excerpt,
-                        profile_excerpt=report.evidence[item.skill],
-                    )
-                    for item in observed
-                    if item.skill in matched
-                ],
-                missing=[
-                    SkillEvidence(skill=item.skill, job_excerpt=item.job_excerpt)
-                    for item in observed
-                    if item.skill not in matched
-                ],
-            )
+        mention_repo = getattr(self, "_mention_repo", None)
+        mentions = await mention_repo.list_for_job(job_id) if mention_repo is not None else []
+        if mentions:
+            for classification, persisted_observed in self._group_persisted_mentions(
+                mentions
+            ).items():
+                report = compute_skill_match(
+                    [item.canonical_label for item in persisted_observed], profile_parsed
+                )
+                matched = set(report.matched_skills)
+                groups[classification] = SkillEvidenceGroup(
+                    matched=[
+                        SkillEvidence(
+                            skill=item.canonical_label,
+                            job_excerpt=item.job_excerpt,
+                            profile_excerpt=report.evidence[item.canonical_label],
+                        )
+                        for item in persisted_observed
+                        if item.canonical_label in matched
+                    ],
+                    missing=[
+                        SkillEvidence(
+                            skill=item.canonical_label,
+                            job_excerpt=item.job_excerpt,
+                        )
+                        for item in persisted_observed
+                        if item.canonical_label not in matched
+                    ],
+                )
+        else:
+            for classification, fallback_observed in classify_job_skills(
+                job.description or ""
+            ).items():
+                report = compute_skill_match(
+                    [item.skill for item in fallback_observed], profile_parsed
+                )
+                matched = set(report.matched_skills)
+                groups[classification] = SkillEvidenceGroup(
+                    matched=[
+                        SkillEvidence(
+                            skill=item.skill,
+                            job_excerpt=item.job_excerpt,
+                            profile_excerpt=report.evidence[item.skill],
+                        )
+                        for item in fallback_observed
+                        if item.skill in matched
+                    ],
+                    missing=[
+                        SkillEvidence(skill=item.skill, job_excerpt=item.job_excerpt)
+                        for item in fallback_observed
+                        if item.skill not in matched
+                    ],
+                )
 
         profile_years_raw = profile_parsed.get("years_experience")
         profile_years = (
@@ -421,6 +459,20 @@ class MatchingService:
             ),
             experience_requirements=experience,
         )
+
+    @staticmethod
+    def _group_persisted_mentions(
+        mentions: list[JobSkillMention],
+    ) -> dict[str, list[JobSkillMention]]:
+        groups: dict[str, list[JobSkillMention]] = {
+            "required": [],
+            "preferred": [],
+            "unclassified": [],
+        }
+        for mention in mentions:
+            if mention.classification in groups:
+                groups[mention.classification].append(mention)
+        return groups
 
     async def _explain_with_llm(
         self,
