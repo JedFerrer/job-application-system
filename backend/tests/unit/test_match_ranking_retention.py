@@ -103,3 +103,47 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
     assert automatic_calls[0]["matched_skills"] == ["python"]
     assert automatic_calls[0]["missing_keywords"] == []
     assert automatic_calls[0]["deterministic_match"] is not None
+
+
+@pytest.mark.asyncio
+async def test_automatic_rank_persists_required_gaps_only_from_classified_mentions() -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeRepository:
+        async def get_active_profile(self, user_id: int) -> object:
+            return SimpleNamespace(
+                id=3,
+                embedding=[0.1, 0.2],
+                parsed={"skills": ["Python", "Docker", "GraphQL"]},
+            )
+
+        async def rank_jobs_by_vector(
+            self, embedding: list[float], limit: int, *, user_id: int
+        ) -> list[tuple[int, float, str]]:
+            return [(101, 0.9, "ignored persisted evidence")]
+
+        async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
+            return []
+
+        async def upsert_match(self, **kwargs: object) -> None:  # noqa: ANN003
+            calls.append(dict(kwargs))
+
+        async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
+            return None
+
+    class FakeMentionRepository:
+        async def list_for_job(self, job_id: int):  # noqa: ANN001
+            return [
+                SimpleNamespace(canonical_label="python", classification="required"),
+                SimpleNamespace(canonical_label="kubernetes", classification="required"),
+                SimpleNamespace(canonical_label="docker", classification="preferred"),
+                SimpleNamespace(canonical_label="graphql", classification="unclassified"),
+            ]
+
+    await MatchingService(
+        FakeRepository(), mention_repository=FakeMentionRepository()  # type: ignore[arg-type]
+    ).rank_jobs(1, 200)
+
+    assert calls[0]["matched_skills"] == ["python", "docker", "graphql"]
+    assert calls[0]["missing_keywords"] == ["kubernetes"]
+    assert calls[0]["deterministic_match"]["missing_skills"] == ["kubernetes"]  # type: ignore[index]

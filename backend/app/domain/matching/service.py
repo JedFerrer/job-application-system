@@ -47,7 +47,6 @@ from app.domain.matching.schemas import (
 from app.domain.matching.skill_matcher import (
     classify_job_skills,
     compute_skill_match,
-    extract_known_skills,
     parse_experience_requirements,
     report_to_dict,
 )
@@ -82,7 +81,14 @@ class MatchingService:
         self._repo = repository
         self._readiness_repo = readiness_repository
         self._embedding_coordinator = embedding_coordinator
-        self._mention_repo = mention_repository
+        self._mention_repo: JobSkillMentionRepository | None
+        if mention_repository is not None:
+            self._mention_repo = mention_repository
+        else:
+            session = getattr(repository, "_session", None)
+            self._mention_repo = (
+                JobSkillMentionRepository(session) if session is not None else None
+            )
 
     async def rank_jobs(self, user_id: int, limit: int) -> RankResponse:
         profile = await self._repo.get_active_profile(user_id)
@@ -92,8 +98,12 @@ class MatchingService:
         ranked = await self._repo.rank_jobs_by_vector(embedding, limit, user_id=user_id)
         profile_parsed = dict(profile.parsed)
         for job_id, similarity, job_description in ranked:
-            report = compute_skill_match(
-                extract_known_skills(job_description or ""), profile_parsed
+            matched_skills, missing_keywords, deterministic_match = (
+                await self._deterministic_match_fields(
+                    job_id=job_id,
+                    job_description=job_description or "",
+                    profile_parsed=profile_parsed,
+                )
             )
             await self._repo.upsert_match(
                 user_id=user_id,
@@ -101,9 +111,9 @@ class MatchingService:
                 vector_score=round(similarity * 100, 2),
                 confidence=confidence_band(similarity),
                 origin="automatic",
-                matched_skills=report.matched_skills,
-                missing_keywords=report.missing_skills,
-                deterministic_match=report_to_dict(report),
+                matched_skills=matched_skills,
+                missing_keywords=missing_keywords,
+                deterministic_match=deterministic_match,
             )
         # Manual analyses are retained outside top-K, but profile changes and
         # nightly refreshes must still update their embedding-based score.
@@ -137,12 +147,22 @@ class MatchingService:
         )
         if similarity is None:
             raise MatchNotReadyError(job_id)
+        matched_skills, missing_keywords, deterministic_match = (
+            await self._deterministic_match_fields(
+                job_id=job_id,
+                job_description=job.description or "",
+                profile_parsed=dict(getattr(profile, "parsed", {})),
+            )
+        )
         await self._repo.upsert_match(
             user_id=user_id,
             job_id=job_id,
             vector_score=round(similarity * 100, 2),
             confidence=confidence_band(similarity),
             origin="manual",
+            matched_skills=matched_skills,
+            missing_keywords=missing_keywords,
+            deterministic_match=deterministic_match,
         )
         summary = await self.get_match_summary(user_id=user_id, job_id=job_id)
         if summary is None:
@@ -155,18 +175,37 @@ class MatchingService:
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
         ranked = 0
+        profile_parsed = dict(profile.parsed)
         for job_id in job_ids:
             similarity = await self._repo.score_visible_job(
                 user_id=user_id, job_id=job_id, embedding=list(profile.embedding)
             )
             if similarity is None:
                 continue
+            get_visible_job = getattr(self._repo, "get_visible_job", None)
+            job = (
+                await get_visible_job(user_id=user_id, job_id=job_id)
+                if callable(get_visible_job)
+                else None
+            )
+            if callable(get_visible_job) and job is None:
+                continue
+            matched_skills, missing_keywords, deterministic_match = (
+                await self._deterministic_match_fields(
+                    job_id=job_id,
+                    job_description=getattr(job, "description", None) or "",
+                    profile_parsed=profile_parsed,
+                )
+            )
             await self._repo.upsert_match(
                 user_id=user_id,
                 job_id=job_id,
                 vector_score=round(similarity * 100, 2),
                 confidence=confidence_band(similarity),
                 origin="automatic",
+                matched_skills=matched_skills,
+                missing_keywords=missing_keywords,
+                deterministic_match=deterministic_match,
             )
             ranked += 1
         await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
@@ -299,9 +338,13 @@ class MatchingService:
             raise MatchNotFoundError(job_id)
 
         # Layer 2: deterministic skill recall (free, reproducible).
-        jd_skills = extract_known_skills(job.description or "")
-        report = compute_skill_match(jd_skills, dict(profile.parsed))
-        report_dict = report_to_dict(report)
+        matched_skills, missing_keywords, report_dict = (
+            await self._deterministic_match_fields(
+                job_id=job_id,
+                job_description=job.description or "",
+                profile_parsed=dict(profile.parsed),
+            )
+        )
         classified_skills = await self._load_classified_skills(user_id, job_id)
         if classified_skills is not None:
             report_dict["classified_skills"] = classified_skills.model_dump()
@@ -318,7 +361,7 @@ class MatchingService:
             profile_parsed=dict(profile.parsed),
             job_description=job.description or "",
             report_dict=report_dict,
-            deterministic_missing=report.missing_skills,
+            deterministic_missing=missing_keywords,
         )
 
         await self._repo.save_explanation(
@@ -328,7 +371,7 @@ class MatchingService:
             explanation=explanation,
             llm_analyzed_at=datetime.now(UTC),
             llm_error=llm_error,
-            matched_skills=report.matched_skills,
+            matched_skills=matched_skills,
             missing_keywords=missing_keywords,
             deterministic_match=report_dict,
             confidence=conf_band,
@@ -353,15 +396,18 @@ class MatchingService:
         if job is None or profile is None:
             raise MatchNotFoundError(job_id)
 
-        report = compute_skill_match(
-            extract_known_skills(job.description or ""),
-            dict(profile.parsed),
+        matched_skills, missing_keywords, deterministic_match = (
+            await self._deterministic_match_fields(
+                job_id=job_id,
+                job_description=job.description or "",
+                profile_parsed=dict(profile.parsed),
+            )
         )
         await self._repo.save_deterministic_match(
             match=match,
-            matched_skills=report.matched_skills,
-            missing_keywords=report.missing_skills,
-            deterministic_match=report_to_dict(report),
+            matched_skills=matched_skills,
+            missing_keywords=missing_keywords,
+            deterministic_match=deterministic_match,
         )
         return await self._to_skill_analysis(match, user_id)
 
@@ -463,6 +509,48 @@ class MatchingService:
                 unclassified=groups.get("unclassified", SkillEvidenceGroup()),
             ),
             experience_requirements=experience,
+        )
+
+    async def _deterministic_match_fields(
+        self,
+        *,
+        job_id: int,
+        job_description: str,
+        profile_parsed: dict[str, object],
+    ) -> tuple[list[str], list[str], dict[str, object]]:
+        """Return compatible match fields with required-only persisted gaps."""
+        mention_repository = getattr(self, "_mention_repo", None)
+        mentions = (
+            await mention_repository.list_for_job(job_id)
+            if mention_repository is not None
+            else []
+        )
+        if mentions:
+            all_skills = [mention.canonical_label for mention in mentions]
+            required_skills = [
+                mention.canonical_label
+                for mention in mentions
+                if mention.classification == "required"
+            ]
+        else:
+            classified = classify_job_skills(job_description)
+            all_skills = [
+                evidence.skill
+                for evidence_group in classified.values()
+                for evidence in evidence_group
+            ]
+            required_skills = [
+                evidence.skill for evidence in classified["required"]
+            ]
+
+        report = compute_skill_match(all_skills, profile_parsed)
+        required_report = compute_skill_match(required_skills, profile_parsed)
+        deterministic_match = report_to_dict(report)
+        deterministic_match["missing_skills"] = list(required_report.missing_skills)
+        return (
+            report.matched_skills,
+            required_report.missing_skills,
+            deterministic_match,
         )
 
     @staticmethod

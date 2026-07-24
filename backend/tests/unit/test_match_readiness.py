@@ -282,7 +282,17 @@ def test_readiness_uses_llm_confidence_with_a_saved_llm_score() -> None:
 @pytest.mark.asyncio
 async def test_analyze_skills_computes_and_persists_without_llm() -> None:
     match = _match(matched_skills=None, missing_keywords=None, deterministic_match=None)
-    job = SimpleNamespace(description="Python FastAPI Kubernetes role")
+    job = SimpleNamespace(
+        description=(
+            "Required skills:\n"
+            "- Python\n"
+            "- FastAPI\n"
+            "- Kubernetes\n"
+            "Preferred:\n"
+            "- Docker\n"
+            "GraphQL experience"
+        )
+    )
     profile = SimpleNamespace(parsed={"skills": ["Python", "FastAPI"]})
     saved: dict[str, object] = {}
 
@@ -307,7 +317,32 @@ async def test_analyze_skills_computes_and_persists_without_llm() -> None:
 
     assert analysis.matched_skills == ["python", "fastapi"]
     assert analysis.missing_keywords == ["kubernetes"]
-    assert saved["deterministic_match"]
+    assert saved["deterministic_match"]["missing_skills"] == ["kubernetes"]  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_persisted_classified_mentions_limit_missing_keywords_to_required_gaps() -> None:
+    class FakeMentionRepository:
+        async def list_for_job(self, job_id: int):  # noqa: ANN001
+            return [
+                SimpleNamespace(canonical_label="python", classification="required"),
+                SimpleNamespace(canonical_label="kubernetes", classification="required"),
+                SimpleNamespace(canonical_label="docker", classification="preferred"),
+                SimpleNamespace(canonical_label="graphql", classification="unclassified"),
+            ]
+
+    service = _service(object())
+    service._mention_repo = FakeMentionRepository()  # type: ignore[attr-defined]
+
+    matched, missing, deterministic = await service._deterministic_match_fields(
+        job_id=101,
+        job_description="ignored because persisted evidence exists",
+        profile_parsed={"skills": ["Python", "Docker", "GraphQL"]},
+    )
+
+    assert matched == ["python", "docker", "graphql"]
+    assert missing == ["kubernetes"]
+    assert deterministic["missing_skills"] == ["kubernetes"]
 
 
 @pytest.mark.asyncio
