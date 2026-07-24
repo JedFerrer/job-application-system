@@ -72,6 +72,14 @@ def test_extract_known_skills_from_jd_text() -> None:
     assert "aws" in found
 
 
+def test_ambiguous_aliases_are_structured_only_for_compatibility_matching() -> None:
+    assert "node.js" not in extract_known_skills("Walk the node before taking a rest.")
+
+    report = compute_skill_match(["node"], {"skills": ["node"], "work_history": []})
+
+    assert report.matched_skills == ["node.js"]
+
+
 def test_report_to_dict_is_json_safe() -> None:
     report = compute_skill_match(["Python"], _profile())
     data = report_to_dict(report)

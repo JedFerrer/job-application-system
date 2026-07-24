@@ -65,3 +65,19 @@ async def test_evidence_needs_review_when_total_profile_years_are_missing() -> N
     result = await _service(FakeRepo()).get_match_evidence(user_id=1, job_id=2)
 
     assert result.experience_requirements[0].assessment == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_evidence_keeps_public_skill_shape_after_catalog_extraction() -> None:
+    class FakeRepo:
+        async def get_visible_job(self, **kwargs: object) -> object:  # noqa: ANN001
+            return SimpleNamespace(description="Required: Python\nPreferred: Docker")
+
+        async def get_active_profile(self, user_id: int) -> object:  # noqa: ANN001
+            return SimpleNamespace(parsed={"skills": ["Python"]})
+
+    result = await _service(FakeRepo()).get_match_evidence(user_id=1, job_id=2)
+    required = result.skills.required.matched[0].model_dump()
+
+    assert set(required) == {"skill", "job_excerpt", "profile_excerpt"}
+    assert {"skill_id", "start_offset", "end_offset", "analyzer_version"}.isdisjoint(required)

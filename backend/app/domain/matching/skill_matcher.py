@@ -20,6 +20,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from app.domain.matching.skill_classification import classify_skill_mentions
+from app.domain.matching.skill_extractor import default_skill_extractor
+from app.domain.matching.skill_types import SkillClassification, SkillExtractionReport, SkillMention
+
 # Canonical skill name -> aliases (including the canonical form itself).
 # Aliases must be symmetric and unambiguous; they are NOT mere equivalents
 # (PostgreSQL and MySQL are both RDBMSs but are not aliases of each other).
@@ -107,18 +111,10 @@ _SKILL_ALIASES: dict[str, tuple[str, ...]] = {
     "iep": ("iep", "individualized education program"),
 }
 
-# Reverse lookup: any alias -> canonical name. Built once at import time.
-_ALIAS_TO_CANONICAL: dict[str, str] = {
-    alias.lower(): canonical
-    for canonical, aliases in _SKILL_ALIASES.items()
-    for alias in aliases
-}
-
-
 def normalize_skill(skill: str) -> str:
     """Map a raw skill string to its canonical form (or itself, lowercased)."""
-    cleaned = skill.strip().lower()
-    return _ALIAS_TO_CANONICAL.get(cleaned, cleaned)
+    catalog_skill = default_skill_extractor().catalog.skill_for_alias(skill)
+    return catalog_skill.preferred_label if catalog_skill is not None else skill.strip().lower()
 
 
 @dataclass(frozen=True)
@@ -140,7 +136,7 @@ class SkillMatchReport:
     evidence: dict[str, str] = field(default_factory=dict)
 
 
-EvidenceClassification = Literal["required", "preferred", "unclassified"]
+EvidenceClassification = SkillClassification
 
 
 @dataclass(frozen=True)
@@ -161,13 +157,6 @@ class ParsedExperienceRequirement:
     skill: str | None = None
 
 
-_REQUIRED_SECTION_RE = re.compile(
-    r"\b(requirements?|qualifications?|must\s+have|required)\b", re.IGNORECASE
-)
-_PREFERRED_SECTION_RE = re.compile(
-    r"\b(preferred|nice\s+to\s+have|bonus|desired)\b", re.IGNORECASE
-)
-_BULLET_RE = re.compile(r"^(?:[-*+•]|\d+[.)])\s+")
 _EXPERIENCE_RE = re.compile(
     r"\b(?P<years>\d+(?:\.\d+)?)\s*\+?\s+years?\s+of\s+"
     r"(?:(?P<descriptor>[A-Za-z][A-Za-z0-9 .+/#-]{0,80}?)\s+)?experience\b",
@@ -183,68 +172,24 @@ def _bounded_excerpt(text: str, max_chars: int = 160) -> str:
     return normalized[: max_chars - 1].rstrip() + "…"
 
 
-def _classify_section(line: str) -> EvidenceClassification | None:
-    """Return a conservative requirement classification for one source line."""
-    if _PREFERRED_SECTION_RE.search(line):
-        return "preferred"
-    if _REQUIRED_SECTION_RE.search(line):
-        return "required"
-    return None
-
-
-def _skills_on_line(line: str) -> list[str]:
-    return [
-        canonical
-        for canonical, aliases in _SKILL_ALIASES.items()
-        if any(_alias_pattern(alias).search(line) for alias in aliases)
-    ]
-
-
 def classify_job_skills(
     job_description: str,
 ) -> dict[EvidenceClassification, list[JobSkillEvidence]]:
-    """Classify known JD skills using only explicit section context.
-
-    A heading applies to following list bullets only. Any substantive non-list
-    prose ends that context, keeping ambiguous prose deliberately unclassified.
-    """
-    groups: dict[EvidenceClassification, dict[str, JobSkillEvidence]] = {
-        "required": {},
-        "preferred": {},
-        "unclassified": {},
+    """Return the legacy evidence shape from classified catalog mentions."""
+    report = classify_skill_mentions(
+        job_description,
+        default_skill_extractor().extract(job_description, source="free_text"),
+    )
+    groups: dict[EvidenceClassification, list[JobSkillEvidence]] = {
+        "required": [],
+        "preferred": [],
+        "unclassified": [],
     }
-    active_section: EvidenceClassification | None = None
-
-    for raw_line in job_description.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        classification = _classify_section(line)
-        is_bullet = bool(_BULLET_RE.match(line))
-        line_skills = _skills_on_line(line)
-
-        if classification is not None:
-            active_section = classification
-            target = classification
-        elif active_section is not None and is_bullet:
-            target = active_section
-        else:
-            target = "unclassified"
-            if active_section is not None:
-                active_section = None
-
-        for skill in line_skills:
-            groups[target].setdefault(skill, JobSkillEvidence(skill, _bounded_excerpt(line)))
-
-    # Requirement evidence is more specific than unclassified prose. Keep a
-    # skill in its strongest explicit group so the detail UI is not repetitive.
-    for skill in groups["required"]:
-        groups["preferred"].pop(skill, None)
-        groups["unclassified"].pop(skill, None)
-    for skill in groups["preferred"]:
-        groups["unclassified"].pop(skill, None)
-
-    return {group: list(items.values()) for group, items in groups.items()}
+    for mention in report.mentions:
+        groups[mention.classification].append(
+            JobSkillEvidence(mention.canonical_label, mention.job_excerpt)
+        )
+    return groups
 
 
 def parse_experience_requirements(job_description: str) -> list[ParsedExperienceRequirement]:
@@ -258,8 +203,12 @@ def parse_experience_requirements(job_description: str) -> list[ParsedExperience
         for match in _EXPERIENCE_RE.finditer(line):
             years = float(match.group("years"))
             descriptor = (match.group("descriptor") or "").strip(" .,:;-")
-            canonical = normalize_skill(descriptor) if descriptor else ""
-            skill = canonical if canonical in _SKILL_ALIASES else None
+            catalog_skill = (
+                default_skill_extractor().catalog.skill_for_alias(descriptor)
+                if descriptor
+                else None
+            )
+            skill = catalog_skill.preferred_label if catalog_skill is not None else None
             scope: Literal["total_experience", "skill_specific"] = (
                 "skill_specific" if skill else "total_experience"
             )
@@ -318,27 +267,6 @@ def _resume_haystack(profile: dict[str, object]) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def _alias_pattern(alias: str) -> re.Pattern[str]:
-    """Whole-word regex for one alias, tolerant of ``.`` / ``/`` in skills."""
-    escaped = re.escape(alias)
-    return re.compile(rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])", re.IGNORECASE)
-
-
-def _find_quote(
-    text: str, match_start: int, match_end: int, max_chars: int = 120
-) -> str:
-    """Extract a short quote around a match, snapping to the containing line."""
-    line_start = text.rfind("\n", 0, match_start) + 1
-    line_end = text.find("\n", match_end)
-    if line_end == -1:
-        line_end = len(text)
-    line = text[line_start:line_end].strip()
-    if len(line) <= max_chars:
-        return line
-    rel_start = max(0, match_start - line_start - max_chars // 2)
-    return line[rel_start : rel_start + max_chars].strip() + "…"
-
-
 def compute_skill_match(
     required_skills: list[str],
     profile: dict[str, object],
@@ -347,7 +275,8 @@ def compute_skill_match(
     if not required_skills:
         return SkillMatchReport(recall=0.0)
 
-    haystack = _resume_haystack(profile)
+    mentions = _profile_skill_mentions(profile)
+    mentions_by_canonical = {mention.canonical_label: mention for mention in mentions}
 
     matched: list[str] = []
     missing: list[str] = []
@@ -360,19 +289,10 @@ def compute_skill_match(
             continue
         seen_canonical.add(canonical)
 
-        aliases = _SKILL_ALIASES.get(canonical, (canonical,))
-
-        hit_quote: str | None = None
-        for alias in aliases:
-            pattern = _alias_pattern(alias)
-            m = pattern.search(haystack)
-            if m:
-                hit_quote = _find_quote(haystack, m.start(), m.end())
-                break
-
-        if hit_quote is not None:
+        mention = mentions_by_canonical.get(canonical)
+        if mention is not None:
             matched.append(canonical)
-            evidence[canonical] = hit_quote
+            evidence[canonical] = mention.job_excerpt
         else:
             missing.append(canonical)
 
@@ -393,17 +313,8 @@ def extract_jd_skills(job_description: str) -> list[str]:
     Scans the JD text for any known skill alias and returns the canonical
     names. Deterministic and free — no LLM call needed.
     """
-    if not job_description:
-        return []
-    text_lower = job_description.lower()
-    found: set[str] = set()
-    for canonical, aliases in _SKILL_ALIASES.items():
-        for alias in aliases:
-            pattern = _alias_pattern(alias)
-            if pattern.search(text_lower):
-                found.add(canonical)
-                break
-    return sorted(found)
+    report = default_skill_extractor().extract(job_description, source="free_text").deduplicated()
+    return sorted(mention.canonical_label for mention in report.mentions)
 
 
 def report_to_dict(report: SkillMatchReport) -> dict[str, object]:
@@ -423,12 +334,21 @@ def extract_known_skills(text: str) -> list[str]:
     without an extra LLM call to parse the job description. Only skills known to
     the alias map are detected (by design — see the module docstring).
     """
-    if not text:
-        return []
-    found: list[str] = []
-    for canonical, aliases in _SKILL_ALIASES.items():
-        for alias in aliases:
-            if _alias_pattern(alias).search(text):
-                found.append(canonical)
-                break
-    return found
+    report = default_skill_extractor().extract(text, source="free_text").deduplicated()
+    return [mention.canonical_label for mention in report.mentions]
+
+
+def _profile_skill_mentions(profile: dict[str, object]) -> tuple[SkillMention, ...]:
+    """Allow explicit profile skills/certifications while keeping prose conservative."""
+    structured_values: list[str] = []
+    for field_name in ("skills", "certifications"):
+        values = profile.get(field_name)
+        if isinstance(values, list):
+            structured_values.extend(str(value) for value in values)
+    extractor = default_skill_extractor()
+    structured = extractor.extract("\n".join(structured_values), source="structured")
+    free_text = extractor.extract(_resume_haystack(profile), source="free_text")
+    return SkillExtractionReport(
+        mentions=structured.mentions + free_text.mentions,
+        analyzer_version=structured.analyzer_version,
+    ).deduplicated().mentions
