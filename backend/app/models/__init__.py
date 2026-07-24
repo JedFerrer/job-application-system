@@ -10,6 +10,7 @@ from app.models.cover_letter import CoverLetter
 from app.models.extension_session import ExtensionSession
 from app.models.interview_prep import InterviewPrep
 from app.models.job import Job
+from app.models.job_skill_mention import JobSkillMention
 from app.models.job_source_link import JobSourceLink
 from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
 from app.models.scrape_query import ScrapeQuery
@@ -32,6 +33,7 @@ __all__ = [
     "ExtensionSession",
     "InterviewPrep",
     "Job",
+    "JobSkillMention",
     "JobSourceLink",
     "Resume",
     "TailoredResumeDraft",
