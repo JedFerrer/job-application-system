@@ -11,6 +11,9 @@ import csv
 import gzip
 import hashlib
 import json
+import re
+import unicodedata
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -66,6 +69,78 @@ def build_catalog(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(output_path, "wt", encoding="utf-8") as handle:
         json.dump(output, handle, ensure_ascii=False, separators=(",", ":"))
+
+
+def build_compatibility_catalog(
+    output_path: Path,
+    aliases: Mapping[str, tuple[str, ...]],
+    *,
+    version: str,
+) -> None:
+    """Build an interim catalog from the legacy matcher alias map.
+
+    This is intentionally an offline bridge for catalog-backed extraction. It
+    is not an ESCO export and must not be treated as full ontology coverage.
+    """
+    definitions: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_aliases: dict[str, str] = {}
+    for canonical_label, raw_aliases in aliases.items():
+        skill_id = _compatibility_skill_id(canonical_label)
+        if skill_id in seen_ids:
+            raise ValueError(f"Duplicate compatibility skill ID: {skill_id}")
+        seen_ids.add(skill_id)
+        alternative_labels = [
+            alias for alias in raw_aliases if alias.casefold() != canonical_label.casefold()
+        ]
+        for alias in (canonical_label, *alternative_labels):
+            normalized_alias = _normalize_compatibility_alias(alias)
+            previous_skill = seen_aliases.get(normalized_alias)
+            if previous_skill is not None and previous_skill != skill_id:
+                raise ValueError(
+                    f"Compatibility alias collision for '{alias}': "
+                    f"{previous_skill} and {skill_id}"
+                )
+            seen_aliases[normalized_alias] = skill_id
+        definitions.append(
+            {
+                "skill_id": skill_id,
+                "preferred_label": canonical_label,
+                "alternative_labels": alternative_labels,
+                "concept_type": "compatibility",
+                "broader_skill_ids": [],
+            }
+        )
+
+    source_payload = json.dumps(aliases, sort_keys=True, separators=(",", ":")).encode()
+    output = {
+        "metadata": {
+            "version": version,
+            "source_name": "repository legacy skill alias compatibility set",
+            "source_url": None,
+            "license_name": None,
+            "built_at": datetime.now(UTC).isoformat(),
+            "source_sha256": hashlib.sha256(source_payload).hexdigest(),
+            "catalog_kind": "legacy-compatibility",
+        },
+        "skills": definitions,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(output_path, "wt", encoding="utf-8") as handle:
+        json.dump(output, handle, ensure_ascii=False, separators=(",", ":"))
+
+
+def _compatibility_skill_id(canonical_label: str) -> str:
+    normalized = unicodedata.normalize("NFKC", canonical_label).casefold()
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+    if not slug:
+        raise ValueError(f"Cannot create compatibility skill ID: {canonical_label!r}")
+    return f"local:{slug}"
+
+
+def _normalize_compatibility_alias(alias: str) -> str:
+    normalized = unicodedata.normalize("NFKC", alias).casefold().strip()
+    return re.sub(r"\s+", " ", normalized)
 
 
 def _first_value(row: dict[str, str], *names: str) -> str:

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
+import unicodedata
 from pathlib import Path
 
 import pytest
 
 from app.domain.matching.catalog import CatalogLoadError, load_catalog, normalize_catalog_label
 from app.domain.matching.skill_matcher import (
+    _SKILL_ALIASES,
     classify_job_skills,
     compute_skill_match,
     extract_jd_skills,
@@ -18,7 +21,7 @@ from app.domain.matching.skill_matcher import (
     parse_experience_requirements,
     report_to_dict,
 )
-from app.scripts.build_esco_catalog import build_catalog
+from app.scripts.build_esco_catalog import build_catalog, build_compatibility_catalog
 
 pytestmark = pytest.mark.unit
 
@@ -165,6 +168,59 @@ def test_build_catalog_round_trip_produces_loadable_gzip_artifact(tmp_path: Path
 
     assert catalog.metadata.source_name == "synthetic ESCO export"
     assert catalog.skill_for_alias(" py ").skill_id == "test:python"  # type: ignore[union-attr]
+
+
+def test_compatibility_catalog_artifact_loads_with_legacy_aliases() -> None:
+    path = (
+        Path(__file__).parents[2]
+        / "app"
+        / "domain"
+        / "matching"
+        / "data"
+        / "esco"
+        / "catalog.v1.2.1.json.gz"
+    )
+
+    catalog = load_catalog(path)
+
+    assert catalog.metadata.version == "esco-v1.2.1"
+    assert catalog.metadata.source_name == "repository legacy skill alias compatibility set"
+    assert len(catalog.skills) == 70
+    assert len(catalog.alias_to_skill_id) == 149
+    for canonical_label, aliases in _SKILL_ALIASES.items():
+        normalized = unicodedata.normalize("NFKC", canonical_label).casefold()
+        slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+        expected_skill_id = f"local:{slug}"
+        for alias in aliases:
+            skill = catalog.skill_for_alias(alias)
+            assert skill is not None
+            assert skill.skill_id == expected_skill_id
+        skill = catalog.skill_for_alias(canonical_label)
+        assert skill is not None
+        assert skill.skill_id == expected_skill_id
+
+
+def test_build_compatibility_catalog_uses_stable_local_ids(tmp_path: Path) -> None:
+    path = tmp_path / "compatibility.json.gz"
+
+    build_compatibility_catalog(
+        path,
+        {"node.js": ("node.js", "nodejs", "node")},
+        version="esco-v1.2.1",
+    )
+    catalog = load_catalog(path, overrides_path=None)
+
+    assert catalog.get("local:node-js") is not None
+    assert catalog.skill_for_alias(" nodejs ").skill_id == "local:node-js"  # type: ignore[union-attr]
+
+
+def test_build_compatibility_catalog_rejects_colliding_local_ids(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Duplicate compatibility skill ID"):
+        build_compatibility_catalog(
+            tmp_path / "compatibility.json.gz",
+            {"C++": ("C++",), "C#": ("C#",)},
+            version="esco-v1.2.1",
+        )
 
 
 def test_catalog_normalization_is_case_and_whitespace_stable() -> None:

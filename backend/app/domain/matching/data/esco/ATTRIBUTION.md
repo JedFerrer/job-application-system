@@ -1,10 +1,14 @@
 # ESCO catalog attribution
 
-The full ESCO v1.2.1 English source snapshot and generated runtime artifact are
-not present in this repository yet. This directory currently contains only the
-Phase 2A override structure and loader foundation.
+The full ESCO v1.2.1 English source snapshot and generated ESCO runtime catalog
+are still pending. `catalog.v1.2.1.json.gz` is an interim compatibility artifact
+generated from the repository's legacy `_SKILL_ALIASES` map. It preserves the
+existing local canonical labels and aliases with deterministic `local:` skill
+IDs; it does not claim full ESCO coverage.
 
-Before adding a runtime catalog, record the exact source release, download URL,
+The compatibility artifact was generated offline by
+`app.scripts.build_esco_catalog.build_compatibility_catalog`. It makes no
+runtime network calls and has no external ESCO source URL or license claim.
+When the full ESCO source is supplied, record its exact release, download URL,
 license terms, source checksum, build timestamp, and catalog-builder version
-here. Do not claim full ESCO coverage until the source artifact is supplied and
-the generated catalog has been reviewed.
+before replacing this interim artifact.
