@@ -280,3 +280,60 @@ def test_ranking_request_is_accepted_and_task_is_owner_scoped(
 
     store.task = {"user_id": 7, "status": "queued", "type": "match_ranking"}
     assert client.get("/matches/tasks/ranking-task").status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_status", "extra_fields"),
+    [
+        ("queued", {"message": "Queued"}),
+        ("running", {"message": "Refreshing match rankings"}),
+        (
+            "done",
+            {
+                "message": "Match rankings refreshed",
+                "result": {"ranked": 200, "profile_id": 9},
+            },
+        ),
+        ("failed", {"message": "Ranking failed", "error": "No active profile"}),
+        ("skipped", {"message": "Rankings already refreshing"}),
+    ],
+)
+def test_ranking_task_polling_returns_custom_task_store_lifecycle_record(
+    lifecycle_status: str,
+    extra_fields: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Polling uses the application task record, not Celery's result backend."""
+    user = User(id=42, email="scoped@test.com", name="Scoped", is_active=True)
+    task = {
+        "user_id": user.id,
+        "type": "match_ranking",
+        "status": lifecycle_status,
+        **extra_fields,
+    }
+    store = _RankingTaskStore(task)
+    app = _build_app_with_overrides(current_user=user, match_service=_EmptyMatchService())
+    app.dependency_overrides[get_task_store] = lambda: store
+
+    class _UnexpectedCeleryLookup:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("match task polling must not query Celery")
+
+    monkeypatch.setattr("celery.result.AsyncResult", _UnexpectedCeleryLookup)
+
+    response = TestClient(app).get("/matches/tasks/ranking-task")
+
+    assert response.status_code == 200
+    assert response.json() == task
+
+
+def test_ranking_task_polling_unknown_task_remains_not_found() -> None:
+    user = User(id=42, email="scoped@test.com", name="Scoped", is_active=True)
+    store = _RankingTaskStore(None)
+    app = _build_app_with_overrides(current_user=user, match_service=_EmptyMatchService())
+    app.dependency_overrides[get_task_store] = lambda: store
+
+    response = TestClient(app).get("/matches/tasks/does-not-exist")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found or expired"
