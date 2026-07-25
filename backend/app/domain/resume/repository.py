@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.matching.profile_fingerprint import profile_matching_hash
 from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
 
 
@@ -45,6 +46,7 @@ class ResumeRepository:
             resume_id=resume_id,
             parsed=parsed,
             summary_text=summary_text,
+            profile_matching_hash=profile_matching_hash(parsed),
             embedding=embedding,
         )
         self._session.add(profile)
@@ -71,6 +73,7 @@ class ResumeRepository:
     ) -> CandidateProfile:
         profile.parsed = parsed
         profile.summary_text = summary_text
+        profile.profile_matching_hash = profile_matching_hash(parsed)
         profile.embedding = embedding
         await self._session.flush()
         return profile

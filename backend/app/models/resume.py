@@ -44,6 +44,7 @@ class CandidateProfile(Base):
     parsed: Mapped[dict[str, object]] = mapped_column(JSONB)
     # Canonical text used to compute the embedding.
     summary_text: Mapped[str] = mapped_column(Text)
+    profile_matching_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
