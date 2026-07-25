@@ -141,13 +141,39 @@ NEXT_PUBLIC_GOOGLE_CLIENT_ID=
 ### Backend services
 
 The Docker Compose file lives in `backend/` and starts PostgreSQL, Redis, the
-FastAPI API, and a Celery worker with beat enabled.
+FastAPI API, a Celery worker, and a separate Celery beat scheduler. Beat is
+included by default so scheduled scraping, ranking, and maintenance continue
+to run locally.
 
 ```bash
 cd backend
 uv sync --dev
 docker compose up -d
 ```
+
+For focused API/worker QA without scheduled tasks:
+
+```bash
+docker compose up -d db redis api worker
+```
+
+Restart the service whose Python code or configuration changed:
+
+```bash
+docker compose restart api      # FastAPI/API changes
+docker compose restart worker   # task, service, or repository changes
+docker compose restart beat     # schedule or Celery configuration changes
+```
+
+Follow all application-process logs with:
+
+```bash
+docker compose logs -f api worker beat
+```
+
+Run only one `beat` instance locally to avoid duplicate periodic dispatches.
+Queued tasks are stored in Redis and survive a worker restart, but task
+consumption pauses while the worker is restarting.
 
 The API container runs `alembic upgrade head` on startup. To run migrations
 manually:

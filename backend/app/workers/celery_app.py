@@ -4,9 +4,10 @@ The codebase is fully async; tasks bridge to the async services with
 ``asyncio.run(...)`` (see ``job_ingestion``/``maintenance``/``match_ranking``).
 Cron expressions come from settings so schedules are configurable per env.
 
-Run the worker + beat together:
+Run the worker and beat as separate processes:
 
-    celery -A app.workers.celery_app worker --beat --loglevel=info
+    celery -A app.workers.celery_app worker --loglevel=info
+    celery -A app.workers.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
 """
 
 from __future__ import annotations
