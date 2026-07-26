@@ -4,17 +4,27 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.matching.llm_fingerprint import canonicalize_cache_value
 from app.models.job import Job
 from app.models.resume import CandidateProfile, Resume
 from app.models.user_job import UserJob
 from app.models.user_job_match import UserJobMatch
+
+
+def _canonical_json(value: object, *, key: str | None = None) -> str:
+    return json.dumps(
+        canonicalize_cache_value(value, key=key),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 class MatchingRepository:
@@ -88,7 +98,28 @@ class MatchingRepository:
         matched_skills: list[str] | None = None,
         missing_keywords: list[str] | None = None,
         deterministic_match: dict[str, Any] | None = None,
+        fit_score: float | None = None,
+        ranking_score: float | None = None,
+        score_components: dict[str, object] | None = None,
+        source_profile_id: int | None = None,
+        source_profile_matching_hash: str | None = None,
+        job_description_hash: str | None = None,
+        ontology_version: str | None = None,
+        scorer_version: str | None = None,
+        readiness_preferences_hash: str | None = None,
     ) -> None:
+        canonical_matched = cast(
+            list[str] | None,
+            canonicalize_cache_value(matched_skills, key="matched_skills"),
+        )
+        canonical_missing = cast(
+            list[str] | None,
+            canonicalize_cache_value(missing_keywords, key="missing_keywords"),
+        )
+        canonical_evidence = cast(
+            dict[str, Any] | None,
+            canonicalize_cache_value(deterministic_match, key="deterministic_match"),
+        )
         values: dict[str, Any] = {
             "user_id": user_id,
             "job_id": job_id,
@@ -98,11 +129,51 @@ class MatchingRepository:
         }
         if deterministic_match is not None:
             values.update(
-                matched_skills=matched_skills,
-                missing_keywords=missing_keywords,
-                deterministic_match=deterministic_match,
+                matched_skills=canonical_matched,
+                missing_keywords=canonical_missing,
+                deterministic_match=canonical_evidence,
             )
+        values.update(
+            fit_score=fit_score,
+            ranking_score=ranking_score,
+            score_components=score_components,
+            source_profile_id=source_profile_id,
+            source_profile_matching_hash=source_profile_matching_hash,
+            job_description_hash=job_description_hash,
+            ontology_version=ontology_version,
+            scorer_version=scorer_version,
+            readiness_preferences_hash=readiness_preferences_hash,
+        )
         stmt = pg_insert(UserJobMatch).values(**values)
+        deterministic_conditions: list[Any] = [
+            UserJobMatch.vector_score.is_distinct_from(stmt.excluded.vector_score),
+            UserJobMatch.fit_score.is_distinct_from(stmt.excluded.fit_score),
+            UserJobMatch.ranking_score.is_distinct_from(stmt.excluded.ranking_score),
+            UserJobMatch.score_components.is_distinct_from(stmt.excluded.score_components),
+            UserJobMatch.source_profile_id.is_distinct_from(stmt.excluded.source_profile_id),
+            UserJobMatch.source_profile_matching_hash.is_distinct_from(
+                stmt.excluded.source_profile_matching_hash
+            ),
+            UserJobMatch.job_description_hash.is_distinct_from(stmt.excluded.job_description_hash),
+            UserJobMatch.ontology_version.is_distinct_from(stmt.excluded.ontology_version),
+            UserJobMatch.scorer_version.is_distinct_from(stmt.excluded.scorer_version),
+            UserJobMatch.readiness_preferences_hash.is_distinct_from(
+                stmt.excluded.readiness_preferences_hash
+            ),
+        ]
+        if deterministic_match is not None:
+            deterministic_conditions.extend(
+                (
+                    UserJobMatch.matched_skills.is_distinct_from(stmt.excluded.matched_skills),
+                    UserJobMatch.missing_keywords.is_distinct_from(
+                        stmt.excluded.missing_keywords
+                    ),
+                    UserJobMatch.deterministic_match.is_distinct_from(
+                        stmt.excluded.deterministic_match
+                    ),
+                )
+            )
+        deterministic_changed = or_(*deterministic_conditions)
         stmt = stmt.on_conflict_do_update(
             index_elements=[UserJobMatch.user_id, UserJobMatch.job_id],
             set_={
@@ -114,11 +185,34 @@ class MatchingRepository:
                     else_="automatic",
                 ),
                 "updated_at": datetime.now(UTC),
+                "fit_score": stmt.excluded.fit_score,
+                "ranking_score": stmt.excluded.ranking_score,
+                "score_components": stmt.excluded.score_components,
+                "source_profile_id": stmt.excluded.source_profile_id,
+                "source_profile_matching_hash": stmt.excluded.source_profile_matching_hash,
+                "job_description_hash": stmt.excluded.job_description_hash,
+                "ontology_version": stmt.excluded.ontology_version,
+                "scorer_version": stmt.excluded.scorer_version,
+                "readiness_preferences_hash": stmt.excluded.readiness_preferences_hash,
+                "llm_score": case((deterministic_changed, None), else_=UserJobMatch.llm_score),
+                "llm_confidence": case(
+                    (deterministic_changed, None), else_=UserJobMatch.llm_confidence
+                ),
+                "llm_explanation": case(
+                    (deterministic_changed, None), else_=UserJobMatch.llm_explanation
+                ),
+                "llm_analyzed_at": case(
+                    (deterministic_changed, None), else_=UserJobMatch.llm_analyzed_at
+                ),
+                "llm_error": case((deterministic_changed, None), else_=UserJobMatch.llm_error),
+                "llm_input_hash": case(
+                    (deterministic_changed, None), else_=UserJobMatch.llm_input_hash
+                ),
                 **(
                     {
-                        "matched_skills": matched_skills,
-                        "missing_keywords": missing_keywords,
-                        "deterministic_match": deterministic_match,
+                        "matched_skills": canonical_matched,
+                        "missing_keywords": canonical_missing,
+                        "deterministic_match": canonical_evidence,
                     }
                     if deterministic_match is not None
                     else {}
@@ -140,6 +234,16 @@ class MatchingRepository:
         )
         value = result.scalar_one_or_none()
         return float(value) if value is not None else None
+
+    async def get_visible_jobs_by_ids(
+        self, *, user_id: int, job_ids: list[int]
+    ) -> dict[int, Job]:
+        if not job_ids:
+            return {}
+        result = await self._session.execute(
+            select(Job).where(Job.id.in_(job_ids), *self._matchable_job_predicate(user_id=user_id))
+        )
+        return {job.id: job for job in result.scalars().all()}
 
     async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
         """Keep only the highest scoring automatic rows; never delete manual rows."""
@@ -365,23 +469,23 @@ class MatchingRepository:
         llm_score: int | None,
         llm_confidence: float | None,
         explanation: str | None,
-        llm_analyzed_at: datetime,
+        llm_analyzed_at: datetime | None,
         llm_error: str | None,
         matched_skills: list[str],
         missing_keywords: list[str],
         deterministic_match: dict[str, Any],
         confidence: str | None,
+        llm_input_hash: str | None = None,
     ) -> UserJobMatch:
         match.llm_score = llm_score
         match.llm_confidence = llm_confidence
         match.llm_explanation = explanation
         match.llm_analyzed_at = llm_analyzed_at
         match.llm_error = llm_error
+        match.llm_input_hash = llm_input_hash
         match.matched_skills = matched_skills
         match.missing_keywords = missing_keywords
         match.deterministic_match = deterministic_match
-        if confidence is not None:
-            match.confidence = confidence
         await self._session.flush()
         return match
 
@@ -393,9 +497,33 @@ class MatchingRepository:
         missing_keywords: list[str],
         deterministic_match: dict[str, Any],
     ) -> UserJobMatch:
-        """Persist free deterministic skill evidence without touching LLM fields."""
+        """Persist deterministic evidence and clear stale LLM output if it changed."""
+        deterministic_changed = any(
+            _canonical_json(current, key=key) != _canonical_json(updated, key=key)
+            for key, current, updated in (
+                ("matched_skills", match.matched_skills, matched_skills),
+                ("missing_keywords", match.missing_keywords, missing_keywords),
+                ("deterministic_match", match.deterministic_match, deterministic_match),
+            )
+        )
         match.matched_skills = matched_skills
         match.missing_keywords = missing_keywords
         match.deterministic_match = deterministic_match
+        if deterministic_changed:
+            match.llm_score = None
+            match.llm_confidence = None
+            match.llm_explanation = None
+            match.llm_analyzed_at = None
+            match.llm_error = None
+            match.llm_input_hash = None
         await self._session.flush()
         return match
+
+    async def clear_llm_analysis(self, match: UserJobMatch) -> None:
+        match.llm_score = None
+        match.llm_confidence = None
+        match.llm_explanation = None
+        match.llm_analyzed_at = None
+        match.llm_error = None
+        match.llm_input_hash = None
+        await self._session.flush()

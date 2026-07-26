@@ -2,11 +2,50 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from typing import Literal
 
 from app.domain.matching.schemas import MatchReadiness
 
 _VALID_CONFIDENCE = {"strong", "moderate", "stretch", "weak"}
+
+
+def readiness_preference_hash(preferences: object | None) -> str:
+    """Hash only the normalized fields consumed by deterministic readiness."""
+    def _text(value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip().casefold() or None
+
+    def _list(value: object) -> list[str]:
+        if not isinstance(value, (list, tuple, set)):
+            return []
+        normalized = {_text(item) for item in value}
+        return sorted(item for item in normalized if isinstance(item, str))
+
+    payload = {
+        "minimum_annual_salary": getattr(preferences, "minimum_annual_salary", None),
+        "salary_currency": _text(getattr(preferences, "salary_currency", None)),
+        "remote_only": getattr(preferences, "remote_only", None),
+        "accepted_job_types": _list(getattr(preferences, "accepted_job_types", None)),
+        "preferred_locations": _list(getattr(preferences, "preferred_locations", None)),
+        "blocked_keywords": _list(getattr(preferences, "blocked_keywords", None)),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def preference_findings(
+    job: object | None, preferences: object | None
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return the existing readiness blockers and warnings without scoring."""
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if preferences is not None and job is not None:
+        _add_preference_findings(job, preferences, blockers, warnings)
+    return tuple(blockers), tuple(warnings)
 
 
 def _normalized_confidence(confidence: str | None) -> str | None:
@@ -54,9 +93,6 @@ def build_match_readiness(
         reasons.append("Weak match confidence")
     reasons.append(_score_reason(score, normalized_confidence))
     caveats: list[str] = []
-    blockers: list[str] = []
-    warnings: list[str] = []
-
     matched_count = len(matched_skills or [])
     if matched_count > 0:
         reasons.append(f"{matched_count} matched skills found")
@@ -69,6 +105,7 @@ def build_match_readiness(
     else:
         caveats.append("Detailed skill gaps are not available yet")
 
+    decision: Literal["apply", "save", "stretch", "skip"]
     if score is None:
         caveats.append("Match score is not available yet")
         decision = "save"
@@ -94,10 +131,11 @@ def build_match_readiness(
         if known_missing_count >= 3:
             decision = "stretch"
 
-    if preferences is not None and job is not None:
-        _add_preference_findings(job, preferences, blockers, warnings)
-        if blockers:
-            decision = "skip"
+    blocker_values, warning_values = preference_findings(job, preferences)
+    blockers = list(blocker_values)
+    warnings = list(warning_values)
+    if blockers:
+        decision = "skip"
 
     return MatchReadiness(
         decision=decision,
@@ -123,13 +161,14 @@ def _add_preference_findings(
         # source-specific payload is not a trusted normalized contract.
         period = getattr(job, "salary_period", None)
         period = str(period).strip().lower() if period is not None else None
+        salary_max = getattr(job, "salary_max", None)
         if period not in {"annual", "annually", "year", "yearly"}:
             warnings.append("Annual salary data is not reliably normalized for this job")
         elif not currency or job_currency != currency:
             warnings.append("Salary currency is missing or incompatible")
-        elif getattr(job, "salary_max", None) is None:
+        elif salary_max is None:
             warnings.append("Salary is not available for comparison")
-        elif float(job.salary_max) < float(minimum):
+        elif float(salary_max) < float(minimum):
             blockers.append(f"Salary is below your {currency} {minimum:,.0f} annual minimum")
 
     accepted = {

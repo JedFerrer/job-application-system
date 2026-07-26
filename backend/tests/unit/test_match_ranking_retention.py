@@ -103,6 +103,11 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
     assert automatic_calls[0]["matched_skills"] == ["python"]
     assert automatic_calls[0]["missing_keywords"] == []
     assert automatic_calls[0]["deterministic_match"] is not None
+    assert isinstance(automatic_calls[0]["fit_score"], float)
+    assert isinstance(automatic_calls[0]["ranking_score"], float)
+    assert isinstance(automatic_calls[0]["score_components"], dict)
+    assert automatic_calls[0]["source_profile_id"] == 3
+    assert automatic_calls[0]["job_description_hash"] is not None
 
 
 @pytest.mark.asyncio

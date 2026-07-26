@@ -9,12 +9,16 @@ Layer 3 (LLM explanation/score): selective, grounded by layer 2, cached on the
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
-from typing import Literal
+from types import SimpleNamespace
+from typing import Any, Literal, cast
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
+from app.domain.matching.catalog import CATALOG_VERSION
 from app.domain.matching.exceptions import (
     MatchNotFoundError,
     MatchNotReadyError,
@@ -23,8 +27,20 @@ from app.domain.matching.exceptions import (
     NoActiveProfileError,
 )
 from app.domain.matching.job_skill_mention_repository import JobSkillMentionRepository
+from app.domain.matching.llm_fingerprint import (
+    canonical_llm_prompt_payload,
+    llm_input_hash_for_payload,
+)
+from app.domain.matching.llm_fingerprint import (
+    llm_input_hash as canonical_llm_input_hash,
+)
+from app.domain.matching.profile_fingerprint import profile_matching_hash
 from app.domain.matching.prompts import MATCH_EXPLANATION_PROMPT
-from app.domain.matching.readiness import build_match_readiness
+from app.domain.matching.readiness import (
+    build_match_readiness,
+    preference_findings,
+    readiness_preference_hash,
+)
 from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.schemas import (
@@ -44,19 +60,70 @@ from app.domain.matching.schemas import (
     SkillGapItem,
     SkillsGapSummary,
 )
+from app.domain.matching.scorer import (
+    SCORER_VERSION,
+    CanonicalSkill,
+    DeterministicScoreInput,
+    ReadinessFindings,
+    score_match,
+)
+from app.domain.matching.skill_classification import classify_skill_mentions
+from app.domain.matching.skill_extractor import default_skill_extractor
 from app.domain.matching.skill_matcher import (
     classify_job_skills,
     compute_skill_match,
     parse_experience_requirements,
+    profile_skill_ids,
     report_to_dict,
 )
-from app.infrastructure.llm_client import LLMUnavailableError, llm_chat_completion
+from app.domain.matching.skill_types import SkillMention
+from app.infrastructure.llm_client import (
+    LLMRequestSpec,
+    LLMUnavailableError,
+    llm_chat_completion_for_spec,
+    normalize_model_identity,
+    resolve_llm_request_spec,
+)
 from app.infrastructure.llm_utils import strip_code_fences
 from app.models.job_skill_mention import JobSkillMention
 
 logger = get_logger(__name__)
 
 _VALID_CONFIDENCE = {"strong", "moderate", "stretch", "overqualified"}
+_LLM_PROMPT_VERSION = "match-explanation-v1"
+_LLM_TEMPERATURE = 0.2
+_LLM_JSON_MODE = True
+
+
+def job_description_hash(description: str | None) -> str:
+    return hashlib.sha256((description or "").encode("utf-8")).hexdigest()
+
+
+def llm_input_hash(
+    *,
+    profile_parsed: object,
+    job_description: str | None,
+    deterministic_report: object,
+    model: str | None,
+    prompt_version: str | None = _LLM_PROMPT_VERSION,
+    prompt_text: str | None = MATCH_EXPLANATION_PROMPT,
+    ontology_version: str | None = CATALOG_VERSION,
+    scorer_version: str | None = SCORER_VERSION,
+    generation_parameters: dict[str, object] | None = None,
+) -> str | None:
+    return canonical_llm_input_hash(
+        profile_parsed=profile_parsed,
+        job_description=job_description,
+        deterministic_report=deterministic_report,
+        model=model,
+        prompt_version=prompt_version,
+        prompt_text=prompt_text,
+        ontology_version=ontology_version,
+        scorer_version=scorer_version,
+        generation_parameters=generation_parameters
+        if generation_parameters is not None
+        else {"temperature": _LLM_TEMPERATURE, "json_mode": _LLM_JSON_MODE},
+    )
 
 
 def confidence_band(similarity: float) -> str:
@@ -79,7 +146,14 @@ class MatchingService:
         mention_repository: JobSkillMentionRepository | None = None,
     ) -> None:
         self._repo = repository
-        self._readiness_repo = readiness_repository
+        self._readiness_repo: ReadinessPreferenceRepository | None
+        if readiness_repository is not None:
+            self._readiness_repo = readiness_repository
+        else:
+            session = getattr(repository, "_session", None)
+            self._readiness_repo = (
+                ReadinessPreferenceRepository(session) if session is not None else None
+            )
         self._embedding_coordinator = embedding_coordinator
         self._mention_repo: JobSkillMentionRepository | None
         if mention_repository is not None:
@@ -90,12 +164,141 @@ class MatchingService:
                 JobSkillMentionRepository(session) if session is not None else None
             )
 
+    async def _classified_job_mentions(
+        self, *, job_id: int, job_description: str
+    ) -> list[JobSkillMention | SkillMention]:
+        """Load persisted mentions, falling back only when none exist."""
+        mention_repository = cast(
+            JobSkillMentionRepository | None, getattr(self, "_mention_repo", None)
+        )
+        if mention_repository is not None:
+            mentions = await mention_repository.list_for_job(job_id)
+            if mentions:
+                return cast(list[JobSkillMention | SkillMention], mentions)
+        extracted = default_skill_extractor().extract(job_description, source="free_text")
+        return list(classify_skill_mentions(job_description, extracted).deduplicated().mentions)
+
+    @staticmethod
+    def _job_seniority(title: str | None) -> str | None:
+        tokens = {token.casefold() for token in (title or "").replace("-", " ").split()}
+        known = {
+            "intern", "trainee", "junior", "entry", "associate", "mid",
+            "intermediate", "senior", "lead", "principal", "staff", "director",
+            "vp", "executive",
+        }
+        values = tokens & known
+        return next(iter(values)) if len(values) == 1 else None
+
+    async def _score_match_inputs(
+        self,
+        *,
+        profile: object,
+        job: object,
+        vector_similarity: float,
+        preferences: object | None,
+        job_id: int,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        profile_parsed = dict(getattr(profile, "parsed", {}))
+        mentions = await self._classified_job_mentions(
+            job_id=job_id, job_description=getattr(job, "description", None) or ""
+        )
+        required = [
+            item
+            for item in mentions
+            if item.classification == "required" and getattr(item, "skill_id", None)
+        ]
+        preferred = [
+            item
+            for item in mentions
+            if item.classification == "preferred" and getattr(item, "skill_id", None)
+        ]
+        profile_ids = profile_skill_ids(profile_parsed)
+        profile_hash = getattr(profile, "profile_matching_hash", None) or profile_matching_hash(
+            profile_parsed
+        )
+        blockers, warnings = preference_findings(job, preferences)
+        years = [
+            item.years_required
+            for item in parse_experience_requirements(getattr(job, "description", None) or "")
+            if item.scope == "total_experience"
+        ]
+        profile_years = profile_parsed.get("years_experience")
+        score_input = DeterministicScoreInput(
+            required_skills=tuple(
+                CanonicalSkill(item.skill_id, item.canonical_label) for item in required
+            ),
+            matched_required_skills=tuple(
+                CanonicalSkill(item.skill_id, item.canonical_label)
+                for item in required
+                if item.skill_id in profile_ids
+            ),
+            preferred_skills=tuple(
+                CanonicalSkill(item.skill_id, item.canonical_label) for item in preferred
+            ),
+            matched_preferred_skills=tuple(
+                CanonicalSkill(item.skill_id, item.canonical_label)
+                for item in preferred
+                if item.skill_id in profile_ids
+            ),
+            semantic_similarity=vector_similarity,
+            job_title=getattr(job, "title", None),
+            profile_roles=tuple(
+                str(value)
+                for value in profile_parsed.get("preferred_roles", [])
+                if value
+            ),
+            profile_headline=(
+                profile_parsed.get("headline")
+                if isinstance(profile_parsed.get("headline"), str)
+                else None
+            ),
+            job_seniority=self._job_seniority(getattr(job, "title", None)),
+            profile_seniority=(
+                profile_parsed.get("seniority")
+                if isinstance(profile_parsed.get("seniority"), str)
+                else None
+            ),
+            job_years_required=max(years) if years else None,
+            profile_years_experience=(
+                float(profile_years)
+                if isinstance(profile_years, int | float)
+                else None
+            ),
+            readiness=ReadinessFindings(blockers=blockers, warnings=warnings),
+        )
+        result = score_match(score_input)
+        profile_id = cast(Any, profile).id
+        provenance = {
+            "source_profile_id": int(profile_id),
+            "source_profile_matching_hash": profile_hash,
+            "job_description_hash": job_description_hash(getattr(job, "description", None)),
+            "ontology_version": CATALOG_VERSION,
+            "scorer_version": SCORER_VERSION,
+            "readiness_preferences_hash": readiness_preference_hash(preferences),
+        }
+        return {
+            "fit_score": result.fit_score,
+            "ranking_score": result.ranking_score,
+            "score_components": result.score_components,
+        }, provenance
+
     async def rank_jobs(self, user_id: int, limit: int) -> RankResponse:
         profile = await self._repo.get_active_profile(user_id)
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
         embedding = list(profile.embedding)
         ranked = await self._repo.rank_jobs_by_vector(embedding, limit, user_id=user_id)
+        get_jobs = getattr(self._repo, "get_visible_jobs_by_ids", None)
+        jobs = (
+            await get_jobs(user_id=user_id, job_ids=[job_id for job_id, _, _ in ranked])
+            if callable(get_jobs)
+            else {}
+        )
+        preferences = (
+            await self._readiness_repo.get_for_user(user_id)
+            if self._readiness_repo is not None
+            else None
+        )
         profile_parsed = dict(profile.parsed)
         for job_id, similarity, job_description in ranked:
             matched_skills, missing_keywords, deterministic_match = (
@@ -104,6 +307,16 @@ class MatchingService:
                     job_description=job_description or "",
                     profile_parsed=profile_parsed,
                 )
+            )
+            score_values, provenance = await self._score_match_inputs(
+                profile=profile,
+                job=jobs.get(
+                    job_id,
+                    SimpleNamespace(id=job_id, title=None, description=job_description),
+                ),
+                vector_similarity=similarity,
+                preferences=preferences,
+                job_id=job_id,
             )
             await self._repo.upsert_match(
                 user_id=user_id,
@@ -114,6 +327,8 @@ class MatchingService:
                 matched_skills=matched_skills,
                 missing_keywords=missing_keywords,
                 deterministic_match=deterministic_match,
+                **score_values,
+                **provenance,
             )
         # Manual analyses are retained outside top-K, but profile changes and
         # nightly refreshes must still update their embedding-based score.
@@ -154,6 +369,18 @@ class MatchingService:
                 profile_parsed=dict(getattr(profile, "parsed", {})),
             )
         )
+        preferences = (
+            await self._readiness_repo.get_for_user(user_id)
+            if self._readiness_repo is not None
+            else None
+        )
+        score_values, provenance = await self._score_match_inputs(
+            profile=profile,
+            job=job,
+            vector_similarity=similarity,
+            preferences=preferences,
+            job_id=job_id,
+        )
         await self._repo.upsert_match(
             user_id=user_id,
             job_id=job_id,
@@ -163,6 +390,8 @@ class MatchingService:
             matched_skills=matched_skills,
             missing_keywords=missing_keywords,
             deterministic_match=deterministic_match,
+            **score_values,
+            **provenance,
         )
         summary = await self.get_match_summary(user_id=user_id, job_id=job_id)
         if summary is None:
@@ -176,6 +405,11 @@ class MatchingService:
             raise NoActiveProfileError
         ranked = 0
         profile_parsed = dict(profile.parsed)
+        preferences = (
+            await self._readiness_repo.get_for_user(user_id)
+            if self._readiness_repo is not None
+            else None
+        )
         for job_id in job_ids:
             similarity = await self._repo.score_visible_job(
                 user_id=user_id, job_id=job_id, embedding=list(profile.embedding)
@@ -197,6 +431,13 @@ class MatchingService:
                     profile_parsed=profile_parsed,
                 )
             )
+            score_values, provenance = await self._score_match_inputs(
+                profile=profile,
+                job=job or SimpleNamespace(id=job_id, title=None, description=""),
+                vector_similarity=similarity,
+                preferences=preferences,
+                job_id=job_id,
+            )
             await self._repo.upsert_match(
                 user_id=user_id,
                 job_id=job_id,
@@ -206,6 +447,8 @@ class MatchingService:
                 matched_skills=matched_skills,
                 missing_keywords=missing_keywords,
                 deterministic_match=deterministic_match,
+                **score_values,
+                **provenance,
             )
             ranked += 1
         await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
@@ -328,26 +571,55 @@ class MatchingService:
         if match is None:
             raise MatchNotFoundError(job_id)
 
-        # Cache hit: return the stored explanation, no LLM cost.
-        if getattr(match, "llm_analyzed_at", None) is not None or match.llm_explanation is not None:
-            return await self._to_explanation(match, user_id)
-
         job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         profile = await self._repo.get_active_profile(user_id)
         if job is None or profile is None:
             raise MatchNotFoundError(job_id)
 
-        # Layer 2: deterministic skill recall (free, reproducible).
+        profile_parsed = dict(profile.parsed)
         matched_skills, missing_keywords, report_dict = (
             await self._deterministic_match_fields(
                 job_id=job_id,
                 job_description=job.description or "",
-                profile_parsed=dict(profile.parsed),
+                profile_parsed=profile_parsed,
             )
         )
         classified_skills = await self._load_classified_skills(user_id, job_id)
         if classified_skills is not None:
             report_dict["classified_skills"] = classified_skills.model_dump()
+        prompt_payload = canonical_llm_prompt_payload(
+            profile_parsed=profile_parsed,
+            job_description=job.description or "",
+            deterministic_report=report_dict,
+        )
+        settings = get_settings()
+        request_spec = resolve_llm_request_spec(
+                model=normalize_model_identity(settings.llm_model),
+            temperature=_LLM_TEMPERATURE,
+            json_mode=_LLM_JSON_MODE,
+        )
+        expected_llm_hash = (
+            llm_input_hash_for_payload(
+            prompt_payload=prompt_payload,
+            model=normalize_model_identity(settings.llm_model),
+            prompt_version=_LLM_PROMPT_VERSION,
+            prompt_text=MATCH_EXPLANATION_PROMPT,
+            ontology_version=CATALOG_VERSION,
+            scorer_version=SCORER_VERSION,
+            generation_parameters=request_spec.cache_identity(),
+            )
+            if request_spec is not None
+            else None
+        )
+        # Cache hit: return only a successful explanation with matching provenance.
+        if self._has_reusable_llm_cache(match, expected_llm_hash):
+            return await self._to_explanation(match, user_id)
+        if (
+            getattr(match, "llm_analyzed_at", None) is not None
+            or match.llm_explanation is not None
+            or match.llm_input_hash is not None
+        ):
+            await self._repo.clear_llm_analysis(match)
 
         # Layer 3: LLM explanation grounded by layer 2.
         (
@@ -357,11 +629,11 @@ class MatchingService:
             explanation,
             conf_band,
             llm_error,
+            cacheable_success,
         ) = await self._explain_with_llm(
-            profile_parsed=dict(profile.parsed),
-            job_description=job.description or "",
-            report_dict=report_dict,
+            prompt_payload=prompt_payload,
             deterministic_missing=missing_keywords,
+            request_spec=request_spec,
         )
 
         await self._repo.save_explanation(
@@ -369,12 +641,13 @@ class MatchingService:
             llm_score=llm_score,
             llm_confidence=llm_confidence,
             explanation=explanation,
-            llm_analyzed_at=datetime.now(UTC),
+            llm_analyzed_at=datetime.now(UTC) if cacheable_success else None,
             llm_error=llm_error,
             matched_skills=matched_skills,
             missing_keywords=missing_keywords,
             deterministic_match=report_dict,
             confidence=conf_band,
+            llm_input_hash=expected_llm_hash if cacheable_success else None,
         )
         return await self._to_explanation(match, user_id)
 
@@ -519,29 +792,15 @@ class MatchingService:
         profile_parsed: dict[str, object],
     ) -> tuple[list[str], list[str], dict[str, object]]:
         """Return compatible match fields with required-only persisted gaps."""
-        mention_repository = getattr(self, "_mention_repo", None)
-        mentions = (
-            await mention_repository.list_for_job(job_id)
-            if mention_repository is not None
-            else []
+        mentions = await self._classified_job_mentions(
+            job_id=job_id, job_description=job_description
         )
-        if mentions:
-            all_skills = [mention.canonical_label for mention in mentions]
-            required_skills = [
-                mention.canonical_label
-                for mention in mentions
-                if mention.classification == "required"
-            ]
-        else:
-            classified = classify_job_skills(job_description)
-            all_skills = [
-                evidence.skill
-                for evidence_group in classified.values()
-                for evidence in evidence_group
-            ]
-            required_skills = [
-                evidence.skill for evidence in classified["required"]
-            ]
+        all_skills = [mention.canonical_label for mention in mentions]
+        required_skills = [
+            mention.canonical_label
+            for mention in mentions
+            if mention.classification == "required"
+        ]
 
         report = compute_skill_match(all_skills, profile_parsed)
         required_report = compute_skill_match(required_skills, profile_parsed)
@@ -570,38 +829,85 @@ class MatchingService:
     async def _explain_with_llm(
         self,
         *,
-        profile_parsed: dict[str, object],
-        job_description: str,
-        report_dict: dict[str, object],
+        prompt_payload: dict[str, object],
         deterministic_missing: list[str],
-    ) -> tuple[int | None, float | None, list[str], str | None, str | None, str | None]:
-        user_payload = {
-            "candidate_profile": profile_parsed,
-            "job_description": job_description,
-            "deterministic_skill_report": report_dict,
-            "classified_skills": report_dict.get("classified_skills", {}),
-        }
+        request_spec: LLMRequestSpec | None,
+    ) -> tuple[
+        int | None,
+        float | None,
+        list[str],
+        str | None,
+        str | None,
+        str | None,
+        bool,
+    ]:
         messages = [
             {"role": "system", "content": MATCH_EXPLANATION_PROMPT},
-            {"role": "user", "content": json.dumps(user_payload, default=str)},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    prompt_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            },
         ]
         try:
-            response, _ = await llm_chat_completion(
-                messages=messages, json_mode=True, temperature=0.2
+            if request_spec is None:
+                raise LLMUnavailableError("No cacheable LLM request policy is configured")
+            response, metadata = await llm_chat_completion_for_spec(
+                messages=messages, request_spec=request_spec
             )
         except LLMUnavailableError:
             # Degrade gracefully: deterministic evidence still gives a result.
             logger.warning("matches.explain.llm_unavailable")
-            return None, None, deterministic_missing, None, None, "LLM service unavailable"
+            return None, None, deterministic_missing, None, None, "LLM service unavailable", False
 
         content = response.choices[0].message.content or "{}"
         try:
             data = json.loads(strip_code_fences(content))
         except json.JSONDecodeError:
             logger.warning("matches.explain.bad_json")
-            return None, None, deterministic_missing, None, None, "LLM returned invalid JSON"
+            return (
+                None,
+                None,
+                deterministic_missing,
+                None,
+                None,
+                "LLM returned invalid JSON",
+                False,
+            )
 
-        return self._parse_llm_payload(data, deterministic_missing)
+        result = self._parse_llm_payload(data, deterministic_missing)
+        cacheable_success = (
+            result[3] is not None
+            and result[5] is None
+            and not metadata.fallback_occurred
+            and self._models_are_compatible(
+                requested_model=metadata.requested_model,
+                actual_model=metadata.actual_model,
+            )
+        )
+        return (*result, cacheable_success)
+
+    @staticmethod
+    def _has_reusable_llm_cache(match: object, expected_hash: str | None) -> bool:
+        return (
+            expected_hash is not None
+            and getattr(match, "llm_input_hash", None) is not None
+            and getattr(match, "llm_input_hash", None) == expected_hash
+            and getattr(match, "llm_analyzed_at", None) is not None
+            and getattr(match, "llm_error", None) is None
+            and getattr(match, "llm_explanation", None) is not None
+        )
+
+    @staticmethod
+    def _models_are_compatible(*, requested_model: object, actual_model: object) -> bool:
+        """Only an explicitly reported exact model match can be cached."""
+        requested = normalize_model_identity(requested_model)
+        actual = normalize_model_identity(actual_model)
+        return requested is not None and actual is not None and actual == requested
 
     @staticmethod
     def _parse_llm_payload(

@@ -352,3 +352,8 @@ def _profile_skill_mentions(profile: dict[str, object]) -> tuple[SkillMention, .
         mentions=structured.mentions + free_text.mentions,
         analyzer_version=structured.analyzer_version,
     ).deduplicated().mentions
+
+
+def profile_skill_ids(profile: dict[str, object]) -> frozenset[str]:
+    """Return catalog-backed profile skill identities for deterministic scoring."""
+    return frozenset(mention.skill_id for mention in _profile_skill_mentions(profile))

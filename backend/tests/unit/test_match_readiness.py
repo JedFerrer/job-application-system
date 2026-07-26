@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.domain.matching.catalog import CATALOG_VERSION
+from app.domain.matching.llm_fingerprint import (
+    canonical_llm_prompt_payload,
+    llm_input_hash_for_payload,
+)
+from app.domain.matching.prompts import MATCH_EXPLANATION_PROMPT
 from app.domain.matching.readiness import build_match_readiness
 from app.domain.matching.schemas import (
     ClassifiedSkillEvidence,
@@ -15,7 +23,16 @@ from app.domain.matching.schemas import (
     SkillEvidence,
     SkillEvidenceGroup,
 )
+from app.domain.matching.scorer import SCORER_VERSION
 from app.domain.matching.service import MatchingService
+from app.infrastructure.llm_client import (
+    LLMCompletionMetadata,
+    LLMRequestSpec,
+    LLMUnavailableError,
+    normalize_model_identity,
+    resolve_llm_request_spec,
+)
+from app.models.user_job_match import UserJobMatch
 
 pytestmark = pytest.mark.unit
 
@@ -66,6 +83,10 @@ async def test_analyze_job_embeds_an_unembedded_visible_job_without_llm() -> Non
     assert summary.job_id == 101
     assert upserted["origin"] == "manual"
     assert upserted["vector_score"] == 72.0
+    assert isinstance(upserted["fit_score"], float)
+    assert isinstance(upserted["ranking_score"], float)
+    assert isinstance(upserted["score_components"], dict)
+    assert upserted["source_profile_id"] == 3
 
 
 def _match(**kwargs: object) -> SimpleNamespace:
@@ -76,6 +97,8 @@ def _match(**kwargs: object) -> SimpleNamespace:
         "confidence": "moderate",
         "llm_confidence": None,
         "llm_explanation": None,
+        "llm_analyzed_at": None,
+        "llm_input_hash": None,
         "matched_skills": ["python", "fastapi"],
         "missing_keywords": None,
         "deterministic_match": None,
@@ -169,12 +192,7 @@ def test_build_match_readiness_skips_when_confidence_is_weak() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_matches_attaches_readiness_without_invoking_llm(monkeypatch) -> None:
-    async def _should_not_run(*args, **kwargs):  # noqa: ANN001
-        raise AssertionError("LLM must not be called for list readiness")
-
-    monkeypatch.setattr("app.domain.matching.service.llm_chat_completion", _should_not_run)
-
+async def test_list_matches_attaches_readiness_without_invoking_llm() -> None:
     job = SimpleNamespace(
         id=101,
         title="Backend Engineer",
@@ -201,7 +219,9 @@ async def test_list_matches_attaches_readiness_without_invoking_llm(monkeypatch)
     )
 
     class FakeRepo:
-        async def list_matches(self, **kwargs):  # noqa: ANN001
+        async def list_matches(
+            self, **kwargs: object
+        ) -> tuple[list[tuple[SimpleNamespace, SimpleNamespace]], int, None, bool]:
             return [(job, match)], 1, None, False
 
     service = _service(FakeRepo())
@@ -215,7 +235,26 @@ async def test_list_matches_attaches_readiness_without_invoking_llm(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_explain_match_returns_cached_readiness() -> None:
+async def test_explain_match_returns_cached_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Settings:
+        llm_model = "gpt-4o-mini"
+
+        def get_fallback_chain(self) -> list[dict[str, str | None]]:
+            return [{"name": "openai", "api_key": "key", "base_url": None, "model": None}]
+
+    settings = Settings()
+    monkeypatch.setattr("app.domain.matching.service.get_settings", lambda: settings)
+    monkeypatch.setattr("app.infrastructure.llm_client.get_settings", lambda: settings)
+    request_spec = resolve_llm_request_spec(
+        model=normalize_model_identity(settings.llm_model), temperature=0.2, json_mode=True
+    )
+    assert request_spec is not None
+    report: dict[str, object] = {}
+    prompt_payload = canonical_llm_prompt_payload(
+        profile_parsed={}, job_description="", deterministic_report=report
+    )
     match = _match(
         job_id=202,
         vector_score=71.0,
@@ -225,21 +264,99 @@ async def test_explain_match_returns_cached_readiness() -> None:
         llm_explanation="cached explanation",
         matched_skills=["python", "fastapi"],
         missing_keywords=["kubernetes", "graphql"],
+        llm_analyzed_at=datetime.now(UTC),
+        llm_input_hash=llm_input_hash_for_payload(
+            prompt_payload=prompt_payload,
+            model="gpt-4o-mini",
+            prompt_version="match-explanation-v1",
+            prompt_text=MATCH_EXPLANATION_PROMPT,
+            ontology_version=CATALOG_VERSION,
+            scorer_version=SCORER_VERSION,
+            generation_parameters=request_spec.cache_identity(),
+        ),
     )
 
     class FakeRepo:
-        async def get_match(self, *, user_id: int, job_id: int):  # noqa: ANN001
+        async def get_match(self, *, user_id: int, job_id: int) -> SimpleNamespace:
             assert user_id == 1
             assert job_id == 202
             return match
 
+        async def get_visible_job(self, *, user_id: int, job_id: int) -> SimpleNamespace:
+            return SimpleNamespace(description="")
+
+        async def get_active_profile(self, user_id: int) -> SimpleNamespace:
+            return SimpleNamespace(parsed={}, profile_matching_hash="profile-hash")
+
+        async def clear_llm_analysis(self, current: UserJobMatch) -> None:
+            current.llm_score = None
+            current.llm_confidence = None
+            current.llm_explanation = None
+            current.llm_analyzed_at = None
+            current.llm_error = None
+            current.llm_input_hash = None
+
     service = _service(FakeRepo())
+    service._deterministic_match_fields = AsyncMock(  # type: ignore[method-assign]
+        return_value=(["python", "fastapi"], ["kubernetes", "graphql"], {})
+    )
+    service._load_classified_skills = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    adapter = AsyncMock()
+    monkeypatch.setattr("app.domain.matching.service.llm_chat_completion_for_spec", adapter)
 
     explanation = await service.explain_match(user_id=1, job_id=202)
 
     assert explanation.readiness.decision == "save"
     assert explanation.readiness.reasons[0] == "Strong match score"
     assert "Known gaps: kubernetes, graphql" in explanation.readiness.reasons
+    adapter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored_hash", [None, "stale-hash"])
+async def test_explain_match_does_not_use_missing_or_stale_hash(
+    stored_hash: str | None,
+) -> None:
+    match = _match(
+        job_id=203,
+        llm_score=84,
+        llm_explanation="stale",
+        llm_analyzed_at=datetime.now(UTC),
+        llm_input_hash=stored_hash,
+    )
+
+    class FakeRepo:
+        async def get_match(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            return match
+
+        async def get_visible_job(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            return SimpleNamespace(description="")
+
+        async def get_active_profile(self, user_id: int):  # noqa: ANN001
+            return SimpleNamespace(parsed={})
+
+        async def clear_llm_analysis(self, match):  # noqa: ANN001
+            return None
+
+        async def save_explanation(self, **kwargs):  # noqa: ANN001
+            return None
+
+    service = _service(FakeRepo())
+    service._deterministic_match_fields = AsyncMock(  # type: ignore[method-assign]
+        return_value=([], [], {})
+    )
+    service._explain_with_llm = AsyncMock(  # type: ignore[method-assign]
+        return_value=(80, 0.8, [], "fresh", "strong", None, True)
+    )
+    service._to_explanation = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace()
+    )
+
+    await service.explain_match(user_id=1, job_id=203)
+
+    service._explain_with_llm.assert_awaited_once()  # type: ignore[attr-defined]
+    service._to_explanation.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -277,6 +394,274 @@ def test_readiness_uses_llm_confidence_with_a_saved_llm_score() -> None:
 
     assert readiness.decision == "apply"
     assert readiness.reasons[0] == "Strong match score"
+
+
+def test_reusable_llm_cache_requires_successful_explanation() -> None:
+    match = _match(
+        llm_analyzed_at=datetime.now(UTC),
+        llm_input_hash="current",
+        llm_explanation=None,
+        llm_error="LLM service unavailable",
+    )
+
+    assert not MatchingService._has_reusable_llm_cache(match, "current")
+
+    match.llm_explanation = "fresh"
+    match.llm_error = None
+    assert MatchingService._has_reusable_llm_cache(match, "current")
+
+
+def test_llm_model_compatibility_requires_a_reported_exact_match() -> None:
+    assert MatchingService._models_are_compatible(
+        requested_model="gpt-4o-mini", actual_model="gpt-4o-mini"
+    )
+    assert not MatchingService._models_are_compatible(
+        requested_model="gpt-4o-mini", actual_model=None
+    )
+    assert not MatchingService._models_are_compatible(
+        requested_model="gpt-4o-mini", actual_model="gpt-4o"
+    )
+    assert not MatchingService._models_are_compatible(requested_model="   ", actual_model="   ")
+    assert not MatchingService._models_are_compatible(requested_model=None, actual_model="model")
+    assert not MatchingService._models_are_compatible(requested_model=42, actual_model="model")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actual_model", "fallback_occurred"),
+    [(None, False), ("other-model", False), ("gpt-4o-mini", True)],
+)
+async def test_unverifiable_or_fallback_llm_result_is_not_cacheable(
+    monkeypatch: pytest.MonkeyPatch,
+    actual_model: str | None,
+    fallback_occurred: bool,
+) -> None:
+    async def fake_completion(**_kwargs: object) -> tuple[object, object]:
+        return (
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"score": 80, "confidence": "strong", "explanation": "ok"}'
+                        )
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                requested_model="gpt-4o-mini",
+                actual_model=actual_model,
+                fallback_occurred=fallback_occurred,
+            ),
+        )
+
+    monkeypatch.setattr("app.domain.matching.service.llm_chat_completion_for_spec", fake_completion)
+    result = await _service(object())._explain_with_llm(
+        prompt_payload={},
+        deterministic_missing=["required-gap"],
+        request_spec=cast(LLMRequestSpec, SimpleNamespace()),
+    )
+
+    assert result[3] == "ok"
+    assert result[-1] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actual_model", "fallback", "cacheable"),
+    [("gpt-4o-mini", False, True), (None, False, False), ("   ", False, False),
+     ("other-model", False, False), ("gpt-4o-mini", True, False)],
+)
+async def test_explain_match_persists_cacheability_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    actual_model: str | None,
+    fallback: bool,
+    cacheable: bool,
+) -> None:
+    match = _match(vector_score=72.0, fit_score=61.0, ranking_score=61.0)
+    saves: list[dict[str, object]] = []
+    calls = 0
+
+    class Settings:
+        llm_model = "gpt-4o-mini"
+
+        def get_fallback_chain(self) -> list[dict[str, str | None]]:
+            return [{"name": "openai", "api_key": "key", "base_url": None, "model": None}]
+
+    class Repo:
+        async def get_match(self, *, user_id: int, job_id: int) -> SimpleNamespace:
+            return match
+
+        async def get_visible_job(self, *, user_id: int, job_id: int) -> SimpleNamespace:
+            return SimpleNamespace(description="Python role")
+
+        async def get_active_profile(self, user_id: int) -> SimpleNamespace:
+            return SimpleNamespace(parsed={})
+
+        async def clear_llm_analysis(self, current: SimpleNamespace) -> None:
+            current.llm_score = None
+            current.llm_confidence = None
+            current.llm_explanation = None
+            current.llm_analyzed_at = None
+            current.llm_error = None
+            current.llm_input_hash = None
+
+        async def save_explanation(self, **kwargs: object) -> SimpleNamespace:
+            saves.append(kwargs)
+            match.llm_score = kwargs["llm_score"]
+            match.llm_confidence = kwargs["llm_confidence"]
+            match.llm_explanation = kwargs["explanation"]
+            match.llm_analyzed_at = kwargs["llm_analyzed_at"]
+            match.llm_error = kwargs["llm_error"]
+            match.llm_input_hash = kwargs["llm_input_hash"]
+            match.matched_skills = kwargs["matched_skills"]
+            match.missing_keywords = kwargs["missing_keywords"]
+            match.deterministic_match = kwargs["deterministic_match"]
+            return match
+
+    async def fake_completion(**_kwargs: object) -> tuple[object, LLMCompletionMetadata]:
+        nonlocal calls
+        calls += 1
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content='{"score": 80, "confidence": "strong", "explanation": "ok"}'
+                ))]
+            ),
+            LLMCompletionMetadata("openai", "gpt-4o-mini", actual_model, fallback),
+        )
+
+    monkeypatch.setattr("app.domain.matching.service.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.domain.matching.service.llm_chat_completion_for_spec", fake_completion)
+    service = _service(Repo())
+    service._deterministic_match_fields = AsyncMock(return_value=([], [], {}))  # type: ignore[method-assign]
+    service._load_classified_skills = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._to_explanation = AsyncMock(return_value=SimpleNamespace())  # type: ignore[method-assign]
+
+    await service.explain_match(user_id=1, job_id=101)
+    await service.explain_match(user_id=1, job_id=101)
+
+    assert calls == (1 if cacheable else 2)
+    assert (saves[0]["llm_input_hash"] is not None) is cacheable
+    assert (saves[0]["llm_analyzed_at"] is not None) is cacheable
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actual_model", "fallback", "failure"),
+    [
+        (None, False, True),
+        (None, False, False),
+        ("   ", False, False),
+        ("other-model", False, False),
+        ("gpt-4o-mini", True, False),
+    ],
+)
+async def test_explain_match_failed_refresh_clears_stale_llm_state(
+    monkeypatch: pytest.MonkeyPatch,
+    actual_model: str | None,
+    fallback: bool,
+    failure: bool,
+) -> None:
+    match = _match(
+        vector_score=72.0,
+        fit_score=61.0,
+        ranking_score=61.0,
+        llm_score=88,
+        llm_confidence=0.9,
+        llm_explanation="old",
+        llm_analyzed_at=datetime.now(UTC),
+        llm_input_hash="old-hash",
+    )
+    saves: list[dict[str, object]] = []
+    calls = 0
+
+    class Settings:
+        llm_model = "gpt-4o-mini"
+
+        def get_fallback_chain(self) -> list[dict[str, str | None]]:
+            return [{"name": "openai", "api_key": "key", "base_url": None, "model": None}]
+
+    class Repo:
+        async def get_match(self, *, user_id: int, job_id: int) -> SimpleNamespace:
+            return match
+
+        async def get_visible_job(self, *, user_id: int, job_id: int) -> SimpleNamespace:
+            return SimpleNamespace(description="Changed role")
+
+        async def get_active_profile(self, user_id: int) -> SimpleNamespace:
+            return SimpleNamespace(parsed={})
+
+        async def clear_llm_analysis(self, current: SimpleNamespace) -> None:
+            current.llm_score = current.llm_confidence = None
+            current.llm_explanation = current.llm_analyzed_at = None
+            current.llm_error = current.llm_input_hash = None
+
+        async def save_explanation(self, **kwargs: object) -> SimpleNamespace:
+            saves.append(kwargs)
+            match.llm_score = kwargs["llm_score"]
+            match.llm_confidence = kwargs["llm_confidence"]
+            match.llm_explanation = kwargs["explanation"]
+            match.llm_analyzed_at = kwargs["llm_analyzed_at"]
+            match.llm_error = kwargs["llm_error"]
+            match.llm_input_hash = kwargs["llm_input_hash"]
+            match.matched_skills = kwargs["matched_skills"]
+            match.missing_keywords = kwargs["missing_keywords"]
+            match.deterministic_match = kwargs["deterministic_match"]
+            return match
+
+    async def completion(**_kwargs: object) -> tuple[object, LLMCompletionMetadata]:
+        nonlocal calls
+        calls += 1
+        if failure:
+            raise LLMUnavailableError("unavailable")
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content='{"score": 80, "confidence": "strong", "explanation": "new"}'
+                ))]
+            ),
+            LLMCompletionMetadata("openai", "gpt-4o-mini", actual_model, fallback),
+        )
+
+    monkeypatch.setattr("app.domain.matching.service.get_settings", lambda: Settings())
+    monkeypatch.setattr(
+        "app.domain.matching.service.llm_chat_completion_for_spec", completion
+    )
+    service = _service(Repo())
+    service._deterministic_match_fields = AsyncMock(  # type: ignore[method-assign]
+        return_value=([], ["required-gap"], {"missing_skills": ["required-gap"]})
+    )
+    service._load_classified_skills = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._to_explanation = AsyncMock(return_value=SimpleNamespace())  # type: ignore[method-assign]
+
+    await service.explain_match(user_id=1, job_id=101)
+
+    saved = saves[0]
+    if failure:
+        assert saved["llm_score"] is None
+        assert saved["llm_confidence"] is None
+        assert saved["explanation"] is None
+        assert saved["llm_error"] == "LLM service unavailable"
+    else:
+        assert saved["llm_score"] == 80
+        assert saved["llm_confidence"] == 0.9
+        assert saved["explanation"] == "new"
+        assert saved["llm_error"] is None
+    assert saved["llm_analyzed_at"] is None
+    assert saved["llm_input_hash"] is None
+    assert match.llm_analyzed_at is None
+    assert match.llm_input_hash is None
+    assert not MatchingService._has_reusable_llm_cache(match, "old-hash")
+
+    await service.explain_match(user_id=1, job_id=101)
+
+    assert calls == 2
+    assert len(saves) == 2
+    assert saves[0]["llm_analyzed_at"] is None
+    assert saves[0]["llm_input_hash"] is None
+    assert match.vector_score == 72.0
+    assert match.fit_score == 61.0
+    assert match.ranking_score == 61.0
 
 
 @pytest.mark.asyncio
@@ -332,7 +717,7 @@ async def test_persisted_classified_mentions_limit_missing_keywords_to_required_
             ]
 
     service = _service(object())
-    service._mention_repo = FakeMentionRepository()  # type: ignore[attr-defined]
+    service._mention_repo = FakeMentionRepository()  # type: ignore[attr-defined,assignment]
 
     matched, missing, deterministic = await service._deterministic_match_fields(
         job_id=101,
@@ -349,7 +734,7 @@ async def test_persisted_classified_mentions_limit_missing_keywords_to_required_
 async def test_cached_match_outputs_add_classified_skills_without_changing_flat_fields() -> None:
     match = _match(missing_keywords=["legacy-gap"])
     service = _service(object())
-    service._mention_repo = object()  # type: ignore[attr-defined]
+    service._mention_repo = object()  # type: ignore[attr-defined,assignment]
     service.get_match_evidence = AsyncMock(  # type: ignore[method-assign]
         return_value=MatchEvidence(
             job_id=101,
@@ -396,7 +781,7 @@ async def test_match_summary_adds_classified_skills_when_evidence_is_available()
             return match
 
     service = _service(FakeRepo())
-    service._mention_repo = object()  # type: ignore[attr-defined]
+    service._mention_repo = object()  # type: ignore[attr-defined,assignment]
     service.get_match_evidence = AsyncMock(  # type: ignore[method-assign]
         return_value=MatchEvidence(
             job_id=101,
@@ -421,26 +806,36 @@ async def test_llm_receives_deterministic_classified_skills(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: list[dict[str, object]] = []
+    request: dict[str, object] = {}
 
     async def fake_completion(**kwargs: object) -> tuple[object, object]:
         captured.extend(kwargs["messages"])  # type: ignore[arg-type,index]
+        request.update(kwargs)
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content='{"score": 80}'))]
-        ), None
+        ), SimpleNamespace(
+            fallback_occurred=False,
+            actual_model="gpt-4o-mini",
+            requested_model="gpt-4o-mini",
+        )
 
-    monkeypatch.setattr("app.domain.matching.service.llm_chat_completion", fake_completion)
+    monkeypatch.setattr("app.domain.matching.service.llm_chat_completion_for_spec", fake_completion)
     service = _service(object())
     classified = {"required_missing_skills": ["kubernetes"]}
 
     await service._explain_with_llm(
-        profile_parsed={},
-        job_description="Job text",
-        report_dict={"classified_skills": classified},
+        prompt_payload=canonical_llm_prompt_payload(
+            profile_parsed={},
+            job_description="Job text",
+            deterministic_report={"classified_skills": classified},
+        ),
         deterministic_missing=["kubernetes"],
+        request_spec=cast(LLMRequestSpec, SimpleNamespace()),
     )
 
-    payload = json.loads(captured[1]["content"])
+    payload = json.loads(cast(str, captured[1]["content"]))
     assert payload["classified_skills"] == classified
+    assert request["request_spec"] is not None
 
 
 def test_llm_missing_keywords_cannot_override_deterministic_gaps() -> None:

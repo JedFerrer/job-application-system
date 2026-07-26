@@ -51,9 +51,16 @@ class UserJobMatch(Base):
     source_profile_id: Mapped[int | None] = mapped_column(
         ForeignKey("candidate_profiles.id", ondelete="SET NULL"), nullable=True
     )
+    source_profile_matching_hash: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
     job_description_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     ontology_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scorer_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    readiness_preferences_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    llm_input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     origin: Mapped[str] = mapped_column(String(16), nullable=False, server_default="automatic")
     llm_score: Mapped[int | None] = mapped_column(Integer)
     llm_confidence: Mapped[float | None] = mapped_column(Float)
