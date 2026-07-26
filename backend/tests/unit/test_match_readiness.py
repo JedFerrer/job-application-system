@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
@@ -15,8 +16,15 @@ from app.domain.matching.llm_fingerprint import (
     canonical_llm_prompt_payload,
     llm_input_hash_for_payload,
 )
+from app.domain.matching.profile_fingerprint import profile_matching_hash
 from app.domain.matching.prompts import MATCH_EXPLANATION_PROMPT
-from app.domain.matching.readiness import build_match_readiness
+from app.domain.matching.readiness import (
+    ReadinessContext,
+    build_match_readiness,
+    readiness_preference_hash,
+    select_readiness_score,
+)
+from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
 from app.domain.matching.schemas import (
     ClassifiedSkillEvidence,
     MatchEvidence,
@@ -24,7 +32,7 @@ from app.domain.matching.schemas import (
     SkillEvidenceGroup,
 )
 from app.domain.matching.scorer import SCORER_VERSION
-from app.domain.matching.service import MatchingService
+from app.domain.matching.service import MatchingService, job_description_hash
 from app.infrastructure.llm_client import (
     LLMCompletionMetadata,
     LLMRequestSpec,
@@ -102,10 +110,47 @@ def _match(**kwargs: object) -> SimpleNamespace:
         "matched_skills": ["python", "fastapi"],
         "missing_keywords": None,
         "deterministic_match": None,
+        "fit_score": None,
+        "ranking_score": None,
+        "score_components": None,
+        "source_profile_id": None,
+        "source_profile_matching_hash": None,
+        "job_description_hash": None,
+        "ontology_version": None,
+        "scorer_version": None,
+        "readiness_preferences_hash": None,
     }
     for key, value in kwargs.items():
         base[key] = value
     return SimpleNamespace(**base)
+
+
+def _fresh_readiness_state(
+    *, origin: str = "automatic"
+) -> tuple[SimpleNamespace, ReadinessContext]:
+    profile = SimpleNamespace(id=3, parsed={"skills": ["Python"]})
+    job = SimpleNamespace(description="Python role")
+    match = _match(
+        vector_score=39.0,
+        fit_score=81.0,
+        ranking_score=77.0,
+        score_components={"components": {}},
+        source_profile_id=profile.id,
+        source_profile_matching_hash=profile_matching_hash(profile.parsed),
+        job_description_hash=job_description_hash(job.description),
+        ontology_version=CATALOG_VERSION,
+        scorer_version=SCORER_VERSION,
+        readiness_preferences_hash=readiness_preference_hash(None),
+        origin=origin,
+    )
+    context = MatchingService._readiness_context(
+        job=job,
+        active_profile=profile,
+        preferences=None,
+        preferences_loaded=True,
+        current_profile_hash=profile_matching_hash(profile.parsed),
+    )
+    return match, context
 
 
 def test_build_match_readiness_apply_for_strong_match_without_known_gaps() -> None:
@@ -234,6 +279,150 @@ async def test_list_matches_attaches_readiness_without_invoking_llm() -> None:
     assert item.readiness.caveats == ["Detailed skill gaps are not available yet"]
 
 
+def _readiness_job(job_id: int = 101) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=job_id,
+        title="Backend Engineer",
+        company="Acme",
+        location="Remote",
+        is_remote=True,
+        job_type="fulltime",
+        description="Python role",
+        shift_type=None,
+        salary_min=None,
+        salary_max=None,
+        salary_currency=None,
+        source="test",
+        source_url=f"https://example.com/job/{job_id}",
+        company_logo=None,
+        posted_at=None,
+    )
+
+
+class _CountingReadinessPreferences:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get_for_user(self, user_id: int) -> None:
+        self.calls += 1
+        return None
+
+
+class _CountingListRepository:
+    def __init__(self, rows: list[tuple[SimpleNamespace, SimpleNamespace]]) -> None:
+        self.rows = rows
+        self.profile_calls = 0
+
+    async def list_matches(
+        self, **kwargs: object
+    ) -> tuple[list[tuple[SimpleNamespace, SimpleNamespace]], int, None, bool]:
+        return self.rows, len(self.rows), None, False
+
+    async def get_active_profile(self, user_id: int) -> SimpleNamespace:
+        self.profile_calls += 1
+        return SimpleNamespace(id=3, parsed={"skills": ["Python"]})
+
+
+@pytest.mark.asyncio
+async def test_list_readiness_loads_profile_and_preferences_once_for_multiple_matches() -> None:
+    first_job = _readiness_job(101)
+    second_job = _readiness_job(102)
+    first_match, _ = _fresh_readiness_state()
+    second_match, _ = _fresh_readiness_state()
+    first_match.job_id = first_job.id
+    second_match.job_id = second_job.id
+    first_match.job_description_hash = job_description_hash(first_job.description)
+    second_match.job_description_hash = job_description_hash(second_job.description)
+    repository = _CountingListRepository([(first_job, first_match), (second_job, second_match)])
+    preferences = _CountingReadinessPreferences()
+    service = _service(repository)
+    service._readiness_repo = cast(ReadinessPreferenceRepository, preferences)
+
+    response = await service.list_matches(user_id=1, limit=50)
+
+    assert len(response.items) == 2
+    assert repository.profile_calls == 1
+    assert preferences.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_readiness_endpoints_share_equivalent_resulting_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _readiness_job()
+    match, _ = _fresh_readiness_state()
+    match.deterministic_match = {}
+    match.missing_keywords = []
+    profile = SimpleNamespace(id=3, parsed={"skills": ["Python"]})
+    profile.embedding = [0.1]
+    job.description_embedding = [0.1]
+    preferences = _CountingReadinessPreferences()
+
+    class Repository:
+        async def list_matches(
+            self, **kwargs: object
+        ) -> tuple[list[tuple[SimpleNamespace, SimpleNamespace]], int, None, bool]:
+            return [(job, match)], 1, None, False
+
+        async def get_match(self, *, user_id: int, job_id: int) -> SimpleNamespace:
+            return match
+
+        async def get_visible_job(self, *, user_id: int, job_id: int) -> SimpleNamespace:
+            return job
+
+        async def get_active_profile(self, user_id: int) -> SimpleNamespace:
+            return profile
+
+        async def score_visible_job(
+            self, *, user_id: int, job_id: int, embedding: list[float]
+        ) -> float:
+            return 0.39
+
+        async def upsert_match(self, **kwargs: object) -> None:
+            for key, value in kwargs.items():
+                setattr(match, key, value)
+
+    service = _service(Repository())
+    service._readiness_repo = cast(ReadinessPreferenceRepository, preferences)
+    service._deterministic_match_fields = AsyncMock(  # type: ignore[method-assign]
+        return_value=(match.matched_skills, match.missing_keywords or [], {})
+    )
+    monkeypatch.setattr(
+        MatchingService,
+        "_has_reusable_llm_cache",
+        staticmethod(lambda match, expected_hash: True),
+    )
+    service._score_match_inputs = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            {
+                "fit_score": match.fit_score,
+                "ranking_score": match.ranking_score,
+                "score_components": match.score_components,
+            },
+            {
+                "source_profile_id": profile.id,
+                "source_profile_matching_hash": profile_matching_hash(profile.parsed),
+                "job_description_hash": job_description_hash(job.description),
+                "ontology_version": CATALOG_VERSION,
+                "scorer_version": SCORER_VERSION,
+                "readiness_preferences_hash": readiness_preference_hash(None),
+            },
+        )
+    )
+
+    listed = (await service.list_matches(user_id=1, limit=50)).items[0].readiness
+    summary = await service.get_match_summary(user_id=1, job_id=job.id)
+    skills = await service.analyze_skills(user_id=1, job_id=job.id)
+    explanation = await service.explain_match(user_id=1, job_id=job.id)
+    analyzed = await service.analyze_job(user_id=1, job_id=job.id)
+
+    assert summary is not None
+    assert summary.readiness == listed
+    assert skills.readiness == listed
+    assert explanation.readiness == listed
+    assert analyzed.readiness == listed
+
+
 @pytest.mark.asyncio
 async def test_explain_match_returns_cached_readiness(
     monkeypatch: pytest.MonkeyPatch,
@@ -308,7 +497,7 @@ async def test_explain_match_returns_cached_readiness(
     explanation = await service.explain_match(user_id=1, job_id=202)
 
     assert explanation.readiness.decision == "save"
-    assert explanation.readiness.reasons[0] == "Strong match score"
+    assert explanation.readiness.reasons[0] == "Moderate match score"
     assert "Known gaps: kubernetes, graphql" in explanation.readiness.reasons
     adapter.assert_not_awaited()
 
@@ -381,7 +570,7 @@ async def test_match_summary_includes_saved_ai_explanation() -> None:
     assert summary.explanation == "Strong Python and API experience for this role."
 
 
-def test_readiness_uses_llm_confidence_with_a_saved_llm_score() -> None:
+def test_readiness_ignores_llm_score_and_confidence() -> None:
     match = _match(
         vector_score=39.45,
         confidence="weak",
@@ -392,8 +581,241 @@ def test_readiness_uses_llm_confidence_with_a_saved_llm_score() -> None:
 
     readiness = MatchingService._build_readiness(match)
 
+    assert readiness.decision == "skip"
+    assert readiness.reasons[0] == "Low match score"
+
+
+def test_current_deterministic_row_uses_fit_score_only() -> None:
+    match, context = _fresh_readiness_state()
+    match.llm_score = 99
+    match.llm_confidence = 0.99
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
     assert readiness.decision == "apply"
     assert readiness.reasons[0] == "Strong match score"
+
+
+@pytest.mark.parametrize(
+    ("field", "mismatched_value"),
+    [
+        ("fit_score", None),
+        ("ranking_score", None),
+        ("score_components", None),
+        ("source_profile_id", 999),
+        ("source_profile_matching_hash", "different-profile-hash"),
+        ("job_description_hash", "different-job-hash"),
+        ("ontology_version", "different-ontology"),
+        ("scorer_version", "different-scorer"),
+        ("readiness_preferences_hash", "different-preferences-hash"),
+    ],
+)
+def test_legacy_or_stale_deterministic_row_uses_vector_fallback(
+    field: str, mismatched_value: object
+) -> None:
+    match, context = _fresh_readiness_state()
+    setattr(match, field, mismatched_value)
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "skip"
+    assert readiness.reasons[0] == "Low match score"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source_profile_id",
+        "source_profile_matching_hash",
+        "job_description_hash",
+        "ontology_version",
+        "scorer_version",
+        "readiness_preferences_hash",
+    ],
+)
+def test_legacy_null_provenance_uses_vector_fallback(field: str) -> None:
+    match, context = _fresh_readiness_state()
+    setattr(match, field, None)
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "skip"
+    assert readiness.reasons[0] == "Low match score"
+
+
+def test_legacy_null_active_profile_hash_is_recomputed_without_writing() -> None:
+    match, context = _fresh_readiness_state()
+    profile = cast(SimpleNamespace, context.active_profile)
+    profile.profile_matching_hash = None
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "apply"
+    assert profile.profile_matching_hash is None
+
+
+def test_missing_active_profile_or_preferences_context_uses_vector_fallback() -> None:
+    match, context = _fresh_readiness_state()
+    unavailable = context.__class__(
+        active_profile=None,
+        current_profile_matching_hash=None,
+        preferences=None,
+        current_readiness_preferences_hash=None,
+        preferences_loaded=False,
+        job=context.job,
+        current_job_description_hash=context.current_job_description_hash,
+    )
+
+    readiness = MatchingService._build_readiness(match, readiness_context=unavailable)
+
+    assert readiness.decision == "skip"
+    assert readiness.reasons[0] == "Low match score"
+
+
+def test_non_finite_fit_uses_finite_vector_fallback() -> None:
+    match, context = _fresh_readiness_state()
+    match.fit_score = float("nan")
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "skip"
+    assert readiness.reasons[0] == "Low match score"
+
+
+def test_missing_vector_preserves_unavailable_score_behavior() -> None:
+    match, context = _fresh_readiness_state()
+    match.vector_score = None
+    match.fit_score = None
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "save"
+    assert readiness.reasons[0] == "Match score unavailable"
+    assert "Match score is not available yet" in readiness.caveats
+
+
+@pytest.mark.parametrize(
+    ("llm_score", "llm_confidence", "llm_error", "llm_input_hash"),
+    [
+        (99, 0.99, None, "cache-hit"),
+        (1, 0.1, None, "cache-hit"),
+        (None, None, None, None),
+        (99, 0.99, "provider failed", None),
+        (99, 0.99, None, "stale-cache"),
+    ],
+)
+def test_fresh_fit_readiness_is_independent_of_llm_state(
+    llm_score: int | None,
+    llm_confidence: float | None,
+    llm_error: str | None,
+    llm_input_hash: str | None,
+) -> None:
+    match, context = _fresh_readiness_state()
+    match.llm_score = llm_score
+    match.llm_confidence = llm_confidence
+    match.llm_error = llm_error
+    match.llm_input_hash = llm_input_hash
+    match.llm_explanation = "advisory" if llm_score is not None else None
+    match.llm_analyzed_at = datetime.now(UTC) if llm_input_hash == "cache-hit" else None
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "apply"
+    assert readiness.reasons == ["Strong match score", "2 matched skills found"]
+    assert readiness.decision_basis == "score"
+
+
+def test_stale_deterministic_fit_ignores_current_llm_score() -> None:
+    match, context = _fresh_readiness_state()
+    match.source_profile_id = 999
+    match.llm_score = 99
+    match.llm_confidence = 0.99
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "skip"
+    assert readiness.reasons[0] == "Low match score"
+
+
+def test_legacy_llm_only_row_uses_vector_score() -> None:
+    match, context = _fresh_readiness_state()
+    for field in (
+        "fit_score",
+        "ranking_score",
+        "score_components",
+        "source_profile_id",
+        "source_profile_matching_hash",
+        "job_description_hash",
+        "ontology_version",
+        "scorer_version",
+        "readiness_preferences_hash",
+    ):
+        setattr(match, field, None)
+    match.llm_score = 99
+    match.llm_confidence = 0.99
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "skip"
+    assert readiness.reasons[0] == "Low match score"
+
+
+@pytest.mark.parametrize(
+    ("fit_score", "vector_score", "expected_score"),
+    [
+        (0.0, 39.0, 0.0),
+        (81.0, 0.0, 81.0),
+        (True, 39.0, 39.0),
+        (81.0, False, None),
+        (math.inf, 39.0, 39.0),
+        (-math.inf, 39.0, 39.0),
+        (math.nan, 39.0, 39.0),
+    ],
+)
+def test_readiness_score_numeric_edges(
+    fit_score: object, vector_score: object, expected_score: float | None
+) -> None:
+    match, context = _fresh_readiness_state()
+    match.fit_score = fit_score
+    match.vector_score = vector_score
+
+    selected = select_readiness_score(match, context)
+
+    assert selected == expected_score
+
+
+def test_invalid_vector_preserves_unavailable_readiness() -> None:
+    match, context = _fresh_readiness_state()
+    match.fit_score = 81.0
+    match.vector_score = math.inf
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == "save"
+    assert readiness.reasons[0] == "Match score unavailable"
+
+
+def test_zero_vector_is_valid_for_stale_fallback() -> None:
+    match, context = _fresh_readiness_state()
+    match.source_profile_id = 999
+    match.vector_score = 0.0
+
+    assert select_readiness_score(match, context) == 0.0
+
+
+@pytest.mark.parametrize("origin", ["automatic", "manual"])
+@pytest.mark.parametrize("stale", [False, True])
+def test_match_origin_never_bypasses_freshness(
+    origin: str, stale: bool
+) -> None:
+    match, context = _fresh_readiness_state(origin=origin)
+    if stale:
+        match.source_profile_id = 999
+
+    readiness = MatchingService._build_readiness(match, readiness_context=context)
+
+    assert readiness.decision == ("skip" if stale else "apply")
+    assert readiness.reasons[0] == ("Low match score" if stale else "Strong match score")
 
 
 def test_reusable_llm_cache_requires_successful_explanation() -> None:

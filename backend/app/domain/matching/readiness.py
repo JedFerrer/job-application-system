@@ -4,12 +4,88 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+from dataclasses import dataclass
 from typing import Literal
 
+from app.domain.matching.catalog import CATALOG_VERSION
 from app.domain.matching.schemas import MatchReadiness
+from app.domain.matching.scorer import SCORER_VERSION
 
 _VALID_CONFIDENCE = {"strong", "moderate", "stretch", "weak"}
+
+
+@dataclass(frozen=True)
+class ReadinessContext:
+    """Already-loaded inputs required to validate deterministic match data."""
+
+    active_profile: object | None
+    current_profile_matching_hash: str | None
+    preferences: object | None
+    current_readiness_preferences_hash: str | None
+    preferences_loaded: bool
+    job: object | None
+    current_job_description_hash: str | None
+    ontology_version: str = CATALOG_VERSION
+    scorer_version: str = SCORER_VERSION
+
+
+def _finite_score(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
+def deterministic_match_is_current(match: object, context: ReadinessContext) -> bool:
+    """Return whether persisted deterministic scoring matches current inputs."""
+    if _finite_score(getattr(match, "fit_score", None)) is None:
+        return False
+    if _finite_score(getattr(match, "ranking_score", None)) is None:
+        return False
+    if getattr(match, "score_components", None) is None:
+        return False
+    if _finite_score(getattr(match, "vector_score", None)) is None:
+        return False
+
+    profile = context.active_profile
+    job = context.job
+    if profile is None or job is None or not context.preferences_loaded:
+        return False
+    profile_id = getattr(profile, "id", None)
+    if profile_id is None or getattr(match, "source_profile_id", None) != profile_id:
+        return False
+    if (
+        context.current_profile_matching_hash is None
+        or getattr(match, "source_profile_matching_hash", None)
+        != context.current_profile_matching_hash
+    ):
+        return False
+    if (
+        context.current_job_description_hash is None
+        or getattr(match, "job_description_hash", None)
+        != context.current_job_description_hash
+    ):
+        return False
+    if context.ontology_version != CATALOG_VERSION or context.scorer_version != SCORER_VERSION:
+        return False
+    return (
+        context.current_readiness_preferences_hash is not None
+        and getattr(match, "ontology_version", None) == context.ontology_version
+        and getattr(match, "scorer_version", None) == context.scorer_version
+        and getattr(match, "readiness_preferences_hash", None)
+        == context.current_readiness_preferences_hash
+    )
+
+
+def select_readiness_score(match: object, context: ReadinessContext) -> float | None:
+    """Select deterministic fit for current rows, otherwise vector fallback."""
+    vector_score = _finite_score(getattr(match, "vector_score", None))
+    fit_score = _finite_score(getattr(match, "fit_score", None))
+    if deterministic_match_is_current(match, context) and fit_score is not None:
+        return fit_score
+    return vector_score
 
 
 def readiness_preference_hash(preferences: object | None) -> str:

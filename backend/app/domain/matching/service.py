@@ -37,9 +37,11 @@ from app.domain.matching.llm_fingerprint import (
 from app.domain.matching.profile_fingerprint import profile_matching_hash
 from app.domain.matching.prompts import MATCH_EXPLANATION_PROMPT
 from app.domain.matching.readiness import (
+    ReadinessContext,
     build_match_readiness,
     preference_findings,
     readiness_preference_hash,
+    select_readiness_score,
 )
 from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
 from app.domain.matching.repository import MatchingRepository
@@ -492,7 +494,24 @@ class MatchingService:
             if self._readiness_repo is not None
             else None
         )
+        active_profile = (
+            await self._repo.get_active_profile(user_id)
+            if self._readiness_repo is not None
+            else None
+        )
+        current_profile_hash = (
+            profile_matching_hash(dict(getattr(active_profile, "parsed", {})))
+            if active_profile is not None
+            else None
+        )
         for job, match in rows:
+            readiness_context = self._readiness_context(
+                job=job,
+                active_profile=active_profile,
+                preferences=readiness_preferences,
+                preferences_loaded=self._readiness_repo is not None,
+                current_profile_hash=current_profile_hash,
+            )
             items.append(
                 MatchItem(
                     job_id=job.id,
@@ -514,7 +533,7 @@ class MatchingService:
                     llm_score=match.llm_score,
                     llm_confidence=match.llm_confidence,
                     matched_skills=match.matched_skills or None,
-                    readiness=self._build_readiness(match, job, readiness_preferences),
+                    readiness=self._build_readiness(match, readiness_context=readiness_context),
                     posted_at=job.posted_at,
                 )
             )
@@ -548,11 +567,7 @@ class MatchingService:
         if match is None:
             return None
 
-        readiness_preferences = (
-            await self._readiness_repo.get_for_user(user_id)
-            if self._readiness_repo is not None
-            else None
-        )
+        readiness_context = await self._load_readiness_context(user_id=user_id, job=job)
         return MatchSummary(
             job_id=job_id,
             vector_score=match.vector_score,
@@ -562,7 +577,7 @@ class MatchingService:
             explanation=match.llm_explanation,
             matched_skills=match.matched_skills or [],
             missing_keywords=match.missing_keywords or [],
-            readiness=self._build_readiness(match, job, readiness_preferences),
+            readiness=self._build_readiness(match, readiness_context=readiness_context),
             classified_skills=await self._load_classified_skills(user_id, job_id),
         )
 
@@ -575,6 +590,9 @@ class MatchingService:
         profile = await self._repo.get_active_profile(user_id)
         if job is None or profile is None:
             raise MatchNotFoundError(job_id)
+        readiness_context = await self._load_readiness_context(
+            user_id=user_id, job=job, active_profile=profile
+        )
 
         profile_parsed = dict(profile.parsed)
         matched_skills, missing_keywords, report_dict = (
@@ -613,7 +631,9 @@ class MatchingService:
         )
         # Cache hit: return only a successful explanation with matching provenance.
         if self._has_reusable_llm_cache(match, expected_llm_hash):
-            return await self._to_explanation(match, user_id)
+            return await self._to_explanation(
+                match, user_id, readiness_context=readiness_context
+            )
         if (
             getattr(match, "llm_analyzed_at", None) is not None
             or match.llm_explanation is not None
@@ -649,7 +669,7 @@ class MatchingService:
             confidence=conf_band,
             llm_input_hash=expected_llm_hash if cacheable_success else None,
         )
-        return await self._to_explanation(match, user_id)
+        return await self._to_explanation(match, user_id, readiness_context=readiness_context)
 
     async def analyze_skills(self, *, user_id: int, job_id: int) -> MatchSkillAnalysis:
         """Return cached or freshly computed deterministic skill evidence."""
@@ -657,17 +677,22 @@ class MatchingService:
         if match is None:
             raise MatchNotFoundError(job_id)
 
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
+        profile = await self._repo.get_active_profile(user_id)
+        if job is None or profile is None:
+            raise MatchNotFoundError(job_id)
+        readiness_context = await self._load_readiness_context(
+            user_id=user_id, job=job, active_profile=profile
+        )
+
         if (
             match.deterministic_match is not None
             and match.matched_skills is not None
             and match.missing_keywords is not None
         ):
-            return await self._to_skill_analysis(match, user_id)
-
-        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
-        profile = await self._repo.get_active_profile(user_id)
-        if job is None or profile is None:
-            raise MatchNotFoundError(job_id)
+            return await self._to_skill_analysis(
+                match, user_id, readiness_context=readiness_context
+            )
 
         matched_skills, missing_keywords, deterministic_match = (
             await self._deterministic_match_fields(
@@ -682,7 +707,9 @@ class MatchingService:
             missing_keywords=missing_keywords,
             deterministic_match=deterministic_match,
         )
-        return await self._to_skill_analysis(match, user_id)
+        return await self._to_skill_analysis(
+            match, user_id, readiness_context=readiness_context
+        )
 
     async def get_match_evidence(self, *, user_id: int, job_id: int) -> MatchEvidence:
         """Build fresh, user-scoped deterministic evidence without persistence."""
@@ -941,16 +968,22 @@ class MatchingService:
 
         return llm_score, llm_confidence, missing, explanation_str, conf_band, None
 
-    async def _to_explanation(self, match: object, user_id: int) -> MatchExplanation:
-        # ``match`` is a UserJobMatch; typed loosely to avoid a circular import.
-        job = None
-        prefs = None
-        if self._readiness_repo is not None:
-            job = await self._repo.get_visible_job(
-                user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
+    async def _to_explanation(
+        self,
+        match: object,
+        user_id: int,
+        *,
+        readiness_context: ReadinessContext | None = None,
+    ) -> MatchExplanation:
+        if readiness_context is None:
+            readiness_context = self._readiness_context(
+                job=None,
+                active_profile=None,
+                preferences=None,
+                preferences_loaded=False,
+                current_profile_hash=None,
             )
-            prefs = await self._readiness_repo.get_for_user(user_id)
-        readiness = self._build_readiness(match, job, prefs)
+        readiness = self._build_readiness(match, readiness_context=readiness_context)
         return MatchExplanation(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
@@ -972,20 +1005,27 @@ class MatchingService:
             ),
         )
 
-    async def _to_skill_analysis(self, match: object, user_id: int) -> MatchSkillAnalysis:
-        job = None
-        prefs = None
-        if self._readiness_repo is not None:
-            job = await self._repo.get_visible_job(
-                user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
+    async def _to_skill_analysis(
+        self,
+        match: object,
+        user_id: int,
+        *,
+        readiness_context: ReadinessContext | None = None,
+    ) -> MatchSkillAnalysis:
+        if readiness_context is None:
+            readiness_context = self._readiness_context(
+                job=None,
+                active_profile=None,
+                preferences=None,
+                preferences_loaded=False,
+                current_profile_hash=None,
             )
-            prefs = await self._readiness_repo.get_for_user(user_id)
         return MatchSkillAnalysis(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
-            readiness=self._build_readiness(match, job, prefs),
+            readiness=self._build_readiness(match, readiness_context=readiness_context),
             classified_skills=await self._load_classified_skills(
                 user_id, match.job_id  # type: ignore[attr-defined]
             ),
@@ -1023,27 +1063,76 @@ class MatchingService:
         match: object,
         job: object | None = None,
         preferences: object | None = None,
+        *,
+        readiness_context: ReadinessContext | None = None,
     ) -> MatchReadiness:
-        score = match.llm_score if match.llm_score is not None else match.vector_score  # type: ignore[attr-defined]
-        confidence = match.confidence  # type: ignore[attr-defined]
-        if match.llm_score is not None and match.llm_confidence is not None:  # type: ignore[attr-defined]
-            confidence = _confidence_band_from_llm_confidence(match.llm_confidence)  # type: ignore[attr-defined]
+        if readiness_context is None:
+            readiness_context = MatchingService._readiness_context(
+                job=job,
+                active_profile=None,
+                preferences=preferences,
+                preferences_loaded=False,
+                current_profile_hash=None,
+            )
+        score = select_readiness_score(match, readiness_context)
         return build_match_readiness(
             score=score,
-            confidence=confidence,
+            confidence=None,
             matched_skills=match.matched_skills,  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords,  # type: ignore[attr-defined]
-            job=job,
-            preferences=preferences,
+            job=readiness_context.job,
+            preferences=readiness_context.preferences,
         )
 
+    @staticmethod
+    def _readiness_context(
+        *,
+        job: object | None,
+        active_profile: object | None,
+        preferences: object | None,
+        preferences_loaded: bool,
+        current_profile_hash: str | None,
+    ) -> ReadinessContext:
+        return ReadinessContext(
+            active_profile=active_profile,
+            current_profile_matching_hash=current_profile_hash,
+            preferences=preferences,
+            current_readiness_preferences_hash=(
+                readiness_preference_hash(preferences) if preferences_loaded else None
+            ),
+            preferences_loaded=preferences_loaded,
+            job=job,
+            current_job_description_hash=(
+                job_description_hash(getattr(job, "description", None))
+                if job is not None
+                else None
+            ),
+        )
 
-def _confidence_band_from_llm_confidence(confidence: float) -> str:
-    """Convert the persisted LLM confidence number to the UI/readiness band."""
-    if confidence >= 0.8:
-        return "strong"
-    if confidence >= 0.65:
-        return "moderate"
-    if confidence >= 0.5:
-        return "stretch"
-    return "weak"
+    async def _load_readiness_context(
+        self,
+        *,
+        user_id: int,
+        job: object,
+        active_profile: object | None = None,
+    ) -> ReadinessContext:
+        preferences_loaded = self._readiness_repo is not None
+        if active_profile is None and self._readiness_repo is not None:
+            active_profile = await self._repo.get_active_profile(user_id)
+        preferences = (
+            await self._readiness_repo.get_for_user(user_id)
+            if self._readiness_repo is not None
+            else None
+        )
+        current_profile_hash = (
+            profile_matching_hash(dict(getattr(active_profile, "parsed", {})))
+            if active_profile is not None
+            else None
+        )
+        return self._readiness_context(
+            job=job,
+            active_profile=active_profile,
+            preferences=preferences,
+            preferences_loaded=preferences_loaded,
+            current_profile_hash=current_profile_hash,
+        )
