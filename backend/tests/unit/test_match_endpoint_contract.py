@@ -9,6 +9,12 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user, get_match_service, get_task_store
 from app.api.v1 import matches as matches_module
 from app.core.lifespan import register_exception_handlers
+from app.domain.matching.schemas import (
+    MatchExplanation,
+    MatchItem,
+    MatchSkillAnalysis,
+    MatchSummary,
+)
 from app.models.user import User
 
 pytestmark = pytest.mark.unit
@@ -167,6 +173,91 @@ def test_classified_skills_are_optional_and_additive_in_openapi() -> None:
         "preferred_missing_skills",
         "unclassified_skills",
     }
+
+
+def test_deterministic_match_fields_are_optional_nullable_and_private_metadata_is_absent() -> None:
+    user = User(id=1, email="a@test.com", name="A", is_active=True)
+    app = _build_app_with_overrides(current_user=user, match_service=_EmptyMatchService())
+    schema = TestClient(app).get("/openapi.json").json()
+
+    for response_name in (
+        "MatchItem",
+        "MatchSummary",
+        "MatchSkillAnalysis",
+        "MatchExplanation",
+    ):
+        response_schema = schema["components"]["schemas"][response_name]
+        properties = response_schema["properties"]
+        for field in ("fit_score", "score_components", "evidence_confidence"):
+            assert field in properties
+            assert field not in response_schema.get("required", [])
+            rendered = properties[field]
+            assert rendered.get("nullable") is True or any(
+                branch.get("type") == "null" for branch in rendered.get("anyOf", [])
+            )
+
+    components = schema["components"]["schemas"]["MatchScoreComponent"]["properties"]
+    assert set(components) == {"score", "weight", "status", "reason"}
+    assert "source_profile_id" not in schema["components"]["schemas"]["MatchItem"]["properties"]
+    assert "job_description_hash" not in schema["components"]["schemas"]["MatchSummary"][
+        "properties"
+    ]
+
+
+def test_match_models_accept_omitted_and_explicit_null_deterministic_fields() -> None:
+    payload: dict[str, object] = {
+        "job_id": 501,
+        "vector_score": 72.5,
+        "confidence": None,
+        "llm_score": None,
+        "llm_confidence": None,
+        "llm_available": False,
+        "llm_error": None,
+        "explanation": None,
+        "matched_skills": [],
+        "missing_keywords": [],
+        "readiness": {
+            "decision": "save",
+            "reasons": [],
+            "caveats": [],
+            "deterministic_blockers": [],
+            "deterministic_warnings": [],
+            "decision_basis": "score",
+        },
+        "title": "Role",
+        "company": None,
+        "location": None,
+        "is_remote": None,
+        "job_type": None,
+        "description": None,
+        "shift_type": None,
+        "salary_min": None,
+        "salary_max": None,
+        "salary_currency": None,
+        "source": "test",
+        "source_url": "https://example.test/job/501",
+        "company_logo": None,
+        "posted_at": None,
+    }
+    models = (MatchItem, MatchSummary, MatchSkillAnalysis, MatchExplanation)
+
+    for model in models:
+        omitted = model.model_validate(payload)
+        assert omitted.fit_score is None
+        assert omitted.score_components is None
+        assert omitted.evidence_confidence is None
+
+        explicit = model.model_validate(
+            {
+                **payload,
+                "fit_score": None,
+                "score_components": None,
+                "evidence_confidence": None,
+            }
+        )
+        assert explicit.fit_score is None
+        assert explicit.score_components is None
+        assert explicit.evidence_confidence is None
 
 
 def test_match_summary_returns_200_null_and_uses_current_user_scope() -> None:

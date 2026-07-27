@@ -2,10 +2,73 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.domain.matching.scorer import WEIGHTS, ReasonCode
+
+ComponentName = Literal[
+    "required_skill_coverage",
+    "preferred_skill_coverage",
+    "semantic_similarity",
+    "role_alignment",
+    "seniority_experience",
+    "user_preferences",
+]
+EvidenceConfidence = Literal["high", "medium", "low"]
+
+
+class MatchScoreComponent(BaseModel):
+    score: float
+    weight: float
+    status: Literal["known", "unknown"]
+    reason: str
+
+
+MatchScoreComponents = dict[ComponentName, MatchScoreComponent]
+
+
+def sanitize_score_components(raw: object) -> MatchScoreComponents | None:
+    """Return only safe, current scorer components from historic JSON data."""
+    if not isinstance(raw, Mapping):
+        return None
+    components = raw.get("components")
+    if not isinstance(components, Mapping):
+        return None
+    reason_codes = set(get_args(ReasonCode))
+    allowed = set(get_args(ComponentName))
+    sanitized: MatchScoreComponents = {}
+    for name, value in components.items():
+        if name not in allowed or not isinstance(value, Mapping):
+            continue
+        score = value.get("score")
+        weight = value.get("weight")
+        status = value.get("status")
+        reason = value.get("reason")
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, int | float)
+            or not math.isfinite(float(score))
+            or not 0 <= float(score) <= 100
+            or isinstance(weight, bool)
+            or not isinstance(weight, int | float)
+            or not math.isfinite(float(weight))
+            or float(weight) != float(WEIGHTS[name])
+            or status not in {"known", "unknown"}
+            or reason not in reason_codes
+        ):
+            continue
+        sanitized[name] = MatchScoreComponent(
+            score=float(score),
+            weight=float(weight),
+            status=status,
+            reason=reason,
+        )
+    return sanitized or None
 
 
 class RankRequest(BaseModel):
@@ -58,6 +121,9 @@ class MatchItem(BaseModel):
     source_url: str
     company_logo: str | None = None
     vector_score: float
+    fit_score: float | None = None
+    score_components: MatchScoreComponents | None = None
+    evidence_confidence: EvidenceConfidence | None = None
     confidence: str | None
     llm_score: int | None
     llm_confidence: float | None = None
@@ -90,6 +156,9 @@ class MatchExplanation(BaseModel):
 
     job_id: int
     vector_score: float
+    fit_score: float | None = None
+    score_components: MatchScoreComponents | None = None
+    evidence_confidence: EvidenceConfidence | None = None
     confidence: str | None
     llm_score: int | None
     llm_confidence: float | None
@@ -107,6 +176,9 @@ class MatchSummary(BaseModel):
 
     job_id: int
     vector_score: float
+    fit_score: float | None = None
+    score_components: MatchScoreComponents | None = None
+    evidence_confidence: EvidenceConfidence | None = None
     confidence: str | None
     llm_score: int | None
     llm_confidence: float | None = None
@@ -122,6 +194,9 @@ class MatchSkillAnalysis(BaseModel):
 
     job_id: int
     vector_score: float
+    fit_score: float | None = None
+    score_components: MatchScoreComponents | None = None
+    evidence_confidence: EvidenceConfidence | None = None
     matched_skills: list[str]
     missing_keywords: list[str]
     readiness: MatchReadiness

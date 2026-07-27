@@ -211,6 +211,9 @@ export interface MatchItem {
   source_url: string;
   company_logo: string | null;
   vector_score: number;
+  fit_score?: number | null;
+  score_components?: MatchScoreComponents | null;
+  evidence_confidence?: EvidenceConfidence | null;
   confidence: string | null;
   llm_score: number | null;
   llm_confidence?: number | null;
@@ -242,6 +245,9 @@ export interface RankTaskResponse {
 export interface MatchExplanation {
   job_id: number;
   vector_score: number;
+  fit_score?: number | null;
+  score_components?: MatchScoreComponents | null;
+  evidence_confidence?: EvidenceConfidence | null;
   confidence: string | null;
   llm_score: number | null;
   llm_confidence: number | null;
@@ -256,6 +262,9 @@ export interface MatchExplanation {
 export interface MatchSummary {
   job_id: number;
   vector_score: number;
+  fit_score?: number | null;
+  score_components?: MatchScoreComponents | null;
+  evidence_confidence?: EvidenceConfidence | null;
   confidence: string | null;
   llm_score: number | null;
   llm_confidence?: number | null;
@@ -268,10 +277,32 @@ export interface MatchSummary {
 export interface MatchSkillAnalysis {
   job_id: number;
   vector_score: number;
+  fit_score?: number | null;
+  score_components?: MatchScoreComponents | null;
+  evidence_confidence?: EvidenceConfidence | null;
   matched_skills: string[];
   missing_keywords: string[];
   readiness: MatchReadiness;
 }
+
+export type EvidenceConfidence = "high" | "medium" | "low";
+
+export type MatchScoreComponent = {
+  score: number;
+  weight: number;
+  status: "known" | "unknown";
+  reason: string;
+};
+
+export type MatchScoreComponents = Partial<Record<
+  | "required_skill_coverage"
+  | "preferred_skill_coverage"
+  | "semantic_similarity"
+  | "role_alignment"
+  | "seniority_experience"
+  | "user_preferences",
+  MatchScoreComponent
+>>;
 
 export interface SkillEvidence {
   skill: string;

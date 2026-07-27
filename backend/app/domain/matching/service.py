@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, Literal, cast
@@ -39,6 +41,7 @@ from app.domain.matching.prompts import MATCH_EXPLANATION_PROMPT
 from app.domain.matching.readiness import (
     ReadinessContext,
     build_match_readiness,
+    deterministic_match_is_current,
     preference_findings,
     readiness_preference_hash,
     select_readiness_score,
@@ -48,6 +51,7 @@ from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.schemas import (
     ClassifiedMatchSkills,
     ClassifiedSkillEvidence,
+    EvidenceConfidence,
     ExperienceRequirement,
     MatchEvidence,
     MatchExplanation,
@@ -61,6 +65,7 @@ from app.domain.matching.schemas import (
     SkillEvidenceGroup,
     SkillGapItem,
     SkillsGapSummary,
+    sanitize_score_components,
 )
 from app.domain.matching.scorer import (
     SCORER_VERSION,
@@ -95,6 +100,14 @@ _VALID_CONFIDENCE = {"strong", "moderate", "stretch", "overqualified"}
 _LLM_PROMPT_VERSION = "match-explanation-v1"
 _LLM_TEMPERATURE = 0.2
 _LLM_JSON_MODE = True
+
+_EvidenceSource = Literal["persisted", "fallback", "unavailable"]
+
+
+@dataclass(frozen=True)
+class _ClassifiedEvidenceResult:
+    skills: ClassifiedMatchSkills | None
+    source: _EvidenceSource
 
 
 def job_description_hash(description: str | None) -> str:
@@ -529,6 +542,7 @@ class MatchingService:
                     source_url=job.source_url,
                     company_logo=job.company_logo,
                     vector_score=match.vector_score,
+                    **self._match_contract_fields(match, readiness_context),
                     confidence=match.confidence,
                     llm_score=match.llm_score,
                     llm_confidence=match.llm_confidence,
@@ -568,9 +582,13 @@ class MatchingService:
             return None
 
         readiness_context = await self._load_readiness_context(user_id=user_id, job=job)
+        evidence_result = await self._load_classified_evidence(user_id, job_id)
         return MatchSummary(
             job_id=job_id,
             vector_score=match.vector_score,
+            **self._match_contract_fields(
+                match, readiness_context, evidence_result.source
+            ),
             confidence=match.confidence,
             llm_score=match.llm_score,
             llm_confidence=match.llm_confidence,
@@ -578,7 +596,7 @@ class MatchingService:
             matched_skills=match.matched_skills or [],
             missing_keywords=match.missing_keywords or [],
             readiness=self._build_readiness(match, readiness_context=readiness_context),
-            classified_skills=await self._load_classified_skills(user_id, job_id),
+            classified_skills=evidence_result.skills,
         )
 
     async def explain_match(self, *, user_id: int, job_id: int) -> MatchExplanation:
@@ -595,16 +613,17 @@ class MatchingService:
         )
 
         profile_parsed = dict(profile.parsed)
+        evidence_result = await self._load_classified_evidence(user_id, job_id)
         matched_skills, missing_keywords, report_dict = (
             await self._deterministic_match_fields(
                 job_id=job_id,
                 job_description=job.description or "",
                 profile_parsed=profile_parsed,
+                classified_skills=evidence_result.skills,
             )
         )
-        classified_skills = await self._load_classified_skills(user_id, job_id)
-        if classified_skills is not None:
-            report_dict["classified_skills"] = classified_skills.model_dump()
+        if evidence_result.skills is not None:
+            report_dict["classified_skills"] = evidence_result.skills.model_dump()
         prompt_payload = canonical_llm_prompt_payload(
             profile_parsed=profile_parsed,
             job_description=job.description or "",
@@ -632,7 +651,11 @@ class MatchingService:
         # Cache hit: return only a successful explanation with matching provenance.
         if self._has_reusable_llm_cache(match, expected_llm_hash):
             return await self._to_explanation(
-                match, user_id, readiness_context=readiness_context
+                match,
+                user_id,
+                readiness_context=readiness_context,
+                evidence_source=evidence_result.source,
+                classified_skills=evidence_result.skills,
             )
         if (
             getattr(match, "llm_analyzed_at", None) is not None
@@ -669,7 +692,13 @@ class MatchingService:
             confidence=conf_band,
             llm_input_hash=expected_llm_hash if cacheable_success else None,
         )
-        return await self._to_explanation(match, user_id, readiness_context=readiness_context)
+        return await self._to_explanation(
+            match,
+            user_id,
+            readiness_context=readiness_context,
+            evidence_source=evidence_result.source,
+            classified_skills=evidence_result.skills,
+        )
 
     async def analyze_skills(self, *, user_id: int, job_id: int) -> MatchSkillAnalysis:
         """Return cached or freshly computed deterministic skill evidence."""
@@ -684,6 +713,7 @@ class MatchingService:
         readiness_context = await self._load_readiness_context(
             user_id=user_id, job=job, active_profile=profile
         )
+        evidence_result = await self._load_classified_evidence(user_id, job_id)
 
         if (
             match.deterministic_match is not None
@@ -691,7 +721,11 @@ class MatchingService:
             and match.missing_keywords is not None
         ):
             return await self._to_skill_analysis(
-                match, user_id, readiness_context=readiness_context
+                match,
+                user_id,
+                readiness_context=readiness_context,
+                evidence_source=evidence_result.source,
+                classified_skills=evidence_result.skills,
             )
 
         matched_skills, missing_keywords, deterministic_match = (
@@ -699,6 +733,7 @@ class MatchingService:
                 job_id=job_id,
                 job_description=job.description or "",
                 profile_parsed=dict(profile.parsed),
+                classified_skills=evidence_result.skills,
             )
         )
         await self._repo.save_deterministic_match(
@@ -708,11 +743,24 @@ class MatchingService:
             deterministic_match=deterministic_match,
         )
         return await self._to_skill_analysis(
-            match, user_id, readiness_context=readiness_context
+            match,
+            user_id,
+            readiness_context=readiness_context,
+            evidence_source=evidence_result.source,
+            classified_skills=evidence_result.skills,
         )
 
     async def get_match_evidence(self, *, user_id: int, job_id: int) -> MatchEvidence:
         """Build fresh, user-scoped deterministic evidence without persistence."""
+        evidence, _ = await self._get_match_evidence_with_source(
+            user_id=user_id, job_id=job_id
+        )
+        return evidence
+
+    async def _get_match_evidence_with_source(
+        self, *, user_id: int, job_id: int
+    ) -> tuple[MatchEvidence, Literal["persisted", "fallback"]]:
+        """Build evidence and retain its internal source for response mapping."""
         job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         profile = await self._repo.get_active_profile(user_id)
         if job is None or profile is None:
@@ -722,6 +770,9 @@ class MatchingService:
         groups: dict[str, SkillEvidenceGroup] = {}
         mention_repo = getattr(self, "_mention_repo", None)
         mentions = await mention_repo.list_for_job(job_id) if mention_repo is not None else []
+        evidence_source: Literal["persisted", "fallback"] = (
+            "persisted" if mentions else "fallback"
+        )
         if mentions:
             for classification, persisted_observed in self._group_persisted_mentions(
                 mentions
@@ -801,7 +852,7 @@ class MatchingService:
                 )
             )
 
-        return MatchEvidence(
+        result = MatchEvidence(
             job_id=job_id,
             skills=ClassifiedSkillEvidence(
                 required=groups.get("required", SkillEvidenceGroup()),
@@ -810,6 +861,7 @@ class MatchingService:
             ),
             experience_requirements=experience,
         )
+        return result, evidence_source
 
     async def _deterministic_match_fields(
         self,
@@ -817,17 +869,39 @@ class MatchingService:
         job_id: int,
         job_description: str,
         profile_parsed: dict[str, object],
+        classified_skills: ClassifiedMatchSkills | None = None,
     ) -> tuple[list[str], list[str], dict[str, object]]:
         """Return compatible match fields with required-only persisted gaps."""
-        mentions = await self._classified_job_mentions(
-            job_id=job_id, job_description=job_description
-        )
-        all_skills = [mention.canonical_label for mention in mentions]
-        required_skills = [
-            mention.canonical_label
-            for mention in mentions
-            if mention.classification == "required"
-        ]
+        if classified_skills is None:
+            mentions = await self._classified_job_mentions(
+                job_id=job_id, job_description=job_description
+            )
+            all_skills = [mention.canonical_label for mention in mentions]
+            required_skills = [
+                mention.canonical_label
+                for mention in mentions
+                if mention.classification == "required"
+            ]
+        else:
+            all_skills = list(
+                dict.fromkeys(
+                    [
+                        *classified_skills.required_matched_skills,
+                        *classified_skills.required_missing_skills,
+                        *classified_skills.preferred_matched_skills,
+                        *classified_skills.preferred_missing_skills,
+                        *classified_skills.unclassified_skills,
+                    ]
+                )
+            )
+            required_skills = list(
+                dict.fromkeys(
+                    [
+                        *classified_skills.required_matched_skills,
+                        *classified_skills.required_missing_skills,
+                    ]
+                )
+            )
 
         report = compute_skill_match(all_skills, profile_parsed)
         required_report = compute_skill_match(required_skills, profile_parsed)
@@ -974,6 +1048,8 @@ class MatchingService:
         user_id: int,
         *,
         readiness_context: ReadinessContext | None = None,
+        evidence_source: _EvidenceSource = "unavailable",
+        classified_skills: ClassifiedMatchSkills | None = None,
     ) -> MatchExplanation:
         if readiness_context is None:
             readiness_context = self._readiness_context(
@@ -987,6 +1063,9 @@ class MatchingService:
         return MatchExplanation(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
+            **self._match_contract_fields(
+                match, readiness_context, evidence_source
+            ),
             confidence=match.confidence,  # type: ignore[attr-defined]
             llm_score=match.llm_score,  # type: ignore[attr-defined]
             llm_confidence=match.llm_confidence,  # type: ignore[attr-defined]
@@ -1000,8 +1079,12 @@ class MatchingService:
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
             readiness=readiness,
-            classified_skills=await self._load_classified_skills(
-                user_id, match.job_id  # type: ignore[attr-defined]
+            classified_skills=(
+                classified_skills
+                if classified_skills is not None
+                else await self._load_classified_skills(
+                    user_id, match.job_id  # type: ignore[attr-defined]
+                )
             ),
         )
 
@@ -1011,6 +1094,8 @@ class MatchingService:
         user_id: int,
         *,
         readiness_context: ReadinessContext | None = None,
+        evidence_source: _EvidenceSource = "unavailable",
+        classified_skills: ClassifiedMatchSkills | None = None,
     ) -> MatchSkillAnalysis:
         if readiness_context is None:
             readiness_context = self._readiness_context(
@@ -1023,11 +1108,18 @@ class MatchingService:
         return MatchSkillAnalysis(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
+            **self._match_contract_fields(
+                match, readiness_context, evidence_source
+            ),
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
             readiness=self._build_readiness(match, readiness_context=readiness_context),
-            classified_skills=await self._load_classified_skills(
-                user_id, match.job_id  # type: ignore[attr-defined]
+            classified_skills=(
+                classified_skills
+                if classified_skills is not None
+                else await self._load_classified_skills(
+                    user_id, match.job_id  # type: ignore[attr-defined]
+                )
             ),
         )
 
@@ -1035,15 +1127,80 @@ class MatchingService:
         self, user_id: int, job_id: int
     ) -> ClassifiedMatchSkills | None:
         """Return additive classified output when the persisted-evidence path is wired."""
-        if getattr(self, "_mention_repo", None) is None:
-            return None
         try:
             evidence = await self.get_match_evidence(user_id=user_id, job_id=job_id)
         except MatchNotFoundError:
-            # Classified output is additive: do not make legacy cached output
-            # unavailable when a profile has been removed since matching.
             return None
         return self._classified_skills_from_evidence(evidence)
+
+    async def _load_classified_evidence(
+        self, user_id: int, job_id: int
+    ) -> _ClassifiedEvidenceResult:
+        """Load classified skills and retain the evidence source already observed."""
+        if getattr(self, "_mention_repo", None) is None:
+            return _ClassifiedEvidenceResult(skills=None, source="unavailable")
+        if not callable(getattr(self._mention_repo, "list_for_job", None)):
+            try:
+                evidence = await self.get_match_evidence(user_id=user_id, job_id=job_id)
+            except MatchNotFoundError:
+                return _ClassifiedEvidenceResult(skills=None, source="unavailable")
+            return _ClassifiedEvidenceResult(
+                skills=self._classified_skills_from_evidence(evidence),
+                source="unavailable",
+            )
+        try:
+            evidence, source = await self._get_match_evidence_with_source(
+                user_id=user_id, job_id=job_id
+            )
+        except MatchNotFoundError:
+            # Classified output is additive: do not make legacy cached output
+            # unavailable when a profile has been removed since matching.
+            return _ClassifiedEvidenceResult(skills=None, source="unavailable")
+        return _ClassifiedEvidenceResult(
+            skills=self._classified_skills_from_evidence(evidence),
+            source=source,
+        )
+
+    @staticmethod
+    def _match_contract_fields(
+        match: object,
+        readiness_context: ReadinessContext,
+        evidence_source: _EvidenceSource = "unavailable",
+    ) -> dict[str, object]:
+        current = deterministic_match_is_current(match, readiness_context)
+        evidence_confidence: EvidenceConfidence | None = (
+            None
+            if evidence_source == "unavailable"
+            else ("high" if evidence_source == "persisted" else "medium")
+        )
+        if not current:
+            return {
+                "fit_score": None,
+                "score_components": None,
+                "evidence_confidence": (
+                    "low" if evidence_confidence is not None else None
+                ),
+            }
+        fit_score = getattr(match, "fit_score", None)
+        components = sanitize_score_components(getattr(match, "score_components", None))
+        if (
+            not isinstance(fit_score, int | float)
+            or isinstance(fit_score, bool)
+            or not math.isfinite(float(fit_score))
+            or components is None
+        ):
+            return {
+                "fit_score": None,
+                "score_components": None,
+                "evidence_confidence": (
+                    "low" if evidence_confidence is not None else None
+                ),
+            }
+        return {
+            "fit_score": float(fit_score),
+            "score_components": components,
+            "evidence_confidence": evidence_confidence,
+        }
 
     @staticmethod
     def _classified_skills_from_evidence(evidence: MatchEvidence) -> ClassifiedMatchSkills:

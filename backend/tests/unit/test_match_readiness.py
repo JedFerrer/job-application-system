@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.domain.matching.catalog import CATALOG_VERSION
+from app.domain.matching.job_skill_mention_repository import JobSkillMentionRepository
 from app.domain.matching.llm_fingerprint import (
     canonical_llm_prompt_payload,
     llm_input_hash_for_payload,
@@ -30,6 +31,7 @@ from app.domain.matching.schemas import (
     MatchEvidence,
     SkillEvidence,
     SkillEvidenceGroup,
+    sanitize_score_components,
 )
 from app.domain.matching.scorer import SCORER_VERSION
 from app.domain.matching.service import MatchingService, job_description_hash
@@ -43,6 +45,87 @@ from app.infrastructure.llm_client import (
 from app.models.user_job_match import UserJobMatch
 
 pytestmark = pytest.mark.unit
+
+
+def test_score_component_sanitizer_whitelists_and_preserves_zero() -> None:
+    result = sanitize_score_components(
+        {
+            "version": "fit-scorer-v1",
+            "components": {
+                "required_skill_coverage": {
+                    "score": 0,
+                    "weight": 35,
+                    "status": "known",
+                    "reason": "matched_required_coverage",
+                },
+                "unknown_future_component": {
+                    "score": 99,
+                    "weight": 1,
+                    "status": "known",
+                    "reason": "matched_required_coverage",
+                },
+                "bad": "historic payload",
+            },
+            "source_profile_id": 42,
+        }
+    )
+
+    assert result is not None
+    assert set(result) == {"required_skill_coverage"}
+    assert result["required_skill_coverage"].score == 0
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        {"components": "malformed"},
+        {"components": {"required_skill_coverage": {"score": math.nan}}},
+        {"components": {"required_skill_coverage": {"score": math.inf}}},
+        {
+            "components": {
+                "required_skill_coverage": {
+                    "score": True,
+                    "weight": 35,
+                    "status": "known",
+                    "reason": "matched_required_coverage",
+                }
+            }
+        },
+        {
+            "components": {
+                "required_skill_coverage": {
+                    "score": 50,
+                    "weight": 99,
+                    "status": "known",
+                    "reason": "matched_required_coverage",
+                }
+            }
+        },
+        {
+            "components": {
+                "required_skill_coverage": {
+                    "score": 50,
+                    "weight": 35,
+                    "status": "invalid",
+                    "reason": "matched_required_coverage",
+                }
+            }
+        },
+        {
+            "components": {
+                "required_skill_coverage": {
+                    "score": 50,
+                    "weight": 35,
+                    "status": "known",
+                    "reason": "raw job excerpt",
+                }
+            }
+        },
+    ],
+)
+def test_score_component_sanitizer_fails_soft_for_historic_payloads(raw: object) -> None:
+    assert sanitize_score_components(raw) is None
 
 
 def _service(repo: object) -> MatchingService:
@@ -134,7 +217,16 @@ def _fresh_readiness_state(
         vector_score=39.0,
         fit_score=81.0,
         ranking_score=77.0,
-        score_components={"components": {}},
+        score_components={
+            "components": {
+                "required_skill_coverage": {
+                    "score": 80,
+                    "weight": 35,
+                    "status": "known",
+                    "reason": "matched_required_coverage",
+                }
+            }
+        },
         source_profile_id=profile.id,
         source_profile_matching_hash=profile_matching_hash(profile.parsed),
         job_description_hash=job_description_hash(job.description),
@@ -151,6 +243,33 @@ def _fresh_readiness_state(
         current_profile_hash=profile_matching_hash(profile.parsed),
     )
     return match, context
+
+
+def test_match_contract_mapper_exposes_only_current_deterministic_values() -> None:
+    match, context = _fresh_readiness_state()
+    match.score_components = {
+        "components": {
+            "required_skill_coverage": {
+                "score": 80,
+                "weight": 35,
+                "status": "known",
+                "reason": "matched_required_coverage",
+            }
+        }
+    }
+
+    current = MatchingService._match_contract_fields(match, context, "persisted")
+    assert current["fit_score"] == 81.0
+    assert current["evidence_confidence"] == "high"
+    assert current["score_components"] is not None
+
+    match.source_profile_id = 999
+    stale = MatchingService._match_contract_fields(match, context, "persisted")
+    assert stale == {
+        "fit_score": None,
+        "score_components": None,
+        "evidence_confidence": "low",
+    }
 
 
 def test_build_match_readiness_apply_for_strong_match_without_known_gaps() -> None:
@@ -384,6 +503,11 @@ async def test_readiness_endpoints_share_equivalent_resulting_state(
 
     service = _service(Repository())
     service._readiness_repo = cast(ReadinessPreferenceRepository, preferences)
+    class EmptyMentionRepository:
+        async def list_for_job(self, job_id: int) -> list[object]:
+            return []
+
+    service._mention_repo = cast(JobSkillMentionRepository, EmptyMentionRepository())
     service._deterministic_match_fields = AsyncMock(  # type: ignore[method-assign]
         return_value=(match.matched_skills, match.missing_keywords or [], {})
     )
@@ -410,7 +534,8 @@ async def test_readiness_endpoints_share_equivalent_resulting_state(
         )
     )
 
-    listed = (await service.list_matches(user_id=1, limit=50)).items[0].readiness
+    listed_item = (await service.list_matches(user_id=1, limit=50)).items[0]
+    listed = listed_item.readiness
     summary = await service.get_match_summary(user_id=1, job_id=job.id)
     skills = await service.analyze_skills(user_id=1, job_id=job.id)
     explanation = await service.explain_match(user_id=1, job_id=job.id)
@@ -421,6 +546,169 @@ async def test_readiness_endpoints_share_equivalent_resulting_state(
     assert skills.readiness == listed
     assert explanation.readiness == listed
     assert analyzed.readiness == listed
+    assert listed_item.fit_score == 81.0
+    assert listed_item.evidence_confidence is None
+    assert summary.fit_score == 81.0
+    assert skills.fit_score == 81.0
+    assert explanation.fit_score == 81.0
+    assert analyzed.fit_score == 81.0
+    assert summary.evidence_confidence == "medium"
+    assert skills.evidence_confidence == "medium"
+    assert explanation.evidence_confidence == "medium"
+    assert analyzed.evidence_confidence == "medium"
+
+
+@pytest.mark.asyncio
+async def test_stale_list_match_keeps_confidence_unavailable_without_repair() -> None:
+    job = _readiness_job()
+    match, _ = _fresh_readiness_state()
+    match.job_id = job.id
+    match.source_profile_id = 999
+
+    class Repository:
+        async def list_matches(
+            self, **kwargs: object
+        ) -> tuple[list[tuple[SimpleNamespace, SimpleNamespace]], int, None, bool]:
+            return [(job, match)], 1, None, False
+
+        async def get_active_profile(self, user_id: int) -> SimpleNamespace:
+            return SimpleNamespace(id=3, parsed={"skills": ["Python"]})
+
+    mention_repo = AsyncMock()
+    service = _service(Repository())
+    service._mention_repo = cast(JobSkillMentionRepository, mention_repo)
+    service._deterministic_match_fields = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("list must not repair deterministic state")
+    )
+    service._explain_with_llm = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("list must not call the LLM")
+    )
+
+    item = (await service.list_matches(user_id=1, limit=50)).items[0]
+
+    assert item.fit_score is None
+    assert item.score_components is None
+    assert item.evidence_confidence is None
+    mention_repo.list_for_job.assert_not_awaited()
+    service._deterministic_match_fields.assert_not_awaited()
+    service._explain_with_llm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("persisted", "stale", "expected_confidence"),
+    [(True, False, "high"), (True, True, "low"), (False, True, "low")],
+)
+async def test_detail_evidence_confidence_respects_source_and_freshness(
+    persisted: bool, stale: bool, expected_confidence: str
+) -> None:
+    job = _readiness_job()
+    match, _ = _fresh_readiness_state()
+    if stale:
+        match.source_profile_id = 999
+    profile = SimpleNamespace(id=3, parsed={"skills": ["Python"]})
+
+    class Repository:
+        async def get_match(self, **kwargs: object) -> SimpleNamespace:  # noqa: ANN003
+            return match
+
+        async def get_visible_job(self, **kwargs: object) -> SimpleNamespace:  # noqa: ANN003
+            return job
+
+        async def get_active_profile(self, user_id: int) -> SimpleNamespace:
+            return profile
+
+    class Preferences:
+        async def get_for_user(self, user_id: int) -> None:
+            return None
+
+    class Mentions:
+        async def list_for_job(self, job_id: int) -> list[object]:
+            if not persisted:
+                return []
+            return [
+                SimpleNamespace(
+                    canonical_label="python",
+                    classification="required",
+                    skill_id="python",
+                    job_excerpt="Required Python",
+                )
+            ]
+
+    service = _service(Repository())
+    service._readiness_repo = cast(ReadinessPreferenceRepository, Preferences())
+    service._mention_repo = cast(JobSkillMentionRepository, Mentions())
+
+    summary = await service.get_match_summary(user_id=1, job_id=job.id)
+
+    assert summary is not None
+    assert summary.evidence_confidence == expected_confidence
+    if stale:
+        assert summary.fit_score is None
+        assert summary.score_components is None
+    else:
+        assert summary.fit_score == 81.0
+        assert summary.score_components is not None
+
+
+@pytest.mark.asyncio
+async def test_detail_contract_is_independent_of_llm_state() -> None:
+    job = _readiness_job()
+    match, _ = _fresh_readiness_state()
+    profile = SimpleNamespace(id=3, parsed={"skills": ["Python"]})
+
+    class Repository:
+        async def get_match(self, **kwargs: object) -> SimpleNamespace:  # noqa: ANN003
+            return match
+
+        async def get_visible_job(self, **kwargs: object) -> SimpleNamespace:  # noqa: ANN003
+            return job
+
+        async def get_active_profile(self, user_id: int) -> SimpleNamespace:
+            return profile
+
+    class Preferences:
+        async def get_for_user(self, user_id: int) -> None:
+            return None
+
+    class PersistedMentions:
+        async def list_for_job(self, job_id: int) -> list[object]:
+            return [
+                SimpleNamespace(
+                    canonical_label="python",
+                    classification="required",
+                    skill_id="python",
+                    job_excerpt="Required Python",
+                )
+            ]
+
+    service = _service(Repository())
+    service._readiness_repo = cast(ReadinessPreferenceRepository, Preferences())
+    service._mention_repo = cast(JobSkillMentionRepository, PersistedMentions())
+    baseline = await service.get_match_summary(user_id=1, job_id=job.id)
+    assert baseline is not None
+    expected = (
+        baseline.fit_score,
+        baseline.score_components,
+        baseline.evidence_confidence,
+    )
+
+    for llm_score, llm_confidence, llm_error, llm_input_hash in (
+        (99, 0.99, None, "cached"),
+        (1, 0.01, "provider failed", None),
+        (None, None, None, "stale"),
+    ):
+        match.llm_score = llm_score
+        match.llm_confidence = llm_confidence
+        match.llm_error = llm_error
+        match.llm_input_hash = llm_input_hash
+        current = await service.get_match_summary(user_id=1, job_id=job.id)
+        assert current is not None
+        assert (
+            current.fit_score,
+            current.score_components,
+            current.evidence_confidence,
+        ) == expected
 
 
 @pytest.mark.asyncio
