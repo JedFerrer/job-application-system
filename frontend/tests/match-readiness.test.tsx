@@ -643,7 +643,7 @@ describe("JobDetailView readiness", () => {
     const matchedHeading = [...container.querySelectorAll("h4")].find((node) =>
       node.textContent?.startsWith("Matched skills (2)"),
     );
-    const evidence = container.querySelector("details");
+    const evidence = [...container.querySelectorAll("details")].pop();
     expect(matchedHeading?.compareDocumentPosition(evidence as Node) ?? 0).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -755,6 +755,13 @@ describe("JobDetailView readiness", () => {
   it("keeps profile relevance separate from a saved AI fit review", async () => {
     apiMocks.matchesApi.summary.mockResolvedValue({
       ...makeSummary(501, "ai-review", 87),
+      fit_score: 82,
+      score_components: {
+        required_skill_coverage: { score: 0, weight: 35, status: "known", reason: "matched_required_coverage" },
+        semantic_similarity: { score: 74.5, weight: 15, status: "known", reason: "semantic_similarity_available" },
+        seniority_experience: { score: 50, weight: 15, status: "unknown", reason: "experience_evidence_unavailable" },
+      },
+      evidence_confidence: "high",
       llm_score: 96,
       llm_confidence: 0.9,
       explanation: "Your backend experience and Python skills align well with this role.",
@@ -766,6 +773,12 @@ describe("JobDetailView readiness", () => {
     );
 
     expect(container.textContent).toContain("Profile relevance");
+    expect(container.textContent).toContain("Deterministic fit · 82%");
+    expect(container.textContent).toContain("Required skills0%");
+    expect(container.textContent).toContain("Profile relevance75%");
+    expect(container.textContent).toContain("Experience alignmentNot available");
+    expect(container.textContent).toContain("High evidence");
+    expect(container.textContent).not.toContain("matched_required_coverage");
     expect(container.querySelector('[data-testid="match-score-summary"]')?.textContent).toContain("87%");
     expect(container.querySelector('[data-testid="ai-fit-review"]')?.textContent).toContain("AI fit review");
     expect(container.querySelector('[data-testid="ai-fit-review"]')?.textContent).toContain("Strong skills fit");
@@ -783,7 +796,7 @@ describe("JobDetailView readiness", () => {
     expect(container.querySelector('[id="job-detail-tab-skills"]')).toBeNull();
     expect(container.querySelector('[id="job-detail-tab-notes"]')).toBeNull();
     const aiReview = container.querySelector('[data-testid="ai-fit-review"]');
-    const evidence = container.querySelector("details");
+    const evidence = [...container.querySelectorAll("details")].pop();
     expect(aiReview?.compareDocumentPosition(evidence as Node) ?? 0).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -805,6 +818,68 @@ describe("JobDetailView readiness", () => {
       await pendingSummary.promise;
       await Promise.resolve();
     });
+  });
+
+  it("preserves deterministic contract fields from the cached match while summary loading continues", async () => {
+    const pendingSummary = deferred<ReturnType<typeof makeSummary> | null>();
+    apiMocks.matchesApi.summary.mockReturnValue(pendingSummary.promise);
+    queryClient.removeQueries({ queryKey: ["match-summary", 501] });
+    const cached = queryClient.getQueryData<Record<string, unknown>>(["matches", "seed"])!;
+    const pages = cached.pages as Array<{ items: Array<Record<string, unknown>> }>;
+    pages[0]!.items[0] = {
+      ...pages[0]!.items[0],
+      fit_score: 82,
+      score_components: {
+        required_skill_coverage: {
+          score: 100,
+          weight: 35,
+          status: "known",
+          reason: "matched_required_coverage",
+        },
+      },
+      evidence_confidence: "high",
+    };
+    queryClient.setQueryData(["matches", "seed"], cached);
+
+    await renderJob(501);
+
+    expect(container.textContent).toContain("Deterministic fit · 82%");
+    expect(container.textContent).toContain("Required skills100%");
+    expect(container.textContent).toContain("High evidence");
+    expect(container.textContent).not.toContain("matched_required_coverage");
+  });
+
+  it.each([
+    ["medium", "Medium evidence"],
+    ["low", "Low evidence"],
+  ] as const)("renders the %s evidence-confidence badge", async (confidence, label) => {
+    apiMocks.matchesApi.summary.mockResolvedValue({
+      ...makeSummary(501, confidence),
+      fit_score: 82,
+      evidence_confidence: confidence,
+    });
+    await renderJob(501);
+    await waitForCondition(() => container.textContent?.includes(label) ?? false);
+    expect(container.textContent).toContain(label);
+  });
+
+  it.each([
+    ["null", { evidence_confidence: null }],
+    ["omitted", {}],
+  ])("hides evidence confidence when it is %s", async (_state, fields) => {
+    apiMocks.matchesApi.summary.mockResolvedValue({
+      ...makeSummary(501, "no-confidence"),
+      fit_score: 82,
+      ...fields,
+    });
+    await renderJob(501);
+    await waitForCondition(
+      () => container.textContent?.includes("Deterministic fit · 82%") ?? false,
+    );
+    const detail = container.querySelector('[data-testid="deterministic-fit-details"]');
+    expect(detail?.textContent).not.toContain("High evidence");
+    expect(detail?.textContent).not.toContain("Medium evidence");
+    expect(detail?.textContent).not.toContain("Low evidence");
   });
 
   it("replaces cached match and skill data with a successful persisted summary", async () => {
@@ -1322,5 +1397,18 @@ describe("JobDetailView readiness", () => {
     expect(apiMocks.jobsApi.archive).toHaveBeenCalledTimes(1);
     expect(routerMocks.push).not.toHaveBeenCalled();
     expect(toastMocks.error).toHaveBeenCalledWith("Archive failed");
+  });
+
+  it("shows a safe pending state when deterministic fit is absent", async () => {
+    apiMocks.matchesApi.summary.mockResolvedValue(makeSummary(501, "pending"));
+    await renderJob(501);
+    await waitForCondition(
+      () => container.querySelector('[data-testid="deterministic-fit-details"]') !== null,
+    );
+    expect(container.textContent).toContain("Fit pending refresh");
+    expect(container.textContent).toContain("The saved deterministic analysis is not current yet.");
+    expect(container.textContent).not.toContain("undefined");
+    expect(container.textContent).not.toContain("High evidence");
+    expect(container.querySelector('[data-testid="deterministic-fit-details"] details')).toBeNull();
   });
 });

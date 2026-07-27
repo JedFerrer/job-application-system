@@ -17,6 +17,7 @@ import { stripMarkdown } from "@/lib/utils";
 import { formatSkillLabel } from "@/lib/skill-display";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
 import type { MatchReadiness } from "@/lib/types";
+import { formatDeterministicFitScore } from "@/lib/match-display";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +47,7 @@ export interface JobCardMatch {
   confidence: string | null;       // "strong" | "moderate" | "stretch" | "weak"
   matchedSkills: string[] | null;
   scoreLabel?: string;
+  fitScore?: number | null;
   readiness?: MatchReadiness | null;
 }
 
@@ -508,6 +510,11 @@ export function JobCard({
                   showConfidenceLabel={showConfidenceLabel}
                   label={match.scoreLabel}
                 />
+                {formatDeterministicFitScore(match.fitScore) && (
+                  <p data-testid="deterministic-fit" className="mt-1 text-[10px] text-muted-foreground">
+                    Deterministic fit · {formatDeterministicFitScore(match.fitScore)}
+                  </p>
+                )}
                 {compactMatchLayout && readinessSummary && (
                   <p
                     data-testid="match-readiness-summary"

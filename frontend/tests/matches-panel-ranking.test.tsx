@@ -24,15 +24,37 @@ vi.mock("@/lib/api", () => api);
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("sonner", () => ({ toast }));
 vi.mock("@/components/matches/skills-gap-summary", () => ({ SkillsGapSummary: () => null }));
-vi.mock("@/components/jobs/job-card", () => ({
-  JobCard: ({ match }: { match: { score: number; confidence: string; scoreLabel?: string } }) => (
-    <div data-testid="job-card-score">{`${match.score}|${match.confidence}|${match.scoreLabel}`}</div>
-  ),
-}));
 
 const emptyMatches = {
   items: [], total: 0, limit: 20, offset: 0, next_cursor: null, has_more: false,
 };
+
+function matchItem(overrides: Record<string, unknown> = {}) {
+  return {
+    job_id: 1,
+    title: "Backend Engineer",
+    company: "Acme",
+    location: "Remote",
+    is_remote: true,
+    job_type: "fulltime",
+    description: "Build APIs",
+    shift_type: null,
+    salary_min: null,
+    salary_max: null,
+    salary_currency: null,
+    source: "test",
+    source_url: "https://example.com/job/1",
+    company_logo: null,
+    vector_score: 80,
+    confidence: "weak",
+    llm_score: null,
+    llm_confidence: null,
+    matched_skills: ["python"],
+    readiness: { decision: "apply", reasons: [], caveats: [], deterministic_blockers: [], deterministic_warnings: [], decision_basis: "score" },
+    posted_at: null,
+    ...overrides,
+  };
+}
 
 async function flushReact() {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -116,31 +138,17 @@ describe("MatchesPanel ranking task", () => {
     expect(toast.message).toHaveBeenCalledWith("Rankings were refreshed recently. Try again in 2 minutes.");
   });
 
-  it("shows the quick vector score and relevance label even after an AI review exists", async () => {
+  it("shows vector relevance and deterministic fit separately", async () => {
     api.matchesApi.list.mockResolvedValue({
-      items: [{
-        job_id: 1,
-        title: "Backend Engineer",
-        company: "Acme",
-        location: "Remote",
-        is_remote: true,
-        job_type: "fulltime",
-        description: "Build APIs",
-        shift_type: null,
-        salary_min: null,
-        salary_max: null,
-        salary_currency: null,
-        source: "test",
-        source_url: "https://example.com/job/1",
-        company_logo: null,
-        vector_score: 80,
-        confidence: "weak",
+      items: [matchItem({
+        fit_score: 68.4,
         llm_score: 95,
         llm_confidence: 0.9,
-        matched_skills: ["python"],
-        readiness: { decision: "apply", reasons: [], caveats: [], deterministic_blockers: [], deterministic_warnings: [], decision_basis: "score" },
-        posted_at: null,
-      }],
+        evidence_confidence: "high",
+        score_components: {
+          required_skill_coverage: { score: 100, weight: 35, status: "known", reason: "matched_required_coverage" },
+        },
+      })],
       total: 1,
       limit: 20,
       offset: 0,
@@ -152,8 +160,36 @@ describe("MatchesPanel ranking task", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.querySelector('[data-testid="job-card-score"]')?.textContent).toBe(
-      "80|strong|Fit",
-    );
+    expect(container.textContent).toContain("80%Relevance");
+    expect(container.textContent).toContain("Deterministic fit · 68%");
+    expect(container.textContent).not.toContain("High evidence");
+    expect(container.textContent).not.toContain("Fit components");
+  });
+
+  it("renders a known zero deterministic fit without replacing vector relevance", async () => {
+    api.matchesApi.list.mockResolvedValue({ ...emptyMatches, items: [matchItem({ fit_score: 0 })], total: 1 });
+    render();
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("80%Relevance");
+    expect(container.textContent).toContain("Deterministic fit · 0%");
+  });
+
+  it("omits deterministic fit when it is null or omitted and preserves input order", async () => {
+    api.matchesApi.list.mockResolvedValue({
+      ...emptyMatches,
+      items: [
+        matchItem({ job_id: 2, title: "Second", vector_score: 40, fit_score: null, confidence: null, matched_skills: [], readiness: null }),
+        matchItem({ job_id: 1, title: "First", vector_score: 90, confidence: null, matched_skills: [], readiness: null }),
+      ],
+      total: 2,
+    });
+    render();
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("40%Relevance");
+    expect(container.textContent).toContain("90%Relevance");
+    expect(container.textContent?.indexOf("Second")).toBeLessThan(container.textContent?.indexOf("First") ?? -1);
+    expect(container.textContent).not.toContain("Deterministic fit");
   });
 });

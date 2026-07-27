@@ -36,7 +36,14 @@ import type {
 } from "@/lib/types";
 import { useEffect, useState } from "react";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
-import { getAiFitLabel, getQuickMatchConfidence } from "@/lib/match-display";
+import {
+  EVIDENCE_CONFIDENCE_TOOLTIP,
+  formatDeterministicFitScore,
+  getDeterministicComponentDisplay,
+  getEvidenceConfidenceLabel,
+  getAiFitLabel,
+  getQuickMatchConfidence,
+} from "@/lib/match-display";
 import { formatJobDescription, stripMarkdown } from "@/lib/utils";
 import { formatSkillLabel } from "@/lib/skill-display";
 import {
@@ -50,6 +57,7 @@ import { InterviewPrepDialog } from "@/components/interview/interview-prep-dialo
 import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { CircularScore, SourceIcon } from "@/components/jobs/job-card";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -284,6 +292,63 @@ function EvidenceDisclosure({
   );
 }
 
+function DeterministicFitDetails({
+  match,
+}: {
+  match: MatchExplanation | MatchSummary;
+}) {
+  const fitScore = formatDeterministicFitScore(match.fit_score);
+  const components = getDeterministicComponentDisplay(match.score_components);
+  const confidence = getEvidenceConfidenceLabel(match.evidence_confidence);
+
+  return (
+    <section data-testid="deterministic-fit-details" className="space-y-2 border-t border-border/60 pt-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-xs font-medium text-foreground">Deterministic fit</h3>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            {fitScore ? `Deterministic fit · ${fitScore}` : "Fit pending refresh"}
+          </p>
+        </div>
+        {confidence && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0}>
+                  <Badge variant="outline" className="rounded-full text-[11px] font-normal">
+                    {confidence}
+                  </Badge>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{EVIDENCE_CONFIDENCE_TOOLTIP}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+      </div>
+      {!fitScore && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          The saved deterministic analysis is not current yet.
+        </p>
+      )}
+      {components.length > 0 && (
+        <details className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
+          <summary className="cursor-pointer text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+            Fit components
+          </summary>
+          <div className="mt-2 space-y-1.5 text-xs">
+            {components.map((component) => (
+              <div key={component.key} className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">{component.label}</span>
+                <span className="font-medium">{component.value}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -334,6 +399,9 @@ export function JobDetailView({ jobId }: { jobId: number }) {
         return {
           job_id: cached.job_id,
           vector_score: cached.vector_score,
+          fit_score: cached.fit_score,
+          score_components: cached.score_components,
+          evidence_confidence: cached.evidence_confidence,
           confidence: cached.confidence,
           llm_score: cached.llm_score,
           llm_confidence: cached.llm_confidence,
@@ -833,6 +901,8 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                       )}
                     </div>
                   </div>
+
+                  <DeterministicFitDetails match={match} />
 
                   {summaryLoadError && (
                     <div className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 text-xs text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">

@@ -493,7 +493,8 @@ export function MatchesPanel() {
             score: match.vector_score,
             confidence: getQuickMatchConfidence(match.vector_score),
             matchedSkills: match.matched_skills,
-            scoreLabel: "Fit",
+            fitScore: match.fit_score,
+            scoreLabel: "Relevance",
             readiness: match.readiness,
           };
 
