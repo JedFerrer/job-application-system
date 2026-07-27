@@ -86,12 +86,14 @@ async def _create_match(
     user_id: int,
     job_id: int,
     vector_score: float,
+    ranking_score: float | None = None,
 ) -> None:
     await db.execute(
         insert(UserJobMatch).values(
             user_id=user_id,
             job_id=job_id,
             vector_score=vector_score,
+            ranking_score=ranking_score,
         )
     )
 
@@ -293,8 +295,116 @@ async def test_first_page_returns_cursor_and_has_more(engine) -> None:  # noqa: 
         assert [job.id for job, _ in rows] == [102, 106]
 
 
+async def test_fit_cursor_pagination_orders_by_ranking_score_and_rejects_vector_cursor(
+    engine: AsyncEngine,
+) -> None:  # noqa: ANN001
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=11, email="fit-viewer@test.com", name="Fit Viewer")
+        for job_id in range(401, 406):
+            await _create_job(
+                db,
+                job_id=job_id,
+                title=f"Fit Candidate {job_id}",
+                company="Fit Test",
+                visibility="public",
+                created_by_user_id=None,
+                ingest_source="scraper",
+            )
+        await _create_match(db, user_id=11, job_id=401, vector_score=99.0, ranking_score=20.0)
+        await _create_match(db, user_id=11, job_id=402, vector_score=20.0, ranking_score=90.0)
+        await _create_match(db, user_id=11, job_id=403, vector_score=10.0, ranking_score=90.0)
+        await _create_match(db, user_id=11, job_id=404, vector_score=98.0, ranking_score=None)
+        await _create_match(db, user_id=11, job_id=405, vector_score=30.0, ranking_score=70.0)
+        await db.commit()
+
+    async with sf() as db:
+        repo = MatchingRepository(db)
+        rows, total, next_cursor, has_more = await repo.list_matches(
+            user_id=11, limit=2, ranking_mode="fit"
+        )
+        assert total == 4
+        assert has_more is True
+        assert [job.id for job, _ in rows] == [403, 402]
+        assert next_cursor is not None
+        assert base64.urlsafe_b64decode(next_cursor).decode().startswith("fit|")
+
+        next_rows, _, final_cursor, final_has_more = await repo.list_matches(
+            user_id=11, limit=2, cursor=next_cursor, ranking_mode="fit"
+        )
+        assert [job.id for job, _ in next_rows] == [405, 401]
+        assert final_cursor is None
+        assert final_has_more is False
+
+        with pytest.raises(ValueError, match="Invalid cursor"):
+            await repo.list_matches(user_id=11, limit=2, cursor=next_cursor)
+
+        _, _, vector_cursor, _ = await repo.list_matches(user_id=11, limit=1)
+        assert vector_cursor is not None
+        with pytest.raises(ValueError, match="Invalid cursor"):
+            await repo.list_matches(
+                user_id=11, limit=1, cursor=vector_cursor, ranking_mode="fit"
+            )
+
+
+async def test_shadow_listing_uses_legacy_vector_cursor_and_ignores_ranking_score(
+    engine: AsyncEngine,
+) -> None:
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=12, email="shadow-viewer@test.com", name="Shadow Viewer")
+        for job_id in range(421, 425):
+            await _create_job(
+                db,
+                job_id=job_id,
+                title=f"Shadow Candidate {job_id}",
+                company="Shadow Test",
+                visibility="public",
+                created_by_user_id=None,
+                ingest_source="scraper",
+            )
+        await _create_match(db, user_id=12, job_id=421, vector_score=99.0, ranking_score=10.0)
+        await _create_match(db, user_id=12, job_id=422, vector_score=20.0, ranking_score=99.0)
+        await _create_match(db, user_id=12, job_id=423, vector_score=99.0, ranking_score=1.0)
+        await _create_match(db, user_id=12, job_id=424, vector_score=98.0, ranking_score=2.0)
+        await db.commit()
+
+    async with sf() as db:
+        repo = MatchingRepository(db)
+        rows, total, next_cursor, has_more = await repo.list_matches(
+            user_id=12, limit=2, ranking_mode="shadow"
+        )
+        assert total == 4
+        assert has_more is True
+        assert [job.id for job, _ in rows] == [423, 421]
+        assert next_cursor is not None
+        assert not base64.urlsafe_b64decode(next_cursor).decode().startswith("fit|")
+
+        next_rows, _, _, next_has_more = await repo.list_matches(
+            user_id=12, limit=2, cursor=next_cursor, ranking_mode="shadow"
+        )
+        assert [job.id for job, _ in next_rows] == [424, 422]
+        assert next_has_more is False
+
+        fit_cursor = _encoded_cursor_payload(b"fit|99.0|423")
+        with pytest.raises(ValueError, match="Invalid cursor"):
+            await repo.list_matches(user_id=12, limit=2, cursor=fit_cursor, ranking_mode="shadow")
+
+
 def _encoded_cursor_payload(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode()
+
+
+@pytest.mark.parametrize("raw_score", ["nan", "inf", "-inf"])
+async def test_non_finite_fit_cursors_raise_value_error(
+    engine: AsyncEngine, raw_score: str
+) -> None:
+    sf = _session_factory(engine)
+    async with sf() as db:
+        repo = MatchingRepository(db)
+        cursor = _encoded_cursor_payload(f"fit|{raw_score}|123".encode())
+        with pytest.raises(ValueError, match="Invalid cursor"):
+            await repo.list_matches(user_id=1, limit=2, cursor=cursor, ranking_mode="fit")
 
 
 @pytest.mark.parametrize(

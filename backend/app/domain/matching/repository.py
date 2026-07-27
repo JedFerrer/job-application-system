@@ -5,8 +5,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import math
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -19,6 +20,8 @@ from app.models.job_skill_mention import JobSkillMention
 from app.models.resume import CandidateProfile, Resume
 from app.models.user_job import UserJob
 from app.models.user_job_match import UserJobMatch
+
+RankingMode = Literal["vector", "shadow", "fit"]
 
 
 def _canonical_json(value: object, *, key: str | None = None) -> str:
@@ -320,7 +323,13 @@ class MatchingRepository:
         )
         return {job.id: job for job in result.scalars().all()}
 
-    async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
+    async def prune_automatic_matches(
+        self,
+        *,
+        user_id: int,
+        limit: int,
+        ranking_mode: RankingMode = "vector",
+    ) -> None:
         """Keep only the highest scoring automatic rows; never delete manual rows."""
         eligible_automatic = (
             select(UserJobMatch.id)
@@ -328,9 +337,15 @@ class MatchingRepository:
             .where(UserJobMatch.user_id == user_id, UserJobMatch.origin == "automatic")
             .where(*self._matchable_job_predicate(user_id=user_id))
         )
-        keep = eligible_automatic.order_by(
-            UserJobMatch.vector_score.desc(), UserJobMatch.job_id.desc()
-        ).limit(limit)
+        score_column = (
+            UserJobMatch.ranking_score if ranking_mode == "fit" else UserJobMatch.vector_score
+        )
+        keep_order = (
+            score_column.desc().nulls_last()
+            if ranking_mode == "fit"
+            else score_column.desc()
+        )
+        keep = eligible_automatic.order_by(keep_order, UserJobMatch.job_id.desc()).limit(limit)
         await self._session.execute(
             delete(UserJobMatch).where(
                 UserJobMatch.user_id == user_id,
@@ -356,6 +371,7 @@ class MatchingRepository:
         limit: int,
         offset: int | None = None,
         cursor: str | None = None,
+        ranking_mode: RankingMode = "vector",
         q: str | None = None,
         source: str | None = None,
         is_remote: bool | None = None,
@@ -370,9 +386,12 @@ class MatchingRepository:
         Imported jobs without match scores are excluded; they belong in
         /imported, not /matches, until analysis completes.
         """
+        score_column = (
+            UserJobMatch.ranking_score if ranking_mode == "fit" else UserJobMatch.vector_score
+        )
         filters: list[Any] = [
             UserJobMatch.user_id == user_id,
-            UserJobMatch.vector_score.is_not(None),
+            score_column.is_not(None),
             *self._matchable_job_predicate(user_id=user_id),
         ]
 
@@ -412,18 +431,29 @@ class MatchingRepository:
         )
         total = int((await self._session.execute(count_stmt)).scalar_one())
 
-        def _encode_cursor(vector_score: float, job_id: int) -> str:
-            raw = f"{vector_score!r}|{job_id}"
+        def _encode_cursor(score: float, job_id: int) -> str:
+            raw = f"fit|{score!r}|{job_id}" if ranking_mode == "fit" else f"{score!r}|{job_id}"
             return base64.urlsafe_b64encode(raw.encode()).decode()
 
         def _decode_cursor(raw_cursor: str) -> tuple[float, int]:
             try:
                 decoded = base64.b64decode(raw_cursor.encode(), altchars=b"-_", validate=True)
                 raw = decoded.decode()
-                score_str, id_str = raw.rsplit("|", 1)
+                parts = raw.split("|")
+                if ranking_mode == "fit":
+                    if len(parts) != 3 or parts[0] != "fit":
+                        raise ValueError
+                    _, score_str, id_str = parts
+                else:
+                    if len(parts) != 2:
+                        raise ValueError
+                    score_str, id_str = parts
                 if not score_str or not id_str:
                     raise ValueError
-                return float(score_str), int(id_str)
+                score = float(score_str)
+                if ranking_mode == "fit" and not math.isfinite(score):
+                    raise ValueError
+                return score, int(id_str)
             except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
                 raise ValueError("Invalid cursor") from exc
 
@@ -433,14 +463,14 @@ class MatchingRepository:
         if cursor is not None:
             cursor_score, cursor_job_id = _decode_cursor(cursor)
             pagination_filters.append(
-                tuple_(UserJobMatch.vector_score, Job.id) < (cursor_score, cursor_job_id)
+                tuple_(score_column, Job.id) < (cursor_score, cursor_job_id)
             )
 
         list_stmt = (
             select(Job, UserJobMatch)
             .join(UserJobMatch, UserJobMatch.job_id == Job.id)
             .where(*pagination_filters)
-            .order_by(UserJobMatch.vector_score.desc(), Job.id.desc())
+            .order_by(score_column.desc(), Job.id.desc())
             .limit(limit + 1)
         )
         if use_offset:
@@ -454,7 +484,13 @@ class MatchingRepository:
         next_cursor: str | None = None
         if has_more and rows:
             last_job, last_match = rows[-1]
-            next_cursor = _encode_cursor(last_match.vector_score, last_job.id)
+            last_score = (
+                last_match.ranking_score
+                if ranking_mode == "fit"
+                else last_match.vector_score
+            )
+            if last_score is not None:
+                next_cursor = _encode_cursor(last_score, last_job.id)
 
         return [(r[0], r[1]) for r in rows], total, next_cursor, has_more
 

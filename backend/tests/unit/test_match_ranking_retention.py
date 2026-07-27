@@ -65,6 +65,22 @@ async def test_pruning_query_only_targets_eligible_automatic_rows() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fit_pruning_orders_by_ranking_score_and_nulls_last() -> None:
+    session = AsyncMock()
+    repository = MatchingRepository(session)
+
+    await repository.prune_automatic_matches(user_id=7, limit=3, ranking_mode="fit")
+
+    statement = session.execute.await_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    assert "user_job_matches.ranking_score DESC NULLS LAST" in sql
+    assert "user_job_matches.vector_score DESC" not in sql
+    assert "user_job_matches.origin =" in sql
+    assert "automatic" in compiled.params.values()
+
+
+@pytest.mark.asyncio
 async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows() -> None:
     automatic_ids = list(range(1000, 1200))
     manual_ids = [10, 11]
