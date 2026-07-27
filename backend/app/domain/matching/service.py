@@ -319,13 +319,14 @@ class MatchingService:
 
     async def rank_jobs(self, user_id: int, limit: int) -> RankResponse:
         settings = get_settings()
+        ranking_mode = settings.match_ranking_mode
         ranking_limit = settings.match_final_limit
         profile = await self._repo.get_active_profile(user_id)
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
         embedding = list(profile.embedding)
         preferences = None
-        if settings.match_ranking_mode == "shadow" and self._readiness_repo is not None:
+        if ranking_mode == "shadow" and self._readiness_repo is not None:
             preferences = await self._readiness_repo.get_for_user(user_id)
         selection = await self._select_ranking_candidates(
             user_id=user_id,
@@ -335,7 +336,7 @@ class MatchingService:
             preferences=preferences,
         )
         ranked = selection.candidates
-        if settings.match_ranking_mode != "shadow" and self._readiness_repo is not None:
+        if ranking_mode != "shadow" and self._readiness_repo is not None:
             preferences = await self._readiness_repo.get_for_user(user_id)
         get_jobs = getattr(self._repo, "get_visible_jobs_by_ids", None)
         jobs = (
@@ -343,6 +344,13 @@ class MatchingService:
             if callable(get_jobs)
             else {}
         )
+        if callable(get_jobs):
+            ranked = [candidate for candidate in ranked if candidate[0] in jobs]
+        if ranking_mode == "fit":
+            await self._repo.reconcile_fit_automatic_matches(
+                user_id=user_id,
+                candidate_ids={candidate[0] for candidate in ranked},
+            )
         profile_parsed = dict(profile.parsed)
         for job_id, similarity, job_description, retrieval_metadata in ranked:
             job_record = jobs.get(job_id)
@@ -379,12 +387,27 @@ class MatchingService:
             )
         # Manual analyses are retained outside top-K, but profile changes and
         # nightly refreshes must still update their embedding-based score.
-        await self.rank_job_ids(
-            user_id=user_id,
-            job_ids=await self._repo.list_manual_match_job_ids(user_id=user_id),
-            limit=ranking_limit,
-        )
-        await self._repo.prune_automatic_matches(user_id=user_id, limit=ranking_limit)
+        manual_job_ids = await self._repo.list_manual_match_job_ids(user_id=user_id)
+        if ranking_mode == "fit":
+            await self.rank_job_ids(
+                user_id=user_id,
+                job_ids=manual_job_ids,
+                limit=ranking_limit,
+                _skip_fit_full_refresh=True,
+                _skip_prune=True,
+            )
+            await self._repo.prune_automatic_matches(
+                user_id=user_id,
+                limit=ranking_limit,
+                ranking_mode="fit",
+            )
+        else:
+            await self.rank_job_ids(
+                user_id=user_id,
+                job_ids=manual_job_ids,
+                limit=ranking_limit,
+            )
+            await self._repo.prune_automatic_matches(user_id=user_id, limit=ranking_limit)
         if selection.shadow_metrics is not None:
             logger.info("matches.shadow_metrics", **selection.shadow_metrics)
         logger.info("matches.ranked", user_id=user_id, count=len(ranked))
@@ -551,10 +574,9 @@ class MatchingService:
     ) -> _RankingSelection:
         """Select the rollout path while preserving vector-visible results.
 
-        ``shadow`` computes hybrid ordering and metrics privately; ``fit``
-        remains a vector-only placeholder until Phase 5D. Keeping explicit
-        branches here prevents accidental exposure of hybrid-only candidates
-        while making the future switch point obvious.
+        ``shadow`` computes hybrid ordering and metrics privately. ``fit``
+        activates the same hybrid candidate pool for deterministic ranking and
+        persistence, while ``vector`` remains vector-only.
         """
         settings = get_settings()
         if settings.match_ranking_mode == "vector":
@@ -574,8 +596,11 @@ class MatchingService:
             )
         if settings.match_ranking_mode == "fit":
             return _RankingSelection(
-                candidates=await self._vector_candidates(
-                    user_id=user_id, embedding=embedding, limit=limit
+                candidates=await self._hybrid_candidates(
+                    user_id=user_id,
+                    embedding=embedding,
+                    profile_parsed=dict(getattr(profile, "parsed", {})),
+                    fallback_limit=limit,
                 )
             )
         raise ValueError(f"Unsupported match ranking mode: {settings.match_ranking_mode}")
@@ -771,11 +796,23 @@ class MatchingService:
             raise MatchNotFoundError(job_id)
         return summary
 
-    async def rank_job_ids(self, *, user_id: int, job_ids: list[int], limit: int) -> int:
+    async def rank_job_ids(
+        self,
+        *,
+        user_id: int,
+        job_ids: list[int],
+        limit: int,
+        _skip_fit_full_refresh: bool = False,
+        _skip_prune: bool = False,
+    ) -> int:
         """Incrementally score embedded jobs for one user without a full scan."""
         # ``limit`` is supplied by callers as their processing bound. The
         # persisted automatic set must always use the rollout final limit.
-        final_limit = get_settings().match_final_limit
+        settings = get_settings()
+        if settings.match_ranking_mode == "fit" and not _skip_fit_full_refresh:
+            return (await self.rank_jobs(user_id, limit)).ranked
+
+        final_limit = settings.match_final_limit
         profile = await self._repo.get_active_profile(user_id)
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
@@ -829,7 +866,15 @@ class MatchingService:
                 **provenance,
             )
             ranked += 1
-        await self._repo.prune_automatic_matches(user_id=user_id, limit=final_limit)
+        if not _skip_prune:
+            if settings.match_ranking_mode == "fit":
+                await self._repo.prune_automatic_matches(
+                    user_id=user_id,
+                    limit=final_limit,
+                    ranking_mode="fit",
+                )
+            else:
+                await self._repo.prune_automatic_matches(user_id=user_id, limit=final_limit)
         return ranked
 
     async def list_matches(
@@ -850,20 +895,37 @@ class MatchingService:
     ) -> MatchListResponse:
         # Cursor is the frontend path; offset remains a deprecated compatibility
         # fallback for old clients until a later API cleanup removes it.
-        rows, total, next_cursor, has_more = await self._repo.list_matches(
-            user_id=user_id,
-            limit=limit,
-            offset=offset,
-            cursor=cursor,
-            q=q,
-            source=source,
-            is_remote=is_remote,
-            job_type=job_type,
-            location_contains=location_contains,
-            company_contains=company_contains,
-            shift_type=shift_type,
-            source_type=source_type,
-        )
+        if get_settings().match_ranking_mode == "fit":
+            rows, total, next_cursor, has_more = await self._repo.list_matches(
+                user_id=user_id,
+                limit=limit,
+                offset=offset,
+                cursor=cursor,
+                ranking_mode="fit",
+                q=q,
+                source=source,
+                is_remote=is_remote,
+                job_type=job_type,
+                location_contains=location_contains,
+                company_contains=company_contains,
+                shift_type=shift_type,
+                source_type=source_type,
+            )
+        else:
+            rows, total, next_cursor, has_more = await self._repo.list_matches(
+                user_id=user_id,
+                limit=limit,
+                offset=offset,
+                cursor=cursor,
+                q=q,
+                source=source,
+                is_remote=is_remote,
+                job_type=job_type,
+                location_contains=location_contains,
+                company_contains=company_contains,
+                shift_type=shift_type,
+                source_type=source_type,
+            )
         items: list[MatchItem] = []
         readiness_preferences = (
             await self._readiness_repo.get_for_user(user_id)

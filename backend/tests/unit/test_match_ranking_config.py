@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.domain.matching.service import MatchingService
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +51,29 @@ def test_ranking_settings_parse_environment_overrides(monkeypatch: pytest.Monkey
     assert settings.match_final_limit == 20
     assert settings.match_rrf_k == 61
     assert settings.match_scorer_version == "fit-scorer-test"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["vector", "shadow", "fit"])
+async def test_listing_passes_fit_mode_to_repository_only_when_activated(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeRepository:
+        async def list_matches(self, **kwargs: object) -> tuple[list[object], int, None, bool]:
+            calls.append(dict(kwargs))
+            return [], 0, None, False
+
+    monkeypatch.setattr(
+        "app.domain.matching.service.get_settings",
+        lambda: Settings(match_ranking_mode=mode),
+    )
+
+    response = await MatchingService(FakeRepository()).list_matches(user_id=1, limit=20)  # type: ignore[arg-type]
+
+    assert response.items == []
+    assert calls[0].get("ranking_mode") == ("fit" if mode == "fit" else None)
 
 
 @pytest.mark.parametrize(

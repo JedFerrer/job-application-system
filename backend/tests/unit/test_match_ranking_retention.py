@@ -130,9 +130,8 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["vector", "shadow", "fit"])
-async def test_ranking_modes_use_vector_placeholder_without_hybrid_only_candidates(
-    monkeypatch: pytest.MonkeyPatch, mode: str
+async def test_vector_mode_uses_vector_candidates_without_hybrid_only_candidates(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     automatic_ids = list(range(1000, 1250))
     manual_ids = [10]
@@ -181,7 +180,7 @@ async def test_ranking_modes_use_vector_placeholder_without_hybrid_only_candidat
 
     monkeypatch.setattr(
         "app.domain.matching.service.get_settings",
-        lambda: Settings(match_ranking_mode=mode, match_final_limit=123),
+        lambda: Settings(match_ranking_mode="vector", match_final_limit=123),
     )
 
     response = await MatchingService(FakeRepository()).rank_jobs(1, 200)  # type: ignore[arg-type]
@@ -190,6 +189,189 @@ async def test_ranking_modes_use_vector_placeholder_without_hybrid_only_candidat
     assert len([call for call in calls if call["job_id"] in automatic_ids]) == 123
     assert {call["job_id"] for call in calls} == {*automatic_ids[:123], *manual_ids}
     assert len([call for call in calls if call["job_id"] in manual_ids]) == 1
+
+
+@pytest.mark.asyncio
+async def test_fit_mode_persists_hybrid_only_candidates_and_prunes_by_ranking_score(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upserted: list[dict[str, object]] = []
+    prune_calls: list[dict[str, object]] = []
+    reconciled: list[set[int]] = []
+
+    class FakeRepository:
+        async def get_active_profile(self, user_id: int) -> object:
+            return SimpleNamespace(
+                id=3,
+                embedding=[0.1, 0.2],
+                parsed={
+                    "preferred_roles": ["Backend Engineer"],
+                    "headline": "Python developer",
+                    "skills": ["Python"],
+                },
+            )
+
+        async def rank_jobs_by_vector(
+            self, embedding: list[float], limit: int, *, user_id: int
+        ) -> list[tuple[int, float, str]]:
+            assert limit == 4
+            return [(1, 0.9, "vector candidate")]
+
+        async def search_jobs_by_text(
+            self, query: str, limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            assert query
+            return [RetrievalCandidate(2, 1.0), RetrievalCandidate(99, 0.5)]
+
+        async def search_jobs_by_skills(
+            self, skill_ids: set[str], limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            assert skill_ids == {"local:python"}
+            return [RetrievalCandidate(2, 1.0)]
+
+        async def vector_similarities_for_jobs(
+            self, *, user_id: int, embedding: list[float], job_ids: list[int]
+        ) -> dict[int, float]:
+            assert job_ids == [2, 99]
+            return {2: 0.8, 99: 0.7}
+
+        async def get_visible_jobs_by_ids(
+            self, *, user_id: int, job_ids: list[int]
+        ) -> dict[int, object]:
+            assert job_ids == [2, 1, 99]
+            return {
+                1: SimpleNamespace(id=1, title="Vector", description="Python services"),
+                2: SimpleNamespace(id=2, title="Hybrid", description="Python APIs"),
+            }
+
+        async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
+            return []
+
+        async def upsert_match(self, **kwargs: object) -> None:
+            upserted.append(dict(kwargs))
+
+        async def reconcile_fit_automatic_matches(
+            self, *, user_id: int, candidate_ids: set[int]
+        ) -> None:
+            reconciled.append(candidate_ids)
+
+        async def prune_automatic_matches(self, **kwargs: object) -> None:
+            prune_calls.append(dict(kwargs))
+
+    monkeypatch.setattr(
+        "app.domain.matching.service.get_settings",
+        lambda: Settings(
+            match_ranking_mode="fit",
+            match_vector_candidate_limit=4,
+            match_text_candidate_limit=4,
+            match_skill_candidate_limit=4,
+            match_final_limit=2,
+        ),
+    )
+
+    response = await MatchingService(FakeRepository()).rank_jobs(1, 200)  # type: ignore[arg-type]
+
+    assert response.ranked == 2
+    assert [call["job_id"] for call in upserted] == [2, 1]
+    hybrid_call = upserted[0]
+    assert hybrid_call["vector_score"] == 80.0
+    assert isinstance(hybrid_call["fit_score"], float)
+    assert isinstance(hybrid_call["ranking_score"], float)
+    assert isinstance(hybrid_call["score_components"], dict)
+    assert hybrid_call["source_profile_id"] == 3
+    retrieval_metadata = cast(dict[str, object], hybrid_call["retrieval_metadata"])
+    assert retrieval_metadata["sources"] == ["skill", "text"]
+    assert retrieval_metadata["source_ranks"] == {"skill": 1, "text": 1}
+    assert isinstance(retrieval_metadata["rrf_score"], float)
+    assert all(call["job_id"] != 99 for call in upserted)
+    assert reconciled == [{1, 2}]
+    assert prune_calls == [{"user_id": 1, "limit": 2, "ranking_mode": "fit"}]
+
+
+@pytest.mark.asyncio
+async def test_fit_incremental_ranking_runs_coherent_full_hybrid_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upserted: list[int] = []
+    prune_calls: list[dict[str, object]] = []
+    reconciled: list[set[int]] = []
+
+    class FakeRepository:
+        async def get_active_profile(self, user_id: int) -> object:
+            return SimpleNamespace(
+                id=3,
+                embedding=[0.1, 0.2],
+                parsed={"headline": "Python developer", "skills": ["Python"]},
+            )
+
+        async def rank_jobs_by_vector(
+            self, embedding: list[float], limit: int, *, user_id: int
+        ) -> list[tuple[int, float, str]]:
+            return [(1, 0.9, "vector candidate")]
+
+        async def search_jobs_by_text(
+            self, query: str, limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            return [RetrievalCandidate(2, 1.0)]
+
+        async def search_jobs_by_skills(
+            self, skill_ids: set[str], limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            return [RetrievalCandidate(2, 1.0)]
+
+        async def vector_similarities_for_jobs(
+            self, *, user_id: int, embedding: list[float], job_ids: list[int]
+        ) -> dict[int, float]:
+            return {2: 0.8}
+
+        async def get_visible_jobs_by_ids(
+            self, *, user_id: int, job_ids: list[int]
+        ) -> dict[int, object]:
+            return {
+                job_id: SimpleNamespace(
+                    id=job_id, title="Backend", description="Python services"
+                )
+                for job_id in job_ids
+            }
+
+        async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
+            return []
+
+        async def score_visible_job(self, **kwargs: object) -> float:
+            raise AssertionError("fit incremental refresh must not rank only supplied IDs")
+
+        async def upsert_match(self, **kwargs: object) -> None:
+            upserted.append(cast(int, kwargs["job_id"]))
+
+        async def reconcile_fit_automatic_matches(
+            self, *, user_id: int, candidate_ids: set[int]
+        ) -> None:
+            reconciled.append(candidate_ids)
+
+        async def prune_automatic_matches(self, **kwargs: object) -> None:
+            prune_calls.append(dict(kwargs))
+
+    monkeypatch.setattr(
+        "app.domain.matching.service.get_settings",
+        lambda: Settings(
+            match_ranking_mode="fit",
+            match_vector_candidate_limit=4,
+            match_text_candidate_limit=4,
+            match_skill_candidate_limit=4,
+            match_final_limit=2,
+        ),
+    )
+
+    ranked = await MatchingService(FakeRepository()).rank_job_ids(  # type: ignore[arg-type]
+        user_id=1,
+        job_ids=[1],
+        limit=200,
+    )
+
+    assert ranked == 2
+    assert upserted == [2, 1]
+    assert reconciled == [{1, 2}]
+    assert prune_calls == [{"user_id": 1, "limit": 2, "ranking_mode": "fit"}]
 
 
 @pytest.mark.asyncio

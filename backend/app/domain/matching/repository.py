@@ -355,6 +355,28 @@ class MatchingRepository:
             )
         )
 
+    async def reconcile_fit_automatic_matches(
+        self, *, user_id: int, candidate_ids: set[int]
+    ) -> None:
+        """Remove eligible automatic rows absent from the current fit pool."""
+        eligible_automatic = (
+            select(UserJobMatch.id)
+            .join(Job, UserJobMatch.job_id == Job.id)
+            .where(UserJobMatch.user_id == user_id, UserJobMatch.origin == "automatic")
+            .where(*self._matchable_job_predicate(user_id=user_id))
+        )
+        if candidate_ids:
+            eligible_automatic = eligible_automatic.where(
+                UserJobMatch.job_id.not_in(candidate_ids)
+            )
+        await self._session.execute(
+            delete(UserJobMatch).where(
+                UserJobMatch.user_id == user_id,
+                UserJobMatch.origin == "automatic",
+                UserJobMatch.id.in_(eligible_automatic),
+            )
+        )
+
     async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
         result = await self._session.execute(
             select(UserJobMatch.job_id).where(

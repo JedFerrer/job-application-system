@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 
 import pytest
-from sqlalchemy import insert, text
+from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -87,6 +87,7 @@ async def _create_match(
     job_id: int,
     vector_score: float,
     ranking_score: float | None = None,
+    origin: str = "automatic",
 ) -> None:
     await db.execute(
         insert(UserJobMatch).values(
@@ -94,6 +95,7 @@ async def _create_match(
             job_id=job_id,
             vector_score=vector_score,
             ranking_score=ranking_score,
+            origin=origin,
         )
     )
 
@@ -389,6 +391,52 @@ async def test_shadow_listing_uses_legacy_vector_cursor_and_ignores_ranking_scor
         fit_cursor = _encoded_cursor_payload(b"fit|99.0|423")
         with pytest.raises(ValueError, match="Invalid cursor"):
             await repo.list_matches(user_id=12, limit=2, cursor=fit_cursor, ranking_mode="shadow")
+
+
+async def test_fit_pruning_uses_ranking_score_and_keeps_manual_rows(engine: AsyncEngine) -> None:
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=13, email="fit-pruning@test.com", name="Fit Pruning")
+        for job_id in range(431, 436):
+            await _create_job(
+                db,
+                job_id=job_id,
+                title=f"Fit Pruning Candidate {job_id}",
+                company="Fit Pruning Test",
+                visibility="public",
+                created_by_user_id=None,
+                ingest_source="scraper",
+            )
+        await _create_match(db, user_id=13, job_id=431, vector_score=99.0, ranking_score=99.0)
+        await _create_match(db, user_id=13, job_id=432, vector_score=20.0, ranking_score=90.0)
+        await _create_match(db, user_id=13, job_id=433, vector_score=30.0, ranking_score=80.0)
+        await _create_match(db, user_id=13, job_id=434, vector_score=98.0, ranking_score=None)
+        await _create_match(
+            db,
+            user_id=13,
+            job_id=435,
+            vector_score=1.0,
+            ranking_score=95.0,
+            origin="manual",
+        )
+        await db.commit()
+
+    async with sf() as db:
+        repo = MatchingRepository(db)
+        await repo.reconcile_fit_automatic_matches(user_id=13, candidate_ids={432, 433})
+        await repo.prune_automatic_matches(user_id=13, limit=2, ranking_mode="fit")
+        await db.commit()
+        rows = await db.execute(
+            select(UserJobMatch.job_id, UserJobMatch.origin)
+            .where(UserJobMatch.user_id == 13)
+            .order_by(UserJobMatch.job_id)
+        )
+
+    assert list(rows.tuples().all()) == [
+        (432, "automatic"),
+        (433, "automatic"),
+        (435, "manual"),
+    ]
 
 
 def _encoded_cursor_payload(raw: bytes) -> str:
