@@ -90,6 +90,7 @@ async def clean_db(engine) -> None:  # noqa: ANN001
             text("DELETE FROM application_events"),
             text("DELETE FROM applications"),
             text("DELETE FROM user_jobs"),
+            text("DELETE FROM user_job_matches"),
             text("DELETE FROM jobs"),
             text("DELETE FROM candidate_profiles"),
             text("DELETE FROM resumes"),

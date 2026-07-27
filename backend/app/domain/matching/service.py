@@ -308,15 +308,16 @@ class MatchingService:
         }, provenance
 
     async def rank_jobs(self, user_id: int, limit: int) -> RankResponse:
+        settings = get_settings()
+        ranking_limit = settings.match_final_limit
         profile = await self._repo.get_active_profile(user_id)
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
         embedding = list(profile.embedding)
-        ranked = await self._hybrid_candidates(
+        ranked = await self._select_ranking_candidates(
             user_id=user_id,
             embedding=embedding,
-            profile_parsed=dict(profile.parsed),
-            fallback_limit=limit,
+            limit=ranking_limit,
         )
         get_jobs = getattr(self._repo, "get_visible_jobs_by_ids", None)
         jobs = (
@@ -368,11 +369,41 @@ class MatchingService:
         await self.rank_job_ids(
             user_id=user_id,
             job_ids=await self._repo.list_manual_match_job_ids(user_id=user_id),
-            limit=limit,
+            limit=ranking_limit,
         )
-        await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
+        await self._repo.prune_automatic_matches(user_id=user_id, limit=ranking_limit)
         logger.info("matches.ranked", user_id=user_id, count=len(ranked))
         return RankResponse(ranked=len(ranked), profile_id=profile.id)
+
+    async def _vector_candidates(
+        self, *, user_id: int, embedding: list[float], limit: int
+    ) -> list[tuple[int, float, str | None, dict[str, object]]]:
+        """Return only legacy vector candidates for the Phase 5A guard."""
+        rows = await self._repo.rank_jobs_by_vector(embedding, limit, user_id=user_id)
+        return [(job_id, score, description, {}) for job_id, score, description in rows]
+
+    async def _select_ranking_candidates(
+        self,
+        *,
+        user_id: int,
+        embedding: list[float],
+        limit: int,
+    ) -> list[tuple[int, float, str | None, dict[str, object]]]:
+        """Select the rollout path while Phase 5A keeps all paths vector-only.
+
+        ``shadow`` and ``fit`` are accepted configuration values, but their
+        computation and ordering are intentionally deferred to Phases 5B and
+        5D. Keeping explicit branches here prevents accidental exposure of
+        hybrid-only candidates while making the future switch point obvious.
+        """
+        settings = get_settings()
+        if settings.match_ranking_mode == "vector":
+            return await self._vector_candidates(user_id=user_id, embedding=embedding, limit=limit)
+        if settings.match_ranking_mode == "shadow":
+            return await self._vector_candidates(user_id=user_id, embedding=embedding, limit=limit)
+        if settings.match_ranking_mode == "fit":
+            return await self._vector_candidates(user_id=user_id, embedding=embedding, limit=limit)
+        raise ValueError(f"Unsupported match ranking mode: {settings.match_ranking_mode}")
 
     @staticmethod
     def _profile_retrieval_inputs(profile_parsed: dict[str, object]) -> tuple[str, set[str]]:
@@ -551,6 +582,9 @@ class MatchingService:
 
     async def rank_job_ids(self, *, user_id: int, job_ids: list[int], limit: int) -> int:
         """Incrementally score embedded jobs for one user without a full scan."""
+        # ``limit`` is supplied by callers as their processing bound. The
+        # persisted automatic set must always use the rollout final limit.
+        final_limit = get_settings().match_final_limit
         profile = await self._repo.get_active_profile(user_id)
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
@@ -604,7 +638,7 @@ class MatchingService:
                 **provenance,
             )
             ranked += 1
-        await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
+        await self._repo.prune_automatic_matches(user_id=user_id, limit=final_limit)
         return ranked
 
     async def list_matches(

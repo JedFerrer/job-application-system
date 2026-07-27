@@ -112,6 +112,19 @@ class Settings(BaseSettings):
     purge_schedule_cron: str = "0 3 * * *"
     match_ranking_schedule_cron: str = "30 6 * * *"
 
+    # --- Match ranking rollout (Phase 5) ---
+    # Shadow and fit are configuration-valid rollout stages; until their
+    # phases are enabled, the service safely uses the vector path for them.
+    # Text/skill limits and RRF K activate in Phase 5B; fit ordering activates
+    # in Phase 5D. Scorer version is rollout/provenance metadata only here.
+    match_ranking_mode: Literal["vector", "shadow", "fit"] = "shadow"
+    match_vector_candidate_limit: int = Field(default=400, ge=1)
+    match_text_candidate_limit: int = Field(default=400, ge=1)
+    match_skill_candidate_limit: int = Field(default=400, ge=1)
+    match_final_limit: int = Field(default=200, ge=1)
+    match_rrf_k: int = Field(default=60, ge=1)
+    match_scorer_version: str = "fit-scorer-v1"
+
     # --- Shift detection ---
     # IANA timezone name for the job seeker.  Used to convert employer-side
     # clock times ("8 AM CST") to the worker's local time before classifying

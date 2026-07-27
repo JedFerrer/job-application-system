@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from app.core.config import Settings
 from app.domain.matching.hybrid_retrieval import RetrievalCandidate
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
@@ -112,7 +113,10 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
 
 
 @pytest.mark.asyncio
-async def test_hybrid_rank_preserves_top_200_pruning_and_manual_refresh() -> None:
+@pytest.mark.parametrize("mode", ["vector", "shadow", "fit"])
+async def test_ranking_modes_use_vector_placeholder_without_hybrid_only_candidates(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
     automatic_ids = list(range(1000, 1250))
     manual_ids = [10]
     calls: list[dict[str, object]] = []
@@ -128,23 +132,23 @@ async def test_hybrid_rank_preserves_top_200_pruning_and_manual_refresh() -> Non
         async def rank_jobs_by_vector(
             self, embedding: list[float], limit: int, *, user_id: int
         ) -> list[tuple[int, float, str]]:
-            assert limit == 400
-            return [(job_id, 0.7, "Python services") for job_id in automatic_ids]
+            assert limit == 123
+            return [(job_id, 0.7, "Python services") for job_id in automatic_ids[:limit]]
 
         async def search_jobs_by_text(
             self, query: str, limit: int, *, user_id: int
         ) -> list[RetrievalCandidate]:
-            return [RetrievalCandidate(2000, 3.0)]
+            raise AssertionError("text retrieval must not run in vector mode")
 
         async def search_jobs_by_skills(
             self, skill_ids: set[str], limit: int, *, user_id: int
         ) -> list[RetrievalCandidate]:
-            return [RetrievalCandidate(2001, 2.0)]
+            raise AssertionError("skill retrieval must not run in vector mode")
 
         async def vector_similarities_for_jobs(
             self, *, user_id: int, embedding: list[float], job_ids: list[int]
         ) -> dict[int, float]:
-            return {job_id: 0.4 for job_id in job_ids}
+            raise AssertionError("vector enrichment must not run in vector mode")
 
         async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
             return manual_ids
@@ -156,14 +160,67 @@ async def test_hybrid_rank_preserves_top_200_pruning_and_manual_refresh() -> Non
             calls.append(dict(kwargs))
 
         async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
-            assert limit == 200
+            assert limit == 123
+
+    monkeypatch.setattr(
+        "app.domain.matching.service.get_settings",
+        lambda: Settings(match_ranking_mode=mode, match_final_limit=123),
+    )
 
     response = await MatchingService(FakeRepository()).rank_jobs(1, 200)  # type: ignore[arg-type]
 
-    assert response.ranked == 252
-    assert len([call for call in calls if call["job_id"] in automatic_ids]) == 250
-    assert {call["job_id"] for call in calls} >= {*automatic_ids, 2000, 2001, *manual_ids}
+    assert response.ranked == 123
+    assert len([call for call in calls if call["job_id"] in automatic_ids]) == 123
+    assert {call["job_id"] for call in calls} == {*automatic_ids[:123], *manual_ids}
     assert len([call for call in calls if call["job_id"] in manual_ids]) == 1
+
+
+@pytest.mark.asyncio
+async def test_incremental_ranking_prunes_with_configured_final_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upserted: list[dict[str, object]] = []
+    prune_limits: list[int] = []
+
+    class FakeRepository:
+        async def get_active_profile(self, user_id: int) -> object:
+            return SimpleNamespace(
+                id=3,
+                embedding=[0.1, 0.2],
+                parsed={"skills": ["Python"]},
+            )
+
+        async def score_visible_job(self, **kwargs: object) -> float:
+            return 0.7
+
+        async def get_visible_job(self, *, user_id: int, job_id: int) -> object:
+            return SimpleNamespace(
+                id=job_id,
+                title="Python Engineer",
+                description="Python services",
+            )
+
+        async def upsert_match(self, **kwargs: object) -> None:
+            upserted.append(dict(kwargs))
+
+        async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
+            prune_limits.append(limit)
+
+    monkeypatch.setattr(
+        "app.domain.matching.service.get_settings",
+        lambda: Settings(match_ranking_mode="shadow", match_final_limit=17),
+    )
+
+    ranked = await MatchingService(FakeRepository()).rank_job_ids(  # type: ignore[arg-type]
+        user_id=1,
+        job_ids=[101, 102],
+        limit=200,
+    )
+
+    assert ranked == 2
+    assert [call["job_id"] for call in upserted] == [101, 102]
+    assert all(call["origin"] == "automatic" for call in upserted)
+    assert prune_limits == [17]
 
 
 @pytest.mark.asyncio
