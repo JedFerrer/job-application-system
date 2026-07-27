@@ -15,6 +15,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import perf_counter
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
@@ -113,6 +114,15 @@ _EvidenceSource = Literal["persisted", "fallback", "unavailable"]
 class _ClassifiedEvidenceResult:
     skills: ClassifiedMatchSkills | None
     source: _EvidenceSource
+
+
+_RankedCandidate = tuple[int, float, str | None, dict[str, object]]
+
+
+@dataclass(frozen=True)
+class _RankingSelection:
+    candidates: list[_RankedCandidate]
+    shadow_metrics: dict[str, object] | None = None
 
 
 def job_description_hash(description: str | None) -> str:
@@ -314,21 +324,24 @@ class MatchingService:
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
         embedding = list(profile.embedding)
-        ranked = await self._select_ranking_candidates(
+        preferences = None
+        if settings.match_ranking_mode == "shadow" and self._readiness_repo is not None:
+            preferences = await self._readiness_repo.get_for_user(user_id)
+        selection = await self._select_ranking_candidates(
             user_id=user_id,
             embedding=embedding,
             limit=ranking_limit,
+            profile=profile,
+            preferences=preferences,
         )
+        ranked = selection.candidates
+        if settings.match_ranking_mode != "shadow" and self._readiness_repo is not None:
+            preferences = await self._readiness_repo.get_for_user(user_id)
         get_jobs = getattr(self._repo, "get_visible_jobs_by_ids", None)
         jobs = (
             await get_jobs(user_id=user_id, job_ids=[job_id for job_id, _, _, _ in ranked])
             if callable(get_jobs)
             else {}
-        )
-        preferences = (
-            await self._readiness_repo.get_for_user(user_id)
-            if self._readiness_repo is not None
-            else None
         )
         profile_parsed = dict(profile.parsed)
         for job_id, similarity, job_description, retrieval_metadata in ranked:
@@ -372,15 +385,160 @@ class MatchingService:
             limit=ranking_limit,
         )
         await self._repo.prune_automatic_matches(user_id=user_id, limit=ranking_limit)
+        if selection.shadow_metrics is not None:
+            logger.info("matches.shadow_metrics", **selection.shadow_metrics)
         logger.info("matches.ranked", user_id=user_id, count=len(ranked))
         return RankResponse(ranked=len(ranked), profile_id=profile.id)
 
     async def _vector_candidates(
         self, *, user_id: int, embedding: list[float], limit: int
-    ) -> list[tuple[int, float, str | None, dict[str, object]]]:
-        """Return only legacy vector candidates for the Phase 5A guard."""
+    ) -> list[_RankedCandidate]:
+        """Return the active vector candidates retained by Phase 5A/5B."""
         rows = await self._repo.rank_jobs_by_vector(embedding, limit, user_id=user_id)
         return [(job_id, score, description, {}) for job_id, score, description in rows]
+
+    async def _shadow_candidates(
+        self,
+        *,
+        user_id: int,
+        embedding: list[float],
+        profile: object,
+        profile_parsed: dict[str, object],
+        preferences: object | None,
+        limit: int,
+    ) -> _RankingSelection:
+        """Compute hybrid ranking privately while retaining vector candidates."""
+        vector_candidates = await self._vector_candidates(
+            user_id=user_id, embedding=embedding, limit=limit
+        )
+        vector_ids = [job_id for job_id, _, _, _ in vector_candidates]
+        settings = get_settings()
+        try:
+            hybrid_candidates = await self._hybrid_candidates(
+                user_id=user_id,
+                embedding=embedding,
+                profile_parsed=profile_parsed,
+                fallback_limit=limit,
+            )
+        except Exception:  # noqa: BLE001 - vector results remain authoritative
+            logger.warning("matches.shadow_retrieval_failed", mode="shadow")
+            hybrid_candidates = []
+
+        get_jobs = getattr(self._repo, "get_visible_jobs_by_ids", None)
+        hybrid_ids = [job_id for job_id, _, _, _ in hybrid_candidates]
+        jobs: dict[int, object] = {}
+        if callable(get_jobs) and hybrid_ids:
+            try:
+                jobs = await get_jobs(user_id=user_id, job_ids=hybrid_ids)
+            except Exception:  # noqa: BLE001 - shadow scoring is non-blocking
+                jobs = {}
+
+        started = perf_counter()
+        scored: dict[int, tuple[float, dict[str, object]]] = {}
+        evidence_components = (
+            "required_skill_coverage",
+            "preferred_skill_coverage",
+            "semantic_similarity",
+            "role_alignment",
+            "seniority_experience",
+            "user_preferences",
+        )
+        missing_evidence_counts = {component: 0 for component in evidence_components}
+        for job_id, similarity, description, _ in hybrid_candidates:
+            job = jobs.get(job_id) or SimpleNamespace(
+                id=job_id,
+                title=None,
+                description=description or "",
+            )
+            try:
+                score_values, _ = await self._score_match_inputs(
+                    profile=profile,
+                    job=job,
+                    vector_similarity=similarity,
+                    preferences=preferences,
+                    job_id=job_id,
+                )
+            except Exception:  # noqa: BLE001, S112 - missing shadow evidence is aggregate-only
+                continue
+            score = float(score_values.get("ranking_score", 0.0))
+            scored[job_id] = (score, score_values)
+            components = score_values.get("score_components", {}).get("components", {})
+            if isinstance(components, dict):
+                for component, value in components.items():
+                    if isinstance(value, dict) and value.get("status") == "unknown":
+                        missing_evidence_counts[component] = (
+                            missing_evidence_counts.get(component, 0) + 1
+                        )
+        scoring_duration_ms = round((perf_counter() - started) * 1000, 3)
+
+        scored_ids = {job_id for job_id, _, _, _ in hybrid_candidates if job_id in scored}
+        ordered_hybrid = sorted(
+            hybrid_candidates,
+            key=lambda item: (
+                -scored.get(item[0], (float("-inf"), {}))[0],
+                item[0],
+            ),
+        )
+        hybrid_order = [job_id for job_id, _, _, _ in ordered_hybrid]
+        vector_set = set(vector_ids)
+        hybrid_set = set(hybrid_order)
+        intersection = vector_set & hybrid_set
+        vector_positions = {job_id: index for index, job_id in enumerate(vector_ids, start=1)}
+        hybrid_positions = {job_id: index for index, job_id in enumerate(hybrid_order, start=1)}
+        movements = [
+            abs(vector_positions[job_id] - hybrid_positions[job_id])
+            for job_id in intersection
+        ]
+        contribution_counts: dict[str, int] = {}
+        metadata_by_id: dict[int, dict[str, object]] = {}
+        for job_id, _, _, metadata in hybrid_candidates:
+            metadata_by_id[job_id] = metadata
+            sources = metadata.get("sources", [])
+            if isinstance(sources, list):
+                for source in sources:
+                    if isinstance(source, str):
+                        contribution_counts[source] = contribution_counts.get(source, 0) + 1
+
+        scored_count = len(scored_ids)
+        missing_total = sum(missing_evidence_counts.values())
+        missing_rates = {
+            component: round(count / scored_count, 4) if scored_count else 0.0
+            for component, count in missing_evidence_counts.items()
+        }
+        metrics: dict[str, object] = {
+            "ranking_mode": settings.match_ranking_mode,
+            "scorer_version": settings.match_scorer_version,
+            "vector_result_count": len(vector_ids),
+            "hybrid_candidate_count": len(hybrid_candidates),
+            "intersection_count": len(intersection),
+            "shadow_only_count": len(hybrid_set - vector_set),
+            "top_10_overlap": len(set(vector_ids[:10]) & set(hybrid_order[:10])),
+            "top_50_overlap": len(set(vector_ids[:50]) & set(hybrid_order[:50])),
+            "mean_rank_movement": round(sum(movements) / len(movements), 4)
+            if movements
+            else 0.0,
+            "retrieval_contribution_counts": dict(sorted(contribution_counts.items())),
+            "missing_evidence_counts": dict(sorted(missing_evidence_counts.items())),
+            "missing_evidence_rates": dict(sorted(missing_rates.items())),
+            "missing_evidence_count": missing_total,
+            "missing_evidence_rate": round(missing_total / (scored_count * 6), 4)
+            if scored_count
+            else 0.0,
+            "scored_candidate_count": scored_count,
+            "scoring_duration_ms": scoring_duration_ms,
+        }
+        return _RankingSelection(
+            candidates=[
+                (
+                    job_id,
+                    similarity,
+                    description,
+                    metadata_by_id.get(job_id, {}) if job_id in intersection else {},
+                )
+                for job_id, similarity, description, _ in vector_candidates
+            ],
+            shadow_metrics=metrics,
+        )
 
     async def _select_ranking_candidates(
         self,
@@ -388,21 +546,38 @@ class MatchingService:
         user_id: int,
         embedding: list[float],
         limit: int,
-    ) -> list[tuple[int, float, str | None, dict[str, object]]]:
-        """Select the rollout path while Phase 5A keeps all paths vector-only.
+        profile: object,
+        preferences: object | None,
+    ) -> _RankingSelection:
+        """Select the rollout path while preserving vector-visible results.
 
-        ``shadow`` and ``fit`` are accepted configuration values, but their
-        computation and ordering are intentionally deferred to Phases 5B and
-        5D. Keeping explicit branches here prevents accidental exposure of
-        hybrid-only candidates while making the future switch point obvious.
+        ``shadow`` computes hybrid ordering and metrics privately; ``fit``
+        remains a vector-only placeholder until Phase 5D. Keeping explicit
+        branches here prevents accidental exposure of hybrid-only candidates
+        while making the future switch point obvious.
         """
         settings = get_settings()
         if settings.match_ranking_mode == "vector":
-            return await self._vector_candidates(user_id=user_id, embedding=embedding, limit=limit)
+            return _RankingSelection(
+                candidates=await self._vector_candidates(
+                    user_id=user_id, embedding=embedding, limit=limit
+                )
+            )
         if settings.match_ranking_mode == "shadow":
-            return await self._vector_candidates(user_id=user_id, embedding=embedding, limit=limit)
+            return await self._shadow_candidates(
+                user_id=user_id,
+                embedding=embedding,
+                profile=profile,
+                profile_parsed=dict(getattr(profile, "parsed", {})),
+                preferences=preferences,
+                limit=limit,
+            )
         if settings.match_ranking_mode == "fit":
-            return await self._vector_candidates(user_id=user_id, embedding=embedding, limit=limit)
+            return _RankingSelection(
+                candidates=await self._vector_candidates(
+                    user_id=user_id, embedding=embedding, limit=limit
+                )
+            )
         raise ValueError(f"Unsupported match ranking mode: {settings.match_ranking_mode}")
 
     @staticmethod
@@ -437,9 +612,10 @@ class MatchingService:
         embedding: list[float],
         profile_parsed: dict[str, object],
         fallback_limit: int = 200,
-    ) -> list[tuple[int, float, str | None, dict[str, object]]]:
+    ) -> list[_RankedCandidate]:
         """Retrieve and fuse candidates while keeping vector ordering untouched."""
-        candidate_limit = 400
+        settings = get_settings()
+        candidate_limit = settings.match_vector_candidate_limit
         has_hybrid_retrievers = any(
             callable(getattr(self._repo, method, None))
             for method in ("search_jobs_by_text", "search_jobs_by_skills")
@@ -455,18 +631,31 @@ class MatchingService:
                 RetrievalCandidate(job_id=job_id, score=similarity)
                 for job_id, similarity, _ in vector_rows
             ]
-        except Exception:  # noqa: BLE001 - degraded retrieval is intentional
+        except Exception as exc:  # noqa: BLE001 - degraded retrieval is intentional
             logger.warning(
                 "matches.hybrid_retrieval_branch_failed",
                 branch="vector",
                 user_id=user_id,
-                exc_info=True,
+                mode=get_settings().match_ranking_mode,
+                error_type=type(exc).__name__,
             )
 
         text_query, skill_ids = self._profile_retrieval_inputs(profile_parsed)
-        for branch, enabled, method, argument in (
-            ("text", bool(text_query), "search_jobs_by_text", text_query),
-            ("skill", bool(skill_ids), "search_jobs_by_skills", skill_ids),
+        for branch, enabled, method, argument, branch_limit in (
+            (
+                "text",
+                bool(text_query),
+                "search_jobs_by_text",
+                text_query,
+                settings.match_text_candidate_limit,
+            ),
+            (
+                "skill",
+                bool(skill_ids),
+                "search_jobs_by_skills",
+                skill_ids,
+                settings.match_skill_candidate_limit,
+            ),
         ):
             if not enabled:
                 continue
@@ -474,20 +663,21 @@ class MatchingService:
             if not callable(retriever):
                 continue
             try:
-                sources[branch] = await retriever(argument, candidate_limit, user_id=user_id)
-            except Exception:  # noqa: BLE001 - one branch must not abort ranking
+                sources[branch] = await retriever(argument, branch_limit, user_id=user_id)
+            except Exception as exc:  # noqa: BLE001 - one branch must not abort ranking
                 logger.warning(
                     "matches.hybrid_retrieval_branch_failed",
                     branch=branch,
                     user_id=user_id,
-                    exc_info=True,
+                    mode=get_settings().match_ranking_mode,
+                    error_type=type(exc).__name__,
                 )
 
         # Test doubles and legacy repository implementations remain vector-only.
         if not sources:
             return [(job_id, score, description, {}) for job_id, score, description in vector_rows]
 
-        fused = fuse_ranked_candidates(sources, k=60, limit=candidate_limit)
+        fused = fuse_ranked_candidates(sources, k=settings.match_rrf_k, limit=candidate_limit)
         vector_scores = {job_id: score for job_id, score, _ in vector_rows}
         missing_vector_ids = [item.job_id for item in fused if item.job_id not in vector_scores]
         vector_batch = getattr(self._repo, "vector_similarities_for_jobs", None)
@@ -500,12 +690,13 @@ class MatchingService:
                         job_ids=missing_vector_ids,
                     )
                 )
-            except Exception:  # noqa: BLE001 - semantic score can use neutral fallback
+            except Exception as exc:  # noqa: BLE001 - semantic score can use neutral fallback
                 logger.warning(
                     "matches.hybrid_vector_enrichment_failed",
                     user_id=user_id,
                     candidate_count=len(missing_vector_ids),
-                    exc_info=True,
+                    mode=get_settings().match_ranking_mode,
+                    error_type=type(exc).__name__,
                 )
 
         descriptions = {job_id: description for job_id, _, description in vector_rows}

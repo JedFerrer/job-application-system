@@ -113,10 +113,10 @@ class Settings(BaseSettings):
     match_ranking_schedule_cron: str = "30 6 * * *"
 
     # --- Match ranking rollout (Phase 5) ---
-    # Shadow and fit are configuration-valid rollout stages; until their
-    # phases are enabled, the service safely uses the vector path for them.
-    # Text/skill limits and RRF K activate in Phase 5B; fit ordering activates
-    # in Phase 5D. Scorer version is rollout/provenance metadata only here.
+    # Shadow computes private hybrid metrics while the vector result remains
+    # user-visible in Phase 5B; fit ordering activates in Phase 5D.
+    # Candidate limits and RRF K are used by the Phase 5B shadow path. Scorer
+    # version is rollout/provenance metadata for the shadow event.
     match_ranking_mode: Literal["vector", "shadow", "fit"] = "shadow"
     match_vector_candidate_limit: int = Field(default=400, ge=1)
     match_text_candidate_limit: int = Field(default=400, ge=1)

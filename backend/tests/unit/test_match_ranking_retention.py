@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from typing import cast
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -221,6 +222,187 @@ async def test_incremental_ranking_prunes_with_configured_final_limit(
     assert [call["job_id"] for call in upserted] == [101, 102]
     assert all(call["origin"] == "automatic" for call in upserted)
     assert prune_limits == [17]
+
+
+@pytest.mark.asyncio
+async def test_shadow_scores_hybrid_candidates_but_persists_only_vector_intersection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upserted: list[dict[str, object]] = []
+    prune_limits: list[int] = []
+    log_info = Mock()
+
+    class FakeRepository:
+        async def get_active_profile(self, user_id: int) -> object:
+            return SimpleNamespace(
+                id=3,
+                embedding=[0.1, 0.2],
+                parsed={
+                    "preferred_roles": ["Backend Engineer"],
+                    "headline": "Python developer",
+                    "skills": ["Python"],
+                },
+            )
+
+        async def rank_jobs_by_vector(
+            self, embedding: list[float], limit: int, *, user_id: int
+        ) -> list[tuple[int, float, str]]:
+            if limit == 3:
+                return [
+                    (1, 0.99, "vector one"),
+                    (2, 0.90, "vector two"),
+                    (5, 0.80, "vector five"),
+                ]
+            return [
+                (1, 0.99, "vector one"),
+                (4, 0.97, "shadow only"),
+                (2, 0.90, "vector two"),
+                (3, 0.80, "hybrid only three"),
+            ]
+
+        async def search_jobs_by_text(
+            self, query: str, limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            return [RetrievalCandidate(4, 3.0), RetrievalCandidate(2, 2.0)]
+
+        async def search_jobs_by_skills(
+            self, skill_ids: set[str], limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            return [RetrievalCandidate(2, 2.0), RetrievalCandidate(3, 1.0)]
+
+        async def get_visible_jobs_by_ids(
+            self, *, user_id: int, job_ids: list[int]
+        ) -> dict[int, object]:
+            return {
+                job_id: SimpleNamespace(
+                    id=job_id,
+                    title="Backend Engineer",
+                    description=f"Description {job_id}",
+                )
+                for job_id in job_ids
+            }
+
+        async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
+            return []
+
+        async def upsert_match(self, **kwargs: object) -> None:
+            upserted.append(dict(kwargs))
+
+        async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
+            prune_limits.append(limit)
+
+    monkeypatch.setattr(
+        "app.domain.matching.service.get_settings",
+        lambda: Settings(
+            match_ranking_mode="shadow",
+            match_vector_candidate_limit=4,
+            match_text_candidate_limit=4,
+            match_skill_candidate_limit=4,
+            match_final_limit=3,
+            match_rrf_k=60,
+        ),
+    )
+    monkeypatch.setattr("app.domain.matching.service.logger.info", log_info)
+
+    response = await MatchingService(FakeRepository()).rank_jobs(1, 200)  # type: ignore[arg-type]
+
+    assert response.ranked == 3
+    assert [call["job_id"] for call in upserted] == [1, 2, 5]
+    assert all(call["job_id"] != 4 for call in upserted)
+    first_metadata = cast(dict[str, object], upserted[0]["retrieval_metadata"])
+    second_metadata = cast(dict[str, object], upserted[1]["retrieval_metadata"])
+    assert set(cast(list[str], first_metadata["sources"])) == {"vector"}
+    assert set(cast(list[str], second_metadata["sources"])) == {"skill", "text", "vector"}
+    assert upserted[2]["retrieval_metadata"] == {}
+    assert prune_limits == [3, 3]
+
+    shadow_call = next(
+        call for call in log_info.call_args_list if call.args[0] == "matches.shadow_metrics"
+    )
+    assert sum(call.args[0] == "matches.shadow_metrics" for call in log_info.call_args_list) == 1
+    metrics = shadow_call.kwargs
+    assert metrics["vector_result_count"] == 3
+    assert metrics["hybrid_candidate_count"] == 4
+    assert metrics["intersection_count"] == 2
+    assert metrics["shadow_only_count"] == 2
+    assert metrics["top_10_overlap"] == 2
+    assert metrics["top_50_overlap"] == 2
+    assert metrics["retrieval_contribution_counts"] == {"skill": 2, "text": 2, "vector": 4}
+    assert metrics["mean_rank_movement"] == pytest.approx(0.5)
+    assert isinstance(metrics["scoring_duration_ms"], float)
+    assert "Description" not in repr(shadow_call)
+    assert "Backend Engineer" not in repr(shadow_call)
+
+
+@pytest.mark.asyncio
+async def test_shadow_retrieval_failure_keeps_vector_visible_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upserted: list[dict[str, object]] = []
+    log_info = Mock()
+    log_warning = Mock()
+
+    class FakeRepository:
+        async def get_active_profile(self, user_id: int) -> object:
+            return SimpleNamespace(
+                id=3,
+                embedding=[0.1, 0.2],
+                parsed={
+                    "preferred_roles": ["Backend Engineer"],
+                    "headline": "Python developer",
+                    "skills": ["Python"],
+                },
+            )
+
+        async def rank_jobs_by_vector(
+            self, embedding: list[float], limit: int, *, user_id: int
+        ) -> list[tuple[int, float, str]]:
+            return [(1, 0.9, "vector one"), (2, 0.8, "vector two")]
+
+        async def search_jobs_by_text(
+            self, query: str, limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            raise RuntimeError("Python developer raw query and job description secret")
+
+        async def search_jobs_by_skills(
+            self, skill_ids: set[str], limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            raise RuntimeError("profile skill label secret")
+
+        async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
+            return []
+
+        async def upsert_match(self, **kwargs: object) -> None:
+            upserted.append(dict(kwargs))
+
+        async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.domain.matching.service.get_settings",
+        lambda: Settings(match_ranking_mode="shadow", match_final_limit=2),
+    )
+    monkeypatch.setattr("app.domain.matching.service.logger.info", log_info)
+    monkeypatch.setattr("app.domain.matching.service.logger.warning", log_warning)
+
+    response = await MatchingService(FakeRepository()).rank_jobs(1, 200)  # type: ignore[arg-type]
+
+    assert response.ranked == 2
+    assert [call["job_id"] for call in upserted] == [1, 2]
+    assert len(log_warning.call_args_list) == 2
+    for warning_call in log_warning.call_args_list:
+        assert warning_call.kwargs["error_type"] == "RuntimeError"
+        assert "exc_info" not in warning_call.kwargs
+        warning_repr = repr(warning_call)
+        assert "Python developer" not in warning_repr
+        assert "raw query" not in warning_repr
+        assert "job description secret" not in warning_repr
+        assert "profile skill label secret" not in warning_repr
+    shadow_call = next(
+        call for call in log_info.call_args_list if call.args[0] == "matches.shadow_metrics"
+    )
+    assert sum(call.args[0] == "matches.shadow_metrics" for call in log_info.call_args_list) == 1
+    assert shadow_call.kwargs["hybrid_candidate_count"] == 2
 
 
 @pytest.mark.asyncio
