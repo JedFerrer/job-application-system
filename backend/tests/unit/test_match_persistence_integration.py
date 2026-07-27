@@ -108,6 +108,10 @@ async def test_postgres_upsert_clears_changed_deterministic_llm_state(
             ontology_version="old-ontology",
             scorer_version="old-scorer",
             readiness_preferences_hash="old-preferences",
+            retrieval_metadata={
+                "sources": ["vector"],
+                "source_ranks": {"vector": 1},
+            },
         )
         await session.commit()
 
@@ -139,6 +143,10 @@ async def test_postgres_upsert_clears_changed_deterministic_llm_state(
             ontology_version="new-ontology",
             scorer_version="new-scorer",
             readiness_preferences_hash="new-preferences",
+            retrieval_metadata={
+                "sources": ["skill", "vector"],
+                "source_ranks": {"skill": 2, "vector": 3},
+            },
         )
         await session.commit()
 
@@ -158,6 +166,10 @@ async def test_postgres_upsert_clears_changed_deterministic_llm_state(
         assert row.matched_skills == ["fastapi", "python"]
         assert row.missing_keywords == ["sql"]
         assert row.source_profile_matching_hash == "new-profile"
+        assert row.retrieval_metadata == {
+            "sources": ["skill", "vector"],
+            "source_ranks": {"skill": 2, "vector": 3},
+        }
         assert row.llm_score is None
         assert row.llm_confidence is None
         assert row.llm_explanation is None

@@ -1,6 +1,7 @@
-"""Matching service: three-layer JD-to-resume scoring (Phase 3).
+"""Matching service: hybrid retrieval and deterministic JD-to-resume scoring.
 
-Layer 1 (vector pre-rank): pgvector cosine similarity ranks jobs cheaply.
+Layer 1 (hybrid retrieval): vector, full-text, and canonical skill retrieval
+    produce a bounded candidate set.
 Layer 2 (deterministic skill recall): free, reproducible evidence of which
     JD-required skills the resume contains (alias-aware whole-word matching).
 Layer 3 (LLM explanation/score): selective, grounded by layer 2, cached on the
@@ -27,6 +28,10 @@ from app.domain.matching.exceptions import (
     MatchPreparingError,
     MatchUnavailableError,
     NoActiveProfileError,
+)
+from app.domain.matching.hybrid_retrieval import (
+    RetrievalCandidate,
+    fuse_ranked_candidates,
 )
 from app.domain.matching.job_skill_mention_repository import JobSkillMentionRepository
 from app.domain.matching.llm_fingerprint import (
@@ -175,9 +180,7 @@ class MatchingService:
             self._mention_repo = mention_repository
         else:
             session = getattr(repository, "_session", None)
-            self._mention_repo = (
-                JobSkillMentionRepository(session) if session is not None else None
-            )
+            self._mention_repo = JobSkillMentionRepository(session) if session is not None else None
 
     async def _classified_job_mentions(
         self, *, job_id: int, job_description: str
@@ -197,9 +200,20 @@ class MatchingService:
     def _job_seniority(title: str | None) -> str | None:
         tokens = {token.casefold() for token in (title or "").replace("-", " ").split()}
         known = {
-            "intern", "trainee", "junior", "entry", "associate", "mid",
-            "intermediate", "senior", "lead", "principal", "staff", "director",
-            "vp", "executive",
+            "intern",
+            "trainee",
+            "junior",
+            "entry",
+            "associate",
+            "mid",
+            "intermediate",
+            "senior",
+            "lead",
+            "principal",
+            "staff",
+            "director",
+            "vp",
+            "executive",
         }
         values = tokens & known
         return next(iter(values)) if len(values) == 1 else None
@@ -258,9 +272,7 @@ class MatchingService:
             semantic_similarity=vector_similarity,
             job_title=getattr(job, "title", None),
             profile_roles=tuple(
-                str(value)
-                for value in profile_parsed.get("preferred_roles", [])
-                if value
+                str(value) for value in profile_parsed.get("preferred_roles", []) if value
             ),
             profile_headline=(
                 profile_parsed.get("headline")
@@ -275,9 +287,7 @@ class MatchingService:
             ),
             job_years_required=max(years) if years else None,
             profile_years_experience=(
-                float(profile_years)
-                if isinstance(profile_years, int | float)
-                else None
+                float(profile_years) if isinstance(profile_years, int | float) else None
             ),
             readiness=ReadinessFindings(blockers=blockers, warnings=warnings),
         )
@@ -302,10 +312,15 @@ class MatchingService:
         if profile is None or profile.embedding is None:
             raise NoActiveProfileError
         embedding = list(profile.embedding)
-        ranked = await self._repo.rank_jobs_by_vector(embedding, limit, user_id=user_id)
+        ranked = await self._hybrid_candidates(
+            user_id=user_id,
+            embedding=embedding,
+            profile_parsed=dict(profile.parsed),
+            fallback_limit=limit,
+        )
         get_jobs = getattr(self._repo, "get_visible_jobs_by_ids", None)
         jobs = (
-            await get_jobs(user_id=user_id, job_ids=[job_id for job_id, _, _ in ranked])
+            await get_jobs(user_id=user_id, job_ids=[job_id for job_id, _, _, _ in ranked])
             if callable(get_jobs)
             else {}
         )
@@ -315,20 +330,22 @@ class MatchingService:
             else None
         )
         profile_parsed = dict(profile.parsed)
-        for job_id, similarity, job_description in ranked:
-            matched_skills, missing_keywords, deterministic_match = (
-                await self._deterministic_match_fields(
-                    job_id=job_id,
-                    job_description=job_description or "",
-                    profile_parsed=profile_parsed,
-                )
+        for job_id, similarity, job_description, retrieval_metadata in ranked:
+            job_record = jobs.get(job_id)
+            resolved_description = job_description or getattr(job_record, "description", "")
+            (
+                matched_skills,
+                missing_keywords,
+                deterministic_match,
+            ) = await self._deterministic_match_fields(
+                job_id=job_id,
+                job_description=resolved_description or "",
+                profile_parsed=profile_parsed,
             )
             score_values, provenance = await self._score_match_inputs(
                 profile=profile,
-                job=jobs.get(
-                    job_id,
-                    SimpleNamespace(id=job_id, title=None, description=job_description),
-                ),
+                job=job_record
+                or SimpleNamespace(id=job_id, title=None, description=resolved_description),
                 vector_similarity=similarity,
                 preferences=preferences,
                 job_id=job_id,
@@ -344,6 +361,7 @@ class MatchingService:
                 deterministic_match=deterministic_match,
                 **score_values,
                 **provenance,
+                retrieval_metadata=retrieval_metadata,
             )
         # Manual analyses are retained outside top-K, but profile changes and
         # nightly refreshes must still update their embedding-based score.
@@ -355,6 +373,122 @@ class MatchingService:
         await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
         logger.info("matches.ranked", user_id=user_id, count=len(ranked))
         return RankResponse(ranked=len(ranked), profile_id=profile.id)
+
+    @staticmethod
+    def _profile_retrieval_inputs(profile_parsed: dict[str, object]) -> tuple[str, set[str]]:
+        """Build bounded retrieval inputs from approved profile fields only."""
+        text_parts: list[str] = []
+        for field_name in ("preferred_roles", "headline"):
+            value = profile_parsed.get(field_name)
+            if isinstance(value, str):
+                text_parts.append(value)
+            elif isinstance(value, list):
+                text_parts.extend(str(item) for item in value if item)
+
+        structured_values: list[str] = []
+        for field_name in ("skills", "certifications"):
+            value = profile_parsed.get(field_name)
+            if isinstance(value, list):
+                structured_values.extend(str(item) for item in value if item)
+        structured_report = (
+            default_skill_extractor()
+            .extract("\n".join(structured_values), source="structured")
+            .deduplicated()
+        )
+        text_parts.extend(mention.canonical_label for mention in structured_report.mentions)
+        skill_ids = {mention.skill_id for mention in structured_report.mentions}
+        return " ".join(part.strip() for part in text_parts if part.strip()), skill_ids
+
+    async def _hybrid_candidates(
+        self,
+        *,
+        user_id: int,
+        embedding: list[float],
+        profile_parsed: dict[str, object],
+        fallback_limit: int = 200,
+    ) -> list[tuple[int, float, str | None, dict[str, object]]]:
+        """Retrieve and fuse candidates while keeping vector ordering untouched."""
+        candidate_limit = 400
+        has_hybrid_retrievers = any(
+            callable(getattr(self._repo, method, None))
+            for method in ("search_jobs_by_text", "search_jobs_by_skills")
+        )
+        vector_limit = candidate_limit if has_hybrid_retrievers else fallback_limit
+        sources: dict[str, list[RetrievalCandidate]] = {}
+        vector_rows: list[tuple[int, float, str | None]] = []
+        try:
+            vector_rows = await self._repo.rank_jobs_by_vector(
+                embedding, vector_limit, user_id=user_id
+            )
+            sources["vector"] = [
+                RetrievalCandidate(job_id=job_id, score=similarity)
+                for job_id, similarity, _ in vector_rows
+            ]
+        except Exception:  # noqa: BLE001 - degraded retrieval is intentional
+            logger.warning(
+                "matches.hybrid_retrieval_branch_failed",
+                branch="vector",
+                user_id=user_id,
+                exc_info=True,
+            )
+
+        text_query, skill_ids = self._profile_retrieval_inputs(profile_parsed)
+        for branch, enabled, method, argument in (
+            ("text", bool(text_query), "search_jobs_by_text", text_query),
+            ("skill", bool(skill_ids), "search_jobs_by_skills", skill_ids),
+        ):
+            if not enabled:
+                continue
+            retriever = getattr(self._repo, method, None)
+            if not callable(retriever):
+                continue
+            try:
+                sources[branch] = await retriever(argument, candidate_limit, user_id=user_id)
+            except Exception:  # noqa: BLE001 - one branch must not abort ranking
+                logger.warning(
+                    "matches.hybrid_retrieval_branch_failed",
+                    branch=branch,
+                    user_id=user_id,
+                    exc_info=True,
+                )
+
+        # Test doubles and legacy repository implementations remain vector-only.
+        if not sources:
+            return [(job_id, score, description, {}) for job_id, score, description in vector_rows]
+
+        fused = fuse_ranked_candidates(sources, k=60, limit=candidate_limit)
+        vector_scores = {job_id: score for job_id, score, _ in vector_rows}
+        missing_vector_ids = [item.job_id for item in fused if item.job_id not in vector_scores]
+        vector_batch = getattr(self._repo, "vector_similarities_for_jobs", None)
+        if missing_vector_ids and callable(vector_batch):
+            try:
+                vector_scores.update(
+                    await vector_batch(
+                        user_id=user_id,
+                        embedding=embedding,
+                        job_ids=missing_vector_ids,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - semantic score can use neutral fallback
+                logger.warning(
+                    "matches.hybrid_vector_enrichment_failed",
+                    user_id=user_id,
+                    candidate_count=len(missing_vector_ids),
+                    exc_info=True,
+                )
+
+        descriptions = {job_id: description for job_id, _, description in vector_rows}
+        result: list[tuple[int, float, str | None, dict[str, object]]] = []
+        for item in fused:
+            result.append(
+                (
+                    item.job_id,
+                    vector_scores.get(item.job_id, 0.5),
+                    descriptions.get(item.job_id),
+                    item.metadata(),
+                )
+            )
+        return result
 
     async def analyze_job(self, *, user_id: int, job_id: int) -> MatchSummary:
         """Score and save one visible job without batch ranking or an LLM call."""
@@ -377,12 +511,14 @@ class MatchingService:
         )
         if similarity is None:
             raise MatchNotReadyError(job_id)
-        matched_skills, missing_keywords, deterministic_match = (
-            await self._deterministic_match_fields(
-                job_id=job_id,
-                job_description=job.description or "",
-                profile_parsed=dict(getattr(profile, "parsed", {})),
-            )
+        (
+            matched_skills,
+            missing_keywords,
+            deterministic_match,
+        ) = await self._deterministic_match_fields(
+            job_id=job_id,
+            job_description=job.description or "",
+            profile_parsed=dict(getattr(profile, "parsed", {})),
         )
         preferences = (
             await self._readiness_repo.get_for_user(user_id)
@@ -439,12 +575,14 @@ class MatchingService:
             )
             if callable(get_visible_job) and job is None:
                 continue
-            matched_skills, missing_keywords, deterministic_match = (
-                await self._deterministic_match_fields(
-                    job_id=job_id,
-                    job_description=getattr(job, "description", None) or "",
-                    profile_parsed=profile_parsed,
-                )
+            (
+                matched_skills,
+                missing_keywords,
+                deterministic_match,
+            ) = await self._deterministic_match_fields(
+                job_id=job_id,
+                job_description=getattr(job, "description", None) or "",
+                profile_parsed=profile_parsed,
             )
             score_values, provenance = await self._score_match_inputs(
                 profile=profile,
@@ -586,9 +724,7 @@ class MatchingService:
         return MatchSummary(
             job_id=job_id,
             vector_score=match.vector_score,
-            **self._match_contract_fields(
-                match, readiness_context, evidence_result.source
-            ),
+            **self._match_contract_fields(match, readiness_context, evidence_result.source),
             confidence=match.confidence,
             llm_score=match.llm_score,
             llm_confidence=match.llm_confidence,
@@ -614,13 +750,11 @@ class MatchingService:
 
         profile_parsed = dict(profile.parsed)
         evidence_result = await self._load_classified_evidence(user_id, job_id)
-        matched_skills, missing_keywords, report_dict = (
-            await self._deterministic_match_fields(
-                job_id=job_id,
-                job_description=job.description or "",
-                profile_parsed=profile_parsed,
-                classified_skills=evidence_result.skills,
-            )
+        matched_skills, missing_keywords, report_dict = await self._deterministic_match_fields(
+            job_id=job_id,
+            job_description=job.description or "",
+            profile_parsed=profile_parsed,
+            classified_skills=evidence_result.skills,
         )
         if evidence_result.skills is not None:
             report_dict["classified_skills"] = evidence_result.skills.model_dump()
@@ -631,19 +765,19 @@ class MatchingService:
         )
         settings = get_settings()
         request_spec = resolve_llm_request_spec(
-                model=normalize_model_identity(settings.llm_model),
+            model=normalize_model_identity(settings.llm_model),
             temperature=_LLM_TEMPERATURE,
             json_mode=_LLM_JSON_MODE,
         )
         expected_llm_hash = (
             llm_input_hash_for_payload(
-            prompt_payload=prompt_payload,
-            model=normalize_model_identity(settings.llm_model),
-            prompt_version=_LLM_PROMPT_VERSION,
-            prompt_text=MATCH_EXPLANATION_PROMPT,
-            ontology_version=CATALOG_VERSION,
-            scorer_version=SCORER_VERSION,
-            generation_parameters=request_spec.cache_identity(),
+                prompt_payload=prompt_payload,
+                model=normalize_model_identity(settings.llm_model),
+                prompt_version=_LLM_PROMPT_VERSION,
+                prompt_text=MATCH_EXPLANATION_PROMPT,
+                ontology_version=CATALOG_VERSION,
+                scorer_version=SCORER_VERSION,
+                generation_parameters=request_spec.cache_identity(),
             )
             if request_spec is not None
             else None
@@ -728,13 +862,15 @@ class MatchingService:
                 classified_skills=evidence_result.skills,
             )
 
-        matched_skills, missing_keywords, deterministic_match = (
-            await self._deterministic_match_fields(
-                job_id=job_id,
-                job_description=job.description or "",
-                profile_parsed=dict(profile.parsed),
-                classified_skills=evidence_result.skills,
-            )
+        (
+            matched_skills,
+            missing_keywords,
+            deterministic_match,
+        ) = await self._deterministic_match_fields(
+            job_id=job_id,
+            job_description=job.description or "",
+            profile_parsed=dict(profile.parsed),
+            classified_skills=evidence_result.skills,
         )
         await self._repo.save_deterministic_match(
             match=match,
@@ -752,9 +888,7 @@ class MatchingService:
 
     async def get_match_evidence(self, *, user_id: int, job_id: int) -> MatchEvidence:
         """Build fresh, user-scoped deterministic evidence without persistence."""
-        evidence, _ = await self._get_match_evidence_with_source(
-            user_id=user_id, job_id=job_id
-        )
+        evidence, _ = await self._get_match_evidence_with_source(user_id=user_id, job_id=job_id)
         return evidence
 
     async def _get_match_evidence_with_source(
@@ -770,9 +904,7 @@ class MatchingService:
         groups: dict[str, SkillEvidenceGroup] = {}
         mention_repo = getattr(self, "_mention_repo", None)
         mentions = await mention_repo.list_for_job(job_id) if mention_repo is not None else []
-        evidence_source: Literal["persisted", "fallback"] = (
-            "persisted" if mentions else "fallback"
-        )
+        evidence_source: Literal["persisted", "fallback"] = "persisted" if mentions else "fallback"
         if mentions:
             for classification, persisted_observed in self._group_persisted_mentions(
                 mentions
@@ -827,9 +959,7 @@ class MatchingService:
 
         profile_years_raw = profile_parsed.get("years_experience")
         profile_years = (
-            float(profile_years_raw)
-            if isinstance(profile_years_raw, int | float)
-            else None
+            float(profile_years_raw) if isinstance(profile_years_raw, int | float) else None
         )
         experience = []
         for requirement in parse_experience_requirements(job.description or ""):
@@ -1063,9 +1193,7 @@ class MatchingService:
         return MatchExplanation(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
-            **self._match_contract_fields(
-                match, readiness_context, evidence_source
-            ),
+            **self._match_contract_fields(match, readiness_context, evidence_source),
             confidence=match.confidence,  # type: ignore[attr-defined]
             llm_score=match.llm_score,  # type: ignore[attr-defined]
             llm_confidence=match.llm_confidence,  # type: ignore[attr-defined]
@@ -1083,7 +1211,8 @@ class MatchingService:
                 classified_skills
                 if classified_skills is not None
                 else await self._load_classified_skills(
-                    user_id, match.job_id  # type: ignore[attr-defined]
+                    user_id,
+                    match.job_id,  # type: ignore[attr-defined]
                 )
             ),
         )
@@ -1108,9 +1237,7 @@ class MatchingService:
         return MatchSkillAnalysis(
             job_id=match.job_id,  # type: ignore[attr-defined]
             vector_score=match.vector_score,  # type: ignore[attr-defined]
-            **self._match_contract_fields(
-                match, readiness_context, evidence_source
-            ),
+            **self._match_contract_fields(match, readiness_context, evidence_source),
             matched_skills=match.matched_skills or [],  # type: ignore[attr-defined]
             missing_keywords=match.missing_keywords or [],  # type: ignore[attr-defined]
             readiness=self._build_readiness(match, readiness_context=readiness_context),
@@ -1118,7 +1245,8 @@ class MatchingService:
                 classified_skills
                 if classified_skills is not None
                 else await self._load_classified_skills(
-                    user_id, match.job_id  # type: ignore[attr-defined]
+                    user_id,
+                    match.job_id,  # type: ignore[attr-defined]
                 )
             ),
         )
@@ -1177,9 +1305,7 @@ class MatchingService:
             return {
                 "fit_score": None,
                 "score_components": None,
-                "evidence_confidence": (
-                    "low" if evidence_confidence is not None else None
-                ),
+                "evidence_confidence": ("low" if evidence_confidence is not None else None),
             }
         fit_score = getattr(match, "fit_score", None)
         components = sanitize_score_components(getattr(match, "score_components", None))
@@ -1192,9 +1318,7 @@ class MatchingService:
             return {
                 "fit_score": None,
                 "score_components": None,
-                "evidence_confidence": (
-                    "low" if evidence_confidence is not None else None
-                ),
+                "evidence_confidence": ("low" if evidence_confidence is not None else None),
             }
         return {
             "fit_score": float(fit_score),
@@ -1260,9 +1384,7 @@ class MatchingService:
             preferences_loaded=preferences_loaded,
             job=job,
             current_job_description_hash=(
-                job_description_hash(getattr(job, "description", None))
-                if job is not None
-                else None
+                job_description_hash(getattr(job, "description", None)) if job is not None else None
             ),
         )
 

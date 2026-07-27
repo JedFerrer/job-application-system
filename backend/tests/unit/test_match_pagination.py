@@ -6,13 +6,19 @@ import base64
 
 import pytest
 from sqlalchemy import insert, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.matching.repository import MatchingRepository
 from app.models.job import Job
+from app.models.job_skill_mention import JobSkillMention
 from app.models.user import User
 from app.models.user_job import UserJob
 from app.models.user_job_match import UserJobMatch
@@ -21,13 +27,13 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
-def engine():
+def engine() -> AsyncEngine:
     settings = get_settings()
     return create_async_engine(settings.database_url, poolclass=NullPool, echo=False)
 
 
 @pytest.fixture(autouse=True)
-async def clean_db(engine) -> None:  # noqa: ANN001
+async def clean_db(engine: AsyncEngine) -> None:
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         await db.execute(
@@ -36,7 +42,7 @@ async def clean_db(engine) -> None:  # noqa: ANN001
         await db.commit()
 
 
-def _session_factory(engine):
+def _session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
@@ -108,6 +114,74 @@ async def _link_user_job(
             status=status,
         )
     )
+
+
+async def test_hybrid_retrieval_applies_visibility_lifecycle_and_embedding_filters(
+    engine: AsyncEngine,
+) -> None:
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="viewer@test.com", name="Viewer")
+        await _create_user(db, user_id=2, email="other@test.com", name="Other")
+
+        jobs = (
+            (101, "inactive", "public", None, True),
+            (102, "active", "public", None, True),
+            (103, "active", "public", None, False),
+            (104, "active", "private", 2, True),
+            (105, "active", "private", 1, True),
+            (106, "active", "public", None, True),
+        )
+        for job_id, status, visibility, owner_id, embedded in jobs:
+            fp = job_fingerprint("Hybrid Test", f"Python Backend {job_id}", f"location-{job_id}")
+            await db.execute(
+                insert(Job).values(
+                    id=job_id,
+                    fingerprint=fp,
+                    title=f"Python Backend {job_id}",
+                    company="Hybrid Test",
+                    location="Remote",
+                    source="test",
+                    source_url=f"https://example.com/job/{job_id}",
+                    visibility=visibility,
+                    created_by_user_id=owner_id,
+                    ingest_source="manual" if visibility == "private" else "scraper",
+                    status=status,
+                    description="Python backend engineering",
+                    description_embedding=[0.0] * 1536 if embedded else None,
+                    raw_response={},
+                )
+            )
+            await db.execute(
+                insert(JobSkillMention).values(
+                    job_id=job_id,
+                    skill_id="local:python",
+                    canonical_label="Python",
+                    classification="required",
+                    job_excerpt="Python backend engineering",
+                    start_offset=0,
+                    end_offset=6,
+                    analyzer_version="test",
+                )
+            )
+
+        await _link_user_job(
+            db,
+            user_id=1,
+            job_id=102,
+            relationship_source="global",
+            import_method="scraper",
+            status="archived",
+        )
+        await db.commit()
+
+    async with sf() as db:
+        repository = MatchingRepository(db)
+        text_rows = await repository.search_jobs_by_text("Python backend", 400, user_id=1)
+        skill_rows = await repository.search_jobs_by_skills({"local:python"}, 400, user_id=1)
+
+    assert {row.job_id for row in text_rows} == {105, 106}
+    assert {row.job_id for row in skill_rows} == {105, 106}
 
 
 async def test_first_page_returns_cursor_and_has_more(engine) -> None:  # noqa: ANN001

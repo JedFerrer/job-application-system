@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Computed, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.config import get_settings
@@ -38,6 +38,15 @@ class Job(Base):
     is_remote: Mapped[bool | None] = mapped_column()
     job_type: Mapped[str | None] = mapped_column(String(32))
     description: Mapped[str | None] = mapped_column(Text)
+    search_vector: Mapped[object | None] = mapped_column(
+        TSVECTOR(),
+        Computed(
+            "setweight(to_tsvector('simple', coalesce(title, '')), 'A') || "
+            "setweight(to_tsvector('simple', coalesce(description, '')), 'B')",
+            persisted=True,
+        ),
+        nullable=True,
+    )
     description_embedding: Mapped[list[float] | None] = mapped_column(
         Vector(_EMBEDDING_DIM), nullable=True
     )
@@ -47,9 +56,7 @@ class Job(Base):
     source: Mapped[str] = mapped_column(String(32), index=True)
     source_url: Mapped[str] = mapped_column(String(1024))
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    fetched_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     shift_type: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     company_logo: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     raw_response: Mapped[dict[str, object]] = mapped_column(JSONB)
@@ -68,9 +75,7 @@ class Job(Base):
     )
     """Owner for private imported jobs; NULL for public scraped jobs."""
 
-    ingest_source: Mapped[str] = mapped_column(
-        String(50), nullable=False, server_default="scraper"
-    )
+    ingest_source: Mapped[str] = mapped_column(String(50), nullable=False, server_default="scraper")
     """``scraper`` | ``manual`` | ``extension``."""
 
     status: Mapped[str] = mapped_column(

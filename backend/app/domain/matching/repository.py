@@ -1,4 +1,4 @@
-"""Matching repository: vector ranking + match-row persistence (Phase 3)."""
+"""Matching repository: hybrid retrieval + match-row persistence."""
 
 from __future__ import annotations
 
@@ -12,8 +12,10 @@ from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.matching.hybrid_retrieval import RetrievalCandidate
 from app.domain.matching.llm_fingerprint import canonicalize_cache_value
 from app.models.job import Job
+from app.models.job_skill_mention import JobSkillMention
 from app.models.resume import CandidateProfile, Resume
 from app.models.user_job import UserJob
 from app.models.user_job_match import UserJobMatch
@@ -82,10 +84,79 @@ class MatchingRepository:
             .limit(limit)
         )
         result = await self._session.execute(stmt)
+        return [(int(row.id), float(row.similarity), row.description) for row in result.all()]
+
+    async def search_jobs_by_text(
+        self, query: str, limit: int, *, user_id: int
+    ) -> list[RetrievalCandidate]:
+        """Return eligible jobs ranked by the indexed title/description document."""
+        if not query.strip() or limit <= 0:
+            return []
+        manual_job_ids = select(UserJobMatch.job_id).where(
+            UserJobMatch.user_id == user_id,
+            UserJobMatch.origin == "manual",
+        )
+        ts_query = func.plainto_tsquery("simple", query)
+        rank = func.ts_rank_cd(Job.search_vector, ts_query)
+        stmt = (
+            select(Job.id, rank.label("text_rank"))
+            .where(
+                Job.id.not_in(manual_job_ids),
+                Job.search_vector.op("@@")(ts_query),
+                *self._matchable_job_predicate(user_id=user_id),
+            )
+            .order_by(rank.desc(), Job.id.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
         return [
-            (int(row.id), float(row.similarity), row.description)
+            RetrievalCandidate(job_id=int(row.id), score=float(row.text_rank))
             for row in result.all()
         ]
+
+    async def search_jobs_by_skills(
+        self, skill_ids: set[str] | frozenset[str], limit: int, *, user_id: int
+    ) -> list[RetrievalCandidate]:
+        """Return eligible jobs ranked by distinct canonical skill overlap."""
+        if not skill_ids or limit <= 0:
+            return []
+        manual_job_ids = select(UserJobMatch.job_id).where(
+            UserJobMatch.user_id == user_id,
+            UserJobMatch.origin == "manual",
+        )
+        overlap = func.count(func.distinct(JobSkillMention.skill_id))
+        stmt = (
+            select(Job.id, overlap.label("skill_overlap"))
+            .join(JobSkillMention, JobSkillMention.job_id == Job.id)
+            .where(
+                Job.id.not_in(manual_job_ids),
+                JobSkillMention.skill_id.in_(skill_ids),
+                *self._matchable_job_predicate(user_id=user_id),
+            )
+            .group_by(Job.id)
+            .order_by(overlap.desc(), Job.id.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return [
+            RetrievalCandidate(job_id=int(row.id), score=float(row.skill_overlap))
+            for row in result.all()
+        ]
+
+    async def vector_similarities_for_jobs(
+        self, *, user_id: int, embedding: list[float], job_ids: list[int]
+    ) -> dict[int, float]:
+        """Return vector similarity for eligible fused candidates in one query."""
+        if not job_ids:
+            return {}
+        distance = Job.description_embedding.cosine_distance(embedding)
+        result = await self._session.execute(
+            select(Job.id, (1 - distance).label("similarity")).where(
+                Job.id.in_(job_ids),
+                *self._matchable_job_predicate(user_id=user_id),
+            )
+        )
+        return {int(row.id): float(row.similarity) for row in result.all()}
 
     async def upsert_match(
         self,
@@ -107,6 +178,7 @@ class MatchingRepository:
         ontology_version: str | None = None,
         scorer_version: str | None = None,
         readiness_preferences_hash: str | None = None,
+        retrieval_metadata: dict[str, object] | None = None,
     ) -> None:
         canonical_matched = cast(
             list[str] | None,
@@ -144,6 +216,8 @@ class MatchingRepository:
             scorer_version=scorer_version,
             readiness_preferences_hash=readiness_preferences_hash,
         )
+        if retrieval_metadata is not None:
+            values["retrieval_metadata"] = retrieval_metadata
         stmt = pg_insert(UserJobMatch).values(**values)
         deterministic_conditions: list[Any] = [
             UserJobMatch.vector_score.is_distinct_from(stmt.excluded.vector_score),
@@ -165,49 +239,52 @@ class MatchingRepository:
             deterministic_conditions.extend(
                 (
                     UserJobMatch.matched_skills.is_distinct_from(stmt.excluded.matched_skills),
-                    UserJobMatch.missing_keywords.is_distinct_from(
-                        stmt.excluded.missing_keywords
-                    ),
+                    UserJobMatch.missing_keywords.is_distinct_from(stmt.excluded.missing_keywords),
                     UserJobMatch.deterministic_match.is_distinct_from(
                         stmt.excluded.deterministic_match
                     ),
                 )
             )
         deterministic_changed = or_(*deterministic_conditions)
+        update_values: dict[str, Any] = {
+            "vector_score": stmt.excluded.vector_score,
+            "confidence": stmt.excluded.confidence,
+            "origin": case(
+                (stmt.excluded.origin == "manual", "manual"),
+                (UserJobMatch.origin == "manual", "manual"),
+                else_="automatic",
+            ),
+            "updated_at": datetime.now(UTC),
+            "fit_score": stmt.excluded.fit_score,
+            "ranking_score": stmt.excluded.ranking_score,
+            "score_components": stmt.excluded.score_components,
+            "source_profile_id": stmt.excluded.source_profile_id,
+            "source_profile_matching_hash": stmt.excluded.source_profile_matching_hash,
+            "job_description_hash": stmt.excluded.job_description_hash,
+            "ontology_version": stmt.excluded.ontology_version,
+            "scorer_version": stmt.excluded.scorer_version,
+            "readiness_preferences_hash": stmt.excluded.readiness_preferences_hash,
+            "llm_score": case((deterministic_changed, None), else_=UserJobMatch.llm_score),
+            "llm_confidence": case(
+                (deterministic_changed, None), else_=UserJobMatch.llm_confidence
+            ),
+            "llm_explanation": case(
+                (deterministic_changed, None), else_=UserJobMatch.llm_explanation
+            ),
+            "llm_analyzed_at": case(
+                (deterministic_changed, None), else_=UserJobMatch.llm_analyzed_at
+            ),
+            "llm_error": case((deterministic_changed, None), else_=UserJobMatch.llm_error),
+            "llm_input_hash": case(
+                (deterministic_changed, None), else_=UserJobMatch.llm_input_hash
+            ),
+        }
+        if retrieval_metadata is not None:
+            update_values["retrieval_metadata"] = stmt.excluded.retrieval_metadata
         stmt = stmt.on_conflict_do_update(
             index_elements=[UserJobMatch.user_id, UserJobMatch.job_id],
             set_={
-                "vector_score": stmt.excluded.vector_score,
-                "confidence": stmt.excluded.confidence,
-                "origin": case(
-                    (stmt.excluded.origin == "manual", "manual"),
-                    (UserJobMatch.origin == "manual", "manual"),
-                    else_="automatic",
-                ),
-                "updated_at": datetime.now(UTC),
-                "fit_score": stmt.excluded.fit_score,
-                "ranking_score": stmt.excluded.ranking_score,
-                "score_components": stmt.excluded.score_components,
-                "source_profile_id": stmt.excluded.source_profile_id,
-                "source_profile_matching_hash": stmt.excluded.source_profile_matching_hash,
-                "job_description_hash": stmt.excluded.job_description_hash,
-                "ontology_version": stmt.excluded.ontology_version,
-                "scorer_version": stmt.excluded.scorer_version,
-                "readiness_preferences_hash": stmt.excluded.readiness_preferences_hash,
-                "llm_score": case((deterministic_changed, None), else_=UserJobMatch.llm_score),
-                "llm_confidence": case(
-                    (deterministic_changed, None), else_=UserJobMatch.llm_confidence
-                ),
-                "llm_explanation": case(
-                    (deterministic_changed, None), else_=UserJobMatch.llm_explanation
-                ),
-                "llm_analyzed_at": case(
-                    (deterministic_changed, None), else_=UserJobMatch.llm_analyzed_at
-                ),
-                "llm_error": case((deterministic_changed, None), else_=UserJobMatch.llm_error),
-                "llm_input_hash": case(
-                    (deterministic_changed, None), else_=UserJobMatch.llm_input_hash
-                ),
+                **update_values,
                 **(
                     {
                         "matched_skills": canonical_matched,
@@ -235,9 +312,7 @@ class MatchingRepository:
         value = result.scalar_one_or_none()
         return float(value) if value is not None else None
 
-    async def get_visible_jobs_by_ids(
-        self, *, user_id: int, job_ids: list[int]
-    ) -> dict[int, Job]:
+    async def get_visible_jobs_by_ids(self, *, user_id: int, job_ids: list[int]) -> dict[int, Job]:
         if not job_ids:
             return {}
         result = await self._session.execute(
@@ -253,11 +328,9 @@ class MatchingRepository:
             .where(UserJobMatch.user_id == user_id, UserJobMatch.origin == "automatic")
             .where(*self._matchable_job_predicate(user_id=user_id))
         )
-        keep = (
-            eligible_automatic
-            .order_by(UserJobMatch.vector_score.desc(), UserJobMatch.job_id.desc())
-            .limit(limit)
-        )
+        keep = eligible_automatic.order_by(
+            UserJobMatch.vector_score.desc(), UserJobMatch.job_id.desc()
+        ).limit(limit)
         await self._session.execute(
             delete(UserJobMatch).where(
                 UserJobMatch.user_id == user_id,

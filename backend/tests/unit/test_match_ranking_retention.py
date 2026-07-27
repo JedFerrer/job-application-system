@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from app.domain.matching.hybrid_retrieval import RetrievalCandidate
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
 
@@ -111,6 +112,61 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
 
 
 @pytest.mark.asyncio
+async def test_hybrid_rank_preserves_top_200_pruning_and_manual_refresh() -> None:
+    automatic_ids = list(range(1000, 1250))
+    manual_ids = [10]
+    calls: list[dict[str, object]] = []
+
+    class FakeRepository:
+        async def get_active_profile(self, user_id: int) -> object:
+            return SimpleNamespace(
+                id=3,
+                embedding=[0.1, 0.2],
+                parsed={"skills": ["Python"]},
+            )
+
+        async def rank_jobs_by_vector(
+            self, embedding: list[float], limit: int, *, user_id: int
+        ) -> list[tuple[int, float, str]]:
+            assert limit == 400
+            return [(job_id, 0.7, "Python services") for job_id in automatic_ids]
+
+        async def search_jobs_by_text(
+            self, query: str, limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            return [RetrievalCandidate(2000, 3.0)]
+
+        async def search_jobs_by_skills(
+            self, skill_ids: set[str], limit: int, *, user_id: int
+        ) -> list[RetrievalCandidate]:
+            return [RetrievalCandidate(2001, 2.0)]
+
+        async def vector_similarities_for_jobs(
+            self, *, user_id: int, embedding: list[float], job_ids: list[int]
+        ) -> dict[int, float]:
+            return {job_id: 0.4 for job_id in job_ids}
+
+        async def list_manual_match_job_ids(self, *, user_id: int) -> list[int]:
+            return manual_ids
+
+        async def score_visible_job(self, **kwargs: object) -> float:
+            return 0.6
+
+        async def upsert_match(self, **kwargs: object) -> None:
+            calls.append(dict(kwargs))
+
+        async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
+            assert limit == 200
+
+    response = await MatchingService(FakeRepository()).rank_jobs(1, 200)  # type: ignore[arg-type]
+
+    assert response.ranked == 252
+    assert len([call for call in calls if call["job_id"] in automatic_ids]) == 250
+    assert {call["job_id"] for call in calls} >= {*automatic_ids, 2000, 2001, *manual_ids}
+    assert len([call for call in calls if call["job_id"] in manual_ids]) == 1
+
+
+@pytest.mark.asyncio
 async def test_automatic_rank_persists_required_gaps_only_from_classified_mentions() -> None:
     calls: list[dict[str, object]] = []
 
@@ -146,7 +202,8 @@ async def test_automatic_rank_persists_required_gaps_only_from_classified_mentio
             ]
 
     await MatchingService(
-        FakeRepository(), mention_repository=FakeMentionRepository()  # type: ignore[arg-type]
+        FakeRepository(),  # type: ignore[arg-type]
+        mention_repository=FakeMentionRepository(),  # type: ignore[arg-type]
     ).rank_jobs(1, 200)
 
     assert calls[0]["matched_skills"] == ["python", "docker", "graphql"]
