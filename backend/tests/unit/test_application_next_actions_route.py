@@ -12,12 +12,12 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_application_service, get_current_user
 from app.api.v1 import applications as applications_module
 from app.core.lifespan import register_exception_handlers
-from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.applications.schemas import (
     ApplicationListItem,
     ApplicationListResponse,
 )
 from app.domain.applications.service import ApplicationService
+from app.domain.auth.exceptions import InvalidTokenError
 from app.models.user import User
 
 pytestmark = pytest.mark.unit

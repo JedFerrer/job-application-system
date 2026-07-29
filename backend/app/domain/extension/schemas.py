@@ -22,7 +22,7 @@ class ExtensionPairingCompleteResponse(BaseModel):
     access_token: str
     refresh_token: str
     expires_in: int
-    user: "ExtensionUserResponse"
+    user: ExtensionUserResponse
     session_id: str
 
 
@@ -124,7 +124,7 @@ class MarkAppliedResponse(BaseModel):
 
 class ApplicationTimelineResponse(BaseModel):
     application_id: str
-    events: list["ApplicationEventItem"]
+    events: list[ApplicationEventItem]
 
 
 class ApplicationEventItem(BaseModel):
@@ -142,7 +142,7 @@ class ApplicationEventItem(BaseModel):
 
 class FieldMappingRequest(BaseModel):
     """Request LLM-based field mapping. Contains field metadata only, never user values."""
-    fields: list["FieldMetadata"]
+    fields: list[FieldMetadata]
 
 
 class FieldMetadata(BaseModel):

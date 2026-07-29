@@ -11,8 +11,8 @@ from app.core.config import get_settings
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
-from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.exceptions import MatchNotFoundError
+from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
 from app.models.job import Job
 from app.models.user import User

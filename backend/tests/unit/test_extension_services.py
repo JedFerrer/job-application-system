@@ -6,12 +6,16 @@ All tests use fake/in-memory repositories — no DB or Redis required.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
+from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.security import create_token, decode_token, decode_token_payload
+from app.core.security import create_token, decode_token_payload
+from app.domain.extension.application_event_service import ApplicationEventService
+from app.domain.extension.autofill_mapping_service import AutofillProfileService
 from app.domain.extension.exceptions import (
     ExtensionSessionNotFoundError,
     ExtensionSessionRevokedError,
@@ -20,9 +24,6 @@ from app.domain.extension.exceptions import (
 )
 from app.domain.extension.extension_auth_service import ExtensionAuthService
 from app.domain.extension.extension_job_import_service import ExtensionJobImportService
-from app.domain.extension.application_event_service import ApplicationEventService
-from app.domain.extension.autofill_mapping_service import AutofillProfileService
-from app.domain.extension.repository import ExtensionRepository
 from app.domain.extension.schemas import (
     ApplicationEventRequest,
     ExtensionJobImportRequest,
@@ -32,18 +33,18 @@ from app.domain.extension.schemas import (
     MarkAppliedRequest,
 )
 from app.domain.jobs.dedup import job_fingerprint
-
+from app.models.application import Application
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
 def _settings() -> Settings:
     return Settings(
-        jwt_secret="test-secret-key-for-unit-tests-only",  # type: ignore[call-arg]
+        jwt_secret="test-secret-key-for-unit-tests-only",
     )
 
 
-def _token(settings: Settings, user_id: int, token_type: str = "access") -> str:
+def _token(settings: Settings, user_id: int, token_type: str = "access") -> str:  # noqa: S107 - token kind
     return create_token(
         settings=settings,
         subject=user_id,
@@ -114,7 +115,12 @@ class FakeExtensionRepository:
         self._next_event_id += 1
         # ORM model uses metadata_ column; ensure it's always present
         metadata_val = kwargs.pop("metadata_", kwargs.pop("metadata", None))
-        event = {"id": eid, **kwargs, "metadata_": metadata_val or {}, "created_at": datetime.now(UTC)}
+        event = {
+            "id": eid,
+            **kwargs,
+            "metadata_": metadata_val or {},
+            "created_at": datetime.now(UTC),
+        }
         self.events.append(event)
         return _DictObj(event)
 
@@ -168,7 +174,15 @@ class FakeJobRepository:
         for jid, job in self.jobs.items():
             if job.get("fingerprint") == fp:
                 # Merge
-                for key in ("title", "company", "location", "description", "source", "source_url", "raw_response"):
+                for key in (
+                    "title",
+                    "company",
+                    "location",
+                    "description",
+                    "source",
+                    "source_url",
+                    "raw_response",
+                ):
                     if values.get(key) is not None and job.get(key) is None:
                         job[key] = values[key]
                 return jid, False
@@ -226,7 +240,7 @@ class FakeApplicationRepository:
 
     async def create_or_get(self, *, user_id: int, job_id: int) -> Any:
         # Check for existing
-        for aid, app in self.applications.items():
+        for _aid, app in self.applications.items():
             if app["user_id"] == user_id and app["job_id"] == job_id:
                 app["updated_at"] = datetime.now(UTC)
                 return _DictObj(app)
@@ -406,7 +420,9 @@ class TestRefreshRotation:
 
 
 class TestJobImport:
-    def _service(self) -> tuple[FakeJobRepository, FakeExtensionRepository, ExtensionJobImportService]:
+    def _service(
+        self,
+    ) -> tuple[FakeJobRepository, FakeExtensionRepository, ExtensionJobImportService]:
         job_repo = FakeJobRepository()
         ext_repo = FakeExtensionRepository()
         svc = ExtensionJobImportService(
@@ -522,9 +538,13 @@ class TestApplyClick:
         )
         return ext_repo, app_repo, job_repo, svc
 
-    def _import_job(self, job_repo: FakeJobRepository, url: str = "https://linkedin.com/jobs/view/123") -> int:
+    def _import_job(
+        self,
+        job_repo: FakeJobRepository,
+        url: str = "https://linkedin.com/jobs/view/123",
+    ) -> int:
         import hashlib
-        fp = hashlib.sha256(f"acme corp|senior backend engineer|remote".encode()).hexdigest()[:16]
+        fp = hashlib.sha256(b"acme corp|senior backend engineer|remote").hexdigest()[:16]
         jid = 1
         job_repo.jobs[jid] = {
             "id": jid,
@@ -539,7 +559,7 @@ class TestApplyClick:
     @pytest.mark.asyncio
     async def test_apply_clicked_creates_application_saved(self) -> None:
         ext_repo, app_repo, job_repo, svc = self._service()
-        jid = self._import_job(job_repo)
+        self._import_job(job_repo)
 
         result = await svc.record_event(
             user_id=42,
@@ -558,7 +578,7 @@ class TestApplyClick:
     @pytest.mark.asyncio
     async def test_duplicate_apply_clicked_does_not_duplicate_application(self) -> None:
         ext_repo, app_repo, job_repo, svc = self._service()
-        jid = self._import_job(job_repo)
+        self._import_job(job_repo)
 
         await svc.record_event(
             user_id=42,
@@ -602,7 +622,7 @@ class TestMarkApplied:
         app_repo: FakeApplicationRepository,
     ) -> tuple[int, int]:
         import hashlib
-        fp = hashlib.sha256(f"acme corp|senior backend engineer|remote".encode()).hexdigest()[:16]
+        fp = hashlib.sha256(b"acme corp|senior backend engineer|remote").hexdigest()[:16]
         jid = 1
         job_repo.jobs[jid] = {
             "id": jid,
@@ -661,6 +681,64 @@ class TestMarkApplied:
         assert result.marked_applied is True
         assert ext_repo.events[0]["event_type"] == "user_marked_applied"
 
+    @pytest.mark.asyncio
+    async def test_mark_applied_flushes_an_attached_application_without_committing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The caller-owned synchronous ORM session remains responsible for commit/rollback."""
+        ext_repo = FakeExtensionRepository()
+        application = Application(id=1, user_id=42, job_id=1, status="saved")
+        session = Session()
+        session.add(application)
+        flush_calls = 0
+        commit_calls = 0
+
+        def record_flush(self: Session) -> None:
+            nonlocal flush_calls
+            assert self is session
+            flush_calls += 1
+
+        def record_commit(self: Session) -> None:
+            nonlocal commit_calls
+            assert self is session
+            commit_calls += 1
+
+        monkeypatch.setattr(Session, "flush", record_flush)
+        monkeypatch.setattr(Session, "commit", record_commit)
+
+        class AttachedApplicationRepository:
+            async def create_or_get(self, *, user_id: int, job_id: int) -> Application:
+                assert (user_id, job_id) == (42, 1)
+                return application
+
+        class AttachedJobRepository:
+            async def find_by_source_url(self, source_url: str) -> SimpleNamespace:
+                assert source_url == "https://linkedin.com/jobs/view/123"
+                return SimpleNamespace(id=1)
+
+        service = ApplicationEventService(
+            extension_repository=ext_repo,  # type: ignore[arg-type]
+            application_repository=AttachedApplicationRepository(),  # type: ignore[arg-type]
+            job_repository=AttachedJobRepository(),  # type: ignore[arg-type]
+        )
+
+        try:
+            result = await service.mark_applied(
+                user_id=42,
+                request=MarkAppliedRequest(
+                    job_url="https://linkedin.com/jobs/view/123",
+                    confirmation_source="confirmation_detected",
+                ),
+            )
+        finally:
+            session.close()
+
+        assert result.status == "applied"
+        assert application.status == "applied"
+        assert flush_calls == 1
+        assert commit_calls == 0
+        assert ext_repo.events[0]["application_id"] == 1
+
 
 class TestTimelineUserIsolation:
     def _service(self) -> tuple[FakeExtensionRepository, ApplicationEventService]:
@@ -709,7 +787,7 @@ class TestAutofillProfile:
     @pytest.mark.asyncio
     async def test_empty_profile_when_no_candidate_profile(self) -> None:
         svc = self._service(None)
-        profile = await svc.get_autofill_profile(user_id=42)
+        profile = cast(dict[str, Any], await svc.get_autofill_profile(user_id=42))
 
         assert profile["personal"]["first_name"] is None
         assert profile["personal"]["email"] is None
@@ -725,7 +803,7 @@ class TestAutofillProfile:
                 "skills": ["Python", "FastAPI"],
             }
         })
-        profile = await svc.get_autofill_profile(user_id=42)
+        profile = cast(dict[str, Any], await svc.get_autofill_profile(user_id=42))
 
         assert profile["personal"]["first_name"] == "Jane"
         assert profile["personal"]["last_name"] == "Doe"
@@ -778,8 +856,18 @@ class TestAutofillProfile:
                     {"elementId": "f2", "label": "Email", "inputType": "email"},
                 ],
                 mappings=[
-                    {"elementId": "f1", "profilePath": "personal.first_name", "action": "fill", "confidence": 0.98},
-                    {"elementId": "f2", "profilePath": "personal.email", "action": "fill", "confidence": 0.99},
+                    {
+                        "elementId": "f1",
+                        "profilePath": "personal.first_name",
+                        "action": "fill",
+                        "confidence": 0.98,
+                    },
+                    {
+                        "elementId": "f2",
+                        "profilePath": "personal.email",
+                        "action": "fill",
+                        "confidence": 0.99,
+                    },
                 ],
                 domain="greenhouse.io",
                 ats_type="greenhouse",
@@ -795,6 +883,68 @@ class TestAutofillProfile:
         assert len(autofill_events) == 1
         assert autofill_events[0]["metadata_"]["filled"] == 2
         assert autofill_events[0]["metadata_"]["skipped"] == 0
+
+    @pytest.mark.asyncio
+    async def test_log_fill_discards_malformed_dynamic_values_without_serializing_objects(
+        self,
+    ) -> None:
+        class MisleadingValue:
+            def __str__(self) -> str:
+                return "sensitive-object-representation"
+
+        malformed = MisleadingValue()
+        svc = self._service({"parsed": {"skills": ["Python"]}})
+        ext_repo = FakeExtensionRepository()
+        svc._ext = ext_repo  # type: ignore[assignment]
+        request = FormFillLogRequest.model_construct(
+            fields=cast(
+                list[dict[str, object]],
+                [
+                    malformed,
+                    {
+                        "elementId": ["not", "a", "string"],
+                        "label": {"nested": "mapping"},
+                        "inputType": malformed,
+                    },
+                    {"name": "email", "label": "Email", "inputType": "email"},
+                ],
+            ),
+            mappings=cast(
+                list[dict[str, object]],
+                [
+                    {
+                        "action": "fill",
+                        "profilePath": malformed,
+                        "confidence": {"bad": True},
+                    },
+                    ["not", "a", "mapping"],
+                    {
+                        "action": "review",
+                        "profilePath": "personal.email",
+                        "confidence": 0.75,
+                        "reasonSkipped": "requires review",
+                    },
+                ],
+            ),
+            domain="example.com",
+            ats_type=None,
+        )
+
+        result = await svc.log_fill(user_id=42, request=request)
+
+        assert result.recorded is True
+        assert len(ext_repo.form_fields) == 2
+        malformed_field, valid_field = ext_repo.form_fields
+        assert malformed_field["field_key"] is None
+        assert malformed_field["field_label"] is None
+        assert malformed_field["field_type"] is None
+        assert malformed_field["profile_path"] is None
+        assert malformed_field["confidence"] is None
+        assert "sensitive-object-representation" not in str(ext_repo.form_fields)
+        assert valid_field["field_key"] == "email"
+        assert valid_field["profile_path"] == "personal.email"
+        assert valid_field["confidence"] == 0.75
+        assert valid_field["reason_skipped"] == "requires review"
 
 
 # ── Fingerprint Tests ───────────────────────────────────────────────────────
@@ -912,6 +1062,7 @@ class TestExtensionSessionTokenClaims:
 
         # Session should now be revoked
         session = await repo.get_session(result.session_id)
+        assert session is not None
         assert session.revoked_at is not None
 
         # Token is still valid cryptographically (not expired, valid signature)
@@ -1052,6 +1203,7 @@ class TestCurrentExtensionUserDependency:
             expected_type="access",
         )
         session_id = payload.get("session_id")
+        assert isinstance(session_id, str)
         found = await repo.get_session(session_id)
         assert found is None
         # The dependency would raise InvalidTokenError.
@@ -1075,6 +1227,7 @@ class TestCurrentExtensionUserDependency:
             expected_type="access",
         )
         session_id = payload.get("session_id")
+        assert isinstance(session_id, str)
         found = await repo.get_session(session_id)
         assert found is not None
         assert found.user_id != int(payload["sub"])

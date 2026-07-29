@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from app.core.logging import get_logger
 from app.domain.applications.exceptions import (
@@ -295,4 +295,6 @@ def _snapshot_key(field_name: str) -> str:
 def _date_to_iso(value: object | None) -> str | None:
     if value is None:
         return None
-    return value.isoformat()
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return None

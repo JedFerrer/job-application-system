@@ -10,8 +10,6 @@ Verifies that:
 from __future__ import annotations
 
 import pytest
-
-pytestmark = pytest.mark.integration
 from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -23,8 +21,8 @@ from app.domain.jobs.repository import JobRepository
 from app.models.application import Application
 from app.models.job import Job
 from app.models.user import User
-from app.models.user_job import UserJob
 
+pytestmark = pytest.mark.integration
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 

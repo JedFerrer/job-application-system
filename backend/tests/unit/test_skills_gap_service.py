@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from app.domain.matching.service import MatchingService
+
+pytestmark = pytest.mark.unit
 
 
 class FakeMatchingRepository:
@@ -29,7 +29,7 @@ class FakeMatchingRepository:
 
 def _service(repo: FakeMatchingRepository) -> MatchingService:
     service = MatchingService.__new__(MatchingService)
-    service._repo = repo  # type: ignore[attr-defined]
+    service._repo = repo  # type: ignore[assignment]
     return service
 
 

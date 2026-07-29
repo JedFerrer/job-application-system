@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from app.domain.jobs.schemas import IngestRequest
 from app.models.scrape_query import ScrapeQuery
 from app.workers.job_ingestion import _request_from_query
+
+pytestmark = pytest.mark.unit
 
 
 def _query(**overrides: object) -> ScrapeQuery:
@@ -27,7 +27,7 @@ def _query(**overrides: object) -> ScrapeQuery:
         "active_user_count": 2,
     }
     defaults.update(overrides)
-    return ScrapeQuery(**defaults)  # type: ignore[arg-type]
+    return ScrapeQuery(**defaults)
 
 
 def test_request_from_query_maps_fields_directly() -> None:

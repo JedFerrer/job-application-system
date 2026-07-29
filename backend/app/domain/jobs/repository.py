@@ -14,11 +14,25 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import and_, delete, exists, func, literal_column, or_, select, tuple_, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import (
+    String,
+    and_,
+    bindparam,
+    delete,
+    exists,
+    func,
+    literal,
+    literal_column,
+    or_,
+    select,
+    tuple_,
+    update,
+)
+from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.application import Application
@@ -197,7 +211,7 @@ class JobRepository:
                 .on_conflict_do_nothing(index_elements=[UserJob.user_id, UserJob.job_id])
             )
             r = await self._session.execute(stmt)
-            total += r.rowcount or 0
+            total += cast(CursorResult[Any], r).rowcount or 0
         return total
 
     async def create_user_job_import(
@@ -244,7 +258,7 @@ class JobRepository:
             .values(
                 description_embedding=embedding,
                 status="active",
-                raw_response=func.coalesce(Job.raw_response, func.cast("{}", JSONB)).op("-")(
+                raw_response=func.coalesce(Job.raw_response, literal({}, type_=JSONB)).op("-")(
                     "embed_error"
                 ),
             )
@@ -258,9 +272,9 @@ class JobRepository:
             .values(
                 status="unknown",
                 raw_response=func.jsonb_set(
-                    func.coalesce(Job.raw_response, func.cast("{}", JSONB)),
-                    "{embed_error}",
-                    func.cast(error, JSONB),
+                    func.coalesce(Job.raw_response, literal({}, type_=JSONB)),
+                    array(["embed_error"], type_=String),
+                    func.to_jsonb(bindparam("embed_error", error, type_=String)),
                 ),
             )
         )
@@ -679,7 +693,7 @@ class JobRepository:
         user_id: int,
         cursor: str | None = None,
         limit: int = 50,
-    ) -> tuple[list[tuple[Job, Any, Any]], int, str | None]:
+    ) -> tuple[list[tuple[Job, float | None, dict[str, object] | None, datetime]], int, str | None]:
         """Return only jobs the user imported (manual or extension).
 
         Cursor-based pagination using ``(UserJob.created_at, Job.id)``.
@@ -724,4 +738,6 @@ class JobRepository:
                 job_id=last_job.id,
             )
 
-        return rows, total, next_cursor
+        return cast(
+            list[tuple[Job, float | None, dict[str, object] | None, datetime]], rows
+        ), total, next_cursor

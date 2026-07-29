@@ -61,7 +61,9 @@ async def _rank_all_async(
 ) -> dict[str, int]:
     totals = {"users": 0, "ranked": 0}
     settings = get_settings()
-    redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    redis = aioredis.from_url(  # type: ignore[no-untyped-call]
+        settings.redis_url, decode_responses=True
+    )
     task_store = TaskStore(redis)
     try:
         if user_id is not None and debounce_token is not None:

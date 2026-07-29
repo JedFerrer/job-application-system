@@ -6,8 +6,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from app.domain.preferences.exceptions import (
     PreferenceNotFoundError,
     PreferenceValidationError,
@@ -16,6 +14,8 @@ from app.domain.preferences.exceptions import (
 from app.domain.preferences.schemas import PreferenceCreate, PreferenceUpdate
 from app.domain.preferences.service import PreferenceService
 from app.models.user_job_preference import UserJobPreference
+
+pytestmark = pytest.mark.unit
 
 ALLOWED = ["indeed", "linkedin"]
 

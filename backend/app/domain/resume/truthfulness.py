@@ -98,7 +98,11 @@ def sanitize_tailoring_output(
     source_text = _profile_source_text(profile)
     generated_summary = payload.get("professional_summary")
     summary_ok = _safe_text(generated_summary, source_text, missing_set)
-    summary = generated_summary.strip() if summary_ok else profile.headline
+    summary = (
+        generated_summary.strip()
+        if summary_ok and isinstance(generated_summary, str)
+        else profile.headline
+    )
 
     role_fallbacks = 0
     bullet_fallbacks = 0

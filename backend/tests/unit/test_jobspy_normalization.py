@@ -7,8 +7,6 @@ from datetime import datetime
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from app.infrastructure.job_sources.jobspy_source import (
     _clean_bool,
     _clean_datetime,
@@ -16,6 +14,8 @@ from app.infrastructure.job_sources.jobspy_source import (
     _clean_str,
     _json_safe,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_clean_str_drops_nan_and_blanks() -> None:

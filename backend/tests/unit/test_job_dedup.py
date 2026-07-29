@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from app.domain.jobs.dedup import job_fingerprint
+
+pytestmark = pytest.mark.unit
 
 
 def test_fingerprint_is_stable_and_16_chars() -> None:

@@ -11,7 +11,6 @@ from app.domain.extension.schemas import (
     FieldMappingItem,
     FieldMappingRequest,
     FieldMappingResponse,
-    FieldMetadata,
     FormFillLogRequest,
     FormFillLogResponse,
 )
@@ -158,7 +157,7 @@ class AutofillProfileService:
             )
 
             content = strip_code_fences(
-                completion.choices[0].message.content if completion.choices else "[]"
+                (completion.choices[0].message.content if completion.choices else None) or "[]"
             )
             import json
 
@@ -221,15 +220,25 @@ class AutofillProfileService:
                 else:
                     skipped += 1
 
+                field_key = field_dict.get("elementId") or field_dict.get("name")
+                field_label = field_dict.get("label")
+                field_type = field_dict.get("inputType")
+                profile_path = mapping_dict.get("profilePath")
+                confidence = mapping_dict.get("confidence")
+                reason_skipped = mapping_dict.get("reasonSkipped")
                 await self._ext.add_form_field(
                     form_session_id=str(session.id),
-                    field_key=field_dict.get("elementId") or field_dict.get("name"),
-                    field_label=field_dict.get("label"),
-                    field_type=field_dict.get("inputType"),
-                    profile_path=mapping_dict.get("profilePath"),
-                    confidence=mapping_dict.get("confidence"),
+                    field_key=field_key if isinstance(field_key, str) else None,
+                    field_label=field_label if isinstance(field_label, str) else None,
+                    field_type=field_type if isinstance(field_type, str) else None,
+                    profile_path=profile_path if isinstance(profile_path, str) else None,
+                    confidence=confidence if isinstance(confidence, (int, float)) else None,
                     was_filled=was_filled,
-                    reason_skipped=mapping_dict.get("reasonSkipped") if not was_filled else None,
+                    reason_skipped=(
+                        reason_skipped
+                        if isinstance(reason_skipped, str) and not was_filled
+                        else None
+                    ),
                 )
 
         await self._ext.complete_form_session(

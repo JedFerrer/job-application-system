@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from app.infrastructure.llm_utils import strip_code_fences
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(

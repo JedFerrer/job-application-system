@@ -14,9 +14,9 @@ pytestmark = pytest.mark.unit
 
 def _service(repo: object) -> MatchingService:
     service = MatchingService.__new__(MatchingService)
-    service._repo = repo  # type: ignore[attr-defined,assignment]
-    service._readiness_repo = None  # type: ignore[attr-defined]
-    service._embedding_coordinator = None  # type: ignore[attr-defined]
+    service._repo = repo  # type: ignore[assignment]
+    service._readiness_repo = None
+    service._embedding_coordinator = None
     return service
 
 
@@ -47,7 +47,7 @@ async def test_analyze_job_embeds_an_unembedded_visible_job_without_llm() -> Non
             return SimpleNamespace(status="ready")
 
     service = _service(FakeRepository())
-    service._embedding_coordinator = FakeCoordinator()  # type: ignore[attr-defined,assignment]
+    service._embedding_coordinator = FakeCoordinator()  # type: ignore[assignment]
 
     async def _summary(*, user_id: int, job_id: int):  # noqa: ANN001
         return SimpleNamespace(job_id=job_id)

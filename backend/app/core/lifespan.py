@@ -35,8 +35,8 @@ from app.domain.interview.exceptions import InterviewGenerationError
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.matching.exceptions import (
     MatchNotFoundError,
-    MatchPreparingError,
     MatchNotReadyError,
+    MatchPreparingError,
     MatchUnavailableError,
     NoActiveProfileError,
 )

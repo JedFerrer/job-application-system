@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from app.domain.jobs.source_id_extractor import extract_source_id
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(

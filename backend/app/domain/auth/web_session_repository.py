@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.web_refresh_session import WebRefreshSession
@@ -92,7 +94,7 @@ class WebSessionRepository:
             .values(revoked_at=datetime.now(UTC))
         )
         await self._session.flush()
-        return result.rowcount or 0
+        return cast(CursorResult[Any], result).rowcount or 0
 
     async def revoke_all_for_user(self, user_id: int) -> int:
         """Revoke all active sessions for *user_id* (password reset)."""
@@ -105,4 +107,4 @@ class WebSessionRepository:
             .values(revoked_at=datetime.now(UTC))
         )
         await self._session.flush()
-        return result.rowcount or 0
+        return cast(CursorResult[Any], result).rowcount or 0

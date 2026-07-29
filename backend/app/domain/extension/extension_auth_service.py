@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.core.security import create_token, decode_token
+from app.core.security import create_token
 from app.domain.extension.exceptions import (
     ExtensionSessionNotFoundError,
     ExtensionSessionRevokedError,
@@ -53,7 +53,7 @@ class ExtensionAuthService:
         *,
         repository: ExtensionRepository,
         settings: Settings,
-        redis: "aioredis.Redis | None" = None,
+        redis: aioredis.Redis | None = None,
     ) -> None:
         self._repo = repository
         self._settings = settings
@@ -111,11 +111,11 @@ class ExtensionAuthService:
             raw = await self._redis.getdel(key)
             if raw is None:
                 # Check if it existed but expired separately
-                raise PairingCodeInvalidError
+                raise PairingCodeInvalidError from None
             try:
                 return int(raw)
             except (ValueError, TypeError):
-                raise PairingCodeInvalidError
+                raise PairingCodeInvalidError from None
         else:
             # In-memory fallback
             entry = _pairing_codes_fallback.get(code)
@@ -148,7 +148,7 @@ class ExtensionAuthService:
         refresh_token = create_token(
             settings=self._settings,
             subject=user_id,
-            token_type="refresh",
+            token_type="refresh",  # noqa: S106 - token kind
         )
         refresh_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
 
@@ -165,14 +165,14 @@ class ExtensionAuthService:
         access_token = create_token(
             settings=self._settings,
             subject=user_id,
-            token_type="access",
+            token_type="access",  # noqa: S106 - token kind
             extra_claims=session_claim,
         )
         # Re-issue refresh token with the same session claim for consistency.
         refresh_token = create_token(
             settings=self._settings,
             subject=user_id,
-            token_type="refresh",
+            token_type="refresh",  # noqa: S106 - token kind
             extra_claims=session_claim,
         )
         # Update the stored hash to match the re-issued refresh token.
@@ -237,13 +237,13 @@ class ExtensionAuthService:
         new_access = create_token(
             settings=self._settings,
             subject=user_id,
-            token_type="access",
+            token_type="access",  # noqa: S106 - token kind
             extra_claims=claims,
         )
         new_refresh = create_token(
             settings=self._settings,
             subject=user_id,
-            token_type="refresh",
+            token_type="refresh",  # noqa: S106 - token kind
             extra_claims=claims,
         )
 

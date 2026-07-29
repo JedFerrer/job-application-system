@@ -1,6 +1,6 @@
 """Test JobSpy scraping directly to debug job count issues."""
+
 from jobspy import scrape_jobs
-import traceback
 
 SEARCH_TERMS = ["software engineer", "backend developer"]
 LOCATIONS = ["Manila", None]

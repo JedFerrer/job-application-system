@@ -23,7 +23,6 @@ from app.api.v1 import resume as resume_module
 from app.infrastructure.task_store import TaskStore
 from app.models.user import User
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 

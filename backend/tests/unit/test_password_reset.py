@@ -9,19 +9,19 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-
-pytestmark = pytest.mark.unit
 from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.service import AuthService
 
+pytestmark = pytest.mark.unit
+
 
 def _settings(environment: str = "development") -> Settings:
     """Return a Settings instance with the given environment."""
     return Settings(
-        environment=environment,  # type: ignore[arg-type]
+        environment=environment,
         jwt_secret=SecretStr("test-secret-for-testing-12345678"),
     )
 

@@ -10,7 +10,6 @@ Verifies that task status records are scoped to the creating user:
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -65,6 +64,7 @@ async def test_user_can_poll_own_ingest_task() -> None:
 
     task = await store.get(task_id)
     assert _task_visible(task, user_id=1) is True
+    assert task is not None
     assert task["type"] == "ingest"
     assert task["status"] == "queued"
 
@@ -76,6 +76,7 @@ async def test_user_can_poll_own_resume_task() -> None:
 
     task = await store.get(task_id)
     assert _task_visible(task, user_id=42) is True
+    assert task is not None
     assert task["type"] == "resume_parse"
 
 
@@ -117,6 +118,7 @@ async def test_task_result_shape_preserved() -> None:
 
     task = await store.get(task_id)
     assert _task_visible(task, user_id=1) is True
+    assert task is not None
     assert task["status"] == "done"
     assert task["user_id"] == 1
     assert task["fetched"] == 50
@@ -134,10 +136,12 @@ async def test_two_users_tasks_are_independent() -> None:
     # User 1 sees only their task.
     t1_data = await store.get(t1)
     assert _task_visible(t1_data, user_id=1) is True
+    assert t1_data is not None
     assert t1_data["type"] == "ingest"
 
     t2_data = await store.get(t2)
     assert _task_visible(t2_data, user_id=2) is True
+    assert t2_data is not None
     assert t2_data["type"] == "resume_parse"
 
     # Cross-user checks fail.

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from sqlalchemy import delete, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
@@ -131,4 +134,4 @@ class ResumeRepository:
                 TailoredResumeDraft.user_id == user_id,
             )
         )
-        return bool(result.rowcount)
+        return bool(cast(CursorResult[Any], result).rowcount)

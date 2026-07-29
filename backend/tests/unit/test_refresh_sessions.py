@@ -11,23 +11,21 @@ Verifies that the web refresh-token session storage correctly handles:
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
 
 import pytest
-
-pytestmark = pytest.mark.integration
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, get_settings
-from app.core.security import create_token
+from app.core.security import create_token, hash_password
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.service import AuthService
 from app.domain.auth.web_session_repository import WebSessionRepository
 from app.models.user import User
 from app.models.web_refresh_session import WebRefreshSession
 
+pytestmark = pytest.mark.integration
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -48,7 +46,6 @@ async def clean_db(engine) -> None:  # noqa: ANN001
 
 @pytest.fixture
 def settings() -> Settings:
-    s = get_settings()
     # Use a fixed secret for deterministic token generation in tests.
     from pydantic import SecretStr
     return Settings(
@@ -81,7 +78,6 @@ async def test_login_creates_session(engine, settings) -> None:  # noqa: ANN001
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
-        from app.core.security import hash_password
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -108,7 +104,6 @@ async def test_refresh_rotates_token(engine, settings) -> None:  # noqa: ANN001
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
-        from app.core.security import hash_password
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -142,7 +137,6 @@ async def test_old_token_reuse_revokes_family(engine, settings) -> None:  # noqa
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
-        from app.core.security import hash_password
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -171,7 +165,6 @@ async def test_logout_revokes_session(engine, settings) -> None:  # noqa: ANN001
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
-        from app.core.security import hash_password
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -247,7 +240,6 @@ async def test_refresh_with_revoked_token_fails(engine, settings) -> None:  # no
 
 async def test_expired_refresh_token_rejected(engine, settings) -> None:  # noqa: ANN001
     """An expired JWT is rejected by decode_token() before the hash lookup."""
-    import time
     from datetime import UTC, datetime, timedelta
 
     import jwt as pyjwt
@@ -319,7 +311,7 @@ async def test_invalid_signature_token_rejected(engine, settings) -> None:  # no
 
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
-        user = await _create_user(db, 1, "a@test.com")
+        await _create_user(db, 1, "a@test.com")
         await db.commit()
 
         svc = _make_svc(db, settings)
@@ -330,8 +322,9 @@ async def test_invalid_signature_token_rejected(engine, settings) -> None:  # no
 
 async def test_wrong_audience_token_rejected(engine, settings) -> None:  # noqa: ANN001
     """A token with the wrong audience claim is rejected."""
-    import jwt as pyjwt
     from datetime import UTC, datetime, timedelta
+
+    import jwt as pyjwt
 
     # Build a token with a deliberately wrong audience.
     now = datetime.now(UTC)
@@ -369,8 +362,9 @@ async def test_wrong_audience_token_rejected(engine, settings) -> None:  # noqa:
 
 async def test_wrong_issuer_token_rejected(engine, settings) -> None:  # noqa: ANN001
     """A token with the wrong issuer claim is rejected."""
-    import jwt as pyjwt
     from datetime import UTC, datetime, timedelta
+
+    import jwt as pyjwt
 
     # Build a token with a deliberately wrong issuer.
     now = datetime.now(UTC)

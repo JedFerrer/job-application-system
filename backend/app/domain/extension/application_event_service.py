@@ -21,7 +21,6 @@ from app.domain.extension.schemas import (
     MarkAppliedResponse,
 )
 from app.domain.jobs.repository import JobRepository
-from app.models.application import Application
 
 logger = get_logger("application_events")
 
@@ -127,8 +126,8 @@ class ApplicationEventService:
                 from sqlalchemy.orm import object_session
                 session = object_session(application)
                 if session:
-                    await session.flush()
-            except Exception:
+                    session.flush()
+            except Exception:  # noqa: S110 - detached ORM objects are expected in tests
                 pass  # Application may be detached (e.g., in tests)
 
         # Record the confirmation event

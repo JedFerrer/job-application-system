@@ -7,13 +7,12 @@ Verifies that production misconfigurations raise errors at startup
 from __future__ import annotations
 
 import pytest
-
-pytestmark = pytest.mark.unit
-
 from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.main import validate_startup_settings
+
+pytestmark = pytest.mark.unit
 
 
 def test_is_production_returns_false_for_development() -> None:

@@ -14,8 +14,6 @@ Requires a running PostgreSQL instance.
 from __future__ import annotations
 
 import pytest
-
-pytestmark = pytest.mark.integration
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -27,11 +25,12 @@ from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
-from app.models.job import Job
 from app.models.application import Application
+from app.models.job import Job
 from app.models.user import User
 from app.models.user_job import UserJob
 
+pytestmark = pytest.mark.integration
 
 # ── DB fixtures (self-contained, same pattern as test_feed_separation.py) ─
 

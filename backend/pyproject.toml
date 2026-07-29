@@ -63,6 +63,10 @@ ignore = ["S101"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
 "migrations/**" = ["E501", "N999"]
+# Immutable legacy migrations that predate the current import/union style.
+"migrations/versions/0016_job_filter_indexes.py" = ["UP007", "UP035"]
+"migrations/versions/0025_public_company_index.py" = ["I001", "UP007", "UP035"]
+"migrations/versions/135bba47a82c_add_company_logo_to_jobs.py" = ["I001"]
 # FastAPI uses callables (Depends/File/Query/Body) as argument defaults by design.
 "app/api/**" = ["B008"]
 
@@ -83,6 +87,29 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["app.workers.*"]
 disallow_untyped_decorators = false
+
+# Legacy database-heavy tests with dynamic pytest/SQLAlchemy fixture boundaries.
+# New tests remain fully strict; production modules remain fully strict above.
+[[tool.mypy.overrides]]
+module = [
+    "tests.unit.test_application_activity",
+    "tests.unit.test_application_next_actions",
+    "tests.unit.test_extension_services",
+    "tests.unit.test_feed_separation",
+    "tests.unit.test_job_authorization",
+    "tests.unit.test_match_authorization",
+    "tests.unit.test_match_pagination",
+    "tests.unit.test_match_readiness",
+    "tests.unit.test_match_ranking_retention",
+    "tests.unit.test_pagination",
+    "tests.unit.test_profile_integration",
+    "tests.unit.test_readiness_preferences",
+    "tests.unit.test_refresh_sessions",
+    "tests.unit.test_resume_drafts_integration",
+]
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disable_error_code = ["no-untyped-def", "no-untyped-call"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

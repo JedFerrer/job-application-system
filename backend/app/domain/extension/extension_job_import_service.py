@@ -22,7 +22,6 @@ from app.domain.extension.schemas import (
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.source_id_extractor import extract_source_id
-from app.infrastructure.embeddings import embed_text
 
 logger = get_logger("extension_job_import")
 

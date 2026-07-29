@@ -14,7 +14,7 @@ _pool: aioredis.Redis | None = None
 
 async def init_redis(url: str) -> None:
     global _pool  # noqa: PLW0603
-    _pool = aioredis.from_url(url, decode_responses=True)
+    _pool = aioredis.from_url(url, decode_responses=True)  # type: ignore[no-untyped-call]
 
 
 async def close_redis() -> None:

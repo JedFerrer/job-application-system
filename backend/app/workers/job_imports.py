@@ -8,6 +8,7 @@ triggers match scoring so the imported job appears in /matches.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import redis.asyncio as aioredis
 from sqlalchemy import update
@@ -41,7 +42,7 @@ def _make_worker_session_factory() -> async_sessionmaker[AsyncSession]:
     default_retry_delay=60,
     name="embed_imported_job",
 )
-def embed_imported_job(self, job_id: int, user_id: int) -> None:
+def embed_imported_job(self: Any, job_id: int, user_id: int) -> None:
     """Embed a newly imported job's description, then run match scoring.
 
     Called after a manual or extension import creates a new job with a

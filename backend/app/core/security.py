@@ -62,9 +62,9 @@ def create_token(
     cannot be overridden via extra_claims.
     """
     now = datetime.now(UTC)
-    if token_type == "access":
+    if token_type == "access":  # noqa: S105 - token kind, not a credential
         expires = now + timedelta(minutes=settings.access_token_expire_minutes)
-    elif token_type == "reset":
+    elif token_type == "reset":  # noqa: S105 - token kind, not a credential
         expires = now + timedelta(minutes=15)
     else:
         expires = now + timedelta(days=settings.refresh_token_expire_days)
@@ -81,7 +81,7 @@ def create_token(
     if extra_claims:
         # Merge extra claims — never allow overwriting reserved claims.
         reserved = {"sub", "type", "jti", "iss", "aud", "iat", "exp"}
-        for k, v in extra_claims.items():
+        for k, _v in extra_claims.items():
             if k in reserved:
                 raise ValueError(
                     f"extra_claims key '{k}' is reserved and cannot be overridden"
@@ -108,7 +108,7 @@ def decode_token(
     payload = _decode_and_validate(settings, token, expected_type)
     subject = payload.get("sub")
     try:
-        return int(subject)
+        return int(subject) if subject is not None else (_ for _ in ()).throw(TypeError)
     except (TypeError, ValueError) as exc:
         raise TokenError("invalid subject") from exc
 

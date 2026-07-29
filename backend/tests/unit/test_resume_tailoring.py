@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -166,7 +167,8 @@ async def test_role_count_mismatch_returns_complete_untailored_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = _payload()
-    payload["tailored_work_history"] = payload["tailored_work_history"][:1]
+    work_history = cast(list[dict[str, object]], payload["tailored_work_history"])
+    payload["tailored_work_history"] = work_history[:1]
     service, job_repository, llm_mock = _service_and_job(payload)
     monkeypatch.setattr(resume_service, "llm_chat_completion", llm_mock)
 

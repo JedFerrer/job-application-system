@@ -72,7 +72,7 @@ async def test_nightly_ranking_skips_locked_user_and_continues(
             assert (user_id, limit) == (2, 200)
             return SimpleNamespace(ranked=200)
 
-    monkeypatch.setattr(match_ranking.aioredis, "from_url", lambda *args, **kwargs: redis)
+    monkeypatch.setattr(match_ranking.aioredis, "from_url", lambda *args, **kwargs: redis)  # type: ignore[attr-defined]
     monkeypatch.setattr(match_ranking, "_worker_session_factory", lambda: db)
     monkeypatch.setattr(match_ranking, "MatchingService", Service)
 
@@ -98,7 +98,7 @@ async def test_failed_ranking_releases_its_opaque_lock(
             del user_id, limit
             raise RuntimeError("database failure")
 
-    monkeypatch.setattr(match_ranking.aioredis, "from_url", lambda *args, **kwargs: redis)
+    monkeypatch.setattr(match_ranking.aioredis, "from_url", lambda *args, **kwargs: redis)  # type: ignore[attr-defined]
     monkeypatch.setattr(match_ranking, "_worker_session_factory", lambda: db)
     monkeypatch.setattr(match_ranking, "MatchingService", FailingService)
 

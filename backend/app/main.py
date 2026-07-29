@@ -23,8 +23,14 @@ from app.api.v1 import (
 )
 from app.api.v1.extension import (
     applications as ext_applications,
+)
+from app.api.v1.extension import (
     auth as ext_auth,
+)
+from app.api.v1.extension import (
     autofill as ext_autofill,
+)
+from app.api.v1.extension import (
     jobs as ext_jobs,
 )
 from app.core.config import Settings, get_settings
@@ -84,7 +90,7 @@ app = FastAPI(
 )
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 app.add_middleware(
     CORSMiddleware,

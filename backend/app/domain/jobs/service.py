@@ -369,7 +369,11 @@ class JobService:
         # Keep the label and URL human-readable while the repository performs
         # the case-insensitive normalized comparison.
         company = " ".join((job.company or "").split())
-        if job.visibility != "public" or job.ingest_source in {"manual", "extension"} or not company:
+        if (
+            job.visibility != "public"
+            or job.ingest_source in {"manual", "extension"}
+            or not company
+        ):
             return response
 
         job_count = await self._repo.count_active_public_jobs_by_company(

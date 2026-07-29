@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import insert, select, text
@@ -469,14 +470,15 @@ async def test_application_update_logs_manual_next_action_updated_and_suppresses
             "manual_next_action_updated",
         ]
         event = events[-1]
-        assert event.metadata_["source"] == "browser_application_update"
-        assert event.metadata_["previous"]["has_note"] is True
-        assert event.metadata_["current"]["has_note"] is True
-        assert "note" not in event.metadata_["previous"]
-        assert "note" not in event.metadata_["current"]
-        assert event.metadata_["changed_fields"] == ["next_action_note"]
-        assert event.metadata_["previous"]["type"] == "follow_up"
-        assert event.metadata_["current"]["type"] == "follow_up"
+        metadata = cast(dict[str, Any], event.metadata_)
+        assert metadata["source"] == "browser_application_update"
+        assert metadata["previous"]["has_note"] is True
+        assert metadata["current"]["has_note"] is True
+        assert "note" not in metadata["previous"]
+        assert "note" not in metadata["current"]
+        assert metadata["changed_fields"] == ["next_action_note"]
+        assert metadata["previous"]["type"] == "follow_up"
+        assert metadata["current"]["type"] == "follow_up"
 
 
 async def test_application_update_logs_manual_next_action_completed(engine) -> None:  # noqa: ANN001

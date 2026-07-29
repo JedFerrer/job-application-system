@@ -10,7 +10,6 @@ message without leaking the reset token.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from typing import Protocol
 
 

@@ -32,7 +32,7 @@ class ScrapeQueryRepository:
         )
         existing = result.scalar_one_or_none()
         if existing is not None:
-            existing.active_user_count = ScrapeQuery.active_user_count + 1  # type: ignore[assignment]
+            existing.active_user_count = ScrapeQuery.active_user_count + 1
             await self._session.flush()
             return existing
 
@@ -80,7 +80,7 @@ class ScrapeQueryRepository:
             update(ScrapeQuery)
             .where(ScrapeQuery.id == query_id)
             .values(
-                active_user_count=ScrapeQuery.active_user_count - 1  # type: ignore[operator]
+                active_user_count=ScrapeQuery.active_user_count - 1
             )
         )
 

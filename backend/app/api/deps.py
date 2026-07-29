@@ -22,17 +22,21 @@ from app.domain.auth.service import AuthService
 from app.domain.auth.web_session_repository import WebSessionRepository
 from app.domain.cover_letters.repository import CoverLetterRepository
 from app.domain.cover_letters.service import CoverLetterService
+from app.domain.extension.application_event_service import ApplicationEventService
+from app.domain.extension.autofill_mapping_service import AutofillProfileService
+from app.domain.extension.extension_auth_service import ExtensionAuthService
+from app.domain.extension.extension_job_import_service import ExtensionJobImportService
 from app.domain.extension.repository import ExtensionRepository
 from app.domain.interview.repository import InterviewRepository
 from app.domain.interview.service import InterviewService
-from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
+from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
-from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.readiness_preferences import (
     ReadinessPreferenceRepository,
     ReadinessPreferenceService,
 )
+from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
 from app.domain.preferences.repository import PreferenceRepository
 from app.domain.preferences.service import PreferenceService
@@ -232,14 +236,6 @@ def get_task_store() -> TaskStore:
 
 
 TaskStoreDep = Annotated[TaskStore, Depends(get_task_store)]
-
-
-# ── Extension Services (Phase 5 — Browser Extension) ──────────────────────
-
-from app.domain.extension.extension_auth_service import ExtensionAuthService
-from app.domain.extension.extension_job_import_service import ExtensionJobImportService
-from app.domain.extension.application_event_service import ApplicationEventService
-from app.domain.extension.autofill_mapping_service import AutofillProfileService
 
 
 def get_extension_auth_service(db: DbSession) -> ExtensionAuthService:

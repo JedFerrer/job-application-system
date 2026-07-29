@@ -129,7 +129,7 @@ def _add_preference_findings(
             warnings.append("Salary currency is missing or incompatible")
         elif getattr(job, "salary_max", None) is None:
             warnings.append("Salary is not available for comparison")
-        elif float(job.salary_max) < float(minimum):
+        elif float(getattr(job, "salary_max")) < float(minimum):  # noqa: B009 - dynamic job boundary
             blockers.append(f"Salary is below your {currency} {minimum:,.0f} annual minimum")
 
     accepted = {

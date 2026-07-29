@@ -224,13 +224,13 @@ class ApplicationRepository:
 
 # ── Cursor helpers (same pattern as job listing) ──────────────────────────
 
-def _encode_app_cursor(updated_at, app_id: int) -> str:
+def _encode_app_cursor(updated_at: datetime, app_id: int) -> str:
     import base64
     raw = f"{updated_at.isoformat()}|{app_id}"
     return base64.urlsafe_b64encode(raw.encode()).decode()
 
 
-def _decode_app_cursor(cursor: str):
+def _decode_app_cursor(cursor: str) -> tuple[datetime, int]:
     import base64
     from datetime import UTC, datetime
     raw = base64.urlsafe_b64decode(cursor.encode()).decode()

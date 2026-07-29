@@ -13,8 +13,6 @@ from google.auth.exceptions import GoogleAuthError as _GoogleVerifyError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
-logger = logging.getLogger(__name__)
-
 from app.core.config import Settings
 from app.core.security import (
     TokenError,
@@ -34,6 +32,8 @@ from app.domain.auth.exceptions import (
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.web_session_repository import WebSessionRepository
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,10 +60,10 @@ class AuthService:
     def _issue(self, user: User) -> IssuedTokens:
         return IssuedTokens(
             access_token=create_token(
-                settings=self._settings, subject=user.id, token_type="access"
+                settings=self._settings, subject=user.id, token_type="access"  # noqa: S106 - token kind
             ),
             refresh_token=create_token(
-                settings=self._settings, subject=user.id, token_type="refresh"
+                settings=self._settings, subject=user.id, token_type="refresh"  # noqa: S106 - token kind
             ),
             expires_in=self._settings.access_token_expire_minutes * 60,
             user=user,
@@ -125,7 +125,7 @@ class AuthService:
                 google_requests.Request(),
                 self._settings.google_client_id,
                 clock_skew_in_seconds=30,
-            )
+            )  # type: ignore[no-untyped-call]
         except (ValueError, _GoogleVerifyError) as exc:
             logger.warning("Google token verification failed: %s", exc)
             raise GoogleAuthError from exc
@@ -254,7 +254,7 @@ class AuthService:
         token = create_token(
             settings=self._settings,
             subject=user.id,
-            token_type="reset",
+            token_type="reset",  # noqa: S106 - token kind
         )
         is_dev = self._settings.environment == "development"
         response: dict[str, str] = {

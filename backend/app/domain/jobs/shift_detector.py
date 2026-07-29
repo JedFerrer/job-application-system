@@ -50,7 +50,7 @@ DST errors are tolerated because they rarely change the day/mid/night bucket.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.core.logging import get_logger
 
@@ -274,7 +274,7 @@ def _resolve_tz_offset(iana_name: str) -> int:
         from zoneinfo import ZoneInfo  # noqa: PLC0415
 
         tz = ZoneInfo(iana_name)
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         offset = now.astimezone(tz).utcoffset()
         return int(offset.total_seconds() // 60) if offset else 0
     except Exception:  # noqa: BLE001
@@ -295,9 +295,12 @@ async def classify_shift_llm(title: str, description: str) -> str | None:
     )
 
     prompt = (
-        "You are classifying a job posting for a remote worker based in the Philippines (PHT = UTC+8).\n"
-        "Determine what shift the WORKER will be on, from the worker's perspective in Philippine Time.\n"
-        "If the posting gives a clock time with a timezone (e.g. '9 AM EST'), convert it to PHT first.\n"
+        "You are classifying a job posting for a remote worker based in the Philippines "
+        "(PHT = UTC+8).\n"
+        "Determine what shift the WORKER will be on, from the worker's perspective in "
+        "Philippine Time.\n"
+        "If the posting gives a clock time with a timezone (e.g. '9 AM EST'), convert it "
+        "to PHT first.\n"
         "Reply with ONLY one lowercase word — no punctuation, no explanation:\n"
         "  day      (worker's shift starts roughly 5 AM – 1 PM Philippine Time)\n"
         "  mid      (worker's shift starts roughly 1 PM – 9 PM Philippine Time)\n"

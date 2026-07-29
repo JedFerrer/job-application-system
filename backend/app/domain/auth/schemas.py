@@ -46,7 +46,7 @@ class TokenResponse(BaseModel):
     """Access token returned in the body; refresh token is set as a cookie."""
 
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 - token kind, not a credential
     expires_in: int
     user: UserResponse
 

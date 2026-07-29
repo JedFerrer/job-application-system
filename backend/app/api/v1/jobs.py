@@ -9,11 +9,10 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from app.api.deps import CurrentUser, JobServiceDep, TaskStoreDep
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
+from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import (
     IngestRequest,
-    IngestResponse,
     JobImportRequest,
     JobListResponse,
     JobResponse,

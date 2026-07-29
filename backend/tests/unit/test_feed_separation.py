@@ -56,7 +56,7 @@ async def clean_jobs(engine) -> None:  # noqa: ANN001
         await db.commit()
 
 
-async def _make_service(engine) -> JobService:  # noqa: ANN001
+async def _make_service(engine) -> tuple[JobService, AsyncSession]:  # noqa: ANN001
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     db = session_factory()
     return JobService(JobRepository(db)), db
@@ -89,7 +89,7 @@ async def _create_job_and_get_id(db: AsyncSession, **overrides: object) -> int:
         str(values.get("title", "")),
         str(values.get("location", "")),
     )
-    await db.execute(__import__("sqlalchemy").insert(Job).values(**values))  # type: ignore[arg-type]
+    await db.execute(__import__("sqlalchemy").insert(Job).values(**values))
     await db.commit()
     result = await db.execute(_sel(Job.id).where(Job.fingerprint == values["fingerprint"]))
     return result.scalar_one()
