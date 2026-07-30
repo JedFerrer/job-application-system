@@ -8,7 +8,9 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.resume.lifecycle import ResumeLifecycleStatus
 from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
+from app.models.user import User
 
 
 class ResumeRepository:
@@ -17,18 +19,35 @@ class ResumeRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def lock_user_for_import(self, user_id: int) -> None:
+        """Serialize import classification for one authenticated user."""
+        result = await self._session.execute(
+            select(User.id).where(User.id == user_id).with_for_update()
+        )
+        if result.scalar_one_or_none() is None:
+            raise ValueError(f"User {user_id} does not exist")
+
     async def deactivate_existing(self, user_id: int) -> None:
         """Mark all of a user's resumes inactive (single active profile)."""
         await self._session.execute(
             update(Resume).where(Resume.user_id == user_id).values(is_active=False)
         )
 
-    async def add_resume(self, user_id: int, filename: str, raw_text: str) -> Resume:
+    async def add_resume(
+        self,
+        user_id: int,
+        filename: str,
+        raw_text: str,
+        *,
+        is_active: bool = True,
+        lifecycle_status: ResumeLifecycleStatus = ResumeLifecycleStatus.ACTIVE,
+    ) -> Resume:
         resume = Resume(
             user_id=user_id,
             filename=filename,
             raw_text=raw_text,
-            is_active=True,
+            is_active=is_active,
+            lifecycle_status=lifecycle_status.value,
         )
         self._session.add(resume)
         await self._session.flush()

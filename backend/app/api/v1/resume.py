@@ -85,7 +85,11 @@ async def _run_resume_bg(
         await store.update(
             task_id,
             status="done",
-            message=f'Parsed "{filename}"',
+            message=(
+                f'Parsed "{filename}" and saved as a draft awaiting review'
+                if not result.is_active
+                else f'Parsed "{filename}"'
+            ),
             result=result.model_dump(mode="json"),
         )
     except UnsupportedResumeFormatError as exc:

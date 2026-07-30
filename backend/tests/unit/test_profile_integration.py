@@ -21,7 +21,9 @@ from sqlalchemy.pool import NullPool
 from app.api.deps import get_current_user
 from app.api.v1 import resume as resume_module
 from app.core.config import get_settings
+from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import ParsedProfile
+from app.domain.resume.service import ResumeService
 from app.models.resume import CandidateProfile, Resume
 from app.models.user import User
 
@@ -132,6 +134,57 @@ async def _seed_profile(
 
 class TestProfileIntegration:
     """End-to-end contract tests through the real route handler + real DB."""
+
+    @pytest.mark.asyncio
+    async def test_replacement_import_is_draft_and_active_profile_is_preserved(
+        self, session_factory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        """A persisted replacement draft cannot change active profile reads."""
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            await _seed_profile(db, user_id=user.id, full_name="Original User")
+            other_user = await _seed_user(db, user_id=2)
+            await _seed_profile(db, user_id=other_user.id, full_name="Other User")
+            await db.commit()
+
+            replacement = ParsedProfile(full_name="Replacement User", headline="New")
+            monkeypatch.setattr(
+                "app.domain.resume.service.extract_text_from_bytes",
+                lambda *_: "replacement text",
+            )
+
+            async def parse(_: str) -> ParsedProfile:
+                return replacement
+
+            async def embed(_: str) -> list[float]:
+                return [0.1] * 1536
+
+            monkeypatch.setattr("app.domain.resume.service.parse_resume_text", parse)
+            monkeypatch.setattr("app.domain.resume.service.embed_text", embed)
+            result = await ResumeService(ResumeRepository(db)).upload_and_parse(
+                user_id=user.id, filename="replacement.pdf", content=b"pdf"
+            )
+            await db.commit()
+
+            active = await ResumeService(ResumeRepository(db)).get_profile(user.id)
+            other_active = await ResumeService(ResumeRepository(db)).get_profile(
+                other_user.id
+            )
+            resumes = (
+                await db.execute(
+                    text(
+                        "SELECT is_active, lifecycle_status FROM resumes "
+                        "WHERE user_id = :user_id ORDER BY id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).all()
+
+        assert result.is_active is False
+        assert result.lifecycle_status.value == "draft"
+        assert active.profile.full_name == "Original User"
+        assert other_active.profile.full_name == "Other User"
+        assert resumes == [(True, "active"), (False, "draft")]
 
     # ── unauthenticated → 401 ──────────────────────────────────────────
 

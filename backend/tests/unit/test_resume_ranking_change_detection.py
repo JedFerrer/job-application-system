@@ -21,12 +21,22 @@ class FakeResumeRepository:
         del user_id
         return self.previous
 
+    async def lock_user_for_import(self, user_id: int) -> None:
+        del user_id
+
     async def deactivate_existing(self, user_id: int) -> None:
         del user_id
 
-    async def add_resume(self, user_id: int, filename: str, raw_text: str) -> object:
+    async def add_resume(
+        self, user_id: int, filename: str, raw_text: str, **kwargs: object
+    ) -> object:
         del user_id, raw_text
-        return SimpleNamespace(id=3, filename=filename, is_active=True)
+        return SimpleNamespace(
+            id=3,
+            filename=filename,
+            is_active=kwargs.get("is_active", True),
+            lifecycle_status=getattr(kwargs.get("lifecycle_status"), "value", "active"),
+        )
 
     async def add_profile(self, **kwargs: object) -> object:
         return SimpleNamespace(**kwargs)

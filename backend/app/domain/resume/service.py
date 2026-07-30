@@ -24,6 +24,7 @@ from app.domain.resume.exceptions import (
     TailoredResumeDraftNotFoundError,
     UnsupportedResumeFormatError,
 )
+from app.domain.resume.lifecycle import ResumeLifecycleStatus
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import (
@@ -110,7 +111,7 @@ class ResumeService:
         self, *, user_id: int, filename: str, content: bytes,
         progress: ProgressFn | None = None,
     ) -> ResumeResponse:
-        """Extract text, LLM-parse, embed, and persist a new active profile."""
+        """Extract text, parse, and persist an active profile or import draft."""
 
         async def _emit(**kw: Any) -> None:
             if progress is not None:
@@ -130,19 +131,31 @@ class ResumeService:
 
         await _emit(message="Embedding profile…")
         summary_text = build_summary_text(profile)
+        await self._repository.lock_user_for_import(user_id)
         previous_profile = await self._repository.get_active_profile(user_id)
-        matching_profile_changed = (
-            previous_profile is None or summary_text != previous_profile.summary_text
-        )
+        is_first_import = previous_profile is None
+        if is_first_import:
+            matching_profile_changed = True
+        else:
+            assert previous_profile is not None
+            matching_profile_changed = summary_text != previous_profile.summary_text
         if matching_profile_changed:
             embedding = await embed_text(summary_text)
         else:
             assert previous_profile is not None
             embedding = previous_profile.embedding
 
-        await self._repository.deactivate_existing(user_id)
+        lifecycle_status = (
+            ResumeLifecycleStatus.ACTIVE
+            if is_first_import
+            else ResumeLifecycleStatus.DRAFT
+        )
         resume = await self._repository.add_resume(
-            user_id=user_id, filename=filename, raw_text=raw_text
+            user_id=user_id,
+            filename=filename,
+            raw_text=raw_text,
+            is_active=is_first_import,
+            lifecycle_status=lifecycle_status,
         )
         await self._repository.add_profile(
             user_id=user_id,
@@ -156,8 +169,9 @@ class ResumeService:
             resume_id=resume.id,
             filename=resume.filename,
             is_active=resume.is_active,
+            lifecycle_status=ResumeLifecycleStatus(resume.lifecycle_status),
             profile=profile,
-            matching_profile_changed=matching_profile_changed,
+            matching_profile_changed=is_first_import,
         )
 
     async def get_profile(self, user_id: int) -> ProfileResponse:

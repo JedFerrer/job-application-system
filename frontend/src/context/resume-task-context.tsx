@@ -87,12 +87,15 @@ export function ResumeTaskProvider({ children }: { children: React.ReactNode }) 
     }
 
     const result = data.result as ResumeResponse | undefined;
+    const isDraft = result?.is_active === false || result?.lifecycle_status === "draft";
     toast.success(`Résumé parsed — "${result?.filename ?? name ?? "résumé"}"`, {
-      description: "Your profile has been updated.",
+      description: isDraft
+        ? "Saved as a draft awaiting review. Your active profile was not changed."
+        : "Your profile has been updated.",
       action: { label: "View résumé", onClick: () => router.push("/dashboard/resume") },
       duration: 8000,
     });
-    queryClient.invalidateQueries({ queryKey: ["profile"] });
+    if (!isDraft) queryClient.invalidateQueries({ queryKey: ["profile"] });
   }, [taskQuery.data?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isRunning =

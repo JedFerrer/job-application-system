@@ -22,6 +22,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.domain.resume.lifecycle import ResumeLifecycleStatus
+
 
 def _normalize_optional_text(value: object) -> object:
     """Trim optional extracted text and normalize blanks to ``None``."""
@@ -182,6 +184,7 @@ class ResumeResponse(BaseModel):
     resume_id: int
     filename: str
     is_active: bool
+    lifecycle_status: ResumeLifecycleStatus = ResumeLifecycleStatus.ACTIVE
     profile: ParsedProfile
     matching_profile_changed: bool = True
 

@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.config import get_settings
+from app.domain.resume.lifecycle import ResumeLifecycleStatus
 from app.infrastructure.database import Base
 
 _EMBEDDING_DIM = get_settings().embedding_dim
@@ -29,6 +30,10 @@ class Resume(Base):
     raw_text: Mapped[str] = mapped_column(Text)
     # Only one resume per user is the active matching profile.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Lifecycle state used to distinguish active profiles from pending imports.
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(16), default=ResumeLifecycleStatus.ACTIVE.value
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

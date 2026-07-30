@@ -87,6 +87,7 @@ export interface ResumeResponse {
   resume_id: number;
   filename: string;
   is_active: boolean;
+  lifecycle_status?: "active" | "draft" | "inactive";
   profile: ParsedProfile;
   matching_profile_changed?: boolean;
 }
