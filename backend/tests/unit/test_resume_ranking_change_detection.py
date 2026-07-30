@@ -56,3 +56,40 @@ async def test_unchanged_resume_matching_text_reuses_embedding(
     )
 
     assert result.matching_profile_changed is False
+
+
+@pytest.mark.asyncio
+async def test_links_and_projects_only_do_not_change_matching_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_profile = ParsedProfile(
+        headline="Backend engineer",
+        skills=["Python"],
+    )
+    profile = ParsedProfile(
+        headline="Backend engineer",
+        skills=["Python"],
+        links={"github": "https://github.com/ada"},
+        projects=[{"name": "Forecasting Tool", "technologies": ["Python"]}],
+    )
+    repository = FakeResumeRepository(build_summary_text(previous_profile))
+
+    async def parse(_: str) -> ParsedProfile:
+        return profile
+
+    async def fail_embed(_: str) -> list[float]:
+        raise AssertionError("links/projects-only changes must not be embedded")
+
+    monkeypatch.setattr("app.domain.resume.service.extract_text_from_bytes", lambda *_: "text")
+    monkeypatch.setattr("app.domain.resume.service.parse_resume_text", parse)
+    monkeypatch.setattr("app.domain.resume.service.embed_text", fail_embed)
+
+    assert build_summary_text(profile) == build_summary_text(previous_profile)
+
+    result = await ResumeService(repository).upload_and_parse(  # type: ignore[arg-type]
+        user_id=7,
+        filename="resume.pdf",
+        content=b"test",
+    )
+
+    assert result.matching_profile_changed is False

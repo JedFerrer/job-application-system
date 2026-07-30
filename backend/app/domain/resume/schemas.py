@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from pydantic import (
     AliasChoices,
@@ -20,6 +21,35 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+
+def _normalize_optional_text(value: object) -> object:
+    """Trim optional extracted text and normalize blanks to ``None``."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return value
+
+
+def _normalize_list_text(value: object) -> object:
+    """Trim non-empty strings in extracted list fields."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return value
+
+
+def _validate_profile_url(value: object) -> object:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None
+    if not isinstance(normalized, str):
+        return normalized
+    parsed = urlsplit(normalized)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL must use the http:// or https:// scheme")
+    return normalized
 
 
 class WorkItem(BaseModel):
@@ -37,7 +67,11 @@ class WorkItem(BaseModel):
     highlights: list[str] = Field(
         default_factory=list,
         validation_alias=AliasChoices(
-            "highlights", "bullets", "achievements", "responsibilities", "details",
+            "highlights",
+            "bullets",
+            "achievements",
+            "responsibilities",
+            "details",
         ),
     )
 
@@ -55,6 +89,49 @@ class EducationItem(BaseModel):
         if value is None or isinstance(value, str):
             return value
         return str(value)
+
+
+class ProfessionalLinks(BaseModel):
+    """Optional professional links extracted from a resume."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    linkedin: str | None = Field(default=None, max_length=2048)
+    github: str | None = Field(default=None, max_length=2048)
+    portfolio: str | None = Field(default=None, max_length=2048)
+    website: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("linkedin", "github", "portfolio", "website", mode="before")
+    @classmethod
+    def _normalize_url(cls, value: object) -> object:
+        return _validate_profile_url(value)
+
+
+class ProjectItem(BaseModel):
+    """A project listed in the candidate's resume."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, max_length=255)
+    description: str | None = Field(default=None, max_length=10000)
+    technologies: list[str] = Field(default_factory=list)
+    achievements: list[str] = Field(default_factory=list)
+    url: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("name", "description", mode="before")
+    @classmethod
+    def _normalize_text(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @field_validator("technologies", "achievements", mode="before")
+    @classmethod
+    def _normalize_text_list(cls, value: object) -> object:
+        return _normalize_list_text(value)
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _normalize_url(cls, value: object) -> object:
+        return _validate_profile_url(value)
 
 
 class ParsedProfile(BaseModel):
@@ -76,6 +153,8 @@ class ParsedProfile(BaseModel):
     skills: list[str] = Field(default_factory=list)
     education: list[EducationItem] = Field(default_factory=list)
     certifications: list[str] = Field(default_factory=list)
+    links: ProfessionalLinks = Field(default_factory=ProfessionalLinks)
+    projects: list[ProjectItem] = Field(default_factory=list)
     work_history: list[WorkItem] = Field(
         default_factory=list,
         validation_alias=AliasChoices("work_history", "experience"),

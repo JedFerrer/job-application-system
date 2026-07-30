@@ -36,9 +36,7 @@ class CoverLetterService:
         self._resumes = resume_repository
         self._jobs = job_repository
 
-    async def generate(
-        self, *, user_id: int, job_id: int, tone: str | None
-    ) -> CoverLetterResponse:
+    async def generate(self, *, user_id: int, job_id: int, tone: str | None) -> CoverLetterResponse:
         profile = await self._resumes.get_active_profile(user_id)
         if profile is None:
             raise ProfileNotFoundError(user_id)
@@ -46,8 +44,12 @@ class CoverLetterService:
         if job is None:
             raise JobNotFoundError(job_id)
 
+        candidate_profile = dict(profile.parsed)
+        candidate_profile.pop("links", None)
+        candidate_profile.pop("projects", None)
+
         content, model = await self._generate_with_llm(
-            candidate_profile=dict(profile.parsed),
+            candidate_profile=candidate_profile,
             job_title=job.title,
             company=job.company,
             job_description=job.description or "",
@@ -72,23 +74,15 @@ class CoverLetterService:
         )
         return CoverLetterResponse.model_validate(cover_letter)
 
-    async def get_for_job(
-        self, *, user_id: int, job_id: int
-    ) -> CoverLetterResponse | None:
+    async def get_for_job(self, *, user_id: int, job_id: int) -> CoverLetterResponse | None:
         """Return the most recent cover letter for a job, or None if absent."""
-        cover_letter = await self._repo.get_for_job(
-            user_id=user_id, job_id=job_id
-        )
+        cover_letter = await self._repo.get_for_job(user_id=user_id, job_id=job_id)
         if cover_letter is None:
             return None
         return CoverLetterResponse.model_validate(cover_letter)
 
-    async def get(
-        self, *, user_id: int, cover_letter_id: int
-    ) -> CoverLetterResponse:
-        cover_letter = await self._repo.get(
-            user_id=user_id, cover_letter_id=cover_letter_id
-        )
+    async def get(self, *, user_id: int, cover_letter_id: int) -> CoverLetterResponse:
+        cover_letter = await self._repo.get(user_id=user_id, cover_letter_id=cover_letter_id)
         if cover_letter is None:
             raise CoverLetterNotFoundError(cover_letter_id)
         return CoverLetterResponse.model_validate(cover_letter)
@@ -96,14 +90,10 @@ class CoverLetterService:
     async def update(
         self, *, user_id: int, cover_letter_id: int, content: str
     ) -> CoverLetterResponse:
-        cover_letter = await self._repo.get(
-            user_id=user_id, cover_letter_id=cover_letter_id
-        )
+        cover_letter = await self._repo.get(user_id=user_id, cover_letter_id=cover_letter_id)
         if cover_letter is None:
             raise CoverLetterNotFoundError(cover_letter_id)
-        updated = await self._repo.update_content(
-            cover_letter=cover_letter, content=content
-        )
+        updated = await self._repo.update_content(cover_letter=cover_letter, content=content)
         return CoverLetterResponse.model_validate(updated)
 
     async def _link_cover_letter_to_application(
