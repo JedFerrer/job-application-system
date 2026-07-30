@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Award,
   Briefcase,
+  ExternalLink,
   GraduationCap,
   Loader2,
   Mail,
@@ -17,7 +18,14 @@ import {
 import { toast } from "sonner";
 import { ApiError, resumeApi } from "@/lib/api";
 import { useResumeTask } from "@/context/resume-task-context";
-import type { EducationItem, ParsedProfile, WorkItem } from "@/lib/types";
+import type {
+  EducationItem,
+  ParsedProfile,
+  ProfessionalLinks,
+  ProjectItem,
+  WorkItem,
+} from "@/lib/types";
+import { validateProfileUrl } from "@/lib/validators";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -59,6 +67,33 @@ function emptyEducationItem(): EducationItem {
   return { degree: null, institution: null, year: null };
 }
 
+function emptyProjectItem(): ProjectItem {
+  return {
+    name: null,
+    description: null,
+    technologies: [],
+    achievements: [],
+    url: null,
+  };
+}
+
+function normalizeProfile(profile: ParsedProfile): ParsedProfile {
+  return {
+    ...profile,
+    links: Object.fromEntries(
+      Object.entries(profile.links).map(([key, value]) => [key, value?.trim() || null]),
+    ) as ProfessionalLinks,
+    projects: profile.projects.map((project) => ({
+      ...project,
+      name: project.name?.trim() || null,
+      description: project.description?.trim() || null,
+      technologies: project.technologies.map((item) => item.trim()).filter(Boolean),
+      achievements: project.achievements.map((item) => item.trim()).filter(Boolean),
+      url: project.url?.trim() || null,
+    })),
+  };
+}
+
 const SENIORITY_OPTIONS = ["entry", "mid", "senior", "staff", "lead"];
 
 // ---- Main component ---------------------------------------------------------
@@ -69,6 +104,7 @@ export function ProfilePanel() {
   const { setTask, isRunning, progressMsg } = useResumeTask();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<ParsedProfile | null>(null);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
 
   const profileQuery = useQuery({
     queryKey: ["profile"],
@@ -106,6 +142,20 @@ export function ProfilePanel() {
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Update failed"),
   });
+
+  const validateForm = (value: ParsedProfile): boolean => {
+    const errors: Record<string, string> = {};
+    for (const [field, url] of Object.entries(value.links)) {
+      const error = validateProfileUrl(url ?? "");
+      if (error) errors[`link-${field}`] = error;
+    }
+    value.projects.forEach((project, index) => {
+      const error = validateProfileUrl(project.url ?? "");
+      if (error) errors[`project-${index}-url`] = error;
+    });
+    setValidationErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
 
   const handleChange = (field: keyof ParsedProfile, value: unknown) => {
     setForm((prev) => (prev ? { ...prev, [field]: value } : prev));
@@ -180,6 +230,9 @@ export function ProfilePanel() {
   }
 
   const displayProfile = editing ? form! : profile;
+  const save = () => {
+    if (form && validateForm(form)) editMutation.mutate(normalizeProfile(form));
+  };
 
   return (
     <div className="flex flex-col gap-8">
@@ -241,7 +294,7 @@ export function ProfilePanel() {
             <div className="flex items-center gap-2">
               <Button
                 size="sm"
-                onClick={() => editMutation.mutate(form!)}
+                onClick={save}
                 disabled={editMutation.isPending}
               >
                 {editMutation.isPending ? (
@@ -254,6 +307,7 @@ export function ProfilePanel() {
                 variant="ghost"
                 onClick={() => {
                   setForm(profile);
+                  setValidationErrors({});
                   setEditing(false);
                 }}
                 disabled={editMutation.isPending}
@@ -273,6 +327,7 @@ export function ProfilePanel() {
             size="sm"
             onClick={() => {
               setForm(profile);
+              setValidationErrors({});
               setEditing(true);
             }}
           >
@@ -288,6 +343,12 @@ export function ProfilePanel() {
             profile={displayProfile}
             editing={editing}
             onChange={handleChange}
+          />
+          <ProfessionalLinksSection
+            links={displayProfile.links}
+            editing={editing}
+            errors={validationErrors}
+            onChange={(links) => handleChange("links", links)}
           />
           <SkillsSection
             skills={displayProfile.skills}
@@ -310,6 +371,12 @@ export function ProfilePanel() {
             education={displayProfile.education}
             editing={editing}
             onChange={(education) => handleChange("education", education)}
+          />
+          <ProjectsSection
+            projects={displayProfile.projects}
+            editing={editing}
+            errors={validationErrors}
+            onChange={(projects) => handleChange("projects", projects)}
           />
         </div>
       </div>
@@ -522,6 +589,161 @@ function ProfileCard({
             </span>
           )}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---- Professional links (editable) ------------------------------------------
+
+const LINK_FIELDS: Array<[keyof ProfessionalLinks, string]> = [
+  ["linkedin", "LinkedIn"],
+  ["github", "GitHub"],
+  ["portfolio", "Portfolio"],
+  ["website", "Website"],
+];
+
+function ProfessionalLinksSection({
+  links,
+  editing,
+  errors,
+  onChange,
+}: {
+  links: ProfessionalLinks;
+  editing: boolean;
+  errors: Record<string, string>;
+  onChange: (links: ProfessionalLinks) => void;
+}) {
+  const populated = LINK_FIELDS.filter(([field]) => links?.[field]);
+  if (!editing && populated.length === 0) {
+    return (
+      <Card>
+        <CardHeader><CardTitle className="text-base">Professional links</CardTitle></CardHeader>
+        <CardContent><p className="text-sm text-muted-foreground">No professional links added.</p></CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-base">Professional links</CardTitle></CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {editing
+          ? LINK_FIELDS.map(([field, label]) => {
+              const error = errors[`link-${field}`];
+              const errorId = `link-${field}-error`;
+              return (
+                <div key={field} className="flex flex-col gap-1.5">
+                  <Label htmlFor={`pf-link-${field}`}>{label}</Label>
+                  <Input
+                    id={`pf-link-${field}`}
+                    value={links[field] ?? ""}
+                    onChange={(event) =>
+                      onChange({ ...links, [field]: event.target.value || null })
+                    }
+                    placeholder="https://example.com"
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? errorId : undefined}
+                  />
+                  {error && <p id={errorId} role="alert" className="text-xs text-destructive">{error}</p>}
+                </div>
+              );
+            })
+          : populated.map(([field, label]) => (
+              <a
+                key={field}
+                href={links[field] ?? undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 text-sm text-primary underline-offset-4 hover:underline"
+              >
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                {label}
+              </a>
+            ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---- Projects (editable) -----------------------------------------------------
+
+function ProjectsSection({
+  projects,
+  editing,
+  errors,
+  onChange,
+}: {
+  projects: ProjectItem[];
+  editing: boolean;
+  errors: Record<string, string>;
+  onChange: (projects: ProjectItem[]) => void;
+}) {
+  if (!editing && projects.length === 0) {
+    return (
+      <Card>
+        <CardHeader><CardTitle className="text-base">Projects</CardTitle></CardHeader>
+        <CardContent><p className="text-sm text-muted-foreground">No projects added.</p></CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-base">Projects</CardTitle>
+        {editing && (
+          <Button size="sm" variant="outline" onClick={() => onChange([...projects, emptyProjectItem()])}>
+            <Plus className="h-4 w-4" />
+            Add project
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {projects.map((project, index) => {
+          const set = (patch: Partial<ProjectItem>) => {
+            const next = [...projects];
+            const current = projects[index];
+            if (!current) return;
+            next[index] = { ...current, ...patch };
+            onChange(next);
+          };
+          const urlError = errors[`project-${index}-url`];
+          const errorId = `project-${index}-url-error`;
+          if (!editing) {
+            return (
+              <div key={index} className="rounded-md border p-4">
+                <p className="font-medium">{project.name ?? "Project"}</p>
+                {project.description && <p className="mt-1 text-sm text-muted-foreground">{project.description}</p>}
+                {project.technologies.length > 0 && <p className="mt-2 text-xs text-muted-foreground"><span className="font-medium text-foreground">Technologies:</span> {project.technologies.join(", ")}</p>}
+                {project.achievements.length > 0 && <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground">{project.achievements.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>}
+                {project.url && <a href={project.url} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-2 text-sm text-primary underline-offset-4 hover:underline"><ExternalLink className="h-3.5 w-3.5" />Project link</a>}
+              </div>
+            );
+          }
+          return (
+            <div key={index} className="relative rounded-md border p-4">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                aria-label={`Remove project ${index + 1}`}
+                className="absolute right-2 top-2 h-7 px-2 text-muted-foreground hover:text-destructive"
+                onClick={() => onChange(projects.filter((_, itemIndex) => itemIndex !== index))}
+              >
+                <Minus className="h-3.5 w-3.5" />
+                <span className="sr-only">Remove</span>
+              </Button>
+              <div className="flex flex-col gap-3 pr-12">
+                <div className="flex flex-col gap-1.5"><Label htmlFor={`pf-project-${index}-name`}>Name</Label><Input id={`pf-project-${index}-name`} value={project.name ?? ""} onChange={(event) => set({ name: event.target.value || null })} /></div>
+                <div className="flex flex-col gap-1.5"><Label htmlFor={`pf-project-${index}-description`}>Description</Label><Textarea id={`pf-project-${index}-description`} value={project.description ?? ""} onChange={(event) => set({ description: event.target.value || null })} rows={2} /></div>
+                <div className="flex flex-col gap-1.5"><Label htmlFor={`pf-project-${index}-url`}>URL</Label><Input id={`pf-project-${index}-url`} value={project.url ?? ""} onChange={(event) => set({ url: event.target.value || null })} placeholder="https://example.com" aria-invalid={urlError ? true : undefined} aria-describedby={urlError ? errorId : undefined} />{urlError && <p id={errorId} role="alert" className="text-xs text-destructive">{urlError}</p>}</div>
+                <div className="flex flex-col gap-1.5"><Label htmlFor={`pf-project-${index}-technologies`}>Technologies (one per line)</Label><Textarea id={`pf-project-${index}-technologies`} value={project.technologies.join("\n")} onChange={(event) => set({ technologies: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} rows={2} /></div>
+                <div className="flex flex-col gap-1.5"><Label htmlFor={`pf-project-${index}-achievements`}>Achievements (one per line)</Label><Textarea id={`pf-project-${index}-achievements`} value={project.achievements.join("\n")} onChange={(event) => set({ achievements: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} rows={2} /></div>
+              </div>
+            </div>
+          );
+        })}
       </CardContent>
     </Card>
   );

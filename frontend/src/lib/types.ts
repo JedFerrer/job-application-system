@@ -52,6 +52,21 @@ export interface EducationItem {
   year: string | null;
 }
 
+export interface ProfessionalLinks {
+  linkedin: string | null;
+  github: string | null;
+  portfolio: string | null;
+  website: string | null;
+}
+
+export interface ProjectItem {
+  name: string | null;
+  description: string | null;
+  technologies: string[];
+  achievements: string[];
+  url: string | null;
+}
+
 export interface ParsedProfile {
   full_name: string | null;
   email: string | null;
@@ -61,6 +76,8 @@ export interface ParsedProfile {
   skills: string[];
   education: EducationItem[];
   certifications: string[];
+  links: ProfessionalLinks;
+  projects: ProjectItem[];
   work_history: WorkItem[];
   preferred_roles: string[];
   seniority: string | null;

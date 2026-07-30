@@ -63,6 +63,8 @@ const profile = {
     skills: ["python"],
     education: [],
     certifications: [],
+    links: { linkedin: "https://linkedin.com/in/ada", github: null, portfolio: null, website: null },
+    projects: [{ name: "Analytical Engine", description: "A computing project", technologies: ["Python"], achievements: ["Reduced errors"], url: "https://example.com/project" }],
     work_history: [],
     preferred_roles: [],
     seniority: "senior",
@@ -155,6 +157,8 @@ describe("ResumePanel saved tailored drafts", () => {
   it("renders metadata and opens the saved snapshot without tailoring", async () => {
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Acme"));
+    expect(container.textContent).toContain("Analytical Engine");
+    expect(container.querySelector('a[href="https://linkedin.com/in/ada"]')?.getAttribute("rel")).toBe("noopener noreferrer");
     expect(container.textContent).toContain("Jul 14, 2026");
     const open = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Open"));
     await act(async () => open?.click());

@@ -19,3 +19,18 @@ export const ingestSchema = z.object({
 });
 
 export type IngestForm = z.infer<typeof ingestSchema>;
+
+/** Return a trimmed URL, or a user-facing error for unsupported profile links. */
+export function validateProfileUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) {
+      return "Use a full HTTP or HTTPS URL, such as https://example.com";
+    }
+  } catch {
+    return "Use a full HTTP or HTTPS URL, such as https://example.com";
+  }
+  return null;
+}

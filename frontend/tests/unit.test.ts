@@ -614,6 +614,21 @@ describe("ApplicationListResponse shape", () => {
 // ── Profile empty-state contract (smoke) ─────────────────────────────────
 
 import { resumeApi, ApiError } from "../src/lib/api";
+import { validateProfileUrl } from "../src/lib/validators";
+
+describe("validateProfileUrl", () => {
+  it.each(["", "   "])('accepts blank value "%s"', (value) => {
+    expect(validateProfileUrl(value)).toBeNull();
+  });
+
+  it.each(["https://example.com", "http://example.com/path"])('accepts %s', (value) => {
+    expect(validateProfileUrl(value)).toBeNull();
+  });
+
+  it.each(["mailto:ada@example.com", "ftp://example.com", "javascript:alert(1)", "example.com"])('rejects %s', (value) => {
+    expect(validateProfileUrl(value)).toContain("full HTTP or HTTPS URL");
+  });
+});
 
 describe("resumeApi.getProfile — empty-state contract", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
@@ -635,7 +650,7 @@ describe("resumeApi.getProfile — empty-state contract", () => {
     const profile = {
       profile_id: 1,
       resume_id: 2,
-      profile: { full_name: "Test", email: null, phone: null, headline: null, years_experience: null, skills: [], education: [], certifications: [], work_history: [], preferred_roles: [], seniority: null },
+      profile: { full_name: "Test", email: null, phone: null, headline: null, years_experience: null, skills: [], education: [], certifications: [], links: { linkedin: null, github: null, portfolio: null, website: null }, projects: [], work_history: [], preferred_roles: [], seniority: null },
     };
     mockFetch(profile, 200);
     const result = await resumeApi.getProfile();

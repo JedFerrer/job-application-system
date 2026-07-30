@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, Loader2, Trash2, Upload } from "lucide-react";
+import { Eye, ExternalLink, Loader2, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, resumeApi } from "@/lib/api";
 import { useResumeTask } from "@/context/resume-task-context";
@@ -333,6 +333,35 @@ function ProfileView({ profile }: { profile: ParsedProfile }) {
             </div>
           </Section>
         )}
+
+        <Section title="Professional links">
+          {Object.entries(profile.links ?? {}).some(([, value]) => value) ? (
+            <div className="flex flex-wrap gap-3 text-sm">
+              {Object.entries(profile.links ?? {}).map(([field, value]) => value && (
+                <a key={field} href={value} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-primary underline-offset-4 hover:underline">
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  {field.charAt(0).toUpperCase() + field.slice(1)}
+                </a>
+              ))}
+            </div>
+          ) : <p className="text-sm text-muted-foreground">No professional links added.</p>}
+        </Section>
+
+        <Section title="Projects">
+          {profile.projects.length > 0 ? (
+            <div className="flex flex-col gap-4">
+              {profile.projects.map((project, index) => (
+                <div key={index} className="rounded-md border p-4">
+                  <p className="font-medium">{project.name ?? "Project"}</p>
+                  {project.description && <p className="mt-1 text-sm text-muted-foreground">{project.description}</p>}
+                  {project.technologies.length > 0 && <p className="mt-2 text-xs text-muted-foreground"><span className="font-medium text-foreground">Technologies:</span> {project.technologies.join(", ")}</p>}
+                  {project.achievements.length > 0 && <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground">{project.achievements.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>}
+                  {project.url && <a href={project.url} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-2 text-sm text-primary underline-offset-4 hover:underline"><ExternalLink className="h-3.5 w-3.5" />Project link</a>}
+                </div>
+              ))}
+            </div>
+          ) : <p className="text-sm text-muted-foreground">No projects added.</p>}
+        </Section>
       </CardContent>
     </Card>
   );
