@@ -28,9 +28,14 @@ class ResumeRepository:
             raise ValueError(f"User {user_id} does not exist")
 
     async def deactivate_existing(self, user_id: int) -> None:
-        """Mark all of a user's resumes inactive (single active profile)."""
+        """Mark only current active resumes inactive."""
         await self._session.execute(
-            update(Resume).where(Resume.user_id == user_id).values(is_active=False)
+            update(Resume)
+            .where(Resume.user_id == user_id, Resume.is_active.is_(True))
+            .values(
+                is_active=False,
+                lifecycle_status=ResumeLifecycleStatus.INACTIVE.value,
+            )
         )
 
     async def add_resume(
@@ -82,6 +87,74 @@ class ResumeRepository:
             .order_by(CandidateProfile.updated_at.desc())
         )
         return result.scalars().first()
+
+    async def list_import_drafts(
+        self, user_id: int
+    ) -> list[tuple[Resume, CandidateProfile]]:
+        result = await self._session.execute(
+            select(Resume, CandidateProfile)
+            .join(CandidateProfile, CandidateProfile.resume_id == Resume.id)
+            .where(
+                Resume.user_id == user_id,
+                CandidateProfile.user_id == user_id,
+                Resume.is_active.is_(False),
+                Resume.lifecycle_status == ResumeLifecycleStatus.DRAFT.value,
+            )
+            .order_by(Resume.created_at.desc(), Resume.id.desc())
+        )
+        return list(result.tuples().all())
+
+    async def get_import_draft(
+        self, *, user_id: int, resume_id: int
+    ) -> tuple[Resume, CandidateProfile] | None:
+        result = await self._session.execute(
+            select(Resume, CandidateProfile)
+            .join(CandidateProfile, CandidateProfile.resume_id == Resume.id)
+            .where(
+                Resume.id == resume_id,
+                Resume.user_id == user_id,
+                CandidateProfile.user_id == user_id,
+                Resume.is_active.is_(False),
+                Resume.lifecycle_status == ResumeLifecycleStatus.DRAFT.value,
+            )
+        )
+        return result.tuples().one_or_none()
+
+    async def approve_import_draft(
+        self, *, user_id: int, resume_id: int
+    ) -> CandidateProfile | None:
+        await self.lock_user_for_import(user_id)
+        draft = await self.get_import_draft(user_id=user_id, resume_id=resume_id)
+        if draft is None:
+            return None
+        resume, profile = draft
+        await self.deactivate_existing(user_id)
+        await self._session.execute(
+            update(Resume)
+            .where(Resume.id == resume.id, Resume.user_id == user_id)
+            .values(
+                is_active=True,
+                lifecycle_status=ResumeLifecycleStatus.ACTIVE.value,
+            )
+        )
+        await self._session.flush()
+        return profile
+
+    async def reject_import_draft(self, *, user_id: int, resume_id: int) -> bool:
+        await self.lock_user_for_import(user_id)
+        draft = await self.get_import_draft(user_id=user_id, resume_id=resume_id)
+        if draft is None:
+            return False
+        await self._session.execute(
+            update(Resume)
+            .where(Resume.id == resume_id, Resume.user_id == user_id)
+            .values(
+                is_active=False,
+                lifecycle_status=ResumeLifecycleStatus.INACTIVE.value,
+            )
+        )
+        await self._session.flush()
+        return True
 
     async def update_profile_parsed(
         self,

@@ -24,6 +24,7 @@ from app.core.config import get_settings
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import ParsedProfile
 from app.domain.resume.service import ResumeService
+from app.infrastructure.database import get_db
 from app.models.resume import CandidateProfile, Resume
 from app.models.user import User
 
@@ -61,7 +62,9 @@ async def clean_db(engine) -> None:  # noqa: ANN001
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
-def _build_app(*, current_user: User | None = None) -> FastAPI:
+def _build_app(
+    *, current_user: User | None = None, session_factory=None
+) -> FastAPI:
     """Build a minimal FastAPI app with only the resume router.
 
     If *current_user* is provided, overrides ``get_current_user`` to
@@ -80,6 +83,14 @@ def _build_app(*, current_user: User | None = None) -> FastAPI:
             return current_user
 
         app.dependency_overrides[get_current_user] = _override_get_current_user
+
+    if session_factory is not None:
+
+        async def _override_get_db():
+            async with session_factory() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_get_db
 
     return app
 
@@ -127,6 +138,37 @@ async def _seed_profile(
     db.add(profile)
     await db.flush()
     return profile
+
+
+async def _seed_import_draft(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    full_name: str,
+    lifecycle_status: str = "draft",
+    is_active: bool = False,
+) -> Resume:
+    resume = Resume(
+        user_id=user_id,
+        filename=f"{full_name.lower().replace(' ', '-')}.pdf",
+        raw_text="draft text",
+        is_active=is_active,
+        lifecycle_status=lifecycle_status,
+    )
+    db.add(resume)
+    await db.flush()
+    parsed = ParsedProfile(full_name=full_name, headline="Engineer")
+    db.add(
+        CandidateProfile(
+            user_id=user_id,
+            resume_id=resume.id,
+            parsed=parsed.model_dump(),
+            summary_text="Engineer",
+            embedding=[0.0] * 1536,
+        )
+    )
+    await db.flush()
+    return resume
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────
@@ -252,3 +294,136 @@ class TestProfileIntegration:
             assert data["profile"]["full_name"] == "Test User"
             assert data["profile"]["headline"] == "Software Engineer"
             assert "Python" in data["profile"]["skills"]
+
+    @pytest.mark.asyncio
+    async def test_import_list_and_detail_are_owned_current_drafts_only(
+        self, session_factory
+    ) -> None:  # noqa: ANN001
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            active = await _seed_profile(db, user_id=user.id, full_name="Active User")
+            draft = await _seed_import_draft(
+                db, user_id=user.id, full_name="Pending User"
+            )
+            inactive = await _seed_import_draft(
+                db,
+                user_id=user.id,
+                full_name="Rejected User",
+                lifecycle_status="inactive",
+            )
+            other = await _seed_user(db, user_id=2)
+            foreign = await _seed_import_draft(
+                db, user_id=other.id, full_name="Foreign User"
+            )
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            response = client.get("/resume/imports")
+            assert response.status_code == 200
+            assert [item["resume_id"] for item in response.json()] == [draft.id]
+
+            detail = client.get(f"/resume/imports/{draft.id}")
+            assert detail.status_code == 200
+            assert detail.json()["profile"]["full_name"] == "Pending User"
+
+            for resume_id in (active.resume_id, inactive.id, foreign.id, 999999):
+                assert client.get(f"/resume/imports/{resume_id}").status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_approve_import_switches_active_and_dispatches_after_commit(
+        self, session_factory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        events: list[str] = []
+
+        async def record_ranking(user_id: int) -> None:
+            events.append(f"ranking:{user_id}")
+
+        monkeypatch.setattr(resume_module, "_enqueue_match_ranking", record_ranking)
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            old = await _seed_profile(db, user_id=user.id, full_name="Old User")
+            first_draft = await _seed_import_draft(
+                db, user_id=user.id, full_name="Approved User"
+            )
+            second_draft = await _seed_import_draft(
+                db, user_id=user.id, full_name="Still Pending"
+            )
+            inactive = await _seed_import_draft(
+                db,
+                user_id=user.id,
+                full_name="Already Rejected",
+                lifecycle_status="inactive",
+            )
+            other_user = await _seed_user(db, user_id=2)
+            foreign = await _seed_import_draft(
+                db, user_id=other_user.id, full_name="Foreign Draft"
+            )
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            response = client.post(f"/resume/imports/{first_draft.id}/approve")
+            assert response.status_code == 200
+            assert response.json()["profile"]["full_name"] == "Approved User"
+            profile = client.get("/resume/profile")
+            assert profile.json()["profile"]["full_name"] == "Approved User"
+            for resume_id in (first_draft.id, inactive.id, foreign.id, 999999):
+                assert client.post(f"/resume/imports/{resume_id}/approve").status_code == 404
+
+        async with session_factory() as db:
+            rows = (
+                await db.execute(
+                    text(
+                        "SELECT id, is_active, lifecycle_status FROM resumes "
+                        "WHERE user_id = :user_id ORDER BY id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).all()
+
+        assert rows == [
+            (old.resume_id, False, "inactive"),
+            (first_draft.id, True, "active"),
+            (second_draft.id, False, "draft"),
+            (inactive.id, False, "inactive"),
+        ]
+        assert events == [f"ranking:{user.id}"]
+
+    @pytest.mark.asyncio
+    async def test_reject_import_keeps_active_and_does_not_dispatch(
+        self, session_factory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        events: list[int] = []
+
+        async def record_ranking(user_id: int) -> None:
+            events.append(user_id)
+
+        monkeypatch.setattr(resume_module, "_enqueue_match_ranking", record_ranking)
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            active = await _seed_profile(db, user_id=user.id, full_name="Active User")
+            draft = await _seed_import_draft(
+                db, user_id=user.id, full_name="Rejected User"
+            )
+            other_user = await _seed_user(db, user_id=2)
+            foreign = await _seed_import_draft(
+                db, user_id=other_user.id, full_name="Foreign Draft"
+            )
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            response = client.post(f"/resume/imports/{draft.id}/reject")
+            assert response.status_code == 204
+            assert client.get("/resume/imports").json() == []
+            assert client.get("/resume/profile").json()["profile"]["full_name"] == (
+                "Active User"
+            )
+            for resume_id in (draft.id, active.resume_id, foreign.id, 999999):
+                assert client.post(f"/resume/imports/{resume_id}/reject").status_code == 404
+
+        assert events == []

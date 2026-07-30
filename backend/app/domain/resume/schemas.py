@@ -189,6 +189,26 @@ class ResumeResponse(BaseModel):
     matching_profile_changed: bool = True
 
 
+class ResumeImportListItem(BaseModel):
+    """Metadata for a pending imported-resume draft."""
+
+    resume_id: int
+    filename: str
+    created_at: datetime
+    lifecycle_status: ResumeLifecycleStatus
+
+
+class ResumeImportDetail(BaseModel):
+    """A pending imported resume with its parsed profile for review."""
+
+    resume_id: int
+    filename: str
+    created_at: datetime
+    is_active: bool
+    lifecycle_status: ResumeLifecycleStatus
+    profile: ParsedProfile
+
+
 class ProfileResponse(BaseModel):
     """API response for the active candidate profile."""
 

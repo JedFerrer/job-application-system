@@ -28,6 +28,14 @@ class ProfileNotFoundError(ResumeError):
         super().__init__(f"No active profile for user {user_id}")
 
 
+class ResumeImportDraftNotFoundError(ResumeError):
+    """Raised when an owned resume is not a current import draft."""
+
+    def __init__(self, resume_id: int) -> None:
+        self.resume_id = resume_id
+        super().__init__(f"Resume import draft {resume_id} not found")
+
+
 class TailoredResumeDraftNotFoundError(ResumeError):
     def __init__(self, draft_id: int) -> None:
         self.draft_id = draft_id

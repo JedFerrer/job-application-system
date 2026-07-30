@@ -20,6 +20,7 @@ from app.domain.matching.skill_matcher import (
 )
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
+    ResumeImportDraftNotFoundError,
     ResumeParseError,
     TailoredResumeDraftNotFoundError,
     UnsupportedResumeFormatError,
@@ -30,6 +31,8 @@ from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import (
     ParsedProfile,
     ProfileResponse,
+    ResumeImportDetail,
+    ResumeImportListItem,
     ResumeResponse,
     TailoredResume,
     TailoredResumeDraftCreate,
@@ -216,6 +219,58 @@ class ResumeService:
             profile=profile,
             matching_profile_changed=matching_profile_changed,
         )
+
+    async def list_import_drafts(self, user_id: int) -> list[ResumeImportListItem]:
+        drafts = await self._repository.list_import_drafts(user_id)
+        return [
+            ResumeImportListItem(
+                resume_id=resume.id,
+                filename=resume.filename,
+                created_at=resume.created_at,
+                lifecycle_status=ResumeLifecycleStatus(resume.lifecycle_status),
+            )
+            for resume, _profile in drafts
+        ]
+
+    async def get_import_draft(
+        self, *, user_id: int, resume_id: int
+    ) -> ResumeImportDetail:
+        draft = await self._repository.get_import_draft(
+            user_id=user_id, resume_id=resume_id
+        )
+        if draft is None:
+            raise ResumeImportDraftNotFoundError(resume_id)
+        resume, profile = draft
+        return ResumeImportDetail(
+            resume_id=resume.id,
+            filename=resume.filename,
+            created_at=resume.created_at,
+            is_active=resume.is_active,
+            lifecycle_status=ResumeLifecycleStatus(resume.lifecycle_status),
+            profile=ParsedProfile.model_validate(profile.parsed),
+        )
+
+    async def approve_import_draft(
+        self, *, user_id: int, resume_id: int
+    ) -> ProfileResponse:
+        profile = await self._repository.approve_import_draft(
+            user_id=user_id, resume_id=resume_id
+        )
+        if profile is None:
+            raise ResumeImportDraftNotFoundError(resume_id)
+        return ProfileResponse(
+            profile_id=profile.id,
+            resume_id=profile.resume_id,
+            profile=ParsedProfile.model_validate(profile.parsed),
+            matching_profile_changed=True,
+        )
+
+    async def reject_import_draft(self, *, user_id: int, resume_id: int) -> None:
+        rejected = await self._repository.reject_import_draft(
+            user_id=user_id, resume_id=resume_id
+        )
+        if not rejected:
+            raise ResumeImportDraftNotFoundError(resume_id)
 
     # -- saved tailored drafts ---------------------------------------------
 

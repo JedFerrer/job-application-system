@@ -47,6 +47,7 @@ from app.domain.preferences.exceptions import (
 )
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
+    ResumeImportDraftNotFoundError,
     ResumeParseError,
     TailoredResumeDraftNotFoundError,
     UnsupportedResumeFormatError,
@@ -70,6 +71,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: ProfileNotFoundError
     ) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": "No resume profile found"})
+
+    @app.exception_handler(ResumeImportDraftNotFoundError)
+    async def _resume_import_draft_not_found(
+        request: Request, exc: ResumeImportDraftNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": "Resume import not found"})
 
     @app.exception_handler(TailoredResumeDraftNotFoundError)
     async def _tailored_resume_draft_not_found(

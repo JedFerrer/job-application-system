@@ -19,6 +19,8 @@ from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import (
     ProfileResponse,
     ProfileUpdate,
+    ResumeImportDetail,
+    ResumeImportListItem,
     TailoredResume,
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
@@ -168,6 +170,53 @@ async def get_profile(
         return await service.get_profile(current_user.id)
     except ProfileNotFoundError:
         return None
+
+
+@router.get("/imports", response_model=list[ResumeImportListItem])
+async def list_resume_imports(
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+) -> list[ResumeImportListItem]:
+    return await service.list_import_drafts(current_user.id)
+
+
+@router.get("/imports/{resume_id}", response_model=ResumeImportDetail)
+async def get_resume_import(
+    resume_id: int,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+) -> ResumeImportDetail:
+    return await service.get_import_draft(
+        user_id=current_user.id, resume_id=resume_id
+    )
+
+
+@router.post("/imports/{resume_id}/approve", response_model=ProfileResponse)
+async def approve_resume_import(
+    resume_id: int,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+    db: DbSession,
+    background_tasks: BackgroundTasks,
+) -> ProfileResponse:
+    response = await service.approve_import_draft(
+        user_id=current_user.id, resume_id=resume_id
+    )
+    await db.commit()
+    background_tasks.add_task(_enqueue_match_ranking, current_user.id)
+    return response
+
+
+@router.post("/imports/{resume_id}/reject", status_code=status.HTTP_204_NO_CONTENT)
+async def reject_resume_import(
+    resume_id: int,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+    db: DbSession,
+) -> Response:
+    await service.reject_import_draft(user_id=current_user.id, resume_id=resume_id)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
