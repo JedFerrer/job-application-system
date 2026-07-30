@@ -29,7 +29,7 @@ def _assert_no_container_null_guidance(prompt: str) -> None:
 
 
 def test_extraction_prompt_uses_schema_compatible_empty_defaults() -> None:
-    prompt = RESUME_EXTRACTION_PROMPT.lower()
+    prompt = RESUME_EXTRACTION_PROMPT.format(resume_text="").lower()
     links_section = prompt.split("- links ", 1)[1].split("- projects ", 1)[0]
     projects_section = prompt.split("- projects ", 1)[1].split("- work_history ", 1)[0]
 
@@ -46,6 +46,13 @@ def test_extraction_prompt_uses_schema_compatible_empty_defaults() -> None:
     _assert_no_container_null_guidance(prompt)
     assert "never use null for a list or object\ncontainer" in prompt
     assert "never invent data" in prompt
+
+
+def test_extraction_prompt_can_be_formatted_with_resume_text() -> None:
+    rendered = RESUME_EXTRACTION_PROMPT.format(resume_text="Candidate resume text")
+
+    assert "Candidate resume text" in rendered
+    assert "empty object {}" in rendered
 
 
 @pytest.mark.parametrize(

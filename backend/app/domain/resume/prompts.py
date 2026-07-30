@@ -23,7 +23,7 @@ to today; include internships and part-time roles)
 - certifications (array of strings)
 - links (object with: linkedin, github, portfolio, website; use full http:// or
   https:// URLs when present). If no professional links are present, return an
-  empty object {} (or an object with those four keys set to null); never return
+  empty object {{}} (or an object with those four keys set to null); never return
   null or an array for links. Nullable scalar link fields may be null.
 - projects (array of objects with: name, description, technologies[],
   achievements[], url)
@@ -48,7 +48,7 @@ Principal; makes architectural decisions
 professional experience.
 
 If a scalar field cannot be determined, use an empty string or null. For list
-fields, use []; for the links object, use {}. Never use null for a list or object
+fields, use []; for the links object, use {{}}. Never use null for a list or object
 container.
 
 Resume text:
