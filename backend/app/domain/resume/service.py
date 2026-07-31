@@ -31,7 +31,9 @@ from app.domain.resume.lifecycle import ResumeLifecycleStatus
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import (
+    ExtractionEvidence,
     ParsedProfile,
+    ParsedResumeResult,
     ProfileResponse,
     ResumeImportDetail,
     ResumeImportListItem,
@@ -143,9 +145,16 @@ class ResumeService:
 
         await _emit(message="Parsing with AI…")
         try:
-            profile = await parse_resume_text(raw_text)
+            parsed_result = await parse_resume_text(raw_text)
         except ValueError as exc:
             raise ResumeParseError(str(exc)) from exc
+        if isinstance(parsed_result, ParsedResumeResult):
+            profile = parsed_result.profile
+            extraction_evidence = parsed_result.extraction_evidence
+        else:
+            # Preserve compatibility with focused test seams and older callers.
+            profile = parsed_result
+            extraction_evidence = ExtractionEvidence()
         extraction_warnings.extend(find_completeness_warnings(raw_text, profile))
 
         await _emit(message="Embedding profile…")
@@ -182,6 +191,7 @@ class ResumeService:
             parsed=profile.model_dump(),
             summary_text=summary_text,
             embedding=embedding,
+            extraction_evidence=extraction_evidence.model_dump(mode="json"),
         )
         logger.info("resume_parsed", user_id=user_id, resume_id=resume.id)
         return ResumeResponse(
@@ -265,6 +275,9 @@ class ResumeService:
             is_active=resume.is_active,
             lifecycle_status=ResumeLifecycleStatus(resume.lifecycle_status),
             profile=ParsedProfile.model_validate(profile.parsed),
+            extraction_evidence=ExtractionEvidence.model_validate(
+                getattr(profile, "extraction_evidence", None) or {}
+            ),
         )
 
     async def approve_import_draft(

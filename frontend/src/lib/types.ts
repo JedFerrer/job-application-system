@@ -117,6 +117,19 @@ export interface ResumeImportListItem {
 export interface ResumeImportDetail extends ResumeImportListItem {
   is_active: boolean;
   profile: ParsedProfile;
+  extraction_evidence: ExtractionEvidence;
+}
+
+export interface EvidenceItem {
+  item_index: number;
+  excerpt: string;
+}
+
+export interface ExtractionEvidence {
+  work_history: EvidenceItem[];
+  education: EvidenceItem[];
+  certifications: EvidenceItem[];
+  projects: EvidenceItem[];
 }
 
 export interface ProfileResponse {

@@ -47,6 +47,10 @@ class CandidateProfile(Base):
     resume_id: Mapped[int] = mapped_column(ForeignKey("resumes.id"), index=True)
     # Structured ParsedProfile payload.
     parsed: Mapped[dict[str, object]] = mapped_column(JSONB)
+    # Verified source excerpts for replacement-draft review only.
+    extraction_evidence: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     # Canonical text used to compute the embedding.
     summary_text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM))

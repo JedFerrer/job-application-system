@@ -68,7 +68,7 @@ const profile = {
   },
 };
 const draft = { resume_id: 11, filename: "replacement.pdf", created_at: "2026-07-30T00:00:00Z", lifecycle_status: "draft" as const };
-const detail = { ...draft, is_active: false, profile: { ...profile.profile, full_name: "Draft Ada", links: { linkedin: "https://linkedin.com/in/draft", github: null, portfolio: null, website: null }, projects: [{ name: "Project X", description: null, technologies: ["Python"], achievements: [], url: null }] } };
+const detail = { ...draft, is_active: false, extraction_evidence: { work_history: [], education: [], certifications: [], projects: [{ item_index: 0, excerpt: "Built Project X for resume matching." }] }, profile: { ...profile.profile, full_name: "Draft Ada", links: { linkedin: "https://linkedin.com/in/draft", github: null, portfolio: null, website: null }, projects: [{ name: "Project X", description: null, technologies: ["Python"], achievements: [], url: null }] } };
 
 describe("ProfilePanel imported resume drafts", () => {
   let container: HTMLDivElement;
@@ -142,6 +142,21 @@ describe("ProfilePanel imported resume drafts", () => {
     expect(container.textContent).toContain("Draft Ada");
     expect(container.textContent).toContain("Project X");
     expect(container.querySelector('a[href="https://linkedin.com/in/draft"]')).not.toBeNull();
+    expect(container.textContent).toContain("Source evidence");
+    expect(container.textContent).toContain("Source excerpt");
+    const disclosure = container.querySelector("details");
+    expect(disclosure).not.toBeNull();
+    expect((disclosure as HTMLDetailsElement).open).toBe(false);
+    await act(async () => { (disclosure as HTMLDetailsElement).open = true; });
+    expect(container.textContent).toContain("Built Project X for resume matching.");
+  });
+
+  it("renders older draft responses without evidence", async () => {
+    apiMocks.getImportDraft.mockResolvedValue({ ...detail, extraction_evidence: undefined });
+    await render();
+    await openReview();
+    expect(container.textContent).not.toContain("Source evidence");
+    expect(container.textContent).toContain("Project X");
   });
 
   it("shows an empty state", async () => {

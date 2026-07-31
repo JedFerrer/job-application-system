@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import unicodedata
 from collections.abc import Iterator
 from typing import Any, Literal, NamedTuple, overload
 
@@ -20,7 +21,13 @@ from pydantic import ValidationError
 
 from app.core.logging import get_logger
 from app.domain.resume.prompts import RESUME_EXTRACTION_PROMPT
-from app.domain.resume.schemas import ExtractionWarning, ParsedProfile
+from app.domain.resume.schemas import (
+    EvidenceItem,
+    ExtractionEvidence,
+    ExtractionWarning,
+    ParsedProfile,
+    ParsedResumeResult,
+)
 from app.infrastructure.llm_client import llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
 
@@ -159,8 +166,8 @@ def _iter_docx_blocks(document: Any) -> Iterator[Paragraph | Table]:
             yield Table(element, document)
 
 
-async def parse_resume_text(resume_text: str) -> ParsedProfile:
-    """Send resume text to the LLM and return a validated ``ParsedProfile``.
+async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
+    """Send resume text to the LLM and return profile plus verified evidence.
 
     Raises ``ValueError`` when the LLM output is not valid JSON or fails schema
     validation (normalized so callers handle a single exception type).
@@ -196,6 +203,8 @@ async def parse_resume_text(resume_text: str) -> ParsedProfile:
                 highlights_sample=str(h)[:200],
             )
 
+    candidate_evidence = payload.pop("extraction_evidence", None)
+
     try:
         profile = ParsedProfile.model_validate(payload)
         # Log what actually got validated.
@@ -206,7 +215,65 @@ async def parse_resume_text(resume_text: str) -> ParsedProfile:
                 title=item.title,
                 highlights_count=len(item.highlights),
             )
-        return profile
+        evidence = _verify_extraction_evidence(
+            candidate_evidence, resume_text, profile
+        )
+        return ParsedResumeResult(profile=profile, extraction_evidence=evidence)
     except ValidationError as exc:
         logger.warning("resume_parse_validation_failed", model=model, error=str(exc))
         raise ValueError(f"Resume data failed validation: {exc}") from exc
+
+
+_EVIDENCE_CATEGORIES = {
+    "work_history": "work_history",
+    "education": "education",
+    "certifications": "certifications",
+    "projects": "projects",
+}
+
+
+def _normalize_evidence_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", value).casefold()
+    return " ".join(normalized.split())
+
+
+def _verify_extraction_evidence(
+    candidate: object,
+    source_text: str,
+    profile: ParsedProfile,
+) -> ExtractionEvidence:
+    """Keep only bounded excerpts that match the extracted source text."""
+    if not isinstance(candidate, dict):
+        return ExtractionEvidence()
+
+    normalized_source = _normalize_evidence_text(source_text)
+    retained: dict[str, list[EvidenceItem]] = {}
+    for category, profile_field in _EVIDENCE_CATEGORIES.items():
+        raw_items = candidate.get(category)
+        if not isinstance(raw_items, list):
+            continue
+        profile_items = getattr(profile, profile_field)
+        seen_indices: set[int] = set()
+        verified: list[EvidenceItem] = []
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            item_index = raw_item.get("item_index")
+            excerpt = raw_item.get("excerpt")
+            if type(item_index) is not int or item_index < 0:
+                continue
+            if item_index in seen_indices or item_index >= len(profile_items):
+                continue
+            if not isinstance(excerpt, str):
+                continue
+            excerpt = excerpt.strip()
+            if not 1 <= len(excerpt) <= 280:
+                continue
+            if _normalize_evidence_text(excerpt) not in normalized_source:
+                continue
+            verified.append(EvidenceItem(item_index=item_index, excerpt=excerpt))
+            seen_indices.add(item_index)
+        if verified:
+            retained[category] = verified
+
+    return ExtractionEvidence.model_validate(retained)

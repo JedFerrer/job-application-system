@@ -20,6 +20,7 @@ import { ApiError, resumeApi } from "@/lib/api";
 import { useResumeTask } from "@/context/resume-task-context";
 import type {
   EducationItem,
+  ExtractionEvidence,
   ParsedProfile,
   ProfessionalLinks,
   ProjectItem,
@@ -50,6 +51,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+
+const EMPTY_EXTRACTION_EVIDENCE: ExtractionEvidence = {
+  work_history: [],
+  education: [],
+  certifications: [],
+  projects: [],
+};
 import {
   Dialog,
   DialogContent,
@@ -509,7 +517,10 @@ function ImportedResumeDrafts() {
           {detailQuery.isError && <p className="text-sm text-destructive">Could not load this imported resume draft.</p>}
           {detailQuery.data && (
             <>
-              <DraftProfileView profile={detailQuery.data.profile} />
+              <DraftProfileView
+                profile={detailQuery.data.profile}
+                evidence={detailQuery.data.extraction_evidence ?? EMPTY_EXTRACTION_EVIDENCE}
+              />
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                 <Button variant="outline" onClick={closeReview} disabled={actionPending}>Cancel</Button>
                 <Button variant="outline" onClick={() => setConfirmAction("reject")} disabled={actionPending}>Reject draft</Button>
@@ -556,7 +567,13 @@ function ImportDraftRow({ draft, onOpen }: { draft: ResumeImportListItem; onOpen
   );
 }
 
-function DraftProfileView({ profile }: { profile: ResumeImportDetail["profile"] }) {
+function DraftProfileView({
+  profile,
+  evidence,
+}: {
+  profile: ResumeImportDetail["profile"];
+  evidence: ExtractionEvidence;
+}) {
   const links = profile.links ?? {};
   const projects = profile.projects ?? [];
   const workHistory = profile.work_history ?? [];
@@ -580,7 +597,35 @@ function DraftProfileView({ profile }: { profile: ResumeImportDetail["profile"] 
       <ReviewSection title="Projects">
         {projects.length > 0 ? <div className="flex flex-col gap-3">{projects.map((project, index) => <div key={index} className="rounded-md border p-3"><p className="font-medium">{project.name ?? "Project"}</p>{project.description && <p className="mt-1 text-muted-foreground">{project.description}</p>}{project.technologies.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Technologies: {project.technologies.join(", ")}</p>}{project.achievements.length > 0 && <p className="mt-1 text-xs text-muted-foreground">{project.achievements.join("; ")}</p>}</div>)}</div> : <p className="text-muted-foreground">No projects added.</p>}
       </ReviewSection>
+      <EvidenceReview evidence={evidence} />
     </div>
+  );
+}
+
+function EvidenceReview({ evidence }: { evidence: ExtractionEvidence }) {
+  const groups = [
+    ["Work history", evidence.work_history],
+    ["Education", evidence.education],
+    ["Certifications", evidence.certifications],
+    ["Projects", evidence.projects],
+  ] as const;
+  const available = groups.some(([, items]) => items.length > 0);
+  if (!available) return null;
+  return (
+    <ReviewSection title="Source evidence">
+      <div className="flex flex-col gap-2">
+        {groups.flatMap(([label, items]) =>
+          items.map((item) => (
+            <details key={`${label}-${item.item_index}`} className="rounded border p-2 text-xs">
+              <summary className="cursor-pointer select-none text-primary">
+                Source excerpt · {label} item {item.item_index + 1}
+              </summary>
+              <p className="mt-2 border-l-2 pl-2 text-muted-foreground">{item.excerpt}</p>
+            </details>
+          )),
+        )}
+      </div>
+    </ReviewSection>
   );
 }
 

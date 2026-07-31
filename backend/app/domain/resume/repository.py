@@ -66,11 +66,13 @@ class ResumeRepository:
         parsed: dict[str, object],
         summary_text: str,
         embedding: list[float],
+        extraction_evidence: dict[str, object] | None = None,
     ) -> CandidateProfile:
         profile = CandidateProfile(
             user_id=user_id,
             resume_id=resume_id,
             parsed=parsed,
+            extraction_evidence=extraction_evidence,
             summary_text=summary_text,
             embedding=embedding,
         )

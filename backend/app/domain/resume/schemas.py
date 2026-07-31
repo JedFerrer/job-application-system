@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -177,6 +177,33 @@ class ParsedProfile(BaseModel):
         return value
 
 
+class EvidenceItem(BaseModel):
+    """A short source excerpt associated with one parsed list item."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    item_index: int = Field(ge=0)
+    excerpt: str = Field(min_length=1, max_length=280)
+
+
+class ExtractionEvidence(BaseModel):
+    """Verified, optional source excerpts kept separate from profile facts."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    work_history: list[EvidenceItem] = Field(default_factory=list)
+    education: list[EvidenceItem] = Field(default_factory=list)
+    certifications: list[EvidenceItem] = Field(default_factory=list)
+    projects: list[EvidenceItem] = Field(default_factory=list)
+
+
+class ParsedResumeResult(NamedTuple):
+    """Internal parser result; evidence is never part of ParsedProfile."""
+
+    profile: ParsedProfile
+    extraction_evidence: ExtractionEvidence
+
+
 class ExtractionWarning(BaseModel):
     """A deterministic, advisory warning about extracted resume text."""
 
@@ -226,6 +253,7 @@ class ResumeImportDetail(BaseModel):
     is_active: bool
     lifecycle_status: ResumeLifecycleStatus
     profile: ParsedProfile
+    extraction_evidence: ExtractionEvidence = Field(default_factory=ExtractionEvidence)
 
 
 class ProfileResponse(BaseModel):

@@ -47,6 +47,13 @@ Principal; makes architectural decisions
   When in doubt between mid and senior, prefer "senior" for candidates with 6+ years of \
 professional experience.
 
+- extraction_evidence (object with optional arrays for work_history, education,
+  certifications, and projects). Each item must contain item_index (the zero-based
+  index in the corresponding extracted array) and excerpt (a short, contiguous
+  excerpt copied exactly from the resume text). Return at most one item per index,
+  never include contact fields, links, or skills, and return [] when no evidence is
+  available. Evidence is advisory and must not change or remove profile facts.
+
 If a scalar field cannot be determined, use an empty string or null. For list
 fields, use []; for the links object, use {{}}. Never use null for a list or object
 container.
