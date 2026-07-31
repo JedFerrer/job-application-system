@@ -193,4 +193,43 @@ describe("resume task completion messaging", () => {
     draftToast.action?.onClick();
     expect(routerMocks.push).toHaveBeenCalledWith("/dashboard/settings/profile");
   });
+
+  it("shows completeness warnings while preserving active-profile routing", async () => {
+    apiMocks.getTaskStatus.mockResolvedValueOnce({
+      type: "resume_parse",
+      status: "done",
+      message: "done",
+      result: {
+        resume_id: 8,
+        filename: "incomplete.pdf",
+        is_active: true,
+        lifecycle_status: "active",
+        extraction_warnings: [
+          {
+            code: "source_email_not_parsed",
+            message: "Review the contact details.",
+          },
+        ],
+        profile: {},
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ResumeTaskProvider><Harness /></ResumeTaskProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      (container.querySelector("button") as HTMLButtonElement).click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    expect(toastMocks.warning).toHaveBeenCalledWith(
+      "Review the contact details.",
+      { duration: 8000 },
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["profile"] });
+  });
 });

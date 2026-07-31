@@ -178,3 +178,67 @@ async def test_service_carries_warnings_without_changing_import_result(
     assert result.extraction_warnings == [warning]
     assert result.matching_profile_changed is True
     assert result.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_service_appends_completeness_warnings_after_extraction_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extraction_warning = ExtractionWarning(
+        code="short_extracted_text",
+        message="Review the imported profile for missing text.",
+    )
+    profile = ParsedProfile()
+    monkeypatch.setattr(
+        "app.domain.resume.service.extract_text_from_bytes",
+        lambda *_: ExtractedResumeText(
+            "ada@example.com\n\nEXPERIENCE\nBackend Engineer",
+            [extraction_warning],
+        ),
+    )
+    monkeypatch.setattr("app.domain.resume.service.parse_resume_text", lambda _: _profile(profile))
+    monkeypatch.setattr("app.domain.resume.service.embed_text", lambda _: _embedding())
+
+    result = await ResumeService(_WarningRepository()).upload_and_parse(  # type: ignore[arg-type]
+        user_id=7, filename="resume.pdf", content=b"pdf"
+    )
+
+    assert [warning.code for warning in result.extraction_warnings] == [
+        "short_extracted_text",
+        "source_email_not_parsed",
+        "missing_work_history",
+    ]
+    payload = result.model_dump(mode="json")
+    assert [warning["code"] for warning in payload["extraction_warnings"]] == [
+        "short_extracted_text",
+        "source_email_not_parsed",
+        "missing_work_history",
+    ]
+
+
+async def _profile(profile: ParsedProfile) -> ParsedProfile:
+    return profile
+
+
+async def _embedding() -> list[float]:
+    return [0.1, 0.2]
+
+
+@pytest.mark.asyncio
+async def test_service_ignores_malformed_social_url_without_failing_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = ParsedProfile()
+    monkeypatch.setattr(
+        "app.domain.resume.service.extract_text_from_bytes",
+        lambda *_: ExtractedResumeText("https://github.com:abc/path", []),
+    )
+    monkeypatch.setattr("app.domain.resume.service.parse_resume_text", lambda _: _profile(profile))
+    monkeypatch.setattr("app.domain.resume.service.embed_text", lambda _: _embedding())
+
+    result = await ResumeService(_WarningRepository()).upload_and_parse(  # type: ignore[arg-type]
+        user_id=7, filename="resume.pdf", content=b"pdf"
+    )
+
+    assert result.extraction_warnings == []
+    assert result.is_active is True

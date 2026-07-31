@@ -18,6 +18,7 @@ from app.domain.matching.skill_matcher import (
     extract_jd_skills,
     normalize_skill,
 )
+from app.domain.resume.completeness import find_completeness_warnings
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeImportDraftNotFoundError,
@@ -137,6 +138,7 @@ class ResumeService:
             profile = await parse_resume_text(raw_text)
         except ValueError as exc:
             raise ResumeParseError(str(exc)) from exc
+        extraction_warnings.extend(find_completeness_warnings(raw_text, profile))
 
         await _emit(message="Embedding profile…")
         summary_text = build_summary_text(profile)

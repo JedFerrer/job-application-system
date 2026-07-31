@@ -94,7 +94,16 @@ export interface ResumeResponse {
 }
 
 export interface ExtractionWarning {
-  code: "short_extracted_text" | "low_pdf_text_coverage" | "likely_scanned_pdf";
+  code:
+    | "short_extracted_text"
+    | "low_pdf_text_coverage"
+    | "likely_scanned_pdf"
+    | "source_email_not_parsed"
+    | "source_linkedin_not_parsed"
+    | "source_github_not_parsed"
+    | "missing_work_history"
+    | "missing_education"
+    | "missing_certifications";
   message: string;
 }
 
