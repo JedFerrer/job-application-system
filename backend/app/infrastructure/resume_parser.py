@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Iterator
+from typing import Any
 
 import pdfplumber
 from docx import Document as DocxDocument
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 from pydantic import ValidationError
 
 from app.core.logging import get_logger
@@ -54,10 +58,40 @@ def _extract_pdf(content: bytes) -> str:
 
 def _extract_docx(content: bytes) -> str:
     document = DocxDocument(io.BytesIO(content))
-    paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
-    if not paragraphs:
+    blocks: list[str] = []
+    for block in _iter_docx_blocks(document):
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if text:
+                blocks.append(text)
+            continue
+
+        for row in block.rows:
+            cells = []
+            for cell in row.cells:
+                cell_text = " ".join(
+                    paragraph.text.strip()
+                    for paragraph in cell.paragraphs
+                    if paragraph.text.strip()
+                )
+                if cell_text:
+                    cells.append(cell_text)
+            if cells:
+                blocks.append(" | ".join(cells))
+
+    if not blocks:
         raise ValueError("No text could be extracted from DOCX. Is the document empty?")
-    return "\n\n".join(paragraphs)
+    return "\n\n".join(blocks)
+
+
+def _iter_docx_blocks(document: Any) -> Iterator[Paragraph | Table]:
+    """Yield top-level paragraphs and tables in their source order."""
+    body = document.element.body
+    for element in body.iterchildren():
+        if element.tag.endswith("}p"):
+            yield Paragraph(element, document)
+        elif element.tag.endswith("}tbl"):
+            yield Table(element, document)
 
 
 async def parse_resume_text(resume_text: str) -> ParsedProfile:
