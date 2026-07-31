@@ -23,6 +23,7 @@ from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeImportDraftNotFoundError,
     ResumeParseError,
+    ResumeTextTooLongError,
     TailoredResumeDraftNotFoundError,
     UnsupportedResumeFormatError,
 )
@@ -45,7 +46,11 @@ from app.domain.resume.truthfulness import sanitize_tailoring_output
 from app.infrastructure.embeddings import embed_text
 from app.infrastructure.llm_client import llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
-from app.infrastructure.resume_parser import extract_text_from_bytes, parse_resume_text
+from app.infrastructure.resume_parser import (
+    MAX_RESUME_TEXT_CHARS,
+    extract_text_from_bytes,
+    parse_resume_text,
+)
 
 logger = get_logger("resume_service")
 
@@ -132,6 +137,9 @@ class ResumeService:
                 extraction_warnings = extracted.warnings
         except ValueError as exc:
             raise UnsupportedResumeFormatError(str(exc)) from exc
+
+        if len(raw_text) > MAX_RESUME_TEXT_CHARS:
+            raise ResumeTextTooLongError(len(raw_text), MAX_RESUME_TEXT_CHARS)
 
         await _emit(message="Parsing with AI…")
         try:

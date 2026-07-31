@@ -29,6 +29,7 @@ logger = get_logger("resume_parser")
 SUPPORTED_EXTENSIONS = {"pdf", "docx"}
 # Defence-in-depth size cap (handlers also enforce this at the boundary).
 MAX_RESUME_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_RESUME_TEXT_CHARS = 60_000
 SHORT_TEXT_WARNING_THRESHOLD = 600
 PDF_MEANINGFUL_PAGE_TEXT_THRESHOLD = 40
 PDF_LOW_COVERAGE_THRESHOLD = 0.5

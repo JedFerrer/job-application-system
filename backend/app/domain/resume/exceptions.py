@@ -22,6 +22,19 @@ class ResumeParseError(ResumeError):
         super().__init__(detail)
 
 
+class ResumeTextTooLongError(ResumeError):
+    """Raised when extracted resume text exceeds the application limit."""
+
+    def __init__(self, actual_chars: int, max_chars: int) -> None:
+        self.actual_chars = actual_chars
+        self.max_chars = max_chars
+        super().__init__(
+            f"This resume contains {actual_chars} extracted characters, "
+            f"exceeding the {max_chars:,}-character import limit. "
+            "The resume was not imported."
+        )
+
+
 class ProfileNotFoundError(ResumeError):
     def __init__(self, user_id: int) -> None:
         self.user_id = user_id

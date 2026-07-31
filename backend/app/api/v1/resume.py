@@ -13,6 +13,7 @@ from app.domain.matching.ranking_dispatch import RankingDispatcher
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeParseError,
+    ResumeTextTooLongError,
     UnsupportedResumeFormatError,
 )
 from app.domain.resume.repository import ResumeRepository
@@ -77,7 +78,11 @@ async def _run_resume_bg(
                 await db.commit()
                 if result.matching_profile_changed:
                     await _enqueue_match_ranking(user_id)
-            except (UnsupportedResumeFormatError, ResumeParseError):
+            except (
+                UnsupportedResumeFormatError,
+                ResumeParseError,
+                ResumeTextTooLongError,
+            ):
                 await db.rollback()
                 raise
             except Exception:
@@ -96,6 +101,8 @@ async def _run_resume_bg(
         )
     except UnsupportedResumeFormatError as exc:
         await store.update(task_id, status="failed", error=exc.detail, message=exc.detail)
+    except ResumeTextTooLongError as exc:
+        await store.update(task_id, status="failed", error=str(exc), message=str(exc))
     except ResumeParseError:
         msg = "Failed to parse resume with AI"
         await store.update(task_id, status="failed", error=msg, message=msg)
