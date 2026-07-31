@@ -122,7 +122,13 @@ class ResumeService:
 
         await _emit(status="running", message="Extracting text…")
         try:
-            raw_text = extract_text_from_bytes(content, filename)
+            extracted = extract_text_from_bytes(content, filename, True)
+            if isinstance(extracted, str):
+                raw_text = extracted
+                extraction_warnings = []
+            else:
+                raw_text = extracted.text
+                extraction_warnings = extracted.warnings
         except ValueError as exc:
             raise UnsupportedResumeFormatError(str(exc)) from exc
 
@@ -175,6 +181,7 @@ class ResumeService:
             lifecycle_status=ResumeLifecycleStatus(resume.lifecycle_status),
             profile=profile,
             matching_profile_changed=is_first_import,
+            extraction_warnings=extraction_warnings,
         )
 
     async def get_profile(self, user_id: int) -> ProfileResponse:

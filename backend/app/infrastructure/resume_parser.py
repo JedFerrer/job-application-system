@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Literal, NamedTuple, overload
 
 import pdfplumber
 from docx import Document as DocxDocument
@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from app.core.logging import get_logger
 from app.domain.resume.prompts import RESUME_EXTRACTION_PROMPT
-from app.domain.resume.schemas import ParsedProfile
+from app.domain.resume.schemas import ExtractionWarning, ParsedProfile
 from app.infrastructure.llm_client import llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
 
@@ -29,34 +29,83 @@ logger = get_logger("resume_parser")
 SUPPORTED_EXTENSIONS = {"pdf", "docx"}
 # Defence-in-depth size cap (handlers also enforce this at the boundary).
 MAX_RESUME_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+SHORT_TEXT_WARNING_THRESHOLD = 600
+PDF_MEANINGFUL_PAGE_TEXT_THRESHOLD = 40
+PDF_LOW_COVERAGE_THRESHOLD = 0.5
 
 
-def extract_text_from_bytes(content: bytes, filename: str) -> str:
+class ExtractedResumeText(NamedTuple):
+    text: str
+    warnings: list[ExtractionWarning]
+
+
+@overload
+def extract_text_from_bytes(
+    content: bytes, filename: str, include_warnings: Literal[False] = False
+) -> str: ...
+
+
+@overload
+def extract_text_from_bytes(
+    content: bytes, filename: str, include_warnings: Literal[True]
+) -> ExtractedResumeText: ...
+
+
+def extract_text_from_bytes(
+    content: bytes, filename: str, include_warnings: bool = False
+) -> str | ExtractedResumeText:
     """Extract text from resume bytes. Supports PDF and DOCX.
 
     Raises ``ValueError`` if the format is unsupported or no text is extracted.
     """
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext == "pdf":
-        return _extract_pdf(content)
-    if ext == "docx":
-        return _extract_docx(content)
-    raise ValueError(f"Unsupported file type '.{ext}'. Accepted: PDF, DOCX")
+        result = _extract_pdf(content)
+    elif ext == "docx":
+        result = _extract_docx(content)
+    else:
+        raise ValueError(f"Unsupported file type '.{ext}'. Accepted: PDF, DOCX")
+    return result if include_warnings else result.text
 
 
-def _extract_pdf(content: bytes) -> str:
+def _extract_pdf(content: bytes) -> ExtractedResumeText:
     pages: list[str] = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                pages.append(text)
-    if not pages:
+            pages.append(page.extract_text() or "")
+    if not any(page.strip() for page in pages):
         raise ValueError("No text could be extracted from PDF. Is this a scanned/image PDF?")
-    return "\n\n".join(pages)
+    text = "\n\n".join(page for page in pages if page.strip())
+    meaningful_pages = sum(
+        len(page.strip()) >= PDF_MEANINGFUL_PAGE_TEXT_THRESHOLD for page in pages
+    )
+    warnings = _text_warnings(text)
+    if pages:
+        coverage = meaningful_pages / len(pages)
+        if coverage < PDF_LOW_COVERAGE_THRESHOLD:
+            warnings.append(
+                ExtractionWarning(
+                    code="low_pdf_text_coverage",
+                    message=(
+                        "Text was extracted from only some PDF pages. Review the "
+                        "imported profile for missing sections."
+                    ),
+                )
+            )
+        if (len(pages) - meaningful_pages) / len(pages) >= PDF_LOW_COVERAGE_THRESHOLD:
+            warnings.append(
+                ExtractionWarning(
+                    code="likely_scanned_pdf",
+                    message=(
+                        "This PDF appears to contain scanned or image-based pages. "
+                        "OCR is not available; review the imported profile for missing text."
+                    ),
+                )
+            )
+    return ExtractedResumeText(text=text, warnings=warnings)
 
 
-def _extract_docx(content: bytes) -> str:
+def _extract_docx(content: bytes) -> ExtractedResumeText:
     document = DocxDocument(io.BytesIO(content))
     blocks: list[str] = []
     for block in _iter_docx_blocks(document):
@@ -81,7 +130,22 @@ def _extract_docx(content: bytes) -> str:
 
     if not blocks:
         raise ValueError("No text could be extracted from DOCX. Is the document empty?")
-    return "\n\n".join(blocks)
+    text = "\n\n".join(blocks)
+    return ExtractedResumeText(text=text, warnings=_text_warnings(text))
+
+
+def _text_warnings(text: str) -> list[ExtractionWarning]:
+    if not text or len(text) >= SHORT_TEXT_WARNING_THRESHOLD:
+        return []
+    return [
+        ExtractionWarning(
+            code="short_extracted_text",
+            message=(
+                "Only a small amount of text was extracted. Review the imported "
+                "profile before using it."
+            ),
+        )
+    ]
 
 
 def _iter_docx_blocks(document: Any) -> Iterator[Paragraph | Table]:

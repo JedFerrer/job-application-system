@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -176,6 +177,17 @@ class ParsedProfile(BaseModel):
         return value
 
 
+class ExtractionWarning(BaseModel):
+    """A deterministic, advisory warning about extracted resume text."""
+
+    code: Literal[
+        "short_extracted_text",
+        "low_pdf_text_coverage",
+        "likely_scanned_pdf",
+    ]
+    message: str
+
+
 class ResumeResponse(BaseModel):
     """API response after a resume is uploaded and parsed."""
 
@@ -187,6 +199,7 @@ class ResumeResponse(BaseModel):
     lifecycle_status: ResumeLifecycleStatus = ResumeLifecycleStatus.ACTIVE
     profile: ParsedProfile
     matching_profile_changed: bool = True
+    extraction_warnings: list[ExtractionWarning] = Field(default_factory=list)
 
 
 class ResumeImportListItem(BaseModel):

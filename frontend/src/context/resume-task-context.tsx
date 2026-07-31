@@ -99,6 +99,9 @@ export function ResumeTaskProvider({ children }: { children: React.ReactNode }) 
       },
       duration: 8000,
     });
+    for (const warning of result?.extraction_warnings ?? []) {
+      toast.warning(warning.message, { duration: 8000 });
+    }
     if (isDraft) {
       queryClient.invalidateQueries({ queryKey: ["resume-imports"] });
     } else {

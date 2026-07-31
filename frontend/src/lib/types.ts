@@ -90,6 +90,12 @@ export interface ResumeResponse {
   lifecycle_status?: "active" | "draft" | "inactive";
   profile: ParsedProfile;
   matching_profile_changed?: boolean;
+  extraction_warnings?: ExtractionWarning[];
+}
+
+export interface ExtractionWarning {
+  code: "short_extracted_text" | "low_pdf_text_coverage" | "likely_scanned_pdf";
+  message: string;
 }
 
 export interface ResumeImportListItem {

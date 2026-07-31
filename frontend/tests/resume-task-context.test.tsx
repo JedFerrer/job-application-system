@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ResumeTaskProvider, useResumeTask } from "@/context/resume-task-context";
 
 const apiMocks = vi.hoisted(() => ({ getTaskStatus: vi.fn() }));
-const toastMocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+const toastMocks = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }));
 const routerMocks = vi.hoisted(() => ({ push: vi.fn() }));
 
 vi.mock("@/lib/api", () => ({ resumeApi: apiMocks }));
@@ -40,6 +40,7 @@ describe("resume task completion messaging", () => {
       },
     });
     toastMocks.success.mockReset();
+    toastMocks.warning.mockReset();
     routerMocks.push.mockReset();
   });
 
@@ -69,6 +70,7 @@ describe("resume task completion messaging", () => {
         description: "Saved as a draft awaiting review. Your active profile was not changed.",
       }),
     );
+    expect(toastMocks.warning).not.toHaveBeenCalled();
     expect(queryClient.getQueryCache().find({ queryKey: ["profile"] })).toBeUndefined();
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["resume-imports"] });
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["profile"] });
@@ -107,6 +109,88 @@ describe("resume task completion messaging", () => {
       'Résumé parsed — "first.pdf"',
       expect.objectContaining({ description: "Your profile has been updated." }),
     );
+    expect(toastMocks.warning).not.toHaveBeenCalled();
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["profile"] });
+  });
+
+  it("shows warning messaging without changing active import behavior", async () => {
+    apiMocks.getTaskStatus.mockResolvedValueOnce({
+      type: "resume_parse",
+      status: "done",
+      message: "done",
+      result: {
+        resume_id: 6,
+        filename: "short.pdf",
+        is_active: true,
+        lifecycle_status: "active",
+        extraction_warnings: [
+          {
+            code: "short_extracted_text",
+            message: "Review the imported profile for missing text.",
+          },
+        ],
+        profile: {},
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ResumeTaskProvider><Harness /></ResumeTaskProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      (container.querySelector("button") as HTMLButtonElement).click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    expect(toastMocks.warning).toHaveBeenCalledWith(
+      "Review the imported profile for missing text.",
+      { duration: 8000 },
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["profile"] });
+  });
+
+  it("shows scanned-document limitations while preserving draft review routing", async () => {
+    apiMocks.getTaskStatus.mockResolvedValueOnce({
+      type: "resume_parse",
+      status: "done",
+      message: "done",
+      result: {
+        resume_id: 7,
+        filename: "scanned.pdf",
+        is_active: false,
+        lifecycle_status: "draft",
+        extraction_warnings: [
+          {
+            code: "likely_scanned_pdf",
+            message: "OCR is not available; review the imported profile for missing text.",
+          },
+        ],
+        profile: {},
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ResumeTaskProvider><Harness /></ResumeTaskProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      (container.querySelector("button") as HTMLButtonElement).click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    expect(toastMocks.warning).toHaveBeenCalledWith(
+      "OCR is not available; review the imported profile for missing text.",
+      { duration: 8000 },
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["resume-imports"] });
+    const draftToast = toastMocks.success.mock.calls.at(-1)?.[1] as { action?: { onClick: () => void } };
+    draftToast.action?.onClick();
+    expect(routerMocks.push).toHaveBeenCalledWith("/dashboard/settings/profile");
   });
 });
