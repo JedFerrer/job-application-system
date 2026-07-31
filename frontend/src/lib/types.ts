@@ -92,6 +92,18 @@ export interface ResumeResponse {
   matching_profile_changed?: boolean;
 }
 
+export interface ResumeImportListItem {
+  resume_id: number;
+  filename: string;
+  created_at: string;
+  lifecycle_status: "active" | "draft" | "inactive";
+}
+
+export interface ResumeImportDetail extends ResumeImportListItem {
+  is_active: boolean;
+  profile: ParsedProfile;
+}
+
 export interface ProfileResponse {
   profile_id: number;
   resume_id: number;

@@ -27,6 +27,8 @@ import type {
   RankTaskResponse,
   RefreshResponse,
   ResumeResponse,
+  ResumeImportDetail,
+  ResumeImportListItem,
   SkillsGapSummary,
   TailoredResume,
   TailoredResumeDraft,
@@ -191,6 +193,16 @@ export const resumeApi = {
   getTaskStatus: (taskId: string) =>
     apiRequest<TaskStatus>(`/resume/tasks/${taskId}`),
   getProfile: () => apiRequest<ProfileResponse | null>("/resume/profile"),
+  listImportDrafts: () =>
+    apiRequest<ResumeImportListItem[]>("/resume/imports"),
+  getImportDraft: (resumeId: number) =>
+    apiRequest<ResumeImportDetail>(`/resume/imports/${resumeId}`),
+  approveImport: (resumeId: number) =>
+    apiRequest<ProfileResponse>(`/resume/imports/${resumeId}/approve`, {
+      method: "POST",
+    }),
+  rejectImport: (resumeId: number) =>
+    apiRequest<void>(`/resume/imports/${resumeId}/reject`, { method: "POST" }),
   updateProfile: (profile: ParsedProfile) =>
     apiRequest<ProfileResponse>("/resume/profile", {
       method: "PUT",

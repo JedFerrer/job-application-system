@@ -5,7 +5,7 @@
  *
  * Lives at the root (inside Providers) so polling continues even when the
  * user navigates away from the /resume page. The success/failure toast
- * includes an action button that routes back to /resume.
+ * includes an action button that routes to the relevant resume surface.
  *
  * ResumePanel calls `setTask(taskId, filename)` to hand off the task.
  */
@@ -92,10 +92,18 @@ export function ResumeTaskProvider({ children }: { children: React.ReactNode }) 
       description: isDraft
         ? "Saved as a draft awaiting review. Your active profile was not changed."
         : "Your profile has been updated.",
-      action: { label: "View résumé", onClick: () => router.push("/dashboard/resume") },
+      action: {
+        label: isDraft ? "Review profile" : "View résumé",
+        onClick: () =>
+          router.push(isDraft ? "/dashboard/settings/profile" : "/dashboard/resume"),
+      },
       duration: 8000,
     });
-    if (!isDraft) queryClient.invalidateQueries({ queryKey: ["profile"] });
+    if (isDraft) {
+      queryClient.invalidateQueries({ queryKey: ["resume-imports"] });
+    } else {
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
+    }
   }, [taskQuery.data?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isRunning =

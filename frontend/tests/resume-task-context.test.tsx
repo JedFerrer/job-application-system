@@ -70,7 +70,11 @@ describe("resume task completion messaging", () => {
       }),
     );
     expect(queryClient.getQueryCache().find({ queryKey: ["profile"] })).toBeUndefined();
-    expect(invalidateSpy).not.toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["resume-imports"] });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["profile"] });
+    const draftToast = toastMocks.success.mock.calls.at(-1)?.[1] as { action?: { onClick: () => void } };
+    draftToast.action?.onClick();
+    expect(routerMocks.push).toHaveBeenCalledWith("/dashboard/settings/profile");
   });
 
   it("keeps the active-import message and invalidates the profile", async () => {

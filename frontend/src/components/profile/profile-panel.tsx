@@ -23,6 +23,8 @@ import type {
   ParsedProfile,
   ProfessionalLinks,
   ProjectItem,
+  ResumeImportDetail,
+  ResumeImportListItem,
   WorkItem,
 } from "@/lib/types";
 import { validateProfileUrl } from "@/lib/validators";
@@ -38,6 +40,23 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const ACCEPTED = ".pdf,.docx";
 
@@ -220,6 +239,7 @@ export function ProfilePanel() {
             )}
           </CardContent>
         </Card>
+        <ImportedResumeDrafts />
         <Card>
           <CardContent className="py-8 text-center text-sm text-muted-foreground">
             No active profile yet. Upload a résumé to get started.
@@ -283,6 +303,8 @@ export function ProfilePanel() {
           )}
         </CardContent>
       </Card>
+
+      <ImportedResumeDrafts />
 
       {/* Edit bar */}
       {editing ? (
@@ -382,6 +404,193 @@ export function ProfilePanel() {
       </div>
     </div>
   );
+}
+
+function ImportedResumeDrafts() {
+  const queryClient = useQueryClient();
+  const [openImportId, setOpenImportId] = useState<number | null>(null);
+  const [confirmAction, setConfirmAction] = useState<"approve" | "reject" | null>(null);
+  const actionInFlightRef = useRef(false);
+
+  const importsQuery = useQuery({
+    queryKey: ["resume-imports"],
+    queryFn: resumeApi.listImportDrafts,
+    retry: false,
+  });
+  const detailQuery = useQuery({
+    queryKey: ["resume-import", openImportId],
+    queryFn: () => resumeApi.getImportDraft(openImportId!),
+    enabled: openImportId != null,
+    retry: false,
+  });
+
+  const closeReview = () => {
+    setConfirmAction(null);
+    setOpenImportId(null);
+  };
+
+  const approveMutation = useMutation({
+    mutationFn: (resumeId: number) => resumeApi.approveImport(resumeId),
+    onSuccess: (_, resumeId) => {
+      actionInFlightRef.current = false;
+      closeReview();
+      void queryClient.invalidateQueries({ queryKey: ["profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["resume-imports"] });
+      void queryClient.removeQueries({ queryKey: ["resume-import", resumeId] });
+      toast.success("Profile updated. Match rankings will update shortly.");
+    },
+    onError: (err) => {
+      actionInFlightRef.current = false;
+      toast.error(errorMessage(err));
+    },
+  });
+  const rejectMutation = useMutation({
+    mutationFn: (resumeId: number) => resumeApi.rejectImport(resumeId),
+    onSuccess: (_, resumeId) => {
+      actionInFlightRef.current = false;
+      closeReview();
+      void queryClient.invalidateQueries({ queryKey: ["resume-imports"] });
+      void queryClient.removeQueries({ queryKey: ["resume-import", resumeId] });
+      toast.success("Imported resume draft rejected.");
+    },
+    onError: (err) => {
+      actionInFlightRef.current = false;
+      toast.error(errorMessage(err));
+    },
+  });
+
+  const selected = importsQuery.data?.find((item) => item.resume_id === openImportId);
+  const actionPending = approveMutation.isPending || rejectMutation.isPending;
+  const submitAction = () => {
+    if (openImportId == null || actionPending || actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
+    if (confirmAction === "approve") approveMutation.mutate(openImportId);
+    if (confirmAction === "reject") rejectMutation.mutate(openImportId);
+  };
+
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Imported resume drafts</CardTitle>
+          <CardDescription>
+            Replacement uploads wait here for review before changing your active profile.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {importsQuery.isLoading && (
+            <p className="text-sm text-muted-foreground">Loading imported resume drafts…</p>
+          )}
+          {importsQuery.isError && (
+            <p className="text-sm text-destructive">Could not load imported resume drafts.</p>
+          )}
+          {importsQuery.data?.length === 0 && (
+            <p className="text-sm text-muted-foreground">No imported resume drafts awaiting review.</p>
+          )}
+          {importsQuery.data && importsQuery.data.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {importsQuery.data.map((draft) => (
+                <ImportDraftRow key={draft.resume_id} draft={draft} onOpen={() => setOpenImportId(draft.resume_id)} />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={openImportId != null} onOpenChange={(open) => { if (!open && !actionPending) closeReview(); }}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>{selected?.filename ?? "Imported resume draft"}</DialogTitle>
+            <DialogDescription>
+              Review this extracted profile before making it your active profile. The current profile remains active until approval.
+            </DialogDescription>
+          </DialogHeader>
+          {detailQuery.isLoading && <p className="text-sm text-muted-foreground">Loading draft profile…</p>}
+          {detailQuery.isError && <p className="text-sm text-destructive">Could not load this imported resume draft.</p>}
+          {detailQuery.data && (
+            <>
+              <DraftProfileView profile={detailQuery.data.profile} />
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button variant="outline" onClick={closeReview} disabled={actionPending}>Cancel</Button>
+                <Button variant="outline" onClick={() => setConfirmAction("reject")} disabled={actionPending}>Reject draft</Button>
+                <Button onClick={() => setConfirmAction("approve")} disabled={actionPending}>Approve draft</Button>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirmAction != null} onOpenChange={(open) => { if (!open && !actionPending) setConfirmAction(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmAction === "approve" ? "Approve imported profile?" : "Reject imported profile?"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmAction === "approve"
+                ? "This will make the imported profile active and replace the current matching profile."
+                : "This will remove the imported draft from your pending reviews. Your active profile will not change."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={actionPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={actionPending} onClick={(event) => { event.preventDefault(); submitAction(); }}>
+              {actionPending ? "Saving…" : confirmAction === "approve" ? "Approve draft" : "Reject draft"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+function ImportDraftRow({ draft, onOpen }: { draft: ResumeImportListItem; onOpen: () => void }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium">{draft.filename}</p>
+        <p className="text-xs text-muted-foreground">
+          Imported {formatImportDate(draft.created_at)} · {draft.lifecycle_status}
+        </p>
+      </div>
+      <Button size="sm" variant="outline" onClick={onOpen}>Review draft</Button>
+    </div>
+  );
+}
+
+function DraftProfileView({ profile }: { profile: ResumeImportDetail["profile"] }) {
+  const links = profile.links ?? {};
+  const projects = profile.projects ?? [];
+  const workHistory = profile.work_history ?? [];
+  const skills = profile.skills ?? [];
+  const education = profile.education ?? [];
+  const certifications = profile.certifications ?? [];
+  return (
+    <div className="flex max-h-[55vh] flex-col gap-5 overflow-y-auto text-sm">
+      <div>
+        <h3 className="text-lg font-semibold">{profile.full_name ?? "Candidate profile"}</h3>
+        {profile.headline && <p className="text-muted-foreground">{profile.headline}</p>}
+        <p className="mt-1 text-muted-foreground">{[profile.email, profile.phone].filter(Boolean).join(" · ") || "No contact details"}</p>
+      </div>
+      {skills.length > 0 && <ReviewSection title="Skills"><div className="flex flex-wrap gap-2">{skills.map((skill) => <Badge key={skill} variant="secondary">{skill}</Badge>)}</div></ReviewSection>}
+      {workHistory.length > 0 && <ReviewSection title="Work history"><ul className="list-disc space-y-1 pl-5">{workHistory.map((item, index) => <li key={`${item.company ?? "role"}-${index}`}>{[item.title, item.company].filter(Boolean).join(" · ") || "Role"}{item.highlights.length > 0 && ` — ${item.highlights.join("; ")}`}</li>)}</ul></ReviewSection>}
+      {education.length > 0 && <ReviewSection title="Education"><ul className="list-disc space-y-1 pl-5">{education.map((item, index) => <li key={index}>{[item.degree, item.institution, item.year].filter(Boolean).join(" · ") || "Education"}</li>)}</ul></ReviewSection>}
+      {certifications.length > 0 && <ReviewSection title="Certifications"><p>{certifications.join(", ")}</p></ReviewSection>}
+      <ReviewSection title="Professional links">
+        {Object.entries(links).some(([, value]) => value) ? <div className="flex flex-wrap gap-3">{Object.entries(links).map(([name, value]) => value && <a key={name} className="text-primary underline" href={value} target="_blank" rel="noopener noreferrer">{name}</a>)}</div> : <p className="text-muted-foreground">No professional links added.</p>}
+      </ReviewSection>
+      <ReviewSection title="Projects">
+        {projects.length > 0 ? <div className="flex flex-col gap-3">{projects.map((project, index) => <div key={index} className="rounded-md border p-3"><p className="font-medium">{project.name ?? "Project"}</p>{project.description && <p className="mt-1 text-muted-foreground">{project.description}</p>}{project.technologies.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Technologies: {project.technologies.join(", ")}</p>}{project.achievements.length > 0 && <p className="mt-1 text-xs text-muted-foreground">{project.achievements.join("; ")}</p>}</div>)}</div> : <p className="text-muted-foreground">No projects added.</p>}
+      </ReviewSection>
+    </div>
+  );
+}
+
+function ReviewSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section><h4 className="mb-2 font-semibold">{title}</h4>{children}</section>;
+}
+
+function formatImportDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "unknown date" : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
 }
 
 // ---- Summary row ------------------------------------------------------------

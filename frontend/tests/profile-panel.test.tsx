@@ -6,6 +6,7 @@ import { ProfilePanel } from "@/components/profile/profile-panel";
 
 const apiMocks = vi.hoisted(() => ({
   getProfile: vi.fn(),
+  listImportDrafts: vi.fn(),
   updateProfile: vi.fn(),
   upload: vi.fn(),
 }));
@@ -63,6 +64,7 @@ describe("ProfilePanel projects and professional links", () => {
     root = createRoot(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
     apiMocks.getProfile.mockResolvedValue(profile);
+    apiMocks.listImportDrafts.mockResolvedValue([]);
     apiMocks.updateProfile.mockReset();
     apiMocks.updateProfile.mockResolvedValue({ ...profile, matching_profile_changed: false });
     apiMocks.upload.mockReset();
