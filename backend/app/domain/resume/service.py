@@ -29,6 +29,10 @@ from app.domain.resume.exceptions import (
 )
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
+from app.domain.resume.provenance import (
+    ResumeImportProvenance,
+    build_resume_import_provenance,
+)
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import (
     ExtractionEvidence,
@@ -136,7 +140,7 @@ class ResumeService:
                 extraction_warnings = []
             else:
                 raw_text = extracted.text
-                extraction_warnings = extracted.warnings
+                extraction_warnings = list(extracted.warnings)
         except ValueError as exc:
             raise UnsupportedResumeFormatError(str(exc)) from exc
 
@@ -155,7 +159,12 @@ class ResumeService:
             # Preserve compatibility with focused test seams and older callers.
             profile = parsed_result
             extraction_evidence = ExtractionEvidence()
-        extraction_warnings.extend(find_completeness_warnings(raw_text, profile))
+        extraction_warning_codes = [warning.code for warning in extraction_warnings]
+        response_warnings = list(extraction_warnings)
+        response_warnings.extend(find_completeness_warnings(raw_text, profile))
+        provenance = build_resume_import_provenance(
+            filename, extraction_warning_codes
+        )
 
         await _emit(message="Embedding profile…")
         summary_text = build_summary_text(profile)
@@ -184,6 +193,7 @@ class ResumeService:
             raw_text=raw_text,
             is_active=is_first_import,
             lifecycle_status=lifecycle_status,
+            import_provenance=provenance.model_dump(mode="json"),
         )
         await self._repository.add_profile(
             user_id=user_id,
@@ -201,7 +211,8 @@ class ResumeService:
             lifecycle_status=ResumeLifecycleStatus(resume.lifecycle_status),
             profile=profile,
             matching_profile_changed=is_first_import,
-            extraction_warnings=extraction_warnings,
+            extraction_warnings=response_warnings,
+            provenance=provenance,
         )
 
     async def get_profile(self, user_id: int) -> ProfileResponse:
@@ -277,6 +288,11 @@ class ResumeService:
             profile=ParsedProfile.model_validate(profile.parsed),
             extraction_evidence=ExtractionEvidence.model_validate(
                 getattr(profile, "extraction_evidence", None) or {}
+            ),
+            provenance=(
+                ResumeImportProvenance.model_validate(resume.import_provenance)
+                if getattr(resume, "import_provenance", None)
+                else None
             ),
         )
 

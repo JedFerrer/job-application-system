@@ -24,6 +24,9 @@ from pydantic import (
 )
 
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
+from app.domain.resume.provenance import ResumeImportProvenance
+
+PARSED_PROFILE_SCHEMA_VERSION = "parsed-profile-v1"
 
 
 def _normalize_optional_text(value: object) -> object:
@@ -233,6 +236,7 @@ class ResumeResponse(BaseModel):
     profile: ParsedProfile
     matching_profile_changed: bool = True
     extraction_warnings: list[ExtractionWarning] = Field(default_factory=list)
+    provenance: ResumeImportProvenance | None = None
 
 
 class ResumeImportListItem(BaseModel):
@@ -254,6 +258,7 @@ class ResumeImportDetail(BaseModel):
     lifecycle_status: ResumeLifecycleStatus
     profile: ParsedProfile
     extraction_evidence: ExtractionEvidence = Field(default_factory=ExtractionEvidence)
+    provenance: ResumeImportProvenance | None = None
 
 
 class ProfileResponse(BaseModel):

@@ -7,6 +7,8 @@ drop fields. Extraction only — the model must never invent data.
 
 from __future__ import annotations
 
+RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v1"
+
 RESUME_EXTRACTION_PROMPT = """You are an expert resume parser. Extract structured \
 information from the resume text below. Return valid JSON only — no markdown, no \
 explanation. Extract only what is present; never invent data.

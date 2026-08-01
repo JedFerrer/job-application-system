@@ -11,6 +11,8 @@ running and migrated.  The database is enforced in backend/tests/conftest.py.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -21,6 +23,7 @@ from sqlalchemy.pool import NullPool
 from app.api.deps import get_current_user
 from app.api.v1 import resume as resume_module
 from app.core.config import get_settings
+from app.domain.resume.provenance import build_resume_import_provenance
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import ParsedProfile
 from app.domain.resume.service import ResumeService
@@ -148,12 +151,16 @@ async def _seed_import_draft(
     lifecycle_status: str = "draft",
     is_active: bool = False,
 ) -> Resume:
+    filename = f"{full_name.lower().replace(' ', '-')}.pdf"
     resume = Resume(
         user_id=user_id,
-        filename=f"{full_name.lower().replace(' ', '-')}.pdf",
+        filename=filename,
         raw_text="draft text",
         is_active=is_active,
         lifecycle_status=lifecycle_status,
+        import_provenance=build_resume_import_provenance(
+            filename, []
+        ).model_dump(mode="json"),
     )
     db.add(resume)
     await db.flush()
@@ -327,6 +334,7 @@ class TestProfileIntegration:
             detail = client.get(f"/resume/imports/{draft.id}")
             assert detail.status_code == 200
             assert detail.json()["profile"]["full_name"] == "Pending User"
+            assert detail.json()["provenance"]["extraction_warning_codes"] == []
 
             for resume_id in (active.resume_id, inactive.id, foreign.id, 999999):
                 assert client.get(f"/resume/imports/{resume_id}").status_code == 404
@@ -340,13 +348,21 @@ class TestProfileIntegration:
         async def record_ranking(user_id: int) -> None:
             events.append(f"ranking:{user_id}")
 
+        async def embed(_: str) -> list[float]:
+            return [0.2] * 1536
+
         monkeypatch.setattr(resume_module, "_enqueue_match_ranking", record_ranking)
+        monkeypatch.setattr("app.domain.resume.service.embed_text", embed)
         async with session_factory() as db:
             user = await _seed_user(db)
             old = await _seed_profile(db, user_id=user.id, full_name="Old User")
             first_draft = await _seed_import_draft(
                 db, user_id=user.id, full_name="Approved User"
             )
+            original_provenance = build_resume_import_provenance(
+                first_draft.filename, []
+            ).model_dump(mode="json")
+            first_draft.import_provenance = original_provenance
             second_draft = await _seed_import_draft(
                 db, user_id=user.id, full_name="Still Pending"
             )
@@ -370,6 +386,12 @@ class TestProfileIntegration:
             assert response.json()["profile"]["full_name"] == "Approved User"
             profile = client.get("/resume/profile")
             assert profile.json()["profile"]["full_name"] == "Approved User"
+            edited = client.put(
+                "/resume/profile",
+                json={"profile": {"full_name": "Edited User", "headline": "Changed"}},
+            )
+            assert edited.status_code == 200
+            assert edited.json()["profile"]["full_name"] == "Edited User"
             for resume_id in (first_draft.id, inactive.id, foreign.id, 999999):
                 assert client.post(f"/resume/imports/{resume_id}/approve").status_code == 404
 
@@ -390,7 +412,16 @@ class TestProfileIntegration:
             (second_draft.id, False, "draft"),
             (inactive.id, False, "inactive"),
         ]
-        assert events == [f"ranking:{user.id}"]
+        assert events == [f"ranking:{user.id}", f"ranking:{user.id}"]
+
+        async with session_factory() as db:
+            stored_provenance = (
+                await db.execute(
+                    text("SELECT import_provenance FROM resumes WHERE id = :resume_id"),
+                    {"resume_id": first_draft.id},
+                )
+            ).scalar_one()
+        assert stored_provenance == original_provenance
 
     @pytest.mark.asyncio
     async def test_reject_import_keeps_active_and_does_not_dispatch(
@@ -408,6 +439,11 @@ class TestProfileIntegration:
             draft = await _seed_import_draft(
                 db, user_id=user.id, full_name="Rejected User"
             )
+            original_provenance = deepcopy(draft.import_provenance)
+            assert original_provenance is not None
+            draft.import_provenance = build_resume_import_provenance(
+                draft.filename, []
+            ).model_dump(mode="json")
             other_user = await _seed_user(db, user_id=2)
             foreign = await _seed_import_draft(
                 db, user_id=other_user.id, full_name="Foreign Draft"
@@ -427,3 +463,12 @@ class TestProfileIntegration:
                 assert client.post(f"/resume/imports/{resume_id}/reject").status_code == 404
 
         assert events == []
+
+        async with session_factory() as db:
+            stored_provenance = (
+                await db.execute(
+                    text("SELECT import_provenance FROM resumes WHERE id = :resume_id"),
+                    {"resume_id": draft.id},
+                )
+            ).scalar_one()
+        assert stored_provenance == original_provenance

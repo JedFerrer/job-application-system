@@ -20,6 +20,9 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user, get_task_store
 from app.api.v1 import jobs as jobs_module
 from app.api.v1 import resume as resume_module
+from app.domain.resume.lifecycle import ResumeLifecycleStatus
+from app.domain.resume.provenance import build_resume_import_provenance
+from app.domain.resume.schemas import ParsedProfile, ResumeResponse
 from app.infrastructure.task_store import TaskStore
 from app.models.user import User
 
@@ -191,6 +194,76 @@ class TestTaskOwnershipEndpoints:
         data = resp.json()
         assert data["type"] == "resume_parse"
         assert data["user_id"] == user_a.id
+
+    def test_user_can_poll_own_completed_resume_task_with_provenance(
+        self, user_a: User, task_store: FakeTaskStore
+    ) -> None:
+        """The owner receives the complete serialized import result."""
+        import asyncio
+
+        provenance = build_resume_import_provenance("resume.pdf", []).model_dump(
+            mode="json"
+        )
+        result = ResumeResponse(
+            resume_id=7,
+            filename="resume.pdf",
+            is_active=True,
+            lifecycle_status=ResumeLifecycleStatus.ACTIVE,
+            profile=ParsedProfile(full_name="Ada Lovelace"),
+            provenance=build_resume_import_provenance("resume.pdf", []),
+        ).model_dump(mode="json")
+
+        async def _setup() -> str:
+            task_id = await task_store.create("resume_parse", user_id=user_a.id)
+            await task_store.update(
+                task_id, status="done", message="Parsed", result=result
+            )
+            return task_id
+
+        task_id = asyncio.run(_setup())
+        app = _build_app_with_overrides(
+            current_user=user_a, task_store=task_store  # type: ignore[arg-type]
+        )
+
+        response = TestClient(app).get(f"/resume/tasks/{task_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "done"
+        assert data["result"] == result
+        assert data["result"]["provenance"] == provenance
+
+    def test_another_user_cannot_poll_completed_resume_task_with_provenance(
+        self, user_a: User, user_b: User, task_store: FakeTaskStore
+    ) -> None:
+        """Cross-user polling remains an indistinguishable not-found response."""
+        import asyncio
+
+        result = ResumeResponse(
+            resume_id=7,
+            filename="resume.pdf",
+            is_active=True,
+            lifecycle_status=ResumeLifecycleStatus.ACTIVE,
+            profile=ParsedProfile(full_name="Ada Lovelace"),
+            provenance=build_resume_import_provenance("resume.pdf", []),
+        ).model_dump(mode="json")
+
+        async def _setup() -> str:
+            task_id = await task_store.create("resume_parse", user_id=user_a.id)
+            await task_store.update(
+                task_id, status="done", message="Parsed", result=result
+            )
+            return task_id
+
+        task_id = asyncio.run(_setup())
+        app = _build_app_with_overrides(
+            current_user=user_b, task_store=task_store  # type: ignore[arg-type]
+        )
+
+        response = TestClient(app).get(f"/resume/tasks/{task_id}")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Task not found or expired"}
 
     def test_another_user_polling_resume_task_returns_404(
         self, user_a: User, user_b: User, task_store: FakeTaskStore

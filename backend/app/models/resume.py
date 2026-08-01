@@ -34,6 +34,10 @@ class Resume(Base):
     lifecycle_status: Mapped[str] = mapped_column(
         String(16), default=ResumeLifecycleStatus.ACTIVE.value
     )
+    # Immutable metadata captured when this source was successfully imported.
+    import_provenance: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

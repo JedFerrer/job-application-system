@@ -7,6 +7,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app.domain.resume.schemas import ExtractionWarning, ParsedProfile
 
+COMPLETENESS_VALIDATOR_VERSION = "completeness-validator-v1"
+
 _EMAIL_RE = re.compile(
     r"(?<![\w.+-])[\w.!#$%&'*+/=?^`{|}~-]+@"
     r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?![\w.-])"

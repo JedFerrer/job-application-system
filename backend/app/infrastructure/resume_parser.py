@@ -33,6 +33,10 @@ from app.infrastructure.llm_utils import strip_code_fences
 
 logger = get_logger("resume_parser")
 
+RESUME_PARSER_CONFIG_ID = "resume-parser-v1"
+EVIDENCE_VERIFIER_VERSION = "evidence-verifier-v1"
+NATIVE_EXTRACTION_VERSION = "native-extraction-v1"
+
 SUPPORTED_EXTENSIONS = {"pdf", "docx"}
 # Defence-in-depth size cap (handlers also enforce this at the boundary).
 MAX_RESUME_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB

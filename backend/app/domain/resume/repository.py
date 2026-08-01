@@ -46,6 +46,7 @@ class ResumeRepository:
         *,
         is_active: bool = True,
         lifecycle_status: ResumeLifecycleStatus = ResumeLifecycleStatus.ACTIVE,
+        import_provenance: dict[str, object] | None = None,
     ) -> Resume:
         resume = Resume(
             user_id=user_id,
@@ -53,6 +54,7 @@ class ResumeRepository:
             raw_text=raw_text,
             is_active=is_active,
             lifecycle_status=lifecycle_status.value,
+            import_provenance=import_provenance,
         )
         self._session.add(resume)
         await self._session.flush()
