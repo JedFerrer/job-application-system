@@ -1,0 +1,95 @@
+{
+  "schema_version": "resume-extraction-eval-v1",
+  "provenance": "Fully synthetic extraction fixtures. Do not replace with real resumes. Static PDF output is pinned to current supported extraction behavior.",
+  "cases": [
+    {
+      "id": "pdf-multipage",
+      "format": "pdf",
+      "fixture": "multipage.pdf",
+      "sha256": "532f2671203f5f18bad4ec1b625637531c9d39013586a82aa7d165565fbf5e92",
+      "byte_size": 934,
+      "expected_blocks": [
+        "Fictional Atlas\nPage One Detail",
+        "Page Two Detail\nCafe - resume punctuation"
+      ],
+      "expected_warning_codes": [
+        "short_extracted_text",
+        "likely_scanned_pdf"
+      ]
+    },
+    {
+      "id": "pdf-two-column",
+      "format": "pdf",
+      "fixture": "two-column.pdf",
+      "sha256": "c6affd7cb62774a92f924949d91ae9b553aba15b9ae74faa3e3edd7cdd75975d",
+      "byte_size": 695,
+      "interpretation": "Pinned pdfplumber extractor order; not asserted as human reading order.",
+      "expected_blocks": [
+        "Left top Right top\nLeft bottom Right bottom"
+      ],
+      "expected_warning_codes": [
+        "short_extracted_text"
+      ]
+    },
+    {
+      "id": "pdf-sparse-pages",
+      "format": "pdf",
+      "fixture": "sparse-pages.pdf",
+      "sha256": "8e8ee0b7e23e06aaf2d41e7f3dd79ba62d5f050d652f4215d82e3fa350315da1",
+      "byte_size": 2014,
+      "expected_blocks": [
+        "Dense fictional content AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "Tiny"
+      ],
+      "expected_warning_codes": [
+        "low_pdf_text_coverage",
+        "likely_scanned_pdf"
+      ]
+    },
+    {
+      "id": "pdf-blank-no-text",
+      "format": "pdf",
+      "fixture": "blank-pages.pdf",
+      "sha256": "6838523e2d185adb9c44209abe6698d84a3668f58d54508bd5e2bad26ffe4f5a",
+      "byte_size": 849,
+      "expected_error": "No text could be extracted from PDF. Is this a scanned/image PDF?"
+    },
+    {
+      "id": "docx-paragraphs-unicode",
+      "format": "docx",
+      "builder": "paragraphs-unicode",
+      "expected_blocks": [
+        "Nova Vale — fictional engineer",
+        "Skills: Python; TypeScript; café résumé tooling",
+        "- Built safe parsers (100% synthetic) — verify: § • №"
+      ],
+      "expected_warning_codes": [
+        "short_extracted_text"
+      ]
+    },
+    {
+      "id": "docx-paragraph-table-order",
+      "format": "docx",
+      "builder": "paragraph-table-order",
+      "expected_blocks": [
+        "Before the fictional table",
+        "Skill | Python",
+        "Atlas project | example.invalid",
+        "After the fictional table"
+      ],
+      "expected_warning_codes": [
+        "short_extracted_text"
+      ]
+    },
+    {
+      "id": "docx-multiple-tables",
+      "format": "docx",
+      "builder": "multiple-tables",
+      "expected_blocks": [
+        "Contact | fictional.invalid",
+        "Project | First paragraph Second paragraph Dense synthetic table evidence verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified verified"
+      ],
+      "expected_warning_codes": []
+    }
+  ]
+}
