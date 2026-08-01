@@ -69,7 +69,7 @@ async def test_unchanged_resume_matching_text_reuses_embedding(
 
 
 @pytest.mark.asyncio
-async def test_links_and_projects_only_do_not_change_matching_input(
+async def test_links_projects_and_languages_do_not_change_matching_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     previous_profile = ParsedProfile(
@@ -81,6 +81,7 @@ async def test_links_and_projects_only_do_not_change_matching_input(
         skills=["Python"],
         links={"github": "https://github.com/ada"},
         projects=[{"name": "Forecasting Tool", "technologies": ["Python"]}],
+        languages=[{"language": "English", "proficiency": "Fluent"}],
     )
     repository = FakeResumeRepository(build_summary_text(previous_profile))
 
@@ -88,7 +89,7 @@ async def test_links_and_projects_only_do_not_change_matching_input(
         return profile
 
     async def fail_embed(_: str) -> list[float]:
-        raise AssertionError("links/projects-only changes must not be embedded")
+        raise AssertionError("non-matching profile changes must not be embedded")
 
     monkeypatch.setattr("app.domain.resume.service.extract_text_from_bytes", lambda *_: "text")
     monkeypatch.setattr("app.domain.resume.service.parse_resume_text", parse)

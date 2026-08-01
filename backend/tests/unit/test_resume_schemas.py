@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from app.domain.resume.schemas import ParsedProfile, ProfileResponse, ProfileUpdate
+from app.domain.resume.schemas import (
+    LanguageItem,
+    ParsedProfile,
+    ProfileResponse,
+    ProfileUpdate,
+)
 from app.domain.resume.service import build_summary_text
 
 pytestmark = pytest.mark.unit
@@ -47,6 +53,97 @@ def test_profile_links_and_projects_default_empty() -> None:
         "website": None,
     }
     assert profile.projects == []
+    assert profile.languages == []
+
+
+def test_languages_normalize_and_deduplicate_without_merging() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "languages": [
+                {"language": " Spanish ", "proficiency": " Professional "},
+                {"language": "spanish", "proficiency": "Fluent"},
+                {"language": "English", "proficiency": "   "},
+            ]
+        }
+    )
+    assert [item.model_dump() for item in profile.languages] == [
+        {"language": "Spanish", "proficiency": "Professional"},
+        {"language": "English", "proficiency": None},
+    ]
+
+
+def test_language_model_instances_deduplicate_without_merging() -> None:
+    profile = ParsedProfile(
+        languages=[
+            LanguageItem(language="English", proficiency=None),
+            LanguageItem(language="english", proficiency="Native"),
+        ]
+    )
+
+    assert [item.model_dump() for item in profile.languages] == [
+        {"language": "English", "proficiency": None}
+    ]
+
+
+def test_mixed_language_inputs_deduplicate_without_merging() -> None:
+    profile = ParsedProfile(
+        languages=[
+            {"language": "English", "proficiency": None},
+            LanguageItem(language="english", proficiency="Native"),
+        ]
+    )
+
+    assert [item.model_dump() for item in profile.languages] == [
+        {"language": "English", "proficiency": None}
+    ]
+
+
+def test_languages_accept_twenty_items_and_reject_twenty_one() -> None:
+    languages = [
+        {"language": f"Language {index}", "proficiency": None}
+        for index in range(21)
+    ]
+
+    assert len(ParsedProfile(languages=languages[:20]).languages) == 20
+    with pytest.raises(ValidationError):
+        ParsedProfile(languages=languages)
+
+
+@pytest.mark.parametrize("language", ["", "   "])
+def test_language_rejects_blank_or_whitespace_name(language: str) -> None:
+    with pytest.raises(ValidationError):
+        LanguageItem(language=language, proficiency=None)
+
+
+def test_language_rejects_overlong_name() -> None:
+    with pytest.raises(ValidationError):
+        LanguageItem(language="x" * 101, proficiency=None)
+
+
+def test_language_rejects_overlong_proficiency() -> None:
+    with pytest.raises(ValidationError):
+        LanguageItem(language="English", proficiency="x" * 101)
+
+
+def test_language_model_instances_normalize_and_preserve_non_duplicates() -> None:
+    profile = ParsedProfile(
+        languages=[
+            LanguageItem(
+                language="  Spanish  ",
+                proficiency=" Professional working proficiency ",
+            ),
+            LanguageItem(language="spanish", proficiency="Native"),
+            {"language": "German", "proficiency": "Conversational"},
+        ]
+    )
+
+    assert [item.model_dump() for item in profile.languages] == [
+        {
+            "language": "Spanish",
+            "proficiency": "Professional working proficiency",
+        },
+        {"language": "German", "proficiency": "Conversational"},
+    ]
 
 
 def test_profile_links_validate_full_and_partial_values() -> None:

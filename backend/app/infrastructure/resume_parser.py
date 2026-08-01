@@ -33,8 +33,8 @@ from app.infrastructure.llm_utils import strip_code_fences
 
 logger = get_logger("resume_parser")
 
-RESUME_PARSER_CONFIG_ID = "resume-parser-v1"
-EVIDENCE_VERIFIER_VERSION = "evidence-verifier-v1"
+RESUME_PARSER_CONFIG_ID = "resume-parser-v2"
+EVIDENCE_VERIFIER_VERSION = "evidence-verifier-v2"
 NATIVE_EXTRACTION_VERSION = "native-extraction-v1"
 
 SUPPORTED_EXTENSIONS = {"pdf", "docx"}
@@ -233,6 +233,7 @@ _EVIDENCE_CATEGORIES = {
     "education": "education",
     "certifications": "certifications",
     "projects": "projects",
+    "languages": "languages",
 }
 
 

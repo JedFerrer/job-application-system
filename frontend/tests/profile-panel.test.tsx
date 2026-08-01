@@ -34,6 +34,10 @@ const profile = {
     skills: ["python"],
     education: [],
     certifications: [],
+    languages: [
+      { language: "Spanish", proficiency: "Professional" },
+      { language: "English", proficiency: null },
+    ],
     links: {
       linkedin: "https://linkedin.com/in/ada",
       github: null,
@@ -132,6 +136,18 @@ describe("ProfilePanel projects and professional links", () => {
     expect(toastMocks.success).toHaveBeenCalledWith("Profile updated");
   });
 
+  it("displays and edits languages with optional proficiency", async () => {
+    await render("Spanish");
+    expect(container.textContent).toContain("Professional");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Edit profile"))?.click());
+    await setInput("#pf-language-proficiency-0", " Fluent ");
+    await act(async () => (container.querySelector('button[aria-label="Remove English"]') as HTMLButtonElement).click());
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save all changes"))?.click());
+    await vi.waitFor(() => expect(apiMocks.updateProfile).toHaveBeenCalled());
+    const saved = apiMocks.updateProfile.mock.calls.at(-1)?.[0];
+    expect(saved.languages).toEqual([{ language: "Spanish", proficiency: "Fluent" }]);
+  });
+
   it("shows clear empty states for missing links and projects", async () => {
     apiMocks.getProfile.mockResolvedValue({
       ...profile,
@@ -139,10 +155,12 @@ describe("ProfilePanel projects and professional links", () => {
         ...profile.profile,
         links: { linkedin: null, github: null, portfolio: null, website: null },
         projects: [],
+        languages: [],
       },
     });
     await render("No projects added.");
     expect(container.textContent).toContain("No professional links added.");
+    expect(container.textContent).toContain("No languages added.");
   });
 
   it("clears a populated professional link to null while preserving the full payload", async () => {

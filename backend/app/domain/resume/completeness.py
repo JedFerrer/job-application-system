@@ -7,7 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app.domain.resume.schemas import ExtractionWarning, ParsedProfile
 
-COMPLETENESS_VALIDATOR_VERSION = "completeness-validator-v1"
+COMPLETENESS_VALIDATOR_VERSION = "completeness-validator-v2"
 
 _EMAIL_RE = re.compile(
     r"(?<![\w.+-])[\w.!#$%&'*+/=?^`{|}~-]+@"
@@ -52,6 +52,10 @@ _SECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "missing_certifications",
         re.compile(r"^(?:professional\s+)?certifications?\s*:?$", re.IGNORECASE),
     ),
+    (
+        "missing_languages",
+        re.compile(r"^(?:languages|language\s+skills)\s*:?$", re.IGNORECASE),
+    ),
 )
 
 _MESSAGES = {
@@ -78,6 +82,10 @@ _MESSAGES = {
     "missing_certifications": (
         "A certifications section was detected but no certifications were "
         "imported. Review the imported profile."
+    ),
+    "missing_languages": (
+        "A languages section was detected but no languages were imported. "
+        "Review the imported profile."
     ),
 }
 
@@ -173,6 +181,7 @@ def find_completeness_warnings(text: str, profile: ParsedProfile) -> list[Extrac
         "missing_work_history": "work_history",
         "missing_education": "education",
         "missing_certifications": "certifications",
+        "missing_languages": "languages",
     }
     for code, pattern in _SECTION_PATTERNS:
         collection = getattr(profile, profile_fields[code])

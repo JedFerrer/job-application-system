@@ -46,6 +46,8 @@ def test_extraction_prompt_uses_schema_compatible_empty_defaults() -> None:
     _assert_no_container_null_guidance(prompt)
     assert "never use null for a list or object\ncontainer" in prompt
     assert "never invent data" in prompt
+    assert "never infer fluency" in prompt
+    assert "never translate" in prompt and "canonicalize names" in prompt
 
 
 def test_extraction_prompt_can_be_formatted_with_resume_text() -> None:

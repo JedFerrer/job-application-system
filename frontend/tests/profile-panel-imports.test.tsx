@@ -60,6 +60,7 @@ const profile = {
     skills: ["python"],
     education: [],
     certifications: [],
+    languages: [],
     links: { linkedin: null, github: null, portfolio: null, website: null },
     projects: [],
     work_history: [],
@@ -68,7 +69,7 @@ const profile = {
   },
 };
 const draft = { resume_id: 11, filename: "replacement.pdf", created_at: "2026-07-30T00:00:00Z", lifecycle_status: "draft" as const };
-const detail = { ...draft, is_active: false, extraction_evidence: { work_history: [], education: [], certifications: [], projects: [{ item_index: 0, excerpt: "Built Project X for resume matching." }] }, profile: { ...profile.profile, full_name: "Draft Ada", links: { linkedin: "https://linkedin.com/in/draft", github: null, portfolio: null, website: null }, projects: [{ name: "Project X", description: null, technologies: ["Python"], achievements: [], url: null }] } };
+const detail = { ...draft, is_active: false, extraction_evidence: { work_history: [], education: [], certifications: [], projects: [{ item_index: 0, excerpt: "Built Project X for resume matching." }], languages: [{ item_index: 0, excerpt: "Spanish - Professional" }] }, profile: { ...profile.profile, full_name: "Draft Ada", languages: [{ language: "Spanish", proficiency: "Professional" }], links: { linkedin: "https://linkedin.com/in/draft", github: null, portfolio: null, website: null }, projects: [{ name: "Project X", description: null, technologies: ["Python"], achievements: [], url: null }] } };
 
 describe("ProfilePanel imported resume drafts", () => {
   let container: HTMLDivElement;
@@ -141,6 +142,7 @@ describe("ProfilePanel imported resume drafts", () => {
     await vi.waitFor(() => expect(container.textContent).toContain("Draft Ada"));
     expect(container.textContent).toContain("Draft Ada");
     expect(container.textContent).toContain("Project X");
+    expect(container.textContent).toContain("Spanish · Professional");
     expect(container.querySelector('a[href="https://linkedin.com/in/draft"]')).not.toBeNull();
     expect(container.textContent).toContain("Source evidence");
     expect(container.textContent).toContain("Source excerpt");
@@ -149,6 +151,7 @@ describe("ProfilePanel imported resume drafts", () => {
     expect((disclosure as HTMLDetailsElement).open).toBe(false);
     await act(async () => { (disclosure as HTMLDetailsElement).open = true; });
     expect(container.textContent).toContain("Built Project X for resume matching.");
+    expect(container.textContent).toContain("Spanish - Professional");
   });
 
   it("renders older draft responses without evidence", async () => {

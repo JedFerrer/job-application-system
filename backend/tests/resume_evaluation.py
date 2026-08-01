@@ -25,19 +25,19 @@ EXPECTED_CASE_COUNT = 6
 FIELD_ORDER = (
     "full_name", "email", "phone", "headline", "years_experience",
     "skills", "education", "certifications", "links", "projects",
-    "work_history", "preferred_roles", "seniority",
+    "languages", "work_history", "preferred_roles", "seniority",
 )
 WARNING_CODES = {
     "short_extracted_text", "low_pdf_text_coverage", "likely_scanned_pdf",
     "source_email_not_parsed", "source_linkedin_not_parsed",
     "source_github_not_parsed", "missing_work_history", "missing_education",
-    "missing_certifications",
+    "missing_certifications", "missing_languages",
 }
-EVIDENCE_CATEGORIES = ("work_history", "education", "certifications", "projects")
+EVIDENCE_CATEGORIES = ("work_history", "education", "certifications", "projects", "languages")
 PROFILE_FIELDS = {
     "full_name", "name", "email", "phone", "headline", "current_role", "summary",
     "years_experience", "skills", "education", "certifications", "links", "projects",
-    "work_history", "experience", "preferred_roles", "seniority",
+    "languages", "work_history", "experience", "preferred_roles", "seniority",
 }
 NESTED_PROFILE_FIELDS = {
     "education": {"degree", "institution", "year"},
@@ -46,12 +46,14 @@ NESTED_PROFILE_FIELDS = {
         "achievements", "responsibilities", "details",
     },
     "projects": {"name", "description", "technologies", "achievements", "url"},
+    "languages": {"language", "proficiency"},
     "links": {"linkedin", "github", "portfolio", "website"},
 }
 NESTED_PROFILE_ALIASES = {
     "education": ("education",),
     "work_history": ("work_history", "experience"),
     "projects": ("projects",),
+    "languages": ("languages",),
     "links": ("links",),
 }
 

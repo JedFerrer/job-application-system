@@ -55,7 +55,14 @@ def test_ambiguous_or_empty_sections_do_not_warn() -> None:
     assert _codes(text, ParsedProfile()) == []
 
 
-@pytest.mark.parametrize("heading", ["Projects", "Languages"])
+def test_languages_warning_is_bounded_to_clear_section() -> None:
+    assert _codes("Languages\nSpanish and English", ParsedProfile()) == ["missing_languages"]
+    populated = ParsedProfile.model_validate({"languages": [{"language": "Spanish"}]})
+    assert _codes("Language Skills:\nSpanish", populated) == []
+    assert _codes("I used English language support at work.", ParsedProfile()) == []
+
+
+@pytest.mark.parametrize("heading", ["Projects"])
 def test_unmonitored_heading_terminates_empty_section(heading: str) -> None:
     text = f"Education\n\n{heading}\nSome content"
 

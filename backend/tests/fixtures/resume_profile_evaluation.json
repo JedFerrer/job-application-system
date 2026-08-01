@@ -4,10 +4,10 @@
   "cases": [
     {
       "id": "chronological-multiple-roles",
-      "raw_text": "Nova Byte\nBackend Engineer\nWORK EXPERIENCE\n2022-2024 Platform Engineer at Fictional Orbit Labs\nBuilt APIs\n2020-2022 Software Engineer at Fictional Signal Works\nMaintained services\nEDUCATION\nBSc Computing, Fictional Technical Institute, 2020",
-      "locked_parser_response": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"nova.byte@fictional.invalid","phone":"+1 555 0100","years_experience":4,"skills":["Python","APIs"],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":2020}]},
-      "expected_profile": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"NOVA.BYTE@FICTIONAL.INVALID","phone":"+1 555 0100","years_experience":4.0,"skills":["python","APIs"],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":"2020"}]},
-      "expected_verified_evidence": {},
+      "raw_text": "Nova Byte\nBackend Engineer\nLANGUAGES\nSpanish - Professional working proficiency\nEnglish\nWORK EXPERIENCE\n2022-2024 Platform Engineer at Fictional Orbit Labs\nBuilt APIs\n2020-2022 Software Engineer at Fictional Signal Works\nMaintained services\nEDUCATION\nBSc Computing, Fictional Technical Institute, 2020",
+      "locked_parser_response": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"nova.byte@fictional.invalid","phone":"+1 555 0100","years_experience":4,"skills":["Python","APIs"],"languages":[{"language":" Spanish ","proficiency":"Professional working proficiency"},{"language":"English"}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":2020}],"extraction_evidence":{"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}]}},
+      "expected_profile": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"NOVA.BYTE@FICTIONAL.INVALID","phone":"+1 555 0100","years_experience":4.0,"skills":["python","APIs"],"languages":[{"language":"Spanish","proficiency":"Professional working proficiency"},{"language":"English","proficiency":null}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":"2020"}]},
+      "expected_verified_evidence": {"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}]},
       "expected_warning_codes": []
     },
     {
@@ -28,7 +28,7 @@
     },
     {
       "id": "unusual-headings",
-      "raw_text": "Headingless Star\nCAREER HIGHLIGHTS\nBuilt useful tools\nWHAT I LIKE\nSystems thinking",
+      "raw_text": "Headingless Star\nCAREER HIGHLIGHTS\nBuilt useful tools\nWHAT I LIKE\nEnglish language support and systems thinking",
       "locked_parser_response": {"full_name":"Headingless Star","headline":"Systems thinker","work_history":[],"projects":[]},
       "expected_profile": {"full_name":"Headingless Star","headline":"Systems thinker","work_history":[],"projects":[]},
       "expected_verified_evidence": {},
@@ -36,18 +36,18 @@
     },
     {
       "id": "completeness-warnings",
-      "raw_text": "Missing Contact\ncontact@fictional.invalid\nEXPERIENCE\nA substantive role description\nEDUCATION\nA substantive degree description\nCERTIFICATIONS\nA substantive certificate description",
+      "raw_text": "Missing Contact\ncontact@fictional.invalid\nEXPERIENCE\nA substantive role description\nEDUCATION\nA substantive degree description\nCERTIFICATIONS\nA substantive certificate description\nLANGUAGES\nSpanish and English",
       "locked_parser_response": {"full_name":"Missing Contact"},
       "expected_profile": {"full_name":"Missing Contact"},
       "expected_verified_evidence": {},
-      "expected_warning_codes": ["source_email_not_parsed","missing_work_history","missing_education","missing_certifications"]
+      "expected_warning_codes": ["source_email_not_parsed","missing_work_history","missing_education","missing_certifications","missing_languages"]
     },
     {
       "id": "evidence-rejection",
-      "raw_text": "Proof Lantern\nWORK EXPERIENCE\nFictional Proof Co | Analyst\nEDUCATION\nBSc Proof, Fictional Academy\nCERTIFICATIONS\nFictional Safety Badge\nPROJECTS\nProof Console",
-      "locked_parser_response": {"full_name":"Proof Lantern","work_history":[{"company":"Fictional Proof Co","title":"Analyst"}],"education":[{"degree":"BSc Proof","institution":"Fictional Academy"}],"certifications":["Fictional Safety Badge"],"projects":[{"name":"Proof Console"}],"extraction_evidence":{"work_history":[{"item_index":0,"excerpt":"Fictional Proof Co | Analyst"},{"item_index":0,"excerpt":"Fictional Safety Badge"},{"item_index":-1,"excerpt":"bad"},{"item_index":9,"excerpt":"bad"}],"education":[{"item_index":0,"excerpt":"BSc Proof, Fictional Academy"}],"certifications":[{"item_index":0,"excerpt":"Fictional Safety Badge"}],"projects":[{"item_index":0,"excerpt":"not in source"},{"item_index":0,"excerpt":"Proof Console"}],"skills":[{"item_index":0,"excerpt":"unsupported"}]}},
-      "expected_profile": {"full_name":"Proof Lantern","work_history":[{"company":"Fictional Proof Co","title":"Analyst"}],"education":[{"degree":"BSc Proof","institution":"Fictional Academy"}],"certifications":["Fictional Safety Badge"],"projects":[{"name":"Proof Console"}]},
-      "expected_verified_evidence": {"work_history":[{"item_index":0,"excerpt":"Fictional Proof Co | Analyst"}],"education":[{"item_index":0,"excerpt":"BSc Proof, Fictional Academy"}],"certifications":[{"item_index":0,"excerpt":"Fictional Safety Badge"}],"projects":[{"item_index":0,"excerpt":"Proof Console"}]},
+      "raw_text": "Proof Lantern\nWORK EXPERIENCE\nFictional Proof Co | Analyst\nEDUCATION\nBSc Proof, Fictional Academy\nCERTIFICATIONS\nFictional Safety Badge\nPROJECTS\nProof Console\nLANGUAGES\nPython\nPYTHON\nFrench",
+      "locked_parser_response": {"full_name":"Proof Lantern","work_history":[{"company":"Fictional Proof Co","title":"Analyst"}],"education":[{"degree":"BSc Proof","institution":"Fictional Academy"}],"certifications":["Fictional Safety Badge"],"projects":[{"name":"Proof Console"}],"languages":[{"language":"Python"},{"language":"PYTHON","proficiency":"Fluent"},{"language":"French"}],"extraction_evidence":{"work_history":[{"item_index":0,"excerpt":"Fictional Proof Co | Analyst"},{"item_index":0,"excerpt":"Fictional Safety Badge"},{"item_index":-1,"excerpt":"bad"},{"item_index":9,"excerpt":"bad"}],"education":[{"item_index":0,"excerpt":"BSc Proof, Fictional Academy"}],"certifications":[{"item_index":0,"excerpt":"Fictional Safety Badge"}],"projects":[{"item_index":0,"excerpt":"not in source"},{"item_index":0,"excerpt":"Proof Console"}],"languages":[{"item_index":0,"excerpt":"Python"},{"item_index":0,"excerpt":"PYTHON"},{"item_index":1,"excerpt":"French"},{"item_index":9,"excerpt":"bad"}],"skills":[{"item_index":0,"excerpt":"unsupported"}]}},
+      "expected_profile": {"full_name":"Proof Lantern","work_history":[{"company":"Fictional Proof Co","title":"Analyst"}],"education":[{"degree":"BSc Proof","institution":"Fictional Academy"}],"certifications":["Fictional Safety Badge"],"projects":[{"name":"Proof Console"}],"languages":[{"language":"Python","proficiency":null},{"language":"French","proficiency":null}]},
+      "expected_verified_evidence": {"work_history":[{"item_index":0,"excerpt":"Fictional Proof Co | Analyst"}],"education":[{"item_index":0,"excerpt":"BSc Proof, Fictional Academy"}],"certifications":[{"item_index":0,"excerpt":"Fictional Safety Badge"}],"projects":[{"item_index":0,"excerpt":"Proof Console"}],"languages":[{"item_index":0,"excerpt":"Python"},{"item_index":1,"excerpt":"French"}]},
       "expected_warning_codes": []
     }
   ]

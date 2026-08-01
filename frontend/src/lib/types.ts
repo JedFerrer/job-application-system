@@ -67,6 +67,11 @@ export interface ProjectItem {
   url: string | null;
 }
 
+export interface LanguageItem {
+  language: string;
+  proficiency: string | null;
+}
+
 export interface ParsedProfile {
   full_name: string | null;
   email: string | null;
@@ -76,6 +81,7 @@ export interface ParsedProfile {
   skills: string[];
   education: EducationItem[];
   certifications: string[];
+  languages: LanguageItem[];
   links: ProfessionalLinks;
   projects: ProjectItem[];
   work_history: WorkItem[];
@@ -103,7 +109,8 @@ export interface ExtractionWarning {
     | "source_github_not_parsed"
     | "missing_work_history"
     | "missing_education"
-    | "missing_certifications";
+    | "missing_certifications"
+    | "missing_languages";
   message: string;
 }
 
@@ -130,6 +137,7 @@ export interface ExtractionEvidence {
   education: EvidenceItem[];
   certifications: EvidenceItem[];
   projects: EvidenceItem[];
+  languages: EvidenceItem[];
 }
 
 export interface ProfileResponse {

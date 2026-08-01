@@ -24,6 +24,7 @@ import type {
   ParsedProfile,
   ProfessionalLinks,
   ProjectItem,
+  LanguageItem,
   ResumeImportDetail,
   ResumeImportListItem,
   WorkItem,
@@ -57,6 +58,7 @@ const EMPTY_EXTRACTION_EVIDENCE: ExtractionEvidence = {
   education: [],
   certifications: [],
   projects: [],
+  languages: [],
 };
 import {
   Dialog,
@@ -117,6 +119,10 @@ function normalizeProfile(profile: ParsedProfile): ParsedProfile {
       technologies: project.technologies.map((item) => item.trim()).filter(Boolean),
       achievements: project.achievements.map((item) => item.trim()).filter(Boolean),
       url: project.url?.trim() || null,
+    })),
+    languages: (profile.languages ?? []).map((item) => ({
+      language: item.language.trim(),
+      proficiency: item.proficiency?.trim() || null,
     })),
   };
 }
@@ -390,6 +396,11 @@ export function ProfilePanel() {
             editing={editing}
             onChange={(certs) => handleChange("certifications", certs)}
           />
+          <LanguagesSection
+            languages={displayProfile.languages ?? []}
+            editing={editing}
+            onChange={(languages) => handleChange("languages", languages)}
+          />
         </div>
         <div className="flex flex-col gap-8 lg:col-span-2">
           <WorkTimeline
@@ -580,6 +591,7 @@ function DraftProfileView({
   const skills = profile.skills ?? [];
   const education = profile.education ?? [];
   const certifications = profile.certifications ?? [];
+  const languages = profile.languages ?? [];
   return (
     <div className="flex max-h-[55vh] flex-col gap-5 overflow-y-auto text-sm">
       <div>
@@ -591,6 +603,9 @@ function DraftProfileView({
       {workHistory.length > 0 && <ReviewSection title="Work history"><ul className="list-disc space-y-1 pl-5">{workHistory.map((item, index) => <li key={`${item.company ?? "role"}-${index}`}>{[item.title, item.company].filter(Boolean).join(" · ") || "Role"}{item.highlights.length > 0 && ` — ${item.highlights.join("; ")}`}</li>)}</ul></ReviewSection>}
       {education.length > 0 && <ReviewSection title="Education"><ul className="list-disc space-y-1 pl-5">{education.map((item, index) => <li key={index}>{[item.degree, item.institution, item.year].filter(Boolean).join(" · ") || "Education"}</li>)}</ul></ReviewSection>}
       {certifications.length > 0 && <ReviewSection title="Certifications"><p>{certifications.join(", ")}</p></ReviewSection>}
+      <ReviewSection title="Languages">
+        {languages.length > 0 ? <ul className="list-disc space-y-1 pl-5">{languages.map((item, index) => <li key={`${item.language}-${index}`}>{item.language}{item.proficiency ? ` · ${item.proficiency}` : ""}</li>)}</ul> : <p className="text-muted-foreground">No languages added.</p>}
+      </ReviewSection>
       <ReviewSection title="Professional links">
         {Object.entries(links).some(([, value]) => value) ? <div className="flex flex-wrap gap-3">{Object.entries(links).map(([name, value]) => value && <a key={name} className="text-primary underline" href={value} target="_blank" rel="noopener noreferrer">{name}</a>)}</div> : <p className="text-muted-foreground">No professional links added.</p>}
       </ReviewSection>
@@ -608,6 +623,7 @@ function EvidenceReview({ evidence }: { evidence: ExtractionEvidence }) {
     ["Education", evidence.education],
     ["Certifications", evidence.certifications],
     ["Projects", evidence.projects],
+    ["Languages", evidence.languages ?? []],
   ] as const;
   const available = groups.some(([, items]) => items.length > 0);
   if (!available) return null;
@@ -1471,6 +1487,95 @@ function CertificationsSection({
             </Button>
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function LanguagesSection({
+  languages,
+  editing,
+  onChange,
+}: {
+  languages: LanguageItem[];
+  editing: boolean;
+  onChange: (languages: LanguageItem[]) => void;
+}) {
+  if (!editing && languages.length === 0) {
+    return (
+      <Card>
+        <CardHeader><CardTitle className="text-base">Languages</CardTitle></CardHeader>
+        <CardContent><p className="text-sm text-muted-foreground">No languages added.</p></CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-base">Languages</CardTitle>
+        {editing && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={languages.length >= 20}
+            onClick={() => onChange([...languages, { language: "", proficiency: null }])}
+          >
+            <Plus className="h-4 w-4" />
+            Add language
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {languages.map((item, index) => {
+          const set = (patch: Partial<LanguageItem>) => {
+            const next = [...languages];
+            next[index] = { ...item, ...patch };
+            onChange(next);
+          };
+          if (!editing) {
+            return (
+              <div key={`${item.language}-${index}`} className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+                <span className="font-medium">{item.language}</span>
+                {item.proficiency && <span className="text-sm text-muted-foreground">{item.proficiency}</span>}
+              </div>
+            );
+          }
+          return (
+            <div key={index} className="relative grid grid-cols-1 gap-3 rounded-md border p-4 sm:grid-cols-2 sm:pr-12">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`pf-language-${index}`}>Language</Label>
+                <Input
+                  id={`pf-language-${index}`}
+                  value={item.language}
+                  onChange={(event) => set({ language: event.target.value })}
+                  maxLength={100}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`pf-language-proficiency-${index}`}>Proficiency</Label>
+                <Input
+                  id={`pf-language-proficiency-${index}`}
+                  value={item.proficiency ?? ""}
+                  onChange={(event) => set({ proficiency: event.target.value || null })}
+                  maxLength={100}
+                  placeholder="Optional"
+                />
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                aria-label={`Remove ${item.language.trim() || `language ${index + 1}`}`}
+                className="absolute right-2 top-2 h-7 px-2 text-muted-foreground hover:text-destructive"
+                onClick={() => onChange(languages.filter((_, itemIndex) => itemIndex !== index))}
+              >
+                <Minus className="h-3.5 w-3.5" />
+                <span className="sr-only">Remove</span>
+              </Button>
+            </div>
+          );
+        })}
       </CardContent>
     </Card>
   );

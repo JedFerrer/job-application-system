@@ -26,7 +26,7 @@ from app.core.config import get_settings
 from app.domain.resume.provenance import build_resume_import_provenance
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import ParsedProfile
-from app.domain.resume.service import ResumeService
+from app.domain.resume.service import ResumeService, build_summary_text
 from app.infrastructure.database import get_db
 from app.models.resume import CandidateProfile, Resume
 from app.models.user import User
@@ -129,13 +129,16 @@ async def _seed_profile(
         email=f"user{user_id}@test.com",
         headline="Software Engineer",
         skills=["Python", "FastAPI"],
+        languages=[{"language": "English", "proficiency": "Fluent"}],
+        certifications=["AWS Certified Developer"],
+        projects=[{"name": "Candidate Portal", "technologies": ["Python"]}],
         years_experience=3,
     )
     profile = CandidateProfile(
         user_id=user_id,
         resume_id=resume.id,
         parsed=parsed.model_dump(),
-        summary_text="Software Engineer. Skills: Python, FastAPI.",
+        summary_text=build_summary_text(parsed),
         embedding=[0.0] * 1536,
     )
     db.add(profile)
@@ -301,6 +304,38 @@ class TestProfileIntegration:
             assert data["profile"]["full_name"] == "Test User"
             assert data["profile"]["headline"] == "Software Engineer"
             assert "Python" in data["profile"]["skills"]
+            assert data["profile"]["languages"] == [
+                {"language": "English", "proficiency": "Fluent"}
+            ]
+
+    @pytest.mark.asyncio
+    async def test_language_only_profile_update_preserves_existing_sections(
+        self, session_factory
+    ) -> None:  # noqa: ANN001
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            await _seed_profile(db, user_id=user.id)
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            profile = client.get("/resume/profile").json()["profile"]
+            existing_projects = profile["projects"]
+            profile["languages"] = [
+                {"language": "Spanish", "proficiency": "Professional"}
+            ]
+
+            response = client.put("/resume/profile", json={"profile": profile})
+
+            assert response.status_code == 200
+            updated = response.json()["profile"]
+            assert updated["languages"] == [
+                {"language": "Spanish", "proficiency": "Professional"}
+            ]
+            assert updated["certifications"] == ["AWS Certified Developer"]
+            assert updated["projects"] == existing_projects
+            assert client.get("/resume/profile").json()["profile"] == updated
 
     @pytest.mark.asyncio
     async def test_import_list_and_detail_are_owned_current_drafts_only(
