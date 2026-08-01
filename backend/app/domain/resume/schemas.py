@@ -26,7 +26,7 @@ from pydantic import (
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
 from app.domain.resume.provenance import ResumeImportProvenance
 
-PARSED_PROFILE_SCHEMA_VERSION = "parsed-profile-v2"
+PARSED_PROFILE_SCHEMA_VERSION = "parsed-profile-v3"
 
 
 def _normalize_optional_text(value: object) -> object:
@@ -161,6 +161,27 @@ class LanguageItem(BaseModel):
         return _normalize_optional_text(value)
 
 
+class ProfessionalCredential(BaseModel):
+    """A professional license or registration explicitly listed by the candidate."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=255)
+    issuer: str | None = Field(default=None, max_length=255)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _normalize_name(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("issuer", mode="before")
+    @classmethod
+    def _normalize_issuer(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+
 class ParsedProfile(BaseModel):
     """Normalized, validated resume payload (also the LLM output contract)."""
 
@@ -181,6 +202,7 @@ class ParsedProfile(BaseModel):
     education: list[EducationItem] = Field(default_factory=list)
     certifications: list[str] = Field(default_factory=list)
     languages: list[LanguageItem] = Field(default_factory=list, max_length=20)
+    licenses: list[ProfessionalCredential] = Field(default_factory=list, max_length=30)
     links: ProfessionalLinks = Field(default_factory=ProfessionalLinks)
     projects: list[ProjectItem] = Field(default_factory=list)
     work_history: list[WorkItem] = Field(
@@ -215,6 +237,30 @@ class ParsedProfile(BaseModel):
             result.append(item)
         return result
 
+    @field_validator("licenses", mode="before")
+    @classmethod
+    def _deduplicate_licenses(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        result: list[object] = []
+        seen: set[tuple[str, str]] = set()
+        for item in value:
+            if isinstance(item, dict):
+                name, issuer = item.get("name"), item.get("issuer")
+            elif isinstance(item, ProfessionalCredential):
+                name, issuer = item.name, item.issuer
+            else:
+                name, issuer = None, None
+            if isinstance(name, str):
+                issuer_key = issuer.strip().casefold() if isinstance(issuer, str) else ""
+                key = (name.strip().casefold(), issuer_key)
+                if key[0] and key in seen:
+                    continue
+                if key[0]:
+                    seen.add(key)
+            result.append(item)
+        return result
+
     @field_validator("years_experience", mode="before")
     @classmethod
     def _coerce_years(cls, value: object) -> object:
@@ -245,6 +291,7 @@ class ExtractionEvidence(BaseModel):
     certifications: list[EvidenceItem] = Field(default_factory=list)
     projects: list[EvidenceItem] = Field(default_factory=list)
     languages: list[EvidenceItem] = Field(default_factory=list)
+    licenses: list[EvidenceItem] = Field(default_factory=list)
 
 
 class ParsedResumeResult(NamedTuple):
@@ -268,6 +315,7 @@ class ExtractionWarning(BaseModel):
         "missing_education",
         "missing_certifications",
         "missing_languages",
+        "missing_licenses",
     ]
     message: str
 

@@ -7,7 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app.domain.resume.schemas import ExtractionWarning, ParsedProfile
 
-COMPLETENESS_VALIDATOR_VERSION = "completeness-validator-v2"
+COMPLETENESS_VALIDATOR_VERSION = "completeness-validator-v3"
 
 _EMAIL_RE = re.compile(
     r"(?<![\w.+-])[\w.!#$%&'*+/=?^`{|}~-]+@"
@@ -24,6 +24,9 @@ _COMMON_SECTION_HEADINGS = frozenset(
         "coursework",
         "interests",
         "languages",
+        "licenses",
+        "licensure",
+        "professional registrations",
         "objective",
         "professional summary",
         "profile",
@@ -56,6 +59,13 @@ _SECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "missing_languages",
         re.compile(r"^(?:languages|language\s+skills)\s*:?$", re.IGNORECASE),
     ),
+    (
+        "missing_licenses",
+        re.compile(
+            r"^(?:professional\s+)?(?:licenses?|licensure|registrations?)\s*:?$",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 _MESSAGES = {
@@ -86,6 +96,10 @@ _MESSAGES = {
     "missing_languages": (
         "A languages section was detected but no languages were imported. "
         "Review the imported profile."
+    ),
+    "missing_licenses": (
+        "A licenses or registrations section was detected but no credentials were "
+        "imported. Review the imported profile."
     ),
 }
 
@@ -182,6 +196,7 @@ def find_completeness_warnings(text: str, profile: ParsedProfile) -> list[Extrac
         "missing_education": "education",
         "missing_certifications": "certifications",
         "missing_languages": "languages",
+        "missing_licenses": "licenses",
     }
     for code, pattern in _SECTION_PATTERNS:
         collection = getattr(profile, profile_fields[code])

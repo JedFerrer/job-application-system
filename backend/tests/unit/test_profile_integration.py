@@ -130,6 +130,7 @@ async def _seed_profile(
         headline="Software Engineer",
         skills=["Python", "FastAPI"],
         languages=[{"language": "English", "proficiency": "Fluent"}],
+        licenses=[{"name": "Registered Engineer", "issuer": "State Board"}],
         certifications=["AWS Certified Developer"],
         projects=[{"name": "Candidate Portal", "technologies": ["Python"]}],
         years_experience=3,
@@ -307,9 +308,12 @@ class TestProfileIntegration:
             assert data["profile"]["languages"] == [
                 {"language": "English", "proficiency": "Fluent"}
             ]
+            assert data["profile"]["licenses"] == [
+                {"name": "Registered Engineer", "issuer": "State Board"}
+            ]
 
     @pytest.mark.asyncio
-    async def test_language_only_profile_update_preserves_existing_sections(
+    async def test_profile_update_preserves_existing_sections_and_licenses(
         self, session_factory
     ) -> None:  # noqa: ANN001
         async with session_factory() as db:
@@ -325,6 +329,9 @@ class TestProfileIntegration:
             profile["languages"] = [
                 {"language": "Spanish", "proficiency": "Professional"}
             ]
+            profile["licenses"] = [
+                {"name": "Safety Registration", "issuer": "Safety Board"}
+            ]
 
             response = client.put("/resume/profile", json={"profile": profile})
 
@@ -332,6 +339,9 @@ class TestProfileIntegration:
             updated = response.json()["profile"]
             assert updated["languages"] == [
                 {"language": "Spanish", "proficiency": "Professional"}
+            ]
+            assert updated["licenses"] == [
+                {"name": "Safety Registration", "issuer": "Safety Board"}
             ]
             assert updated["certifications"] == ["AWS Certified Developer"]
             assert updated["projects"] == existing_projects

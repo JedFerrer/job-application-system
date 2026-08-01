@@ -72,6 +72,11 @@ export interface LanguageItem {
   proficiency: string | null;
 }
 
+export interface ProfessionalCredential {
+  name: string;
+  issuer: string | null;
+}
+
 export interface ParsedProfile {
   full_name: string | null;
   email: string | null;
@@ -82,6 +87,7 @@ export interface ParsedProfile {
   education: EducationItem[];
   certifications: string[];
   languages: LanguageItem[];
+  licenses: ProfessionalCredential[];
   links: ProfessionalLinks;
   projects: ProjectItem[];
   work_history: WorkItem[];
@@ -110,7 +116,8 @@ export interface ExtractionWarning {
     | "missing_work_history"
     | "missing_education"
     | "missing_certifications"
-    | "missing_languages";
+    | "missing_languages"
+    | "missing_licenses";
   message: string;
 }
 
@@ -138,6 +145,7 @@ export interface ExtractionEvidence {
   certifications: EvidenceItem[];
   projects: EvidenceItem[];
   languages: EvidenceItem[];
+  licenses: EvidenceItem[];
 }
 
 export interface ProfileResponse {

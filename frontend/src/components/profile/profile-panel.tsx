@@ -25,6 +25,7 @@ import type {
   ProfessionalLinks,
   ProjectItem,
   LanguageItem,
+  ProfessionalCredential,
   ResumeImportDetail,
   ResumeImportListItem,
   WorkItem,
@@ -59,6 +60,7 @@ const EMPTY_EXTRACTION_EVIDENCE: ExtractionEvidence = {
   certifications: [],
   projects: [],
   languages: [],
+  licenses: [],
 };
 import {
   Dialog,
@@ -123,6 +125,10 @@ function normalizeProfile(profile: ParsedProfile): ParsedProfile {
     languages: (profile.languages ?? []).map((item) => ({
       language: item.language.trim(),
       proficiency: item.proficiency?.trim() || null,
+    })),
+    licenses: (profile.licenses ?? []).map((item) => ({
+      name: item.name.trim(),
+      issuer: item.issuer?.trim() || null,
     })),
   };
 }
@@ -401,6 +407,11 @@ export function ProfilePanel() {
             editing={editing}
             onChange={(languages) => handleChange("languages", languages)}
           />
+          <LicensesSection
+            licenses={displayProfile.licenses ?? []}
+            editing={editing}
+            onChange={(licenses) => handleChange("licenses", licenses)}
+          />
         </div>
         <div className="flex flex-col gap-8 lg:col-span-2">
           <WorkTimeline
@@ -592,6 +603,7 @@ function DraftProfileView({
   const education = profile.education ?? [];
   const certifications = profile.certifications ?? [];
   const languages = profile.languages ?? [];
+  const licenses = profile.licenses ?? [];
   return (
     <div className="flex max-h-[55vh] flex-col gap-5 overflow-y-auto text-sm">
       <div>
@@ -605,6 +617,9 @@ function DraftProfileView({
       {certifications.length > 0 && <ReviewSection title="Certifications"><p>{certifications.join(", ")}</p></ReviewSection>}
       <ReviewSection title="Languages">
         {languages.length > 0 ? <ul className="list-disc space-y-1 pl-5">{languages.map((item, index) => <li key={`${item.language}-${index}`}>{item.language}{item.proficiency ? ` · ${item.proficiency}` : ""}</li>)}</ul> : <p className="text-muted-foreground">No languages added.</p>}
+      </ReviewSection>
+      <ReviewSection title="Licenses and registrations">
+        {licenses.length > 0 ? <ul className="list-disc space-y-1 pl-5">{licenses.map((item, index) => <li key={`${item.name}-${item.issuer ?? ""}-${index}`}>{item.name}{item.issuer ? ` · ${item.issuer}` : ""}</li>)}</ul> : <p className="text-muted-foreground">No licenses or registrations added.</p>}
       </ReviewSection>
       <ReviewSection title="Professional links">
         {Object.entries(links).some(([, value]) => value) ? <div className="flex flex-wrap gap-3">{Object.entries(links).map(([name, value]) => value && <a key={name} className="text-primary underline" href={value} target="_blank" rel="noopener noreferrer">{name}</a>)}</div> : <p className="text-muted-foreground">No professional links added.</p>}
@@ -624,6 +639,7 @@ function EvidenceReview({ evidence }: { evidence: ExtractionEvidence }) {
     ["Certifications", evidence.certifications],
     ["Projects", evidence.projects],
     ["Languages", evidence.languages ?? []],
+    ["Licenses and registrations", evidence.licenses ?? []],
   ] as const;
   const available = groups.some(([, items]) => items.length > 0);
   if (!available) return null;
@@ -1569,6 +1585,95 @@ function LanguagesSection({
                 aria-label={`Remove ${item.language.trim() || `language ${index + 1}`}`}
                 className="absolute right-2 top-2 h-7 px-2 text-muted-foreground hover:text-destructive"
                 onClick={() => onChange(languages.filter((_, itemIndex) => itemIndex !== index))}
+              >
+                <Minus className="h-3.5 w-3.5" />
+                <span className="sr-only">Remove</span>
+              </Button>
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
+function LicensesSection({
+  licenses,
+  editing,
+  onChange,
+}: {
+  licenses: ProfessionalCredential[];
+  editing: boolean;
+  onChange: (licenses: ProfessionalCredential[]) => void;
+}) {
+  if (!editing && licenses.length === 0) {
+    return (
+      <Card>
+        <CardHeader><CardTitle className="text-base">Licenses and registrations</CardTitle></CardHeader>
+        <CardContent><p className="text-sm text-muted-foreground">No licenses or registrations added.</p></CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-base">Licenses and registrations</CardTitle>
+        {editing && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={licenses.length >= 30}
+            onClick={() => onChange([...licenses, { name: "", issuer: null }])}
+          >
+            <Plus className="h-4 w-4" />
+            Add credential
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {licenses.map((item, index) => {
+          const set = (patch: Partial<ProfessionalCredential>) => {
+            const next = [...licenses];
+            next[index] = { ...item, ...patch };
+            onChange(next);
+          };
+          if (!editing) {
+            return (
+              <div key={`${item.name}-${item.issuer ?? ""}-${index}`} className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+                <span className="font-medium">{item.name}</span>
+                {item.issuer && <span className="text-sm text-muted-foreground">{item.issuer}</span>}
+              </div>
+            );
+          }
+          return (
+            <div key={index} className="relative grid grid-cols-1 gap-3 rounded-md border p-4 sm:grid-cols-2 sm:pr-12">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`pf-license-${index}`}>Credential</Label>
+                <Input
+                  id={`pf-license-${index}`}
+                  value={item.name}
+                  onChange={(event) => set({ name: event.target.value })}
+                  maxLength={255}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`pf-license-issuer-${index}`}>Issuer</Label>
+                <Input
+                  id={`pf-license-issuer-${index}`}
+                  value={item.issuer ?? ""}
+                  onChange={(event) => set({ issuer: event.target.value || null })}
+                  maxLength={255}
+                  placeholder="Optional"
+                />
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                aria-label={`Remove ${item.name.trim() || `credential ${index + 1}`}`}
+                className="absolute right-2 top-2 h-7 px-2 text-muted-foreground hover:text-destructive"
+                onClick={() => onChange(licenses.filter((_, itemIndex) => itemIndex !== index))}
               >
                 <Minus className="h-3.5 w-3.5" />
                 <span className="sr-only">Remove</span>

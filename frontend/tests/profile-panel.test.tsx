@@ -38,6 +38,7 @@ const profile = {
       { language: "Spanish", proficiency: "Professional" },
       { language: "English", proficiency: null },
     ],
+    licenses: [{ name: "Registered Engineer", issuer: "State Board" }],
     links: {
       linkedin: "https://linkedin.com/in/ada",
       github: null,
@@ -148,6 +149,22 @@ describe("ProfilePanel projects and professional links", () => {
     expect(saved.languages).toEqual([{ language: "Spanish", proficiency: "Fluent" }]);
   });
 
+  it("displays and edits licenses with an optional issuer", async () => {
+    await render("Registered Engineer");
+    expect(container.textContent).toContain("State Board");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Edit profile"))?.click());
+    await setInput("#pf-license-issuer-0", " Engineering Board ");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add credential"))?.click());
+    await setInput("#pf-license-1", "Safety Registration");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save all changes"))?.click());
+    await vi.waitFor(() => expect(apiMocks.updateProfile).toHaveBeenCalled());
+    const saved = apiMocks.updateProfile.mock.calls.at(-1)?.[0];
+    expect(saved.licenses).toEqual([
+      { name: "Registered Engineer", issuer: "Engineering Board" },
+      { name: "Safety Registration", issuer: null },
+    ]);
+  });
+
   it("shows clear empty states for missing links and projects", async () => {
     apiMocks.getProfile.mockResolvedValue({
       ...profile,
@@ -156,11 +173,13 @@ describe("ProfilePanel projects and professional links", () => {
         links: { linkedin: null, github: null, portfolio: null, website: null },
         projects: [],
         languages: [],
+        licenses: [],
       },
     });
     await render("No projects added.");
     expect(container.textContent).toContain("No professional links added.");
     expect(container.textContent).toContain("No languages added.");
+    expect(container.textContent).toContain("No licenses or registrations added.");
   });
 
   it("clears a populated professional link to null while preserving the full payload", async () => {

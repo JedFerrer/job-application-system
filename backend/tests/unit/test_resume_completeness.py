@@ -62,6 +62,17 @@ def test_languages_warning_is_bounded_to_clear_section() -> None:
     assert _codes("I used English language support at work.", ParsedProfile()) == []
 
 
+def test_licenses_warning_is_bounded_to_clear_section() -> None:
+    assert _codes("Professional Registrations\nRegistered Engineer", ParsedProfile()) == [
+        "missing_licenses"
+    ]
+    populated = ParsedProfile.model_validate(
+        {"licenses": [{"name": "Registered Engineer", "issuer": "State Board"}]}
+    )
+    assert _codes("Licensure:\nRegistered Engineer", populated) == []
+    assert _codes("I discussed licenses for software at work.", ParsedProfile()) == []
+
+
 @pytest.mark.parametrize("heading", ["Projects"])
 def test_unmonitored_heading_terminates_empty_section(heading: str) -> None:
     text = f"Education\n\n{heading}\nSome content"

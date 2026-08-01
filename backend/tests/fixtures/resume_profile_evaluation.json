@@ -4,10 +4,10 @@
   "cases": [
     {
       "id": "chronological-multiple-roles",
-      "raw_text": "Nova Byte\nBackend Engineer\nLANGUAGES\nSpanish - Professional working proficiency\nEnglish\nWORK EXPERIENCE\n2022-2024 Platform Engineer at Fictional Orbit Labs\nBuilt APIs\n2020-2022 Software Engineer at Fictional Signal Works\nMaintained services\nEDUCATION\nBSc Computing, Fictional Technical Institute, 2020",
-      "locked_parser_response": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"nova.byte@fictional.invalid","phone":"+1 555 0100","years_experience":4,"skills":["Python","APIs"],"languages":[{"language":" Spanish ","proficiency":"Professional working proficiency"},{"language":"English"}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":2020}],"extraction_evidence":{"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}]}},
-      "expected_profile": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"NOVA.BYTE@FICTIONAL.INVALID","phone":"+1 555 0100","years_experience":4.0,"skills":["python","APIs"],"languages":[{"language":"Spanish","proficiency":"Professional working proficiency"},{"language":"English","proficiency":null}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":"2020"}]},
-      "expected_verified_evidence": {"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}]},
+      "raw_text": "Nova Byte\nBackend Engineer\nLANGUAGES\nSpanish - Professional working proficiency\nEnglish\nPROFESSIONAL REGISTRATIONS\nRegistered Engineer — Fictional State Board\nWORK EXPERIENCE\n2022-2024 Platform Engineer at Fictional Orbit Labs\nBuilt APIs\n2020-2022 Software Engineer at Fictional Signal Works\nMaintained services\nEDUCATION\nBSc Computing, Fictional Technical Institute, 2020",
+      "locked_parser_response": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"nova.byte@fictional.invalid","phone":"+1 555 0100","years_experience":4,"skills":["Python","APIs"],"languages":[{"language":" Spanish ","proficiency":"Professional working proficiency"},{"language":"English"}],"licenses":[{"name":" Registered Engineer ","issuer":" Fictional State Board "}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":2020}],"extraction_evidence":{"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}],"licenses":[{"item_index":0,"excerpt":"Registered Engineer — Fictional State Board"}]}},
+      "expected_profile": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"NOVA.BYTE@FICTIONAL.INVALID","phone":"+1 555 0100","years_experience":4.0,"skills":["python","APIs"],"languages":[{"language":"Spanish","proficiency":"Professional working proficiency"},{"language":"English","proficiency":null}],"licenses":[{"name":"Registered Engineer","issuer":"Fictional State Board"}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":"2020"}]},
+      "expected_verified_evidence": {"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}],"licenses":[{"item_index":0,"excerpt":"Registered Engineer — Fictional State Board"}]},
       "expected_warning_codes": []
     },
     {
@@ -36,11 +36,11 @@
     },
     {
       "id": "completeness-warnings",
-      "raw_text": "Missing Contact\ncontact@fictional.invalid\nEXPERIENCE\nA substantive role description\nEDUCATION\nA substantive degree description\nCERTIFICATIONS\nA substantive certificate description\nLANGUAGES\nSpanish and English",
+      "raw_text": "Missing Contact\ncontact@fictional.invalid\nEXPERIENCE\nA substantive role description\nEDUCATION\nA substantive degree description\nCERTIFICATIONS\nA substantive certificate description\nLANGUAGES\nSpanish and English\nLICENSES\nRegistered Engineer",
       "locked_parser_response": {"full_name":"Missing Contact"},
       "expected_profile": {"full_name":"Missing Contact"},
       "expected_verified_evidence": {},
-      "expected_warning_codes": ["source_email_not_parsed","missing_work_history","missing_education","missing_certifications","missing_languages"]
+      "expected_warning_codes": ["source_email_not_parsed","missing_work_history","missing_education","missing_certifications","missing_languages","missing_licenses"]
     },
     {
       "id": "evidence-rejection",

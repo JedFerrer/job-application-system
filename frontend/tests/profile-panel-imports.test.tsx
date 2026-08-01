@@ -61,6 +61,7 @@ const profile = {
     education: [],
     certifications: [],
     languages: [],
+    licenses: [],
     links: { linkedin: null, github: null, portfolio: null, website: null },
     projects: [],
     work_history: [],
@@ -69,7 +70,7 @@ const profile = {
   },
 };
 const draft = { resume_id: 11, filename: "replacement.pdf", created_at: "2026-07-30T00:00:00Z", lifecycle_status: "draft" as const };
-const detail = { ...draft, is_active: false, extraction_evidence: { work_history: [], education: [], certifications: [], projects: [{ item_index: 0, excerpt: "Built Project X for resume matching." }], languages: [{ item_index: 0, excerpt: "Spanish - Professional" }] }, profile: { ...profile.profile, full_name: "Draft Ada", languages: [{ language: "Spanish", proficiency: "Professional" }], links: { linkedin: "https://linkedin.com/in/draft", github: null, portfolio: null, website: null }, projects: [{ name: "Project X", description: null, technologies: ["Python"], achievements: [], url: null }] } };
+const detail = { ...draft, is_active: false, extraction_evidence: { work_history: [], education: [], certifications: [], projects: [{ item_index: 0, excerpt: "Built Project X for resume matching." }], languages: [{ item_index: 0, excerpt: "Spanish - Professional" }], licenses: [{ item_index: 0, excerpt: "Registered Engineer — State Board" }] }, profile: { ...profile.profile, full_name: "Draft Ada", languages: [{ language: "Spanish", proficiency: "Professional" }], licenses: [{ name: "Registered Engineer", issuer: "State Board" }], links: { linkedin: "https://linkedin.com/in/draft", github: null, portfolio: null, website: null }, projects: [{ name: "Project X", description: null, technologies: ["Python"], achievements: [], url: null }] } };
 
 describe("ProfilePanel imported resume drafts", () => {
   let container: HTMLDivElement;

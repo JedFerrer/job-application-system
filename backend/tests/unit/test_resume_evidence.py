@@ -26,6 +26,7 @@ def _profile() -> ParsedProfile:
             "education": [{"degree": "BSc", "institution": "MIT", "year": "2020"}],
             "certifications": ["AWS Certified Developer"],
             "projects": [{"name": "Resume Matcher"}],
+            "licenses": [{"name": "Registered Engineer", "issuer": "State Board"}],
         }
     )
 
@@ -34,7 +35,7 @@ def test_valid_evidence_is_verified_for_all_supported_categories() -> None:
     profile = _profile()
     source = (
         "Acme Engineer\nMIT BSc 2020\nAWS Certified Developer\n"
-        "Resume Matcher"
+        "Resume Matcher\nRegistered Engineer, State Board"
     )
 
     result = resume_parser._verify_extraction_evidence(
@@ -43,6 +44,7 @@ def test_valid_evidence_is_verified_for_all_supported_categories() -> None:
             "education": [{"item_index": 0, "excerpt": "MIT BSc 2020"}],
             "certifications": [{"item_index": 0, "excerpt": "AWS CERTIFIED DEVELOPER"}],
             "projects": [{"item_index": 0, "excerpt": "Resume Matcher"}],
+            "licenses": [{"item_index": 0, "excerpt": "REGISTERED ENGINEER, STATE BOARD"}],
             "skills": [{"item_index": 0, "excerpt": "not allowed"}],
         },
         source,
@@ -55,6 +57,7 @@ def test_valid_evidence_is_verified_for_all_supported_categories() -> None:
             "education": [{"item_index": 0, "excerpt": "MIT BSc 2020"}],
             "certifications": [{"item_index": 0, "excerpt": "AWS CERTIFIED DEVELOPER"}],
             "projects": [{"item_index": 0, "excerpt": "Resume Matcher"}],
+            "licenses": [{"item_index": 0, "excerpt": "REGISTERED ENGINEER, STATE BOARD"}],
         }
     )
 

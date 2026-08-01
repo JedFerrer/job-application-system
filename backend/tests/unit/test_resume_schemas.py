@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.domain.resume.schemas import (
     LanguageItem,
     ParsedProfile,
+    ProfessionalCredential,
     ProfileResponse,
     ProfileUpdate,
 )
@@ -54,6 +55,40 @@ def test_profile_links_and_projects_default_empty() -> None:
     }
     assert profile.projects == []
     assert profile.languages == []
+    assert profile.licenses == []
+
+
+def test_licenses_normalize_deduplicate_and_keep_distinct_issuers() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "licenses": [
+                {"name": " Registered Engineer ", "issuer": " State Board "},
+                {"name": "registered engineer", "issuer": "state board"},
+                {"name": "Registered Engineer", "issuer": "Other Board"},
+                {"name": "Safety Registration", "issuer": "   "},
+            ]
+        }
+    )
+
+    assert [item.model_dump() for item in profile.licenses] == [
+        {"name": "Registered Engineer", "issuer": "State Board"},
+        {"name": "Registered Engineer", "issuer": "Other Board"},
+        {"name": "Safety Registration", "issuer": None},
+    ]
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+def test_professional_credential_rejects_blank_name(name: str) -> None:
+    with pytest.raises(ValidationError):
+        ProfessionalCredential(name=name, issuer=None)
+
+
+def test_licenses_reject_more_than_thirty_items() -> None:
+    licenses = [{"name": f"Credential {index}"} for index in range(31)]
+
+    assert len(ParsedProfile(licenses=licenses[:30]).licenses) == 30
+    with pytest.raises(ValidationError):
+        ParsedProfile(licenses=licenses)
 
 
 def test_languages_normalize_and_deduplicate_without_merging() -> None:
@@ -219,6 +254,7 @@ def test_legacy_profile_json_gets_new_defaults_and_round_trips() -> None:
     assert restored.full_name == "Ada Lovelace"
     assert restored.links.linkedin is None
     assert restored.projects == []
+    assert restored.licenses == []
 
 
 def test_profile_get_put_contract_round_trips_new_fields() -> None:
@@ -226,6 +262,7 @@ def test_profile_get_put_contract_round_trips_new_fields() -> None:
         {
             "links": {"github": "https://github.com/ada"},
             "projects": [{"name": "Analytical Engine"}],
+            "licenses": [{"name": "Registered Engineer", "issuer": "State Board"}],
         }
     )
     update = ProfileUpdate(profile=profile)
@@ -233,6 +270,7 @@ def test_profile_get_put_contract_round_trips_new_fields() -> None:
 
     assert response.profile.links.github == "https://github.com/ada"
     assert response.profile.projects[0].name == "Analytical Engine"
+    assert response.profile.licenses[0].issuer == "State Board"
 
 
 def test_build_summary_text_includes_signal() -> None:

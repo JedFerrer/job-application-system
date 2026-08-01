@@ -7,7 +7,7 @@ drop fields. Extraction only — the model must never invent data.
 
 from __future__ import annotations
 
-RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v2"
+RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v3"
 
 RESUME_EXTRACTION_PROMPT = """You are an expert resume parser. Extract structured \
 information from the resume text below. Return valid JSON only — no markdown, no \
@@ -28,6 +28,11 @@ to today; include internships and part-time roles)
   proficiency only when explicitly stated; never infer fluency; never translate
   or canonicalize names, split bilingual phrases, or create entries from
   incidental prose. Use null when proficiency is absent.
+- licenses (array of objects with: name, issuer). Extract only clearly listed
+  professional licenses and registrations. Preserve source wording and order.
+  Include issuer only when explicitly stated; never infer credential status,
+  numbers, dates, jurisdictions, or verification details. Use null when issuer
+  is absent.
 - links (object with: linkedin, github, portfolio, website; use full http:// or
   https:// URLs when present). If no professional links are present, return an
   empty object {{}} (or an object with those four keys set to null); never return
@@ -55,7 +60,8 @@ Principal; makes architectural decisions
 professional experience.
 
 - extraction_evidence (object with optional arrays for work_history, education,
-  certifications, projects, and languages). Each item must contain item_index (the zero-based
+  certifications, projects, languages, and licenses). Each item must contain
+  item_index (the zero-based
   index in the corresponding extracted array) and excerpt (a short, contiguous
   excerpt copied exactly from the resume text). Return at most one item per index,
   never include contact fields, links, or skills, and return [] when no evidence is

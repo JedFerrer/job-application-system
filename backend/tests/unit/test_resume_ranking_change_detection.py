@@ -69,7 +69,7 @@ async def test_unchanged_resume_matching_text_reuses_embedding(
 
 
 @pytest.mark.asyncio
-async def test_links_projects_and_languages_do_not_change_matching_input(
+async def test_links_projects_languages_and_licenses_do_not_change_matching_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     previous_profile = ParsedProfile(
@@ -82,6 +82,7 @@ async def test_links_projects_and_languages_do_not_change_matching_input(
         links={"github": "https://github.com/ada"},
         projects=[{"name": "Forecasting Tool", "technologies": ["Python"]}],
         languages=[{"language": "English", "proficiency": "Fluent"}],
+        licenses=[{"name": "Registered Engineer", "issuer": "State Board"}],
     )
     repository = FakeResumeRepository(build_summary_text(previous_profile))
 
