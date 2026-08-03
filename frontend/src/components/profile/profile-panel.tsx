@@ -461,13 +461,17 @@ function ImportedResumeDrafts() {
 
   const approveMutation = useMutation({
     mutationFn: (resumeId: number) => resumeApi.approveImport(resumeId),
-    onSuccess: (_, resumeId) => {
+    onSuccess: (response, resumeId) => {
       actionInFlightRef.current = false;
       closeReview();
       void queryClient.invalidateQueries({ queryKey: ["profile"] });
       void queryClient.invalidateQueries({ queryKey: ["resume-imports"] });
       void queryClient.removeQueries({ queryKey: ["resume-import", resumeId] });
-      toast.success("Profile updated. Match rankings will update shortly.");
+      toast.success(
+        response.matching_profile_changed
+          ? "Profile updated. Match rankings will update shortly."
+          : "Profile updated",
+      );
     },
     onError: (err) => {
       actionInFlightRef.current = false;

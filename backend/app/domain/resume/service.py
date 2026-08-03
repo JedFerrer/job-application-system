@@ -28,6 +28,7 @@ from app.domain.resume.exceptions import (
     UnsupportedResumeFormatError,
 )
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
+from app.domain.resume.matching_inputs import build_matching_input_fingerprint
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
 from app.domain.resume.provenance import (
     ResumeImportProvenance,
@@ -172,11 +173,15 @@ class ResumeService:
         previous_profile = await self._repository.get_active_profile(user_id)
         is_first_import = previous_profile is None
         if is_first_import:
-            matching_profile_changed = True
+            embedding_input_changed = True
         else:
             assert previous_profile is not None
-            matching_profile_changed = summary_text != previous_profile.summary_text
-        if matching_profile_changed:
+            embedding_input_changed = summary_text != previous_profile.summary_text
+        if embedding_input_changed or (
+            not is_first_import
+            and previous_profile is not None
+            and previous_profile.embedding is None
+        ):
             embedding = await embed_text(summary_text)
         else:
             assert previous_profile is not None
@@ -234,8 +239,17 @@ class ResumeService:
             raise ProfileNotFoundError(user_id)
 
         summary_text = build_summary_text(profile)
-        matching_profile_changed = summary_text != profile_row.summary_text
-        if matching_profile_changed:
+        embedding_input_changed = summary_text != profile_row.summary_text
+        matching_profile_changed = (
+            build_matching_input_fingerprint(
+                summary_text=summary_text, parsed_profile=profile.model_dump()
+            )
+            != build_matching_input_fingerprint(
+                summary_text=profile_row.summary_text,
+                parsed_profile=profile_row.parsed,
+            )
+        )
+        if embedding_input_changed or profile_row.embedding is None:
             embedding = await embed_text(summary_text)
         else:
             embedding = profile_row.embedding
@@ -299,16 +313,37 @@ class ResumeService:
     async def approve_import_draft(
         self, *, user_id: int, resume_id: int
     ) -> ProfileResponse:
-        profile = await self._repository.approve_import_draft(
+        approval = await self._repository.approve_import_draft(
             user_id=user_id, resume_id=resume_id
         )
-        if profile is None:
+        if approval is None:
             raise ResumeImportDraftNotFoundError(resume_id)
+        if not approval.activated:
+            matching_profile_changed = False
+        elif approval.previous_parsed is None:
+            matching_profile_changed = True
+        else:
+            current_fingerprint = build_matching_input_fingerprint(
+                summary_text=approval.profile.summary_text,
+                parsed_profile=approval.profile.parsed,
+            )
+            previous_fingerprint = build_matching_input_fingerprint(
+                summary_text=approval.previous_summary_text,
+                parsed_profile=approval.previous_parsed,
+            )
+            embeddings_aligned = (
+                approval.previous_embedding is not None
+                and approval.profile.embedding is not None
+                and list(approval.profile.embedding) == approval.previous_embedding
+            )
+            matching_profile_changed = (
+                current_fingerprint != previous_fingerprint or not embeddings_aligned
+            )
         return ProfileResponse(
-            profile_id=profile.id,
-            resume_id=profile.resume_id,
-            profile=ParsedProfile.model_validate(profile.parsed),
-            matching_profile_changed=True,
+            profile_id=approval.profile.id,
+            resume_id=approval.profile.resume_id,
+            profile=ParsedProfile.model_validate(approval.profile.parsed),
+            matching_profile_changed=matching_profile_changed,
         )
 
     async def reject_import_draft(self, *, user_id: int, resume_id: int) -> None:

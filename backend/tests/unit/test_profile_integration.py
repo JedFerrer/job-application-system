@@ -16,7 +16,7 @@ from copy import deepcopy
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -159,6 +159,8 @@ async def _seed_import_draft(
     full_name: str,
     lifecycle_status: str = "draft",
     is_active: bool = False,
+    profile: ParsedProfile | None = None,
+    embedding: list[float] | None = None,
 ) -> Resume:
     filename = f"{full_name.lower().replace(' ', '-')}.pdf"
     resume = Resume(
@@ -173,14 +175,14 @@ async def _seed_import_draft(
     )
     db.add(resume)
     await db.flush()
-    parsed = ParsedProfile(full_name=full_name, headline="Engineer")
+    parsed = profile or ParsedProfile(full_name=full_name, headline="Engineer")
     db.add(
         CandidateProfile(
             user_id=user_id,
             resume_id=resume.id,
             parsed=parsed.model_dump(),
-            summary_text="Engineer",
-            embedding=[0.0] * 1536,
+            summary_text=build_summary_text(parsed),
+            embedding=embedding or [0.0] * 1536,
         )
     )
     await db.flush()
@@ -407,7 +409,22 @@ class TestProfileIntegration:
             user = await _seed_user(db)
             old = await _seed_profile(db, user_id=user.id, full_name="Old User")
             first_draft = await _seed_import_draft(
-                db, user_id=user.id, full_name="Approved User"
+                db,
+                user_id=user.id,
+                full_name="Approved User",
+                profile=ParsedProfile(
+                    full_name="Approved User",
+                    email="user1@test.com",
+                    headline="Software Engineer",
+                    skills=["Python", "FastAPI"],
+                    years_experience=3,
+                    certifications=["AWS Certified Developer"],
+                    languages=[{"language": "Spanish", "proficiency": "Fluent"}],
+                    licenses=[{"name": "Registered Nurse", "issuer": "Other Board"}],
+                    links={"github": "https://github.com/example"},
+                    projects=[{"name": "Different Project"}],
+                ),
+                embedding=[0.3] * 1536,
             )
             original_provenance = build_resume_import_provenance(
                 first_draft.filename, []
@@ -503,6 +520,19 @@ class TestProfileIntegration:
             response = client.post(f"/resume/imports/{first_draft.id}/approve")
             assert response.status_code == 200
             assert response.json()["profile"]["full_name"] == "Approved User"
+            assert response.json()["matching_profile_changed"] is False
+            async with session_factory() as approval_db:
+                approved_profile = (
+                    await approval_db.execute(
+                        select(CandidateProfile)
+                        .join(Resume, Resume.id == CandidateProfile.resume_id)
+                        .where(
+                            CandidateProfile.user_id == user.id,
+                            Resume.is_active.is_(True),
+                        )
+                    )
+                ).scalar_one()
+                assert list(approved_profile.embedding) == [0.0] * 1536
             profile = client.get("/resume/profile")
             assert profile.json()["profile"]["full_name"] == "Approved User"
             edited = client.put(
@@ -530,7 +560,7 @@ class TestProfileIntegration:
             (second_draft.id, False, "draft"),
             (inactive.id, False, "inactive"),
         ]
-        assert events == [f"ranking:{user.id}", f"ranking:{user.id}"]
+        assert events == [f"ranking:{user.id}"]
 
         async with session_factory() as db:
             old_profile = await db.get(CandidateProfile, old.id)
@@ -589,6 +619,47 @@ class TestProfileIntegration:
                 )
             ).scalar_one()
         assert stored_provenance == original_provenance
+
+    @pytest.mark.asyncio
+    async def test_approval_compares_against_profile_active_at_approval_time(
+        self, session_factory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        events: list[int] = []
+
+        async def record_ranking(user_id: int) -> None:
+            events.append(user_id)
+
+        monkeypatch.setattr(resume_module, "_enqueue_match_ranking", record_ranking)
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            active = await _seed_profile(db, user_id=user.id, full_name="Active User")
+            draft = await _seed_import_draft(
+                db,
+                user_id=user.id,
+                full_name="Replacement User",
+                profile=ParsedProfile(
+                    full_name="Replacement User",
+                    headline="Software Engineer",
+                    skills=["Python", "FastAPI"],
+                    years_experience=3,
+                    certifications=["AWS Certified Developer"],
+                ),
+                embedding=[0.3] * 1536,
+            )
+            current = ParsedProfile.model_validate(active.parsed)
+            current.headline = "Updated active headline"
+            active.parsed = current.model_dump()
+            active.summary_text = build_summary_text(current)
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            response = client.post(f"/resume/imports/{draft.id}/approve")
+
+        assert response.status_code == 200
+        assert response.json()["matching_profile_changed"] is True
+        assert events == [user.id]
 
     @pytest.mark.asyncio
     async def test_reject_import_keeps_active_and_does_not_dispatch(
@@ -675,7 +746,7 @@ class TestProfileIntegration:
                     {"user_id": user.id},
                 )
             ).scalar_one() == 1
-        assert events == [user.id, user.id]
+        assert events == [user.id]
 
     @pytest.mark.asyncio
     async def test_multiple_active_sources_fail_closed_and_roll_back(

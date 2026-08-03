@@ -210,7 +210,8 @@ async def approve_resume_import(
         user_id=current_user.id, resume_id=resume_id
     )
     await db.commit()
-    background_tasks.add_task(_enqueue_match_ranking, current_user.id)
+    if response.matching_profile_changed:
+        background_tasks.add_task(_enqueue_match_ranking, current_user.id)
     return response
 
 

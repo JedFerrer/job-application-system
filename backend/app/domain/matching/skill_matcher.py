@@ -278,7 +278,7 @@ def parse_experience_requirements(job_description: str) -> list[ParsedExperience
     return findings
 
 
-def _resume_haystack(profile: dict[str, object]) -> str:
+def build_resume_haystack(profile: dict[str, object]) -> str:
     """Flatten a parsed ``ParsedProfile`` dict into one searchable string."""
     parts: list[str] = []
 
@@ -347,7 +347,7 @@ def compute_skill_match(
     if not required_skills:
         return SkillMatchReport(recall=0.0)
 
-    haystack = _resume_haystack(profile)
+    haystack = build_resume_haystack(profile)
 
     matched: list[str] = []
     missing: list[str] = []

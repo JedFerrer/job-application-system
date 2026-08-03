@@ -33,6 +33,9 @@ class FakeResumeService:
 
 
 class FakeImportApprovalService:
+    def __init__(self, changed: bool = True) -> None:
+        self.changed = changed
+
     async def approve_import_draft(
         self, *, user_id: int, resume_id: int
     ) -> ProfileResponse:
@@ -41,7 +44,7 @@ class FakeImportApprovalService:
             profile_id=1,
             resume_id=1,
             profile=ParsedProfile(headline="Backend engineer"),
-            matching_profile_changed=True,
+            matching_profile_changed=self.changed,
         )
 
 
@@ -93,3 +96,20 @@ async def test_approved_import_commits_before_scheduling_ranking() -> None:
     assert response.matching_profile_changed is True
     assert events == ["commit"]
     assert len(background_tasks.tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_unchanged_approved_import_commits_without_scheduling_ranking() -> None:
+    events: list[str] = []
+    background_tasks = BackgroundTasks()
+    response = await approve_resume_import(
+        resume_id=9,
+        current_user=User(id=7, email="test@example.com", name="Test", is_active=True),
+        service=FakeImportApprovalService(changed=False),  # type: ignore[arg-type]
+        db=FakeDb(events),  # type: ignore[arg-type]
+        background_tasks=background_tasks,
+    )
+
+    assert response.matching_profile_changed is False
+    assert events == ["commit"]
+    assert background_tasks.tasks == []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, cast
 
 from sqlalchemy import delete, select, update
@@ -11,6 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
 from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
 from app.models.user import User
+
+
+@dataclass(frozen=True)
+class ResumeImportApprovalResult:
+    """Approval result plus the previous active snapshot needed by the service."""
+
+    profile: CandidateProfile
+    activated: bool
+    previous_summary_text: str | None = None
+    previous_parsed: dict[str, object] | None = None
+    previous_embedding: list[float] | None = None
 
 
 class ResumeRepository:
@@ -174,18 +186,39 @@ class ResumeRepository:
 
     async def approve_import_draft(
         self, *, user_id: int, resume_id: int
-    ) -> CandidateProfile | None:
+    ) -> ResumeImportApprovalResult | None:
         await self.lock_user_for_import(user_id)
         draft = await self.get_import_draft(user_id=user_id, resume_id=resume_id)
         if draft is None:
             # A client may retry after the transaction committed but before it
             # received the response. Return the already-active target without
             # attempting any additional cleanup.
-            return await self.get_active_profile_for_resume(
+            profile = await self.get_active_profile_for_resume(
                 user_id=user_id, resume_id=resume_id
             )
+            if profile is None:
+                return None
+            return ResumeImportApprovalResult(profile=profile, activated=False)
         resume, profile = draft
         previous = await self._capture_previous_active_source(user_id=user_id)
+        previous_summary_text: str | None = None
+        previous_parsed: dict[str, object] | None = None
+        previous_embedding: list[float] | None = None
+        if previous is not None:
+            _previous_resume, previous_profile = previous
+            previous_summary_text = previous_profile.summary_text
+            previous_parsed = dict(previous_profile.parsed)
+            if previous_profile.embedding is not None:
+                previous_embedding = list(previous_profile.embedding)
+            if (
+                isinstance(previous_summary_text, str)
+                and isinstance(profile.summary_text, str)
+                and previous_summary_text == profile.summary_text
+                and previous_embedding is not None
+            ):
+                # Keep existing match rows aligned when the embedding input is
+                # unchanged, even if the draft was parsed at another time.
+                profile.embedding = list(previous_embedding)
         await self._session.execute(
             update(Resume)
             .where(Resume.id == resume.id, Resume.user_id == user_id)
@@ -202,7 +235,13 @@ class ResumeRepository:
             await self._session.flush()
             await self._session.delete(previous_resume)
             await self._session.flush()
-        return profile
+        return ResumeImportApprovalResult(
+            profile=profile,
+            activated=True,
+            previous_summary_text=previous_summary_text,
+            previous_parsed=previous_parsed,
+            previous_embedding=previous_embedding,
+        )
 
     async def reject_import_draft(self, *, user_id: int, resume_id: int) -> bool:
         await self.lock_user_for_import(user_id)

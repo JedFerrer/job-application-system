@@ -51,6 +51,7 @@ vi.mock("@/components/ui/alert-dialog", () => {
 const profile = {
   profile_id: 8,
   resume_id: 3,
+  matching_profile_changed: true,
   profile: {
     full_name: "Ada Lovelace",
     email: "ada@example.com",
@@ -186,6 +187,15 @@ describe("ProfilePanel imported resume drafts", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["resume-imports"] });
     expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["resume-import", 11] });
     expect(toastMocks.success).toHaveBeenCalledWith("Profile updated. Match rankings will update shortly.");
+  });
+
+  it("does not claim rankings will refresh when approval inputs are unchanged", async () => {
+    apiMocks.approveImport.mockResolvedValue({ ...profile, matching_profile_changed: false });
+    await render();
+    await openReview();
+    await clickButton("Approve draft");
+    await clickAlertButton("Approve draft");
+    await vi.waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith("Profile updated"));
   });
 
   it("rejects without invalidating the active profile", async () => {
