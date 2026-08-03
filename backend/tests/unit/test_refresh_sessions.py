@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import jwt
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -30,7 +31,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, get_settings
-from app.core.security import create_token, hash_password
+from app.core.security import create_token, decode_token_payload, hash_password
 from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.service import AuthService
@@ -253,7 +254,10 @@ async def test_password_reset_revokes_all_sessions(
 
         # Generate a reset token and reset the password.
         reset_token = create_token(
-            settings=settings, subject=user.id, token_type="reset"
+            settings=settings,
+            subject=user.id,
+            token_type="reset",
+            extra_claims={"reset_version": user.password_reset_version},
         )
         await svc.reset_password(
             token_str=reset_token, new_password="newpassword456"
@@ -393,14 +397,20 @@ async def test_migration_backfills_active_and_revoked_legacy_sessions(
 
     try:
         async with sf() as db:
-            user = await _create_user(db, 1, "a@test.com")
+            await db.execute(
+                text(
+                    "INSERT INTO users (id, email, name, hashed_password, is_active) "
+                    "VALUES (1, 'a@test.com', 'Test User', NULL, true)"
+                )
+            )
+            await db.commit()
             active = ExtensionSession(
-                user_id=user.id,
+                user_id=1,
                 refresh_token_hash=hashlib.sha256(active_token.encode()).hexdigest(),
                 created_at=source_created_at,
             )
             revoked = ExtensionSession(
-                user_id=user.id,
+                user_id=1,
                 refresh_token_hash=hashlib.sha256(revoked_token.encode()).hexdigest(),
                 created_at=source_created_at,
                 revoked_at=source_revoked_at,
@@ -897,6 +907,221 @@ async def test_forgot_password_unknown_email_no_leak(engine: AsyncEngine) -> Non
         result = await svc.forgot_password(email="nonexistent@test.com")
         assert "reset_url" not in result
         assert result["message"] == "If the email is registered, a reset link has been sent."
+
+
+async def test_forgot_password_advances_version_and_embeds_claim(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 10, "versioned@test.com")
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        result = await _make_svc(db, settings).forgot_password(email=user.email)
+        await db.commit()
+        await db.refresh(user)
+        assert user.password_reset_version == 1
+        token = result["reset_url"].split("token=", 1)[1]
+        payload = decode_token_payload(
+            settings=settings, token=token, expected_type="reset"
+        )
+        assert payload["reset_version"] == 1
+        assert isinstance(payload["reset_version"], int)
+
+
+@pytest.mark.parametrize(
+    ("email", "hashed_password", "is_active"),
+    [
+        ("inactive@test.com", "password123", False),
+        ("oauth@test.com", None, True),
+    ],
+)
+async def test_forgot_password_noneligible_users_remain_generic(
+    engine: AsyncEngine,
+    settings: Settings,
+    email: str,
+    hashed_password: str | None,
+    is_active: bool,
+) -> None:
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = User(
+            id=11,
+            email=email,
+            name="Noneligible User",
+            hashed_password=hash_password(hashed_password) if hashed_password else None,
+            is_active=is_active,
+        )
+        db.add(user)
+        await db.commit()
+        result = await _make_svc(db, settings).forgot_password(email=email)
+        assert result == {"message": "If the email is registered, a reset link has been sent."}
+        await db.refresh(user)
+        assert user.password_reset_version == 0
+
+
+async def test_password_reset_is_single_use_and_rejects_legacy_token(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 12, "single-use@test.com")
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+        svc = _make_svc(db, settings)
+        result = await svc.forgot_password(email=user.email)
+        token = result["reset_url"].split("token=", 1)[1]
+
+        await svc.reset_password(token_str=token, new_password="newpassword456")
+        await db.commit()
+        with pytest.raises(InvalidTokenError):
+            await svc.reset_password(token_str=token, new_password="another456")
+
+        legacy = create_token(settings=settings, subject=user.id, token_type="reset")
+        with pytest.raises(InvalidTokenError):
+            await svc.reset_password(token_str=legacy, new_password="legacy456")
+
+
+async def test_newer_reset_link_invalidates_older_link(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 13, "newer-link@test.com")
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+        svc = _make_svc(db, settings)
+        first = await svc.forgot_password(email=user.email)
+        second = await svc.forgot_password(email=user.email)
+        first_token = first["reset_url"].split("token=", 1)[1]
+        second_token = second["reset_url"].split("token=", 1)[1]
+        with pytest.raises(InvalidTokenError):
+            await svc.reset_password(token_str=first_token, new_password="first456")
+        await svc.reset_password(token_str=second_token, new_password="second456")
+        await db.commit()
+
+
+async def test_concurrent_password_reset_has_one_winner(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 14, "concurrent-reset@test.com")
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+        result = await _make_svc(db, settings).forgot_password(email=user.email)
+        token = result["reset_url"].split("token=", 1)[1]
+        await db.commit()
+
+    async def attempt(password: str) -> str:
+        async with sf() as db:
+            try:
+                await _make_svc(db, settings).reset_password(
+                    token_str=token, new_password=password
+                )
+                await db.commit()
+                return "success"
+            except InvalidTokenError:
+                await db.rollback()
+                return "invalid"
+
+    outcomes = await asyncio.gather(attempt("winner456"), attempt("loser456"))
+    assert sorted(outcomes) == ["invalid", "success"]
+
+
+async def test_reset_rejects_invalid_version_and_token_variants(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 15, "invalid-reset@test.com")
+        user.hashed_password = hash_password("password123")
+        other = await _create_user(db, 16, "other-reset@test.com")
+        await db.commit()
+        svc = _make_svc(db, settings)
+        result = await svc.forgot_password(email=user.email)
+        token = result["reset_url"].split("token=", 1)[1]
+        base = decode_token_payload(
+            settings=settings, token=token, expected_type="reset"
+        )
+
+        variants: list[str] = ["not-a-jwt"]
+        for claim in (None, "1", 0):
+            payload = dict(base)
+            if claim is None:
+                payload.pop("reset_version")
+            else:
+                payload["reset_version"] = claim
+            variants.append(
+                jwt.encode(
+                    payload,
+                    settings.jwt_secret.get_secret_value(),
+                    algorithm=settings.jwt_algorithm,
+                )
+            )
+        wrong_user = dict(base)
+        wrong_user["sub"] = str(other.id)
+        variants.append(
+            jwt.encode(
+                wrong_user,
+                settings.jwt_secret.get_secret_value(),
+                algorithm=settings.jwt_algorithm,
+            )
+        )
+        expired = dict(base)
+        expired["exp"] = int((datetime.now(UTC) - timedelta(minutes=1)).timestamp())
+        variants.append(
+            jwt.encode(
+                expired,
+                settings.jwt_secret.get_secret_value(),
+                algorithm=settings.jwt_algorithm,
+            )
+        )
+        for invalid in variants:
+            with pytest.raises(InvalidTokenError):
+                await svc.reset_password(token_str=invalid, new_password="new456")
+
+        with pytest.raises(InvalidTokenError):
+            await svc.reset_password(
+                token_str=create_token(
+                    settings=settings, subject=user.id, token_type="access"
+                ),
+                new_password="new456",
+            )
+
+
+def test_password_reset_migration_backfills_existing_users() -> None:
+    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", get_settings().sync_database_url)
+    command.downgrade(config, "0030_ext_refresh_token_history")
+    marker = f"migration-reset-{uuid4()}@example.test"
+    try:
+        from sqlalchemy import create_engine
+
+        sync_engine = create_engine(get_settings().sync_database_url)
+        with sync_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO users (email, name, hashed_password, is_active) "
+                    "VALUES (:email, :name, :password, true)"
+                ),
+                {
+                    "email": marker,
+                    "name": "Migration User",
+                    "password": hash_password("password123"),
+                },
+            )
+        command.upgrade(config, "0031_password_reset_version")
+        with sync_engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT password_reset_version FROM users WHERE email = :email"),
+                {"email": marker},
+            ).one()
+            assert row.password_reset_version == 0
+        sync_engine.dispose()
+    finally:
+        command.upgrade(config, "head")
 
 
 class _FakeEmailProvider:

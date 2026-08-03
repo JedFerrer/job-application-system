@@ -33,6 +33,7 @@ async def test_dev_includes_reset_url() -> None:
     user.id = 1
     user.hashed_password = "some-hash"
     repo.get_by_email.return_value = user
+    repo.advance_password_reset_version.return_value = 1
 
     svc = AuthService(repository=repo, settings=_settings("development"))
     result = await svc.forgot_password(email="user@example.com")
@@ -49,6 +50,7 @@ async def test_production_excludes_reset_url() -> None:
     user.id = 1
     user.hashed_password = "some-hash"
     repo.get_by_email.return_value = user
+    repo.advance_password_reset_version.return_value = 1
 
     svc = AuthService(repository=repo, settings=_settings("production"))
     result = await svc.forgot_password(email="user@example.com")
@@ -64,6 +66,7 @@ async def test_staging_excludes_reset_url() -> None:
     user.id = 1
     user.hashed_password = "some-hash"
     repo.get_by_email.return_value = user
+    repo.advance_password_reset_version.return_value = 1
 
     svc = AuthService(repository=repo, settings=_settings("staging"))
     result = await svc.forgot_password(email="user@example.com")

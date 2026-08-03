@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
@@ -64,3 +64,40 @@ class UserRepository:
         await self._session.flush()
         await self._session.refresh(user)
         return user
+
+    async def advance_password_reset_version(self, *, user_id: int) -> int | None:
+        """Advance the reset version for an eligible active password user."""
+        result = await self._session.execute(
+            update(User)
+            .where(
+                User.id == user_id,
+                User.is_active.is_(True),
+                User.hashed_password.is_not(None),
+            )
+            .values(password_reset_version=User.password_reset_version + 1)
+            .returning(User.password_reset_version)
+        )
+        return result.scalar_one_or_none()
+
+    async def consume_password_reset(
+        self,
+        *,
+        user_id: int,
+        reset_version: int,
+        hashed_password: str,
+    ) -> int | None:
+        """Consume a reset version exactly once using a conditional update."""
+        result = await self._session.execute(
+            update(User)
+            .where(
+                User.id == user_id,
+                User.is_active.is_(True),
+                User.password_reset_version == reset_version,
+            )
+            .values(
+                hashed_password=hashed_password,
+                password_reset_version=User.password_reset_version + 1,
+            )
+            .returning(User.id)
+        )
+        return result.scalar_one_or_none()

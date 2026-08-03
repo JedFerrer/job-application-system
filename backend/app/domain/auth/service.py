@@ -19,6 +19,7 @@ from app.core.security import (
     TokenError,
     create_token,
     decode_token,
+    decode_token_payload,
     hash_password,
     needs_rehash,
     verify_password,
@@ -268,10 +269,15 @@ class AuthService:
             # Don't reveal whether the email exists — always return success.
             return {"message": "If the email is registered, a reset link has been sent."}
 
+        reset_version = await self._repo.advance_password_reset_version(user_id=user.id)
+        if reset_version is None:
+            return {"message": "If the email is registered, a reset link has been sent."}
+
         token = create_token(
             settings=self._settings,
             subject=user.id,
             token_type="reset",  # noqa: S106 - token kind
+            extra_claims={"reset_version": reset_version},
         )
         is_dev = self._settings.environment == "development"
         response: dict[str, str] = {
@@ -293,36 +299,45 @@ class AuthService:
         """Validate a reset token, update the password, and revoke all
         existing refresh sessions for the user (forcing re-login everywhere)."""
         try:
-            user_id = decode_token(
+            payload = decode_token_payload(
                 settings=self._settings,
                 token=token_str,
                 expected_type="reset",
             )
-        except TokenError as exc:
+            subject = payload.get("sub")
+            reset_version = payload.get("reset_version")
+            if isinstance(reset_version, bool) or not isinstance(reset_version, int):
+                raise TokenError("invalid reset version")
+            if not isinstance(subject, str) or not subject.isdigit():
+                raise TokenError("invalid subject")
+            user_id = int(subject)
+            if reset_version < 0:
+                raise TokenError("invalid reset version")
+        except (TokenError, TypeError, ValueError) as exc:
             raise InvalidTokenError from exc
 
-        user = await self._repo.get_by_id(user_id)
-        if user is None or not user.is_active:
-            raise InvalidTokenError
-
-        await self._repo.update_password(
-            user, hashed_password=hash_password(new_password)
+        updated_user_id = await self._repo.consume_password_reset(
+            user_id=user_id,
+            reset_version=reset_version,
+            hashed_password=hash_password(new_password),
         )
+        if updated_user_id is None:
+            raise InvalidTokenError
 
         # Revoke all web refresh sessions so old tokens can't be used.
         if self._sessions is not None:
-            count = await self._sessions.revoke_all_for_user(user.id)
+            count = await self._sessions.revoke_all_for_user(updated_user_id)
             if count:
                 logger.info(
                     "password_reset.sessions_revoked user_id=%s count=%s",
-                    user.id,
+                    updated_user_id,
                     count,
                 )
         if self._extension_sessions is not None:
-            count = await self._extension_sessions.revoke_all_for_user(user.id)
+            count = await self._extension_sessions.revoke_all_for_user(updated_user_id)
             if count:
                 logger.info(
                     "password_reset.extension_sessions_revoked user_id=%s count=%s",
-                    user.id,
+                    updated_user_id,
                     count,
                 )

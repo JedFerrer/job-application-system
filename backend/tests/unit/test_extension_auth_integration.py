@@ -253,7 +253,12 @@ async def test_password_reset_revokes_only_users_extension_sessions(
         other = await _create_user(db, 2, "reset-other@example.com")
         own_pair = await _pair(db, settings, user.id)
         other_pair = await _pair(db, settings, other.id)
-        reset_token = create_token(settings=settings, subject=user.id, token_type="reset")
+        reset_token = create_token(
+            settings=settings,
+            subject=user.id,
+            token_type="reset",
+            extra_claims={"reset_version": user.password_reset_version},
+        )
 
         async with _client() as client:
             response = await client.post(
