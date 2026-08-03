@@ -514,8 +514,7 @@ export const extensionApi = {
 
   /** Revoke an extension session by id (web dashboard). */
   revokeSession: (sessionId: string) =>
-    apiRequest<void>("/extension/auth/logout", {
-      method: "POST",
-      body: JSON.stringify({ session_id: sessionId }),
+    apiRequest<void>(`/extension/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
     }),
 };

@@ -5,19 +5,21 @@ All tests use fake/in-memory repositories — no DB or Redis required.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import create_token, decode_token_payload
+from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.extension.application_event_service import ApplicationEventService
 from app.domain.extension.autofill_mapping_service import AutofillProfileService
 from app.domain.extension.exceptions import (
-    ExtensionSessionNotFoundError,
     ExtensionSessionRevokedError,
     PairingCodeExpiredError,
     PairingCodeInvalidError,
@@ -60,6 +62,7 @@ class FakeExtensionRepository:
 
     def __init__(self) -> None:
         self.sessions: dict[str, dict[str, Any]] = {}
+        self.refresh_tokens: dict[str, dict[str, Any]] = {}
         self.events: list[dict[str, Any]] = []
         self.form_sessions: dict[str, dict[str, Any]] = {}
         self.form_fields: list[dict[str, Any]] = []
@@ -91,6 +94,48 @@ class FakeExtensionRepository:
         self.sessions[sid] = session
         return _DictObj(session)
 
+    async def create_refresh_token(
+        self,
+        *,
+        session_id: str,
+        token_hash: str,
+        token_family: str,
+        expires_at: datetime,
+    ) -> Any:
+        token = {
+            "id": str(uuid4()),
+            "extension_session_id": session_id,
+            "token_hash": token_hash,
+            "token_family": token_family,
+            "created_at": datetime.now(UTC),
+            "expires_at": expires_at,
+            "used_at": None,
+            "revoked_at": None,
+        }
+        self.refresh_tokens[token_hash] = token
+        return _DictObj(token)
+
+    async def find_refresh_token(self, token_hash: str, *, for_update: bool = False) -> Any | None:
+        token = self.refresh_tokens.get(token_hash)
+        return _DictObj(token) if token else None
+
+    async def rotate_refresh_token(
+        self, token: Any, *, new_hash: str, expires_at: datetime
+    ) -> Any:
+        token.used_at = datetime.now(UTC)
+        successor = {
+            "id": str(uuid4()),
+            "extension_session_id": token.extension_session_id,
+            "token_hash": new_hash,
+            "token_family": token.token_family,
+            "created_at": datetime.now(UTC),
+            "expires_at": expires_at,
+            "used_at": None,
+            "revoked_at": None,
+        }
+        self.refresh_tokens[new_hash] = successor
+        return _DictObj(successor)
+
     async def get_session(self, session_id: str) -> Any | None:
         s = self.sessions.get(session_id)
         return _DictObj(s) if s else None
@@ -102,6 +147,18 @@ class FakeExtensionRepository:
     async def revoke_session(self, session_id: str) -> None:
         if session_id in self.sessions:
             self.sessions[session_id]["revoked_at"] = datetime.now(UTC)
+        for token in self.refresh_tokens.values():
+            if token["extension_session_id"] == session_id:
+                token["revoked_at"] = datetime.now(UTC)
+
+    async def revoke_all_for_user(self, user_id: int) -> int:
+        count = 0
+        for session in self.sessions.values():
+            if session["user_id"] == user_id and session["revoked_at"] is None:
+                session["revoked_at"] = datetime.now(UTC)
+                count += 1
+                await self.revoke_session(session["id"])
+        return count
 
     async def list_user_sessions(self, user_id: int) -> list[Any]:
         return [
@@ -401,8 +458,68 @@ class TestRefreshRotation:
         assert session_after["last_used_at"] is not None
 
         # Old refresh should no longer work (token was rotated)
-        with pytest.raises((ExtensionSessionNotFoundError, ExtensionSessionRevokedError)):
+        with pytest.raises((InvalidTokenError, ExtensionSessionRevokedError)):
             await svc.refresh(old_refresh)
+        assert repo.sessions[result.session_id]["revoked_at"] is not None
+        with pytest.raises(ExtensionSessionRevokedError):
+            await svc.refresh(refreshed.refresh_token)
+
+    @pytest.mark.asyncio
+    async def test_malformed_refresh_fails_as_auth_error(self) -> None:
+        from app.domain.auth.exceptions import InvalidTokenError
+
+        _, svc = self._repo_and_service()
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh("not-a-jwt")
+
+    @pytest.mark.asyncio
+    async def test_access_token_cannot_be_used_as_refresh_token(self) -> None:
+        from app.domain.auth.exceptions import InvalidTokenError
+
+        _, svc = self._repo_and_service()
+        code, _ = await svc.generate_pairing_code(user_id=42)
+        result = await svc.complete_pairing(code)
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(result.access_token)
+
+    @pytest.mark.asyncio
+    async def test_refresh_with_non_numeric_subject_fails_safely(self) -> None:
+        import jwt as pyjwt
+
+        repo, svc = self._repo_and_service()
+        code, _ = await svc.generate_pairing_code(user_id=42)
+        result = await svc.complete_pairing(code)
+        payload = decode_token_payload(
+            settings=_settings(), token=result.refresh_token, expected_type="refresh"
+        )
+        payload["sub"] = "not-an-integer"
+        malformed = pyjwt.encode(
+            payload,
+            _settings().jwt_secret.get_secret_value(),
+            algorithm=_settings().jwt_algorithm,
+        )
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(malformed)
+        assert repo.sessions[result.session_id]["revoked_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_legacy_refresh_without_session_claim_is_migrated(self) -> None:
+        repo, svc = self._repo_and_service()
+        session = await repo.create_session(user_id=42, refresh_token_hash="legacy")
+        legacy_refresh = create_token(
+            settings=_settings(), subject=42, token_type="refresh"
+        )
+        legacy_hash = hashlib.sha256(legacy_refresh.encode()).hexdigest()
+        await repo.create_refresh_token(
+            session_id=str(session.id),
+            token_hash=legacy_hash,
+            token_family=str(uuid4()),
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+
+        refreshed = await svc.refresh(legacy_refresh)
+        assert refreshed.access_token
+        assert refreshed.refresh_token
 
     @pytest.mark.asyncio
     async def test_revoked_session_cannot_refresh(self) -> None:
@@ -1096,7 +1213,8 @@ class TestExtensionSessionTokenClaims:
             algorithm=_settings().jwt_algorithm,
         )
 
-        with pytest.raises(ExtensionSessionNotFoundError):
+        from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
             await svc.refresh(tampered_token)
 
 

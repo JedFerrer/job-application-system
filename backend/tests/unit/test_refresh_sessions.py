@@ -10,11 +10,22 @@ Verifies that the web refresh-token session storage correctly handles:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, get_settings
@@ -22,6 +33,11 @@ from app.core.security import create_token, hash_password
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.service import AuthService
 from app.domain.auth.web_session_repository import WebSessionRepository
+from app.domain.extension.exceptions import ExtensionSessionRevokedError
+from app.domain.extension.extension_auth_service import ExtensionAuthService
+from app.domain.extension.repository import ExtensionRepository
+from app.models.extension_refresh_token import ExtensionRefreshToken
+from app.models.extension_session import ExtensionSession
 from app.models.user import User
 from app.models.web_refresh_session import WebRefreshSession
 
@@ -30,13 +46,13 @@ pytestmark = pytest.mark.integration
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
-def engine():
+def engine() -> AsyncEngine:
     settings = get_settings()
     return create_async_engine(settings.database_url, poolclass=NullPool, echo=False)
 
 
 @pytest.fixture(autouse=True)
-async def clean_db(engine) -> None:  # noqa: ANN001
+async def clean_db(engine: AsyncEngine) -> None:
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         await db.execute(text("TRUNCATE TABLE web_refresh_sessions CASCADE"))
@@ -67,13 +83,14 @@ def _make_svc(db: AsyncSession, settings: Settings) -> AuthService:
         repository=UserRepository(db),
         settings=settings,
         web_sessions=WebSessionRepository(db),
+        extension_sessions=ExtensionRepository(db),
     )
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────
 
 
-async def test_login_creates_session(engine, settings) -> None:  # noqa: ANN001
+async def test_login_creates_session(engine: AsyncEngine, settings: Settings) -> None:
     """Login creates a web refresh session with a hashed token."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -99,7 +116,7 @@ async def test_login_creates_session(engine, settings) -> None:  # noqa: ANN001
         assert s.token_family is not None
 
 
-async def test_refresh_rotates_token(engine, settings) -> None:  # noqa: ANN001
+async def test_refresh_rotates_token(engine: AsyncEngine, settings: Settings) -> None:
     """Refresh rotates the token: old session revoked, new session created."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -132,7 +149,7 @@ async def test_refresh_rotates_token(engine, settings) -> None:  # noqa: ANN001
         ).hexdigest()
 
 
-async def test_old_token_reuse_revokes_family(engine, settings) -> None:  # noqa: ANN001
+async def test_old_token_reuse_revokes_family(engine: AsyncEngine, settings: Settings) -> None:
     """Using an already-rotated token revokes the entire token family."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -160,7 +177,7 @@ async def test_old_token_reuse_revokes_family(engine, settings) -> None:  # noqa
             assert s.revoked_at is not None
 
 
-async def test_logout_revokes_session(engine, settings) -> None:  # noqa: ANN001
+async def test_logout_revokes_session(engine: AsyncEngine, settings: Settings) -> None:
     """Logout revokes the current refresh session."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -183,7 +200,9 @@ async def test_logout_revokes_session(engine, settings) -> None:  # noqa: ANN001
         assert sessions[0].revoked_at is not None
 
 
-async def test_password_reset_revokes_all_sessions(engine, settings) -> None:  # noqa: ANN001
+async def test_password_reset_revokes_all_sessions(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """Password reset revokes all active web refresh sessions for the user."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -193,6 +212,20 @@ async def test_password_reset_revokes_all_sessions(engine, settings) -> None:  #
         await db.commit()
 
         svc = _make_svc(db, settings)
+
+        other_user = await _create_user(db, 2, "b@test.com")
+        extension_session = ExtensionSession(
+            user_id=other_user.id, refresh_token_hash="extension-hash"
+        )
+        db.add(extension_session)
+        await db.commit()
+
+        extension_service = ExtensionAuthService(
+            repository=ExtensionRepository(db), settings=settings
+        )
+        pairing_code, _ = await extension_service.generate_pairing_code(user_id=user.id)
+        extension_pair = await extension_service.complete_pairing(pairing_code)
+        await db.commit()
 
         # Create two sessions (simulating two logins).
         await svc.authenticate(email="a@test.com", password="password123")
@@ -212,11 +245,174 @@ async def test_password_reset_revokes_all_sessions(engine, settings) -> None:  #
         result = await db.execute(select(WebRefreshSession))
         sessions = result.scalars().all()
         assert len(sessions) == 2
-        for s in sessions:
-            assert s.revoked_at is not None
+    for s in sessions:
+        assert s.revoked_at is not None
+
+    async with sf() as db:
+        extension = await db.get(ExtensionSession, extension_session.id)
+        assert extension is not None
+        assert extension.revoked_at is None
+
+    async with sf() as db:
+        user_session = await db.get(ExtensionSession, extension_pair.session_id)
+        assert user_session is not None
+        assert user_session.revoked_at is not None
+        revoked_service = ExtensionAuthService(
+            repository=ExtensionRepository(db), settings=settings
+        )
+        with pytest.raises(ExtensionSessionRevokedError):
+            await revoked_service.refresh(extension_pair.refresh_token)
 
 
-async def test_refresh_with_revoked_token_fails(engine, settings) -> None:  # noqa: ANN001
+async def test_legacy_extension_refresh_backfill_preserves_family_rotation(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    """A migrated legacy hash refreshes once and creates a same-family successor."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        legacy_token = create_token(settings=settings, subject=user.id, token_type="refresh")
+        session = ExtensionSession(
+            user_id=user.id,
+            refresh_token_hash=hashlib.sha256(legacy_token.encode()).hexdigest(),
+        )
+        db.add(session)
+        await db.flush()
+        family = str(uuid4())
+        db.add(
+            ExtensionRefreshToken(
+                extension_session_id=session.id,
+                token_hash=hashlib.sha256(legacy_token.encode()).hexdigest(),
+                token_family=family,
+                expires_at=datetime.now(UTC) + timedelta(days=7),
+            )
+        )
+        await db.commit()
+
+        service = ExtensionAuthService(
+            repository=ExtensionRepository(db), settings=settings
+        )
+        refreshed = await service.refresh(legacy_token)
+        await db.commit()
+
+        rows = (
+            await db.execute(
+                select(ExtensionRefreshToken)
+                .where(ExtensionRefreshToken.extension_session_id == session.id)
+                .order_by(ExtensionRefreshToken.created_at)
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+        assert rows[0].used_at is not None
+        assert rows[1].token_family == family
+        assert hashlib.sha256(refreshed.refresh_token.encode()).hexdigest() == rows[1].token_hash
+        assert refreshed.refresh_token not in {row.token_hash for row in rows}
+
+
+async def test_migration_backfills_active_and_revoked_legacy_sessions(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    """The real 0029->0030 upgrade preserves legacy session state."""
+    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", get_settings().sync_database_url)
+    command.downgrade(config, "0029_resume_import_provenance")
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    active_token = create_token(settings=settings, subject=1, token_type="refresh")
+    revoked_token = create_token(settings=settings, subject=1, token_type="refresh")
+    source_created_at = datetime.now(UTC) - timedelta(hours=2)
+    source_revoked_at = datetime.now(UTC) - timedelta(hours=1)
+
+    try:
+        async with sf() as db:
+            user = await _create_user(db, 1, "a@test.com")
+            active = ExtensionSession(
+                user_id=user.id,
+                refresh_token_hash=hashlib.sha256(active_token.encode()).hexdigest(),
+                created_at=source_created_at,
+            )
+            revoked = ExtensionSession(
+                user_id=user.id,
+                refresh_token_hash=hashlib.sha256(revoked_token.encode()).hexdigest(),
+                created_at=source_created_at,
+                revoked_at=source_revoked_at,
+            )
+            db.add_all([active, revoked])
+            await db.commit()
+            active_id, revoked_id = active.id, revoked.id
+
+        command.upgrade(config, "0030_ext_refresh_token_history")
+
+        async with sf() as db:
+            rows = (
+                await db.execute(
+                    select(ExtensionRefreshToken).where(
+                        ExtensionRefreshToken.extension_session_id.in_(
+                            [active_id, revoked_id]
+                        )
+                    )
+                )
+            ).scalars().all()
+            assert len(rows) == 2
+            by_session = {row.extension_session_id: row for row in rows}
+            active_row = by_session[active_id]
+            revoked_row = by_session[revoked_id]
+            assert active_row.revoked_at is None
+            assert revoked_row.revoked_at == source_revoked_at
+            assert active_row.created_at == source_created_at
+            assert revoked_row.created_at == source_created_at
+            assert active_row.token_hash == hashlib.sha256(active_token.encode()).hexdigest()
+            assert revoked_row.token_hash == hashlib.sha256(revoked_token.encode()).hexdigest()
+            assert active_token not in {row.token_hash for row in rows}
+            assert revoked_token not in {row.token_hash for row in rows}
+            assert active_row.token_family
+            assert revoked_row.token_family
+
+            service = ExtensionAuthService(
+                repository=ExtensionRepository(db), settings=settings
+            )
+            refreshed = await service.refresh(active_token)
+            assert refreshed.refresh_token
+            await db.commit()
+            with pytest.raises(ExtensionSessionRevokedError):
+                await service.refresh(revoked_token)
+    finally:
+        command.upgrade(config, "head")
+
+
+async def test_concurrent_extension_refresh_has_one_success(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    """PostgreSQL row locking permits only one concurrent refresh winner."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        service = ExtensionAuthService(
+            repository=ExtensionRepository(db), settings=settings
+        )
+        code, _ = await service.generate_pairing_code(user_id=user.id)
+        pair = await service.complete_pairing(code)
+        await db.commit()
+
+    async def attempt() -> str:
+        async with sf() as db:
+            worker = ExtensionAuthService(
+                repository=ExtensionRepository(db), settings=settings
+            )
+            try:
+                await worker.refresh(pair.refresh_token)
+                await db.commit()
+                return "success"
+            except ExtensionSessionRevokedError:
+                await db.commit()
+                return "revoked"
+
+    outcomes = await asyncio.gather(attempt(), attempt())
+    assert sorted(outcomes) == ["revoked", "success"]
+
+
+async def test_refresh_with_revoked_token_fails(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """A logged-out token cannot be used to refresh."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -238,7 +434,9 @@ async def test_refresh_with_revoked_token_fails(engine, settings) -> None:  # no
 # ── Cryptographic JWT validation in session-based path ────────────────────
 
 
-async def test_expired_refresh_token_rejected(engine, settings) -> None:  # noqa: ANN001
+async def test_expired_refresh_token_rejected(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """An expired JWT is rejected by decode_token() before the hash lookup."""
     from datetime import UTC, datetime, timedelta
 
@@ -280,7 +478,9 @@ async def test_expired_refresh_token_rejected(engine, settings) -> None:  # noqa
             await svc.refresh(refresh_token=expired_token)
 
 
-async def test_access_token_used_as_refresh_rejected(engine, settings) -> None:  # noqa: ANN001
+async def test_access_token_used_as_refresh_rejected(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """An access token presented as a refresh token is rejected (type check)."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -299,7 +499,9 @@ async def test_access_token_used_as_refresh_rejected(engine, settings) -> None: 
             await svc.refresh(refresh_token=access)
 
 
-async def test_invalid_signature_token_rejected(engine, settings) -> None:  # noqa: ANN001
+async def test_invalid_signature_token_rejected(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """A token signed with a different secret is rejected."""
     import jwt as pyjwt
 
@@ -320,7 +522,9 @@ async def test_invalid_signature_token_rejected(engine, settings) -> None:  # no
             await svc.refresh(refresh_token=forged)
 
 
-async def test_wrong_audience_token_rejected(engine, settings) -> None:  # noqa: ANN001
+async def test_wrong_audience_token_rejected(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """A token with the wrong audience claim is rejected."""
     from datetime import UTC, datetime, timedelta
 
@@ -360,7 +564,9 @@ async def test_wrong_audience_token_rejected(engine, settings) -> None:  # noqa:
             await svc.refresh(refresh_token=wrong_aud_token)
 
 
-async def test_wrong_issuer_token_rejected(engine, settings) -> None:  # noqa: ANN001
+async def test_wrong_issuer_token_rejected(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """A token with the wrong issuer claim is rejected."""
     from datetime import UTC, datetime, timedelta
 
@@ -399,7 +605,9 @@ async def test_wrong_issuer_token_rejected(engine, settings) -> None:  # noqa: A
             await svc.refresh(refresh_token=wrong_iss_token)
 
 
-async def test_jwt_user_id_mismatch_session_rejected(engine, settings) -> None:  # noqa: ANN001
+async def test_jwt_user_id_mismatch_session_rejected(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """JWT decodes to user A but session row belongs to user B — rejected."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -430,7 +638,9 @@ async def test_jwt_user_id_mismatch_session_rejected(engine, settings) -> None: 
 # ── last_used_at tracking ─────────────────────────────────────────────────
 
 
-async def test_last_used_at_updated_on_refresh(engine, settings) -> None:  # noqa: ANN001
+async def test_last_used_at_updated_on_refresh(
+    engine: AsyncEngine, settings: Settings
+) -> None:
     """After a successful refresh, the old session has last_used_at set."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -465,7 +675,7 @@ async def test_last_used_at_updated_on_refresh(engine, settings) -> None:  # noq
 # ── Password Reset Production Safety Tests ──────────────────────────────────
 
 
-async def test_forgot_password_dev_returns_reset_url(engine) -> None:  # noqa: ANN001
+async def test_forgot_password_dev_returns_reset_url(engine: AsyncEngine) -> None:
     """In development, forgot_password returns reset_url for convenience."""
     from pydantic import SecretStr
 
@@ -487,7 +697,7 @@ async def test_forgot_password_dev_returns_reset_url(engine) -> None:  # noqa: A
         assert result["message"] == "If the email is registered, a reset link has been sent."
 
 
-async def test_forgot_password_prod_excludes_reset_url(engine) -> None:  # noqa: ANN001
+async def test_forgot_password_prod_excludes_reset_url(engine: AsyncEngine) -> None:
     """In production, forgot_password does NOT leak reset_url."""
     from pydantic import SecretStr
 
@@ -511,7 +721,7 @@ async def test_forgot_password_prod_excludes_reset_url(engine) -> None:  # noqa:
         assert result["message"] == "If the email is registered, a reset link has been sent."
 
 
-async def test_forgot_password_unknown_email_no_leak(engine) -> None:  # noqa: ANN001
+async def test_forgot_password_unknown_email_no_leak(engine: AsyncEngine) -> None:
     """forgot_password returns generic message for unknown email (no user enum)."""
     from pydantic import SecretStr
 
@@ -538,7 +748,7 @@ class _FakeEmailProvider:
         self.calls.append({"to_email": to_email, "reset_url": reset_url})
 
 
-async def test_forgot_password_prod_calls_email_provider(engine) -> None:  # noqa: ANN001
+async def test_forgot_password_prod_calls_email_provider(engine: AsyncEngine) -> None:
     """In production with email provider, forgot_password calls the provider."""
     from pydantic import SecretStr
 
@@ -569,7 +779,7 @@ async def test_forgot_password_prod_calls_email_provider(engine) -> None:  # noq
         assert "/reset-password?token=" in provider.calls[0]["reset_url"]
 
 
-async def test_forgot_password_no_provider_no_leak(engine) -> None:  # noqa: ANN001
+async def test_forgot_password_no_provider_no_leak(engine: AsyncEngine) -> None:
     """In production without email provider, no reset_url is leaked."""
     from pydantic import SecretStr
 

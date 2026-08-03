@@ -7,7 +7,9 @@ so the resolved user scopes all queries to that account.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,6 +64,7 @@ def get_auth_service(db: DbSession) -> AuthService:
         UserRepository(db),
         get_settings(),
         web_sessions=WebSessionRepository(db),
+        extension_sessions=ExtensionRepository(db),
     )
 
 
@@ -96,6 +99,48 @@ async def get_current_user(request: Request, db: DbSession) -> User:
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+async def get_current_web_user(request: Request, db: DbSession) -> User:
+    """Authenticate a web access token, excluding session-bound extension tokens."""
+    token = _extract_bearer_token(request)
+    settings = get_settings()
+    try:
+        payload = decode_token_payload(
+            settings=settings, token=token, expected_type="access"
+        )
+    except TokenError as exc:
+        raise InvalidTokenError from exc
+
+    # Extension access tokens are also type="access"; the session binding is
+    # the durable distinction available in the current token contract.
+    if "session_id" in payload:
+        raise InvalidTokenError
+
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidTokenError from exc
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise InvalidTokenError
+    return user
+
+
+CurrentWebUser = Annotated[User, Depends(get_current_web_user)]
+
+
+def _validated_extension_session_id(payload: dict[str, object]) -> str:
+    raw_session_id = payload.get("session_id")
+    if not isinstance(raw_session_id, str) or not raw_session_id:
+        raise InvalidTokenError
+    if raw_session_id != raw_session_id.strip():
+        raise InvalidTokenError
+    try:
+        UUID(raw_session_id)
+    except ValueError as exc:
+        raise InvalidTokenError from exc
+    return raw_session_id
+
+
 async def get_current_extension_user(request: Request, db: DbSession) -> User:
     """Resolve the authenticated user from an extension access token.
 
@@ -113,10 +158,11 @@ async def get_current_extension_user(request: Request, db: DbSession) -> User:
     except TokenError as exc:
         raise InvalidTokenError from exc
 
-    user_id = int(payload["sub"])
-    session_id = payload.get("session_id")
-    if not session_id:
-        raise InvalidTokenError
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidTokenError from exc
+    session_id = _validated_extension_session_id(payload)
 
     user = await db.get(User, user_id)
     if user is None or not user.is_active:
@@ -132,6 +178,45 @@ async def get_current_extension_user(request: Request, db: DbSession) -> User:
 
 
 CurrentExtensionUser = Annotated[User, Depends(get_current_extension_user)]
+
+
+@dataclass(frozen=True)
+class ExtensionAuthPrincipal:
+    user: User
+    session_id: str
+
+
+async def get_current_extension_principal(
+    request: Request, db: DbSession
+) -> ExtensionAuthPrincipal:
+    """Authenticate an extension access token and return its bound session."""
+    token = _extract_bearer_token(request)
+    settings = get_settings()
+    try:
+        payload = decode_token_payload(
+            settings=settings, token=token, expected_type="access"
+        )
+    except TokenError as exc:
+        raise InvalidTokenError from exc
+
+    session_id = _validated_extension_session_id(payload)
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidTokenError from exc
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise InvalidTokenError
+
+    session = await ExtensionRepository(db).get_session(session_id)
+    if session is None or session.user_id != user_id or session.revoked_at is not None:
+        raise InvalidTokenError
+    return ExtensionAuthPrincipal(user=user, session_id=session_id)
+
+
+CurrentExtensionPrincipal = Annotated[
+    ExtensionAuthPrincipal, Depends(get_current_extension_principal)
+]
 
 
 def get_resume_service(db: DbSession) -> ResumeService:

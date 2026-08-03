@@ -10,10 +10,16 @@ Pairing-code flow:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Request, Response, status
 
-from app.api.deps import CurrentUser, DbSession, ExtensionAuthServiceDep
+from app.api.deps import (
+    CurrentExtensionPrincipal,
+    CurrentWebUser,
+    DbSession,
+    ExtensionAuthServiceDep,
+)
 from app.core.rate_limit import limiter
+from app.domain.extension.exceptions import ExtensionSessionRevokedError
 from app.domain.extension.repository import ExtensionRepository
 from app.domain.extension.schemas import (
     ExtensionLogoutRequest,
@@ -34,7 +40,7 @@ web_router = APIRouter(prefix="/extension", tags=["extension-sessions"])
 
 @router.post("/start", response_model=ExtensionPairingStartResponse)
 async def start_pairing(
-    current_user: CurrentUser,
+    current_user: CurrentWebUser,
     service: ExtensionAuthServiceDep,
 ) -> ExtensionPairingStartResponse:
     """Generate a one-time pairing code for the authenticated user.
@@ -81,25 +87,35 @@ async def refresh_extension_token(
     request: Request,
     payload: ExtensionRefreshRequest,
     service: ExtensionAuthServiceDep,
+    db: DbSession,
 ) -> ExtensionRefreshResponse:
     """Refresh an extension access token using a refresh token.
 
     Called from the extension service worker when the access token expires.
     Does not require authentication (refresh token IS the auth).
     """
-    return await service.refresh(payload.refresh_token)
+    try:
+        return await service.refresh(payload.refresh_token)
+    except ExtensionSessionRevokedError:
+        # Reuse detection revokes the session before raising. Preserve that
+        # security side effect even though request-scoped DB dependencies roll
+        # back unhandled exceptions.
+        await db.commit()
+        raise
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout_extension(
-    payload: ExtensionLogoutRequest,
+    principal: CurrentExtensionPrincipal,
     service: ExtensionAuthServiceDep,
+    payload: ExtensionLogoutRequest | None = None,
 ) -> None:
     """Revoke an extension session.
 
     Called from the extension when the user disconnects.
     """
-    await service.logout(payload.session_id)
+    # The legacy body is tolerated for rollout compatibility but never trusted.
+    await service.logout(principal.session_id)
 
 
 # ── Web Dashboard Endpoints ────────────────────────────────────────────────
@@ -107,7 +123,7 @@ async def logout_extension(
 
 @web_router.get("/sessions", response_model=ExtensionSessionListResponse)
 async def list_extension_sessions(
-    current_user: CurrentUser,
+    current_user: CurrentWebUser,
     db: DbSession,
 ) -> ExtensionSessionListResponse:
     """List all extension sessions for the current user.
@@ -130,3 +146,18 @@ async def list_extension_sessions(
     ]
 
     return ExtensionSessionListResponse(sessions=items)
+
+
+@web_router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_owned_extension_session(
+    session_id: str,
+    current_user: CurrentWebUser,
+    db: DbSession,
+) -> Response:
+    """Revoke an extension session owned by the authenticated web user."""
+    await ExtensionRepository(db).revoke_owned_session(
+        session_id=session_id, user_id=current_user.id
+    )
+    # Return the same response whether the ID exists, is revoked, or belongs to
+    # another user so session existence is not disclosed.
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

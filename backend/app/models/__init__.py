@@ -7,6 +7,7 @@ from app.models.application_event import ApplicationEvent
 from app.models.application_form_field import ApplicationFormField
 from app.models.application_form_session import ApplicationFormSession
 from app.models.cover_letter import CoverLetter
+from app.models.extension_refresh_token import ExtensionRefreshToken
 from app.models.extension_session import ExtensionSession
 from app.models.interview_prep import InterviewPrep
 from app.models.job import Job
@@ -30,6 +31,7 @@ __all__ = [
     "CandidateProfile",
     "CoverLetter",
     "ExtensionSession",
+    "ExtensionRefreshToken",
     "InterviewPrep",
     "Job",
     "JobSourceLink",

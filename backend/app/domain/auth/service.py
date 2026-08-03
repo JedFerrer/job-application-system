@@ -31,6 +31,7 @@ from app.domain.auth.exceptions import (
 )
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.web_session_repository import WebSessionRepository
+from app.domain.extension.repository import ExtensionRepository
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -50,10 +51,12 @@ class AuthService:
         repository: UserRepository,
         settings: Settings,
         web_sessions: WebSessionRepository | None = None,
+        extension_sessions: ExtensionRepository | None = None,
     ) -> None:
         self._repo = repository
         self._settings = settings
         self._sessions = web_sessions
+        self._extension_sessions = extension_sessions
 
     # -- token helpers -----------------------------------------------------
 
@@ -298,6 +301,14 @@ class AuthService:
             if count:
                 logger.info(
                     "password_reset.sessions_revoked user_id=%s count=%s",
+                    user.id,
+                    count,
+                )
+        if self._extension_sessions is not None:
+            count = await self._extension_sessions.revoke_all_for_user(user.id)
+            if count:
+                logger.info(
+                    "password_reset.extension_sessions_revoked user_id=%s count=%s",
                     user.id,
                     count,
                 )

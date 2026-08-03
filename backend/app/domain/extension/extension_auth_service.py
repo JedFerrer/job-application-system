@@ -17,12 +17,13 @@ import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.core.security import create_token
+from app.core.security import TokenError, create_token
+from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.extension.exceptions import (
-    ExtensionSessionNotFoundError,
     ExtensionSessionRevokedError,
     PairingCodeExpiredError,
     PairingCodeInvalidError,
@@ -143,14 +144,8 @@ class ExtensionAuthService:
         """Exchange a pairing code for extension tokens + session."""
         user_id = await self.consume_pairing_code(code)
 
-        # Hash a placeholder refresh token to create the session first.
-        # We need the session ID before we can issue tokens that carry it.
-        refresh_token = create_token(
-            settings=self._settings,
-            subject=user_id,
-            token_type="refresh",  # noqa: S106 - token kind
-        )
-        refresh_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
+        # Create the stable session before issuing the final token carrying its ID.
+        refresh_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
 
         session = await self._repo.create_session(
             user_id=user_id,
@@ -175,9 +170,16 @@ class ExtensionAuthService:
             token_type="refresh",  # noqa: S106 - token kind
             extra_claims=session_claim,
         )
-        # Update the stored hash to match the re-issued refresh token.
+        # Keep the legacy column synchronized for compatibility with older readers.
         new_refresh_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
         session.refresh_token_hash = new_refresh_hash
+        await self._repo.create_refresh_token(
+            session_id=str(session.id),
+            token_hash=new_refresh_hash,
+            token_family=str(uuid4()),
+            expires_at=datetime.now(UTC)
+            + timedelta(days=self._settings.refresh_token_expire_days),
+        )
         await self._repo.touch_session(str(session.id))
 
         logger.info("extension.pairing_complete", user_id=user_id, session_id=session.id)
@@ -203,34 +205,46 @@ class ExtensionAuthService:
         # extract the session_id claim.
         from app.core.security import decode_token_payload
 
-        payload = decode_token_payload(
-            settings=self._settings,
-            token=refresh_token,
-            expected_type="refresh",
-        )
-        user_id = int(payload["sub"])
-        session_id = payload.get("session_id")
+        try:
+            payload = decode_token_payload(
+                settings=self._settings,
+                token=refresh_token,
+                expected_type="refresh",
+            )
+        except TokenError as exc:
+            raise InvalidTokenError from exc
+        try:
+            user_id = int(payload["sub"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise InvalidTokenError from exc
+        claimed_session_id = payload.get("session_id")
+        if claimed_session_id is not None and (
+            not isinstance(claimed_session_id, str) or not claimed_session_id
+        ):
+            raise InvalidTokenError
 
-        # Find the session by refresh token hash
         token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
+        token_record = await self._repo.find_refresh_token(token_hash, for_update=True)
+        if token_record is None:
+            raise InvalidTokenError
 
-        # Look up session by hash (we need to iterate since hash is not indexed uniquely)
-        sessions = await self._repo.list_user_sessions(user_id)
-        session = None
-        for s in sessions:
-            if s.refresh_token_hash == token_hash:
-                session = s
-                break
+        session_id = str(token_record.extension_session_id)
+        if claimed_session_id is not None and claimed_session_id != session_id:
+            raise InvalidTokenError
+        session = await self._repo.get_session(token_record.extension_session_id)
+        if session is None or session.user_id != user_id:
+            raise InvalidTokenError
 
-        if session is None:
-            raise ExtensionSessionNotFoundError("unknown")
-
-        if session.revoked_at is not None:
+        if (
+            token_record.used_at is not None
+            or token_record.revoked_at is not None
+            or session.revoked_at is not None
+        ):
+            await self._repo.revoke_session(str(session.id))
             raise ExtensionSessionRevokedError
 
-        # Cross-check: the session_id in the JWT must match the session we found.
-        if session_id is not None and str(session.id) != session_id:
-            raise ExtensionSessionNotFoundError("session mismatch")
+        if token_record.expires_at <= datetime.now(UTC):
+            raise InvalidTokenError
 
         # Issue new token pair carrying the same session id.
         claims = {"session_id": str(session.id)}
@@ -247,9 +261,15 @@ class ExtensionAuthService:
             extra_claims=claims,
         )
 
-        # Update session with new refresh hash
+        # Atomically consume the old record and create the successor in its family.
         new_hash = hashlib.sha256(new_refresh.encode()).hexdigest()
         session.refresh_token_hash = new_hash
+        await self._repo.rotate_refresh_token(
+            token_record,
+            new_hash=new_hash,
+            expires_at=datetime.now(UTC)
+            + timedelta(days=self._settings.refresh_token_expire_days),
+        )
         await self._repo.touch_session(str(session.id))
 
         return ExtensionRefreshResponse(

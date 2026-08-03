@@ -49,14 +49,8 @@ export async function getSessionState(): Promise<SessionState> {
 /** Logout and revoke the extension session. */
 export async function logout(): Promise<void> {
   try {
-    const result = await chrome.storage.session.get(STORAGE_KEYS.SESSION_ID);
-    const sessionId = result[STORAGE_KEYS.SESSION_ID] as string | undefined;
-    if (sessionId) {
-      await apiRequest("/extension/auth/logout", {
-        method: "POST",
-        body: JSON.stringify({ session_id: sessionId }),
-      });
-    }
+    // The backend derives the session from the validated access-token claim.
+    await apiRequest("/extension/auth/logout", { method: "POST" });
   } catch {
     // Best-effort: revoke may fail if token is already expired
   } finally {
