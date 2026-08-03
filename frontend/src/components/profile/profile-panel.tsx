@@ -559,7 +559,7 @@ function ImportedResumeDrafts() {
             <AlertDialogTitle>{confirmAction === "approve" ? "Approve imported profile?" : "Reject imported profile?"}</AlertDialogTitle>
             <AlertDialogDescription>
               {confirmAction === "approve"
-                ? "This will make the imported profile active and replace the current matching profile."
+                ? "This will replace your current active resume profile and permanently delete the previous uploaded resume and its resume-specific extracted data. Saved applications and application documents will not be deleted."
                 : "This will remove the imported draft from your pending reviews. Your active profile will not change."}
             </AlertDialogDescription>
           </AlertDialogHeader>
