@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.web_refresh_session import WebRefreshSession
 
@@ -41,14 +41,17 @@ class WebSessionRepository:
 
     # -- lookup ------------------------------------------------------------
 
-    async def find_by_token(self, refresh_token: str) -> WebRefreshSession | None:
+    async def find_by_token(
+        self, refresh_token: str, *, for_update: bool = False
+    ) -> WebRefreshSession | None:
         """Find a (possibly revoked) session by its refresh-token hash."""
         token_hash = _hash_token(refresh_token)
-        result = await self._session.execute(
-            select(WebRefreshSession).where(
-                WebRefreshSession.refresh_token_hash == token_hash
-            )
+        query = select(WebRefreshSession).where(
+            WebRefreshSession.refresh_token_hash == token_hash
         )
+        if for_update:
+            query = query.with_for_update()
+        result = await self._session.execute(query)
         return result.scalar_one_or_none()
 
     # -- rotate ------------------------------------------------------------
@@ -95,6 +98,27 @@ class WebSessionRepository:
         )
         await self._session.flush()
         return cast(CursorResult[Any], result).rowcount or 0
+
+    async def revoke_family_persisted(self, token_family: str) -> int:
+        """Persist family revocation independently of an auth failure rollback.
+
+        The request transaction owns the row lock and will be rolled back when
+        the invalid-token exception reaches FastAPI. Release that transaction
+        before committing the security revocation in a short-lived session so
+        unrelated pending request changes are never committed accidentally.
+        """
+        await self._session.rollback()
+        bind = self._session.bind
+        if bind is None:
+            raise RuntimeError("web refresh session has no database bind")
+        session_factory = async_sessionmaker(
+            bind=bind, class_=AsyncSession, expire_on_commit=False
+        )
+        async with session_factory() as session:
+            repository = WebSessionRepository(session)
+            count = await repository.revoke_family(token_family)
+            await session.commit()
+            return count
 
     async def revoke_all_for_user(self, user_id: int) -> int:
         """Revoke all active sessions for *user_id* (password reset)."""

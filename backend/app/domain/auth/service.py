@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from google.auth.exceptions import GoogleAuthError as _GoogleVerifyError
 from google.auth.transport import requests as google_requests
@@ -180,7 +181,9 @@ class AuthService:
         # If session storage is available, cross-check the verified token
         # against persisted sessions (rotation, revocation, reuse detection).
         if self._sessions is not None:
-            session = await self._sessions.find_by_token(refresh_token)
+            session = await self._sessions.find_by_token(
+                refresh_token, for_update=True
+            )
             if session is None:
                 raise InvalidTokenError
 
@@ -195,13 +198,24 @@ class AuthService:
                 raise InvalidTokenError
 
             if session.revoked_at is not None:
+                now = datetime.now(UTC)
+                if (
+                    session.last_used_at is not None
+                    and (now - session.last_used_at).total_seconds()
+                    <= self._settings.web_refresh_reuse_grace_seconds
+                ):
+                    raise InvalidTokenError
+
                 # Reuse detected — revoke the entire token family.
-                await self._sessions.revoke_family(session.token_family)
+                session_id = session.id
+                token_family = session.token_family
+                session_user_id = session.user_id
+                await self._sessions.revoke_family_persisted(token_family)
                 logger.warning(
                     "refresh.reuse_detected session_id=%s family=%s user_id=%s",
-                    session.id,
-                    session.token_family,
-                    session.user_id,
+                    session_id,
+                    token_family,
+                    session_user_id,
                 )
                 raise InvalidTokenError
 

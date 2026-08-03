@@ -19,6 +19,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -30,12 +31,15 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, get_settings
 from app.core.security import create_token, hash_password
+from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.service import AuthService
 from app.domain.auth.web_session_repository import WebSessionRepository
 from app.domain.extension.exceptions import ExtensionSessionRevokedError
 from app.domain.extension.extension_auth_service import ExtensionAuthService
 from app.domain.extension.repository import ExtensionRepository
+from app.infrastructure.database import engine as app_engine
+from app.main import app
 from app.models.extension_refresh_token import ExtensionRefreshToken
 from app.models.extension_session import ExtensionSession
 from app.models.user import User
@@ -161,13 +165,24 @@ async def test_old_token_reuse_revokes_family(engine: AsyncEngine, settings: Set
         tokens1 = await svc.authenticate(email="a@test.com", password="password123")
 
         # First refresh — rotates token.
-        await svc.refresh(refresh_token=tokens1.refresh_token)
+        rotated_tokens = await svc.refresh(refresh_token=tokens1.refresh_token)
 
-        # Reuse the OLD token — should raise InvalidTokenError and revoke family.
-        from app.domain.auth.exceptions import InvalidTokenError
+        old_session = (
+            await db.execute(
+                select(WebRefreshSession).where(
+                    WebRefreshSession.refresh_token_hash
+                    == hashlib.sha256(tokens1.refresh_token.encode()).hexdigest()
+                )
+            )
+        ).scalar_one()
+        old_session.last_used_at = datetime.now(UTC) - timedelta(
+            seconds=settings.web_refresh_reuse_grace_seconds + 1
+        )
+        await db.flush()
+
+        # Reuse the old token outside the grace window.
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=tokens1.refresh_token)
-        await db.commit()
 
     # Verify ALL sessions in the family are revoked.
     async with sf() as db:
@@ -175,6 +190,11 @@ async def test_old_token_reuse_revokes_family(engine: AsyncEngine, settings: Set
         sessions = result.scalars().all()
         for s in sessions:
             assert s.revoked_at is not None
+    async with sf() as verify_db:
+        with pytest.raises(InvalidTokenError):
+            await _make_svc(verify_db, settings).refresh(
+                refresh_token=rotated_tokens.refresh_token
+            )
 
 
 async def test_logout_revokes_session(engine: AsyncEngine, settings: Settings) -> None:
@@ -262,6 +282,55 @@ async def test_password_reset_revokes_all_sessions(
         )
         with pytest.raises(ExtensionSessionRevokedError):
             await revoked_service.refresh(extension_pair.refresh_token)
+
+
+async def test_delayed_web_reuse_api_persists_family_revocation(
+    engine: AsyncEngine,
+) -> None:
+    """The real API rollback path preserves delayed family revocation."""
+    api_settings = get_settings()
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+        svc = _make_svc(db, api_settings)
+        tokens = await svc.authenticate(email="a@test.com", password="password123")
+        rotated = await svc.refresh(refresh_token=tokens.refresh_token)
+        await db.commit()
+
+    async with sf() as db:
+        old = (
+            await db.execute(
+                select(WebRefreshSession).where(
+                    WebRefreshSession.refresh_token_hash
+                    == hashlib.sha256(tokens.refresh_token.encode()).hexdigest()
+                )
+            )
+        ).scalar_one()
+        old.last_used_at = datetime.now(UTC) - timedelta(
+            seconds=api_settings.web_refresh_reuse_grace_seconds + 1
+        )
+        await db.commit()
+
+    await app_engine.dispose()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/auth/refresh",
+            cookies={api_settings.refresh_cookie_name: tokens.refresh_token},
+        )
+    assert response.status_code == 401
+
+    async with sf() as db:
+        rows = (await db.execute(select(WebRefreshSession))).scalars().all()
+        assert rows
+        assert all(row.revoked_at is not None for row in rows)
+        with pytest.raises(InvalidTokenError):
+            await _make_svc(db, api_settings).refresh(
+                refresh_token=rotated.refresh_token
+            )
 
 
 async def test_legacy_extension_refresh_backfill_preserves_family_rotation(
@@ -410,6 +479,79 @@ async def test_concurrent_extension_refresh_has_one_success(
     assert sorted(outcomes) == ["revoked", "success"]
 
 
+async def test_concurrent_web_refresh_has_one_success_without_family_revocation(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    """Concurrent web refreshes have one winner and a safe grace loser."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+        tokens = await _make_svc(db, settings).authenticate(
+            email="a@test.com", password="password123"
+        )
+        await db.commit()
+
+    async def attempt() -> str:
+        async with sf() as db:
+            try:
+                await _make_svc(db, settings).refresh(
+                    refresh_token=tokens.refresh_token
+                )
+                await db.commit()
+                return "success"
+            except InvalidTokenError:
+                await db.commit()
+                return "invalid"
+
+    outcomes = await asyncio.gather(attempt(), attempt())
+    assert sorted(outcomes) == ["invalid", "success"]
+
+    async with sf() as db:
+        rows = (
+            await db.execute(
+                select(WebRefreshSession).order_by(WebRefreshSession.created_at)
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+        assert sum(row.revoked_at is None for row in rows) == 1
+        assert len({row.token_family for row in rows}) == 1
+
+
+async def test_recent_web_reuse_within_grace_does_not_revoke_family(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    """A stale token inside the configured grace window is rejected safely."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+        svc = _make_svc(db, settings)
+        tokens = await svc.authenticate(email="a@test.com", password="password123")
+        await svc.refresh(refresh_token=tokens.refresh_token)
+        old = (
+            await db.execute(
+                select(WebRefreshSession).where(
+                    WebRefreshSession.refresh_token_hash
+                    == hashlib.sha256(tokens.refresh_token.encode()).hexdigest()
+                )
+            )
+        ).scalar_one()
+        old.last_used_at = datetime.now(UTC) - timedelta(
+            seconds=max(settings.web_refresh_reuse_grace_seconds - 1, 0)
+        )
+        await db.flush()
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=tokens.refresh_token)
+        await db.commit()
+
+    async with sf() as db:
+        rows = (await db.execute(select(WebRefreshSession))).scalars().all()
+        assert sum(row.revoked_at is None for row in rows) == 1
+
+
 async def test_refresh_with_revoked_token_fails(
     engine: AsyncEngine, settings: Settings
 ) -> None:
@@ -427,6 +569,25 @@ async def test_refresh_with_revoked_token_fails(
         await db.commit()
 
         from app.domain.auth.exceptions import InvalidTokenError
+        with pytest.raises(InvalidTokenError):
+            await svc.refresh(refresh_token=tokens.refresh_token)
+
+
+async def test_refresh_with_inactive_user_fails(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    """A valid refresh token cannot revive an inactive account."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        user.hashed_password = hash_password("password123")
+        await db.commit()
+
+        svc = _make_svc(db, settings)
+        tokens = await svc.authenticate(email="a@test.com", password="password123")
+        user.is_active = False
+        await db.commit()
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=tokens.refresh_token)
 
