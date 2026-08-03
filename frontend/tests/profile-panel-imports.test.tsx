@@ -178,6 +178,8 @@ describe("ProfilePanel imported resume drafts", () => {
     await openReview();
     await clickButton("Approve draft");
     expect(apiMocks.approveImport).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("permanently delete the previous uploaded resume");
+    expect(container.textContent).toContain("Saved applications and application documents will not be deleted");
     await clickAlertButton("Approve draft");
     await vi.waitFor(() => expect(apiMocks.approveImport).toHaveBeenCalledWith(11));
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["profile"] });

@@ -124,15 +124,68 @@ class ResumeRepository:
         )
         return result.tuples().one_or_none()
 
+    async def get_active_profile_for_resume(
+        self, *, user_id: int, resume_id: int
+    ) -> CandidateProfile | None:
+        """Return an already-approved profile only when it is still active and owned."""
+        result = await self._session.execute(
+            select(CandidateProfile)
+            .join(Resume, Resume.id == CandidateProfile.resume_id)
+            .where(
+                Resume.id == resume_id,
+                Resume.user_id == user_id,
+                Resume.is_active.is_(True),
+                Resume.lifecycle_status == ResumeLifecycleStatus.ACTIVE.value,
+                CandidateProfile.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def _capture_previous_active_source(
+        self, *, user_id: int
+    ) -> tuple[Resume, CandidateProfile] | None:
+        """Capture exactly one valid active source/profile or fail closed."""
+        result = await self._session.execute(
+            select(Resume).where(
+                Resume.user_id == user_id,
+                Resume.is_active.is_(True),
+            )
+        )
+        active_resumes = list(result.scalars().all())
+        if len(active_resumes) > 1:
+            raise ValueError("Multiple active resumes found; refusing broad cleanup")
+        if not active_resumes:
+            return None
+
+        previous_resume = active_resumes[0]
+        if previous_resume.lifecycle_status != ResumeLifecycleStatus.ACTIVE.value:
+            raise ValueError("Active resume has an inconsistent lifecycle state")
+        profile_result = await self._session.execute(
+            select(CandidateProfile).where(
+                CandidateProfile.resume_id == previous_resume.id,
+            )
+        )
+        profiles = list(profile_result.scalars().all())
+        if len(profiles) != 1 or profiles[0].user_id != user_id:
+            raise ValueError(
+                "Active resume does not have exactly one owned candidate profile"
+            )
+        return previous_resume, profiles[0]
+
     async def approve_import_draft(
         self, *, user_id: int, resume_id: int
     ) -> CandidateProfile | None:
         await self.lock_user_for_import(user_id)
         draft = await self.get_import_draft(user_id=user_id, resume_id=resume_id)
         if draft is None:
-            return None
+            # A client may retry after the transaction committed but before it
+            # received the response. Return the already-active target without
+            # attempting any additional cleanup.
+            return await self.get_active_profile_for_resume(
+                user_id=user_id, resume_id=resume_id
+            )
         resume, profile = draft
-        await self.deactivate_existing(user_id)
+        previous = await self._capture_previous_active_source(user_id=user_id)
         await self._session.execute(
             update(Resume)
             .where(Resume.id == resume.id, Resume.user_id == user_id)
@@ -142,6 +195,13 @@ class ResumeRepository:
             )
         )
         await self._session.flush()
+
+        if previous is not None:
+            previous_resume, previous_profile = previous
+            await self._session.delete(previous_profile)
+            await self._session.flush()
+            await self._session.delete(previous_resume)
+            await self._session.flush()
         return profile
 
     async def reject_import_draft(self, *, user_id: int, resume_id: int) -> bool:

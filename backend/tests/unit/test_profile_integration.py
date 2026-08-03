@@ -28,8 +28,13 @@ from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import ParsedProfile
 from app.domain.resume.service import ResumeService, build_summary_text
 from app.infrastructure.database import get_db
-from app.models.resume import CandidateProfile, Resume
+from app.models.application import Application
+from app.models.application_event import ApplicationEvent
+from app.models.cover_letter import CoverLetter
+from app.models.job import Job
+from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
 from app.models.user import User
+from app.models.user_job_match import UserJobMatch
 
 pytestmark = pytest.mark.integration
 
@@ -421,6 +426,75 @@ class TestProfileIntegration:
             foreign = await _seed_import_draft(
                 db, user_id=other_user.id, full_name="Foreign Draft"
             )
+
+            automatic_job = Job(
+                fingerprint="cleanup-auto",
+                title="Automatic match",
+                company="Acme",
+                source="test",
+                source_url="https://example.com/automatic",
+                raw_response={},
+                description="Automatic match description",
+            )
+            manual_job = Job(
+                fingerprint="cleanup-manual",
+                title="Manual match",
+                company="Beta",
+                source="test",
+                source_url="https://example.com/manual",
+                raw_response={},
+                description="Manual match description",
+            )
+            db.add_all([automatic_job, manual_job])
+            await db.flush()
+            cover_letter = CoverLetter(
+                user_id=user.id,
+                job_id=automatic_job.id,
+                content="Saved cover letter",
+                model="test-model",
+            )
+            db.add(cover_letter)
+            await db.flush()
+            application = Application(
+                user_id=user.id,
+                job_id=automatic_job.id,
+                status="applied",
+                cover_letter_id=cover_letter.id,
+            )
+            db.add(application)
+            await db.flush()
+            db.add(
+                ApplicationEvent(
+                    user_id=user.id,
+                    application_id=application.id,
+                    job_id=automatic_job.id,
+                    event_type="submitted",
+                )
+            )
+            db.add_all(
+                [
+                    UserJobMatch(
+                        user_id=user.id,
+                        job_id=automatic_job.id,
+                        vector_score=90.0,
+                        origin="automatic",
+                    ),
+                    UserJobMatch(
+                        user_id=user.id,
+                        job_id=manual_job.id,
+                        vector_score=80.0,
+                        origin="manual",
+                    ),
+                    TailoredResumeDraft(
+                        user_id=user.id,
+                        job_id=automatic_job.id,
+                        source_profile_id=old.id,
+                        job_title="Automatic match",
+                        job_company="Acme",
+                        content={"full_name": "Saved snapshot"},
+                    ),
+                ]
+            )
             await db.commit()
 
         with TestClient(
@@ -437,7 +511,7 @@ class TestProfileIntegration:
             )
             assert edited.status_code == 200
             assert edited.json()["profile"]["full_name"] == "Edited User"
-            for resume_id in (first_draft.id, inactive.id, foreign.id, 999999):
+            for resume_id in (inactive.id, foreign.id, 999999):
                 assert client.post(f"/resume/imports/{resume_id}/approve").status_code == 404
 
         async with session_factory() as db:
@@ -452,7 +526,6 @@ class TestProfileIntegration:
             ).all()
 
         assert rows == [
-            (old.resume_id, False, "inactive"),
             (first_draft.id, True, "active"),
             (second_draft.id, False, "draft"),
             (inactive.id, False, "inactive"),
@@ -460,6 +533,55 @@ class TestProfileIntegration:
         assert events == [f"ranking:{user.id}", f"ranking:{user.id}"]
 
         async with session_factory() as db:
+            old_profile = await db.get(CandidateProfile, old.id)
+            assert old_profile is None
+            old_resume = await db.get(Resume, old.resume_id)
+            assert old_resume is None
+            snapshot = (
+                await db.execute(
+                    text(
+                        "SELECT source_profile_id, content FROM tailored_resume_drafts "
+                        "WHERE user_id = :user_id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).one()
+            assert snapshot[0] is None
+            assert snapshot[1] == {"full_name": "Saved snapshot"}
+            assert (
+                await db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM applications WHERE user_id = :user_id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).scalar_one() == 1
+            assert (
+                await db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM cover_letters WHERE user_id = :user_id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).scalar_one() == 1
+            assert (
+                await db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM application_events WHERE user_id = :user_id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).scalar_one() == 1
+            match_rows = (
+                await db.execute(
+                    text(
+                        "SELECT origin FROM user_job_matches WHERE user_id = :user_id "
+                        "ORDER BY origin"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).scalars().all()
+            assert match_rows == ["automatic", "manual"]
             stored_provenance = (
                 await db.execute(
                     text("SELECT import_provenance FROM resumes WHERE id = :resume_id"),
@@ -509,11 +631,119 @@ class TestProfileIntegration:
 
         assert events == []
 
+    @pytest.mark.asyncio
+    async def test_approved_retry_is_idempotent_and_does_not_delete_new_source(
+        self, session_factory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        events: list[int] = []
+
+        async def record_ranking(user_id: int) -> None:
+            events.append(user_id)
+
+        monkeypatch.setattr(resume_module, "_enqueue_match_ranking", record_ranking)
         async with session_factory() as db:
-            stored_provenance = (
+            user = await _seed_user(db)
+            old = await _seed_profile(db, user_id=user.id, full_name="Old User")
+            draft = await _seed_import_draft(
+                db, user_id=user.id, full_name="Replacement User"
+            )
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            first = client.post(f"/resume/imports/{draft.id}/approve")
+            second = client.post(f"/resume/imports/{draft.id}/approve")
+            assert first.status_code == 200
+            assert second.status_code == 200
+            assert second.json()["profile"]["full_name"] == "Replacement User"
+
+        async with session_factory() as db:
+            assert await db.get(Resume, old.resume_id) is None
+            assert await db.get(CandidateProfile, old.id) is None
+            assert (
                 await db.execute(
-                    text("SELECT import_provenance FROM resumes WHERE id = :resume_id"),
-                    {"resume_id": draft.id},
+                    text("SELECT COUNT(*) FROM resumes WHERE user_id = :user_id"),
+                    {"user_id": user.id},
                 )
-            ).scalar_one()
-        assert stored_provenance == original_provenance
+            ).scalar_one() == 1
+            assert (
+                await db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM candidate_profiles WHERE user_id = :user_id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).scalar_one() == 1
+        assert events == [user.id, user.id]
+
+    @pytest.mark.asyncio
+    async def test_multiple_active_sources_fail_closed_and_roll_back(
+        self, session_factory
+    ) -> None:  # noqa: ANN001
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            first = await _seed_profile(db, user_id=user.id, full_name="First Active")
+            second = await _seed_profile(db, user_id=user.id, full_name="Second Active")
+            draft = await _seed_import_draft(
+                db, user_id=user.id, full_name="Replacement User"
+            )
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            with pytest.raises(ValueError, match="Multiple active resumes"):
+                client.post(f"/resume/imports/{draft.id}/approve")
+
+        async with session_factory() as db:
+            states = (
+                await db.execute(
+                    text(
+                        "SELECT id, is_active, lifecycle_status FROM resumes "
+                        "WHERE user_id = :user_id ORDER BY id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).all()
+            assert states == [
+                (first.resume_id, True, "active"),
+                (second.resume_id, True, "active"),
+                (draft.id, False, "draft"),
+            ]
+
+    @pytest.mark.asyncio
+    async def test_active_resume_with_inconsistent_lifecycle_fails_closed(
+        self, session_factory
+    ) -> None:  # noqa: ANN001
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            active = await _seed_profile(db, user_id=user.id, full_name="Active User")
+            active_resume = await db.get(Resume, active.resume_id)
+            assert active_resume is not None
+            active_resume.lifecycle_status = "draft"
+            draft = await _seed_import_draft(
+                db, user_id=user.id, full_name="Replacement User"
+            )
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            with pytest.raises(ValueError, match="inconsistent lifecycle"):
+                client.post(f"/resume/imports/{draft.id}/approve")
+
+        async with session_factory() as db:
+            states = (
+                await db.execute(
+                    text(
+                        "SELECT id, is_active, lifecycle_status FROM resumes "
+                        "WHERE user_id = :user_id ORDER BY id"
+                    ),
+                    {"user_id": user.id},
+                )
+            ).all()
+            assert states == [
+                (active.resume_id, True, "draft"),
+                (draft.id, False, "draft"),
+            ]
