@@ -21,7 +21,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -1188,3 +1188,188 @@ async def test_forgot_password_no_provider_no_leak(engine: AsyncEngine) -> None:
         result = await svc.forgot_password(email="d@test.com")
         assert "reset_url" not in result
         assert result["message"] == "If the email is registered, a reset link has been sent."
+
+
+async def test_web_session_cleanup_deletes_only_unusable_rows_and_preserves_history(
+    engine: AsyncEngine,
+) -> None:
+    """Retention removes unusable web rows without touching extension history."""
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    now = datetime.now(UTC)
+    revoked_cutoff = now - timedelta(days=30)
+    never_revoked_cutoff = now - timedelta(days=37)
+
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        db.add_all(
+            [
+                WebRefreshSession(
+                    user_id=user.id,
+                    refresh_token_hash="old-revoked",
+                    token_family="family-old-revoked",
+                    created_at=now - timedelta(days=40),
+                    revoked_at=now - timedelta(days=31),
+                ),
+                WebRefreshSession(
+                    user_id=user.id,
+                    refresh_token_hash="recent-revoked",
+                    token_family="family-recent-revoked",
+                    created_at=now - timedelta(days=31),
+                    revoked_at=now - timedelta(days=29),
+                ),
+                WebRefreshSession(
+                    user_id=user.id,
+                    refresh_token_hash="old-never-revoked",
+                    token_family="family-old-never-revoked",
+                    created_at=now - timedelta(days=38),
+                ),
+                WebRefreshSession(
+                    user_id=user.id,
+                    refresh_token_hash="recent-never-revoked",
+                    token_family="family-recent-never-revoked",
+                    created_at=now - timedelta(days=36),
+                ),
+                WebRefreshSession(
+                    user_id=user.id,
+                    refresh_token_hash="active",
+                    token_family="family-active",
+                    created_at=now - timedelta(days=1),
+                ),
+            ]
+        )
+        extension = ExtensionSession(
+            user_id=user.id,
+            refresh_token_hash="extension-session",
+        )
+        db.add(extension)
+        await db.flush()
+        db.add(
+            ExtensionRefreshToken(
+                extension_session_id=extension.id,
+                token_hash="extension-history",
+                token_family="extension-family",
+                expires_at=now + timedelta(days=7),
+            )
+        )
+        await db.commit()
+
+        deleted = await WebSessionRepository(db).delete_unusable_sessions(
+            revoked_before=revoked_cutoff,
+            never_revoked_before=never_revoked_cutoff,
+            batch_size=100,
+        )
+        await db.commit()
+        assert deleted == 2
+
+    async with sf() as db:
+        remaining = (
+            await db.execute(
+                select(WebRefreshSession.refresh_token_hash).order_by(
+                    WebRefreshSession.refresh_token_hash
+                )
+            )
+        ).scalars().all()
+        assert remaining == ["active", "recent-never-revoked", "recent-revoked"]
+        assert await db.scalar(select(ExtensionRefreshToken.token_hash)) == "extension-history"
+
+
+async def test_web_session_cleanup_respects_batch_size_and_is_idempotent(
+    engine: AsyncEngine,
+) -> None:
+    sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    now = datetime.now(UTC)
+    revoked_cutoff = now - timedelta(days=30)
+    never_revoked_cutoff = now - timedelta(days=37)
+
+    async with sf() as db:
+        user = await _create_user(db, 1, "a@test.com")
+        db.add_all(
+            [
+                WebRefreshSession(
+                    user_id=user.id,
+                    refresh_token_hash=f"old-{index}",
+                    token_family=f"family-old-{index}",
+                    created_at=now - timedelta(days=40 + index),
+                    revoked_at=now - timedelta(days=31 + index),
+                )
+                for index in range(3)
+            ]
+        )
+        await db.commit()
+
+        repository = WebSessionRepository(db)
+        assert (
+            await repository.delete_unusable_sessions(
+                revoked_before=revoked_cutoff,
+                never_revoked_before=never_revoked_cutoff,
+                batch_size=2,
+            )
+            == 2
+        )
+        await db.commit()
+        assert (
+            await repository.delete_unusable_sessions(
+                revoked_before=revoked_cutoff,
+                never_revoked_before=never_revoked_cutoff,
+                batch_size=2,
+            )
+            == 1
+        )
+        await db.commit()
+        assert (
+            await repository.delete_unusable_sessions(
+                revoked_before=revoked_cutoff,
+                never_revoked_before=never_revoked_cutoff,
+                batch_size=2,
+            )
+            == 0
+        )
+
+
+async def test_web_session_retention_migration_adds_indexes_without_deleting_rows(
+    engine: AsyncEngine,
+) -> None:
+    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    sync_engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)
+
+    try:
+        command.downgrade(config, "0031_password_reset_version")
+        with sync_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, email, name, hashed_password, is_active) "
+                    "VALUES (1, 'migration@test.com', 'Migration User', NULL, true)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO web_refresh_sessions "
+                    "(id, user_id, refresh_token_hash, token_family) "
+                    "VALUES ('migration-session', 1, 'migration-hash', 'migration-family')"
+                )
+            )
+
+        command.upgrade(config, "0032_web_refresh_retention")
+
+        with sync_engine.connect() as connection:
+            indexes = {
+                row.indexname
+                for row in connection.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes "
+                        "WHERE tablename = 'web_refresh_sessions'"
+                    )
+                )
+            }
+            count = connection.execute(
+                text("SELECT count(*) FROM web_refresh_sessions")
+            ).scalar_one()
+
+        assert "ix_web_refresh_sessions_created_at" in indexes
+        assert "ix_web_refresh_sessions_revoked_at" in indexes
+        assert count == 1
+    finally:
+        command.upgrade(config, "head")
+        with sync_engine.begin() as connection:
+            connection.execute(text("TRUNCATE TABLE web_refresh_sessions, users CASCADE"))
+        sync_engine.dispose()

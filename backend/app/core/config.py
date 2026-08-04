@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
     web_refresh_reuse_grace_seconds: int = Field(default=5, ge=0, le=300)
+    web_refresh_session_retention_days: int = Field(default=30, ge=0)
+    web_refresh_session_cleanup_batch_size: int = Field(default=500, ge=1, le=5_000)
+    web_refresh_session_cleanup_schedule_cron: str = "0 4 * * *"
     # Refresh-token cookie. ``secure`` must be True in production (HTTPS only).
     # Path is "/" because the browser reaches the API through the Next.js rewrite
     # proxy (/api/backend/* -> /api/v1/*); a backend-relative path like

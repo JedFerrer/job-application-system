@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -132,3 +132,42 @@ class WebSessionRepository:
         )
         await self._session.flush()
         return cast(CursorResult[Any], result).rowcount or 0
+
+    async def delete_unusable_sessions(
+        self,
+        *,
+        revoked_before: datetime,
+        never_revoked_before: datetime,
+        batch_size: int,
+    ) -> int:
+        """Delete one bounded batch of sessions that can no longer authenticate.
+
+        Revoked rows use their revocation timestamp. Never-revoked rows use the
+        timestamp at which their JWT lifetime plus retention window elapsed.
+        The caller owns the transaction so maintenance can commit each batch.
+        """
+        candidate_stmt = (
+            select(WebRefreshSession.id)
+            .where(
+                or_(
+                    WebRefreshSession.revoked_at < revoked_before,
+                    (
+                        WebRefreshSession.revoked_at.is_(None)
+                        & (WebRefreshSession.created_at < never_revoked_before)
+                    ),
+                )
+            )
+            .order_by(WebRefreshSession.created_at.asc(), WebRefreshSession.id.asc())
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )
+        candidate_ids = list((await self._session.execute(candidate_stmt)).scalars().all())
+        if not candidate_ids:
+            return 0
+
+        result = await self._session.execute(
+            delete(WebRefreshSession)
+            .where(WebRefreshSession.id.in_(candidate_ids))
+            .returning(WebRefreshSession.id)
+        )
+        return len(list(result.scalars().all()))

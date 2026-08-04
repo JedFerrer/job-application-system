@@ -9,6 +9,7 @@ import pytest
 
 from app.domain.jobs.repository import ExpiredJobPurgeBatch
 from app.workers import maintenance
+from app.workers.celery_app import celery_app
 
 pytestmark = pytest.mark.unit
 
@@ -151,3 +152,48 @@ async def test_purge_rolls_back_on_failure(monkeypatch: pytest.MonkeyPatch) -> N
         await maintenance._purge_expired_jobs_async()
 
     assert session.rolled_back is True
+
+
+@pytest.mark.asyncio
+async def test_web_session_cleanup_commits_each_batch_and_reports_cutoffs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = [_SessionContext(), _SessionContext()]
+    observed: list[dict[str, object]] = []
+
+    class Repository:
+        def __init__(self, db: object) -> None:
+            assert db is sessions[len(observed)]
+
+        async def delete_unusable_sessions(self, **kwargs: object) -> int:
+            observed.append(kwargs)
+            return 2 if len(observed) == 1 else 1
+
+    session_iterator = iter(sessions)
+    monkeypatch.setattr(maintenance, "_worker_session_factory", lambda: next(session_iterator))
+    monkeypatch.setattr(maintenance, "WebSessionRepository", Repository)
+    monkeypatch.setattr(
+        maintenance,
+        "get_settings",
+        lambda: SimpleNamespace(
+            refresh_token_expire_days=7,
+            web_refresh_session_retention_days=30,
+            web_refresh_session_cleanup_batch_size=2,
+        ),
+    )
+
+    result = await maintenance._purge_web_refresh_sessions_async()
+
+    assert result == {"deleted": 3, "batches": 2}
+    assert observed[0]["batch_size"] == 2
+    assert observed[0]["revoked_before"] == observed[1]["revoked_before"]
+    assert observed[0]["never_revoked_before"] == observed[1]["never_revoked_before"]
+    assert all(session.committed for session in sessions)
+
+
+def test_beat_schedule_registers_daily_web_session_cleanup() -> None:
+    schedule = celery_app.conf.beat_schedule["purge-web-refresh-sessions"]
+
+    assert schedule["task"] == "purge_web_refresh_sessions"
+    assert schedule["schedule"].minute == {0}
+    assert schedule["schedule"].hour == {4}
