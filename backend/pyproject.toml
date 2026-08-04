@@ -24,7 +24,7 @@ dependencies = [
     "structlog>=25.1",
     "argon2-cffi>=23.1",
     "pyjwt>=2.10",
-    "google-auth>=2.38",
+    "google-auth[requests]>=2.38",
     "html2text>=2025",
 ]
 

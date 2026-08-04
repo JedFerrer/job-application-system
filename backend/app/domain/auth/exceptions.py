@@ -16,7 +16,9 @@ class EmailAlreadyRegisteredError(AuthError):
 
     def __init__(self, email: str) -> None:
         self.email = email
-        super().__init__("Email already registered")
+        super().__init__(
+            "Unable to create an account with this email. Please sign in or use Google."
+        )
 
 
 class InvalidCredentialsError(AuthError):

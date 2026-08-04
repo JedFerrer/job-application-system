@@ -92,18 +92,15 @@ class AuthService:
 
     async def register(self, *, email: str, name: str, password: str) -> IssuedTokens:
         existing = await self._repo.get_by_email(email)
-        if existing is not None and existing.hashed_password is not None:
+        if existing is not None:
+            # Public registration must never attach credentials to an existing
+            # account. Adding a password to an OAuth account requires an
+            # authenticated, ownership-verified account-settings flow.
             raise EmailAlreadyRegisteredError(email)
 
-        if existing is not None:
-            # Google-only account adding a password — attach, don't duplicate.
-            user = await self._repo.update_password(
-                existing, hashed_password=hash_password(password)
-            )
-        else:
-            user = await self._repo.create(
-                email=email, name=name, hashed_password=hash_password(password)
-            )
+        user = await self._repo.create(
+            email=email, name=name, hashed_password=hash_password(password)
+        )
         return await self._issue_and_track(user)
 
     async def authenticate(self, *, email: str, password: str) -> IssuedTokens:
