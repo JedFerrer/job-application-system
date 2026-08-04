@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from ipaddress import ip_address
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +44,75 @@ configure_logging()
 settings = get_settings()
 logger = get_logger("startup")
 
+_INSECURE_JWT_SECRET = "insecure-dev-secret-change-me"  # noqa: S105 - intentional sentinel
+_MIN_PUBLIC_JWT_SECRET_LENGTH = 32
+
+
+def _is_local_origin(hostname: str) -> bool:
+    normalized = hostname.lower().rstrip(".")
+    if normalized in {"localhost", "host.docker.internal"}:
+        return True
+    if normalized.endswith((".localhost", ".local", ".localdomain", ".test")):
+        return True
+    try:
+        address = ip_address(normalized)
+    except ValueError:
+        return False
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_unspecified
+    )
+
+
+def _validate_public_origins(origins: list[str]) -> None:
+    if not origins:
+        raise RuntimeError(
+            "ALLOWED_ORIGINS must contain at least one HTTPS origin in staging and production."
+        )
+
+    for origin in origins:
+        candidate = origin.strip()
+        if not candidate or candidate != origin or "*" in candidate:
+            raise RuntimeError(
+                "ALLOWED_ORIGINS must contain explicit HTTPS origins and must not use a wildcard."
+            )
+        try:
+            parsed = urlsplit(candidate)
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            raise RuntimeError(
+                "ALLOWED_ORIGINS must contain only non-local HTTPS origins in "
+                "staging and production."
+            ) from None
+
+        if hostname and ":" in hostname:
+            canonical_host = f"[{hostname}]"
+        else:
+            canonical_host = hostname or ""
+        canonical_origin = f"https://{canonical_host}"
+        if port is not None:
+            canonical_origin += f":{port}"
+
+        if (
+            parsed.scheme != "https"
+            or not hostname
+            or not hostname.isascii()
+            or "%" in parsed.netloc
+            or parsed.path != ""
+            or parsed.query
+            or parsed.fragment
+            or _is_local_origin(hostname)
+            or port == 443
+            or canonical_origin != candidate
+        ):
+            raise RuntimeError(
+                "ALLOWED_ORIGINS must contain only non-local HTTPS origins in "
+                "staging and production."
+            )
+
 
 def validate_startup_settings(settings: Settings) -> None:
     """Validate production-safety settings at startup.
@@ -49,18 +120,25 @@ def validate_startup_settings(settings: Settings) -> None:
     Raises ``RuntimeError`` for misconfigured production settings.
     Logs warnings for detectable but non-fatal misconfigurations.
     """
-    if settings.is_production and (
-        settings.jwt_secret.get_secret_value() == "insecure-dev-secret-change-me"
-    ):
+    is_default_secret = settings.jwt_secret.get_secret_value() == _INSECURE_JWT_SECRET
+    if settings.requires_public_security and is_default_secret:
         raise RuntimeError(
-            "JWT_SECRET is using the insecure default in production. Set a strong secret."
+            "JWT_SECRET is using the insecure default in a public deployment. Set a strong secret."
         )
-    elif settings.jwt_secret.get_secret_value() == "insecure-dev-secret-change-me":
+    elif is_default_secret:
         logger.warning("jwt_secret_default", detail="Using insecure default JWT secret")
 
-    if settings.is_production and not settings.refresh_cookie_secure:
+    if (
+        settings.requires_public_security
+        and len(settings.jwt_secret.get_secret_value()) < _MIN_PUBLIC_JWT_SECRET_LENGTH
+    ):
         raise RuntimeError(
-            "REFRESH_COOKIE_SECURE must be True in production. "
+            "JWT_SECRET must be at least 32 characters in staging and production."
+        )
+
+    if settings.requires_public_security and not settings.refresh_cookie_secure:
+        raise RuntimeError(
+            "REFRESH_COOKIE_SECURE must be True in staging and production. "
             "Refresh cookies carry long-lived credentials and must only be sent over HTTPS."
         )
 
@@ -73,9 +151,12 @@ def validate_startup_settings(settings: Settings) -> None:
             ),
         )
 
-    if settings.is_production and settings.job_refresh_cooldown_minutes < 15:
+    if settings.requires_public_security:
+        _validate_public_origins(settings.allowed_origins)
+
+    if settings.requires_public_security and settings.job_refresh_cooldown_minutes < 15:
         raise RuntimeError(
-            "JOB_REFRESH_COOLDOWN_MINUTES must be at least 15 in production. "
+            "JOB_REFRESH_COOLDOWN_MINUTES must be at least 15 in staging and production. "
             f"Got {settings.job_refresh_cooldown_minutes}. "
             "On-demand scraping is expensive; a low cooldown enables abuse."
         )
@@ -111,7 +192,7 @@ async def security_headers(
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
-    if settings.is_production:
+    if settings.requires_public_security:
         response.headers["Strict-Transport-Security"] = (
             "max-age=63072000; includeSubDomains; preload"
         )

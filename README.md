@@ -136,6 +136,12 @@ BACKEND_INTERNAL_URL=http://localhost:8000
 NEXT_PUBLIC_GOOGLE_CLIENT_ID=
 ```
 
+Staging and production are treated as public deployments. They require a
+non-default JWT secret of at least 32 characters, secure refresh cookies, a
+refresh cooldown of at least 15 minutes, and an explicit HTTPS-only
+`ALLOWED_ORIGINS` list without localhost, private-network, or wildcard origins.
+Development keeps the local HTTP defaults shown above.
+
 ## Run Locally
 
 ### Backend services

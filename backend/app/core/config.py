@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+Environment = Literal["development", "test", "staging", "production"]
 LLMProvider = Literal["openai", "deepseek", "anthropic"]
 
 # Base URLs for OpenAI-compatible providers used by the fallback chain.
@@ -31,7 +32,7 @@ class Settings(BaseSettings):
     )
 
     # --- Application ---
-    environment: Literal["development", "staging", "production"] = "development"
+    environment: Environment = "development"
     log_level: str = "INFO"
 
     # --- Database ---
@@ -144,6 +145,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def requires_public_security(self) -> bool:
+        """Whether deployment must use production-equivalent safeguards."""
+        return self.environment in {"staging", "production"}
 
     def _api_key_for(self, provider: str) -> str:
         keys = {
