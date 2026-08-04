@@ -161,6 +161,12 @@ def validate_startup_settings(settings: Settings) -> None:
             "On-demand scraping is expensive; a low cooldown enables abuse."
         )
 
+    if settings.requires_public_security and settings.email_delivery_mode != "resend":
+        raise RuntimeError(
+            "EMAIL_DELIVERY_MODE must be resend in staging and production; "
+            "console and mock delivery are development-only."
+        )
+
 
 validate_startup_settings(settings)
 

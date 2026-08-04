@@ -27,6 +27,7 @@ def _public_settings(environment: str) -> Settings:
         refresh_cookie_secure=True,
         job_refresh_cooldown_minutes=15,
         allowed_origins=_PUBLIC_ORIGINS,
+        email_delivery_mode="resend",
     )
 
 

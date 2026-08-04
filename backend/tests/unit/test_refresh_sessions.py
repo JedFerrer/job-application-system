@@ -1130,7 +1130,14 @@ class _FakeEmailProvider:
     def __init__(self) -> None:
         self.calls: list[dict[str, str]] = []
 
-    async def send_password_reset(self, *, to_email: str, reset_url: str) -> None:
+    async def send_password_reset(
+        self,
+        *,
+        to_email: str,
+        reset_url: str,
+        user_id: int,
+        reset_version: int,
+    ) -> None:
         self.calls.append({"to_email": to_email, "reset_url": reset_url})
 
 

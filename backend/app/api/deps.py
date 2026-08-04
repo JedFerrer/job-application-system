@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
+import redis.asyncio as aioredis
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +46,7 @@ from app.domain.preferences.service import PreferenceService
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.service import ResumeService
 from app.infrastructure.database import get_db
+from app.infrastructure.email_service import EmailProvider, get_email_provider
 from app.infrastructure.redis_client import get_redis
 from app.infrastructure.task_store import TaskStore
 from app.models.user import User
@@ -57,6 +59,16 @@ def get_app_settings() -> Settings:
 
 
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
+
+
+def get_password_reset_email_provider(settings: SettingsDep) -> EmailProvider:
+    return get_email_provider(settings)
+
+
+EmailProviderDep = Annotated[EmailProvider, Depends(get_password_reset_email_provider)]
+
+
+RedisDep = Annotated[aioredis.Redis, Depends(get_redis)]
 
 
 def get_auth_service(db: DbSession) -> AuthService:

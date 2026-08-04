@@ -10,9 +10,9 @@ Tokens:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
-from app.api.deps import AuthServiceDep, CurrentUser, SettingsDep
+from app.api.deps import AuthServiceDep, CurrentUser, EmailProviderDep, RedisDep, SettingsDep
 from app.core.config import Settings
 from app.core.rate_limit import limiter
 from app.domain.auth.exceptions import InvalidTokenError
@@ -26,6 +26,7 @@ from app.domain.auth.schemas import (
     UserResponse,
 )
 from app.domain.auth.service import IssuedTokens
+from app.infrastructure.email_service import EmailDeliveryError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -149,10 +150,20 @@ async def forgot_password(
     request: Request,
     payload: ForgotPasswordRequest,
     service: AuthServiceDep,
+    email_provider: EmailProviderDep,
+    redis: RedisDep,
 ) -> dict[str, str]:
     """Request a password-reset link. The token is returned in the response
     for development; in production it would be sent via email."""
-    return await service.forgot_password(email=payload.email)
+    try:
+        return await service.forgot_password(
+            email=payload.email, email_provider=email_provider, cooldown_redis=redis
+        )
+    except EmailDeliveryError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="If the email is registered, a reset link has been sent.",
+        ) from None
 
 
 @router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)

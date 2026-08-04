@@ -6,10 +6,13 @@ methods raise domain exceptions (never ``HTTPException``).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from urllib.parse import urlencode
 
+import redis.asyncio as aioredis
 from google.auth.exceptions import GoogleAuthError as _GoogleVerifyError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
@@ -34,6 +37,7 @@ from app.domain.auth.exceptions import (
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.web_session_repository import WebSessionRepository
 from app.domain.extension.repository import ExtensionRepository
+from app.infrastructure.email_service import EmailProvider
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -253,21 +257,31 @@ class AuthService:
         self,
         *,
         email: str,
-        email_provider: object | None = None,
+        email_provider: EmailProvider | None = None,
+        cooldown_redis: aioredis.Redis | None = None,
     ) -> dict[str, str]:
-        """Generate a password-reset token for *email*.
-
-        In **development**, the reset URL is returned in the API response for
-        convenience.  In **staging / production**, only a generic message is
-        returned — the actual reset link must be delivered via email.
-
-        When *email_provider* is supplied, ``send_password_reset()`` is called
-        in non-dev environments (the provider handles actual delivery).
-        """
+        """Generate a password-reset token and optionally deliver its link."""
         user = await self._repo.get_by_email(email)
-        if user is None or user.hashed_password is None:
+        if user is None or user.hashed_password is None or not getattr(user, "is_active", True):
             # Don't reveal whether the email exists — always return success.
             return {"message": "If the email is registered, a reset link has been sent."}
+
+        if (
+            self._settings.email_delivery_mode == "resend"
+            and cooldown_redis is not None
+            and self._settings.password_reset_email_cooldown_seconds > 0
+        ):
+            normalized_email = email.strip().lower()
+            digest = hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()
+            claimed = await cooldown_redis.set(
+                f"password-reset-cooldown:{digest}",
+                "1",
+                ex=self._settings.password_reset_email_cooldown_seconds,
+                nx=True,
+            )
+            if not claimed:
+                logger.info("password_reset_delivery_cooldown_applied")
+                return {"message": "If the email is registered, a reset link has been sent."}
 
         reset_version = await self._repo.advance_password_reset_version(user_id=user.id)
         if reset_version is None:
@@ -283,14 +297,20 @@ class AuthService:
         response: dict[str, str] = {
             "message": "If the email is registered, a reset link has been sent.",
         }
-        if is_dev:
+        if is_dev and self._settings.email_delivery_mode == "console":
             # Development-only: include reset_url for convenience.
-            response["reset_url"] = f"/reset-password?token={token}"
-        elif email_provider is not None and hasattr(email_provider, "send_password_reset"):
-            # Production/staging: deliver via email provider.
-            reset_url = f"/reset-password?token={token}"
+            response["reset_url"] = (
+                f"{self._settings.password_reset_url}?{urlencode({'token': token})}"
+            )
+        elif email_provider is not None:
+            reset_url = (
+                f"{self._settings.password_reset_url}?{urlencode({'token': token})}"
+            )
             await email_provider.send_password_reset(
-                to_email=email, reset_url=reset_url
+                to_email=email,
+                reset_url=reset_url,
+                user_id=user.id,
+                reset_version=reset_version,
             )
         # else: no email provider configured — generic message only (safe).
         return response

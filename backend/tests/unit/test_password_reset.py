@@ -40,7 +40,9 @@ async def test_dev_includes_reset_url() -> None:
 
     assert "message" in result
     assert "reset_url" in result
-    assert result["reset_url"].startswith("/reset-password?token=")
+    assert result["reset_url"].startswith(
+        "http://localhost:3000/reset-password?token="
+    )
 
 
 async def test_production_excludes_reset_url() -> None:

@@ -15,6 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "staging", "production"]
 LLMProvider = Literal["openai", "deepseek", "anthropic"]
+EmailDeliveryMode = Literal["mock", "console", "resend"]
 
 # Base URLs for OpenAI-compatible providers used by the fallback chain.
 _PROVIDER_BASE_URLS: dict[str, str | None] = {
@@ -71,6 +72,16 @@ class Settings(BaseSettings):
     refresh_cookie_path: str = "/"
     # Google OAuth — only the client ID is needed to verify ID tokens.
     google_client_id: str = ""
+
+    # --- Password-reset email delivery (Phase C2A) ---
+    email_delivery_mode: EmailDeliveryMode = "console"
+    resend_api_key: SecretStr = SecretStr("")
+    resend_from_email: str = ""
+    resend_from_name: str = "Job Application System"
+    resend_reply_to: str | None = None
+    password_reset_url: str = "http://localhost:3000/reset-password"  # noqa: S105
+    email_provider_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    password_reset_email_cooldown_seconds: int = Field(default=300, ge=0)
 
     # --- Single seeded user (legacy; unused once auth is enabled) ---
     seed_user_email: str = "me@example.com"
