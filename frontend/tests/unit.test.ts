@@ -717,21 +717,20 @@ describe("extensionApi", () => {
   });
 
   describe("revokeSession", () => {
-    it("calls the correct endpoint with POST method", async () => {
+    it("calls the owner-scoped endpoint with DELETE method", async () => {
       const fm = mockFetch(null, 204);
       await extensionApi.revokeSession("session-abc");
       const url = lastUrl(fm);
-      expect(url.pathname).toBe("/api/backend/extension/auth/logout");
+      expect(url.pathname).toBe("/api/backend/extension/sessions/session-abc");
       const init = lastFetchInit(fm);
-      expect(init?.method).toBe("POST");
+      expect(init?.method).toBe("DELETE");
     });
 
-    it("sends session_id in the request body", async () => {
+    it("does not send a caller-selectable session id in the request body", async () => {
       const fm = mockFetch(null, 204);
       await extensionApi.revokeSession("session-xyz");
       const init = lastFetchInit(fm);
-      const body = JSON.parse(init?.body as string);
-      expect(body.session_id).toBe("session-xyz");
+      expect(init?.body).toBeUndefined();
     });
 
     it("includes Authorization header when access token is set", async () => {
