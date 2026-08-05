@@ -76,6 +76,7 @@ class ApplicationListItem(BaseModel):
     job_title: str
     company: str | None
     location: str | None
+    company_logo: str | None = None
     source_url: str
     status: str
     cover_letter_id: int | None

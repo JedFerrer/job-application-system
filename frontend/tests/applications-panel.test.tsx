@@ -55,6 +55,7 @@ type ApplicationItem = {
   job_title: string;
   company: string | null;
   location: string | null;
+  company_logo: string | null;
   source_url: string;
   status: string;
   cover_letter_id: number | null;
@@ -111,6 +112,30 @@ function findButtonInRow(row: HTMLElement, label: string) {
     throw new Error(`Could not find row button containing: ${label}`);
   }
   return button;
+}
+
+async function openRowMenu(row: HTMLElement) {
+  const trigger = row.querySelector<HTMLButtonElement>('button[aria-label^="More actions for"]');
+  if (!trigger) {
+    throw new Error("Could not find the application actions menu trigger");
+  }
+  trigger.dispatchEvent(
+    new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+  );
+  trigger.click();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+async function clickRowMenuItem(container: HTMLElement, row: HTMLElement, label: string) {
+  await openRowMenu(row);
+  const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find((el) =>
+    el.textContent?.includes(label),
+  );
+  if (!item) {
+    throw new Error(`Could not find menu item containing: ${label}`);
+  }
+  (item as HTMLElement).click();
 }
 
 function findRowContainingText(container: HTMLElement, text: string) {
@@ -170,6 +195,7 @@ describe("ApplicationsPanel CRM polish", () => {
         job_title: "Senior Backend Engineer",
         company: "Beta",
         location: "Remote",
+        company_logo: "https://cdn.example.com/beta-logo.png",
         source_url: "https://example.com/jobs/201",
         status: "applied",
         cover_letter_id: null,
@@ -187,6 +213,7 @@ describe("ApplicationsPanel CRM polish", () => {
         job_title: "Platform Engineer",
         company: "Acme",
         location: "Remote",
+        company_logo: null,
         source_url: "https://example.com/jobs/202",
         status: "saved",
         cover_letter_id: null,
@@ -270,16 +297,18 @@ describe("ApplicationsPanel CRM polish", () => {
     });
   }
 
-  it("replaces the status column with row actions", async () => {
+  it("shows status in the application identity and keeps row actions compact", async () => {
     await renderPanel();
     const savedRow = findRowByJobTitle(container, "Platform Engineer");
     const appliedRow = findRowByJobTitle(container, "Senior Backend Engineer");
     const actionsButton = savedRow.querySelector(
-      'button[aria-label="Application actions"]',
+      'button[aria-label^="More actions for"]',
     ) as HTMLButtonElement;
     expect(actionsButton).toBeDefined();
-    expect(container.textContent).not.toContain("Status");
-    expect(appliedRow.querySelector('button[aria-label="Application actions"]')).toBeDefined();
+    expect(savedRow.textContent).not.toContain("saved");
+    expect(container.textContent).not.toContain("Cover letter");
+    expect(appliedRow.querySelector('button[aria-label^="More actions for"]')).toBeDefined();
+    expect(appliedRow.querySelector('img[alt="Beta logo"]')).toBeDefined();
   });
 
   it("shows completed details and creates a fresh active next action", async () => {
@@ -292,10 +321,10 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(container.textContent).toContain(
       formatNextActionDateLabel("2026-07-13"),
     );
-    expect(container.textContent).toContain("New next action");
+    expect(container.textContent).toContain("Add next action");
 
     await act(async () => {
-      findButton(container, "New next action").click();
+      findButton(container, "Add next action").click();
       await Promise.resolve();
     });
 
@@ -342,7 +371,11 @@ describe("ApplicationsPanel CRM polish", () => {
     });
 
     await act(async () => {
-      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Edit").click();
+      await clickRowMenuItem(
+        container,
+        findRowByJobTitle(container, "Platform Engineer"),
+        "Edit next action",
+      );
       await Promise.resolve();
     });
 
@@ -365,7 +398,7 @@ describe("ApplicationsPanel CRM polish", () => {
 
     const row = findRowByJobTitle(container, "Platform Engineer");
     await act(async () => {
-      findButtonInRow(row, "Notes").click();
+      await clickRowMenuItem(container, row, "Notes");
       await Promise.resolve();
     });
 
@@ -398,7 +431,7 @@ describe("ApplicationsPanel CRM polish", () => {
     });
 
     await act(async () => {
-      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Notes").click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Notes");
       await Promise.resolve();
     });
 
@@ -425,7 +458,7 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(container.textContent).not.toContain("Application notes");
 
     await act(async () => {
-      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Notes").click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Notes");
       await Promise.resolve();
     });
 
@@ -442,7 +475,7 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(container.textContent).not.toContain("Application notes");
 
     await act(async () => {
-      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Notes").click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Notes");
       await Promise.resolve();
     });
 
@@ -461,7 +494,7 @@ describe("ApplicationsPanel CRM polish", () => {
     await renderPanel();
 
     await act(async () => {
-      findButtonInRow(findRowByJobTitle(container, "Platform Engineer"), "Notes").click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Notes");
       await Promise.resolve();
     });
 
@@ -507,7 +540,7 @@ describe("ApplicationsPanel CRM polish", () => {
 
     const row = findRowByJobTitle(container, "Platform Engineer");
     await act(async () => {
-      findButtonInRow(row, "Recent activity").click();
+      await clickRowMenuItem(container, row, "Recent activity");
       await Promise.resolve();
     });
 
@@ -634,6 +667,20 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(container.textContent).not.toContain(
       "General application note for the Acme role.",
     );
+
+    const closeButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Hide recent activity"]',
+    );
+    expect(closeButton).toBeDefined();
+    await act(async () => {
+      closeButton?.click();
+      await Promise.resolve();
+    });
+    expect(
+      Array.from(container.querySelectorAll("tr")).some((row) =>
+        row.textContent?.includes("Recent activity"),
+      ),
+    ).toBe(false);
   });
 
   it("shows an empty state and invalidates activity after next-action updates", async () => {
@@ -647,10 +694,7 @@ describe("ApplicationsPanel CRM polish", () => {
     await renderPanel();
 
     await act(async () => {
-      findButtonInRow(
-        findRowByJobTitle(container, "Platform Engineer"),
-        "Recent activity",
-      ).click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Recent activity");
       await vi.runAllTimersAsync();
       await Promise.resolve();
       await Promise.resolve();
@@ -683,10 +727,7 @@ describe("ApplicationsPanel CRM polish", () => {
     await renderPanel();
 
     await act(async () => {
-      findButtonInRow(
-        findRowByJobTitle(container, "Platform Engineer"),
-        "Recent activity",
-      ).click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Recent activity");
       await vi.runAllTimersAsync();
       await Promise.resolve();
       await Promise.resolve();

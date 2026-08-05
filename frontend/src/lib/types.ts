@@ -347,34 +347,6 @@ export interface MatchSkillAnalysis {
   readiness: MatchReadiness;
 }
 
-export interface SkillEvidence {
-  skill: string;
-  job_excerpt: string;
-  profile_excerpt: string | null;
-}
-
-export interface SkillEvidenceGroup {
-  matched: SkillEvidence[];
-  missing: SkillEvidence[];
-}
-
-export interface MatchEvidence {
-  job_id: number;
-  skills: {
-    required: SkillEvidenceGroup;
-    preferred: SkillEvidenceGroup;
-    unclassified: SkillEvidenceGroup;
-  };
-  experience_requirements: Array<{
-    years_required: number;
-    scope: "total_experience" | "skill_specific";
-    skill: string | null;
-    job_excerpt: string;
-    assessment: "meets" | "may_not_meet" | "needs_review";
-    profile_years_experience: number | null;
-  }>;
-}
-
 // ---- Cover letters (Phase 4) ------------------------------------------------
 export interface CoverLetter {
   id: number;
@@ -425,6 +397,7 @@ export interface ApplicationListItem {
   job_title: string;
   company: string | null;
   location: string | null;
+  company_logo: string | null;
   source_url: string;
   status: string;
   cover_letter_id: number | null;

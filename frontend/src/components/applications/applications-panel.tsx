@@ -9,7 +9,6 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import {
-  ChevronDown,
   BookmarkX,
   Check,
   FileText,
@@ -25,6 +24,7 @@ import {
 import { toast } from "sonner";
 import { ApiError, applicationsApi } from "@/lib/api";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
+import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -57,6 +57,76 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const PAGE_SIZE = 25;
+
+const STATUS_BADGE_VARIANT: Record<
+  ApplicationStatus,
+  "default" | "secondary" | "outline" | "destructive"
+> = {
+  saved: "secondary",
+  applied: "default",
+  interview: "default",
+  offer: "default",
+  rejected: "destructive",
+  closed: "outline",
+};
+
+function companyInitials(company: string | null): string {
+  if (!company) return "?";
+  const parts = company.trim().split(/\s+/);
+  if (parts.length >= 2 && parts[0] && parts[1]) {
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
+  return company[0]?.toUpperCase() ?? "?";
+}
+
+function companyAvatarClass(company: string | null): string {
+  const colors = [
+    "bg-blue-900/40 text-blue-300",
+    "bg-emerald-900/40 text-emerald-300",
+    "bg-purple-900/40 text-purple-300",
+    "bg-amber-900/40 text-amber-300",
+    "bg-rose-900/40 text-rose-300",
+    "bg-cyan-900/40 text-cyan-300",
+  ];
+  const name = company ?? "";
+  let hash = 0;
+  for (let index = 0; index < name.length; index += 1) {
+    hash = (hash * 31 + name.charCodeAt(index)) | 0;
+  }
+  return colors[Math.abs(hash) % colors.length] ?? colors[0] ?? "bg-muted text-foreground";
+}
+
+function CompanyLogo({
+  company,
+  logoUrl,
+}: {
+  company: string | null;
+  logoUrl: string | null;
+}) {
+  const [logoError, setLogoError] = useState(false);
+
+  if (logoUrl && !logoError) {
+    return (
+      <img
+        src={logoUrl}
+        alt={company ? `${company} logo` : "Company logo"}
+        className="h-11 w-11 shrink-0 rounded-md bg-muted/30 object-contain md:h-12 md:w-12"
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setLogoError(true)}
+      />
+    );
+  }
+
+  return (
+    <div
+      aria-hidden="true"
+      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-xs font-semibold md:h-12 md:w-12 ${companyAvatarClass(company)}`}
+    >
+      {companyInitials(company)}
+    </div>
+  );
+}
 
 function draftFromApplication(app: ApplicationListItem) {
   return {
@@ -111,7 +181,12 @@ export function ApplicationsPanel() {
     jobId: number;
     jobTitle: string;
   } | null>(null);
+  const [tailorResumeJob, setTailorResumeJob] = useState<{
+    jobId: number;
+    jobTitle: string;
+  } | null>(null);
   const [filterStatus, setFilterStatus] = useState<ApplicationStatus | null>(null);
+  const [expandedApplicationId, setExpandedApplicationId] = useState<number | null>(null);
 
   const hasNextPageRef = useRef(false);
   const isFetchingNextPageRef = useRef(false);
@@ -351,15 +426,6 @@ export function ApplicationsPanel() {
     );
   }
 
-  const STATUS_BADGE_VARIANT: Record<ApplicationStatus, "default" | "secondary" | "outline" | "destructive"> = {
-    saved: "secondary",
-    applied: "default",
-    interview: "default",
-    offer: "default",
-    rejected: "destructive",
-    closed: "outline",
-  };
-
   return (
     <>
       {/* Status filter bar */}
@@ -409,17 +475,20 @@ export function ApplicationsPanel() {
         <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-muted-foreground">
-                    <th className="px-4 py-3 font-medium">Job</th>
-                    <th className="px-4 py-3 font-medium">Company</th>
+                <table className="w-full table-fixed text-sm">
+                  <colgroup>
+                    <col className="w-[46%]" />
+                    <col />
+                    <col className="w-[132px]" />
+                  </colgroup>
+                  <thead className="hidden md:table-header-group">
+                    <tr className="border-b text-left text-muted-foreground">
+                    <th className="px-4 py-3 font-medium">Application</th>
                     <th className="px-4 py-3 font-medium">Next action</th>
-                    <th className="px-4 py-3 font-medium">Cover letter</th>
-                    <th className="px-4 py-3 font-medium text-right">Actions</th>
+                    <th className="px-4 py-3 pr-6 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="block space-y-3 md:table-row-group md:space-y-0">
                   {filteredItems.map((app) => (
                     <ApplicationRow
                       key={app.id}
@@ -441,6 +510,15 @@ export function ApplicationsPanel() {
                           jobTitle: app.job_title,
                         })
                       }
+                      onTailorResumeClick={() =>
+                        setTailorResumeJob({
+                          jobId: app.job_id,
+                          jobTitle: app.job_title,
+                        })
+                      }
+                      isWorkspaceOwner={expandedApplicationId === app.id}
+                      onWorkspaceOpen={() => setExpandedApplicationId(app.id)}
+                      onWorkspaceClose={() => setExpandedApplicationId(null)}
                     />
                   ))}
                 </tbody>
@@ -466,6 +544,14 @@ export function ApplicationsPanel() {
           if (!open) setCoverLetterJob(null);
         }}
       />
+      <TailorResumeDialog
+        jobId={tailorResumeJob?.jobId ?? null}
+        jobTitle={tailorResumeJob?.jobTitle}
+        open={tailorResumeJob != null}
+        onOpenChange={(open) => {
+          if (!open) setTailorResumeJob(null);
+        }}
+      />
     </>
   );
 }
@@ -477,6 +563,10 @@ function ApplicationRow({
   isUnsaving,
   onApplicationUpdate,
   onCoverLetterClick,
+  onTailorResumeClick,
+  isWorkspaceOwner,
+  onWorkspaceOpen,
+  onWorkspaceClose,
 }: {
   app: ApplicationListItem;
   onStatusChange: (status: ApplicationStatus) => void;
@@ -484,6 +574,10 @@ function ApplicationRow({
   isUnsaving: boolean;
   onApplicationUpdate: (payload: ApplicationUpdate) => Promise<unknown>;
   onCoverLetterClick: () => void;
+  onTailorResumeClick: () => void;
+  isWorkspaceOwner: boolean;
+  onWorkspaceOpen: () => void;
+  onWorkspaceClose: () => void;
 }) {
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [nextActionMode, setNextActionMode] = useState<"edit" | "new" | null>(
@@ -505,6 +599,15 @@ function ApplicationRow({
     }
   }, [app, nextActionMode, notesMode]);
 
+  useEffect(() => {
+    if (!isWorkspaceOwner) {
+      setNextActionMode(null);
+      setNotesMode(null);
+      setActivityOpen(false);
+      setStatusMenuOpen(false);
+    }
+  }, [isWorkspaceOwner]);
+
   const hasNextAction = Boolean(
     app.next_action_type ||
       app.next_action_note ||
@@ -525,6 +628,7 @@ function ApplicationRow({
   const isNotesOpen = notesMode !== null;
 
   const startEditing = () => {
+    onWorkspaceOpen();
     setActivityOpen(false);
     setNotesMode(null);
     setDraft(draftFromApplication(app));
@@ -532,6 +636,7 @@ function ApplicationRow({
   };
 
   const startNewNextAction = () => {
+    onWorkspaceOpen();
     setActivityOpen(false);
     setNotesMode(null);
     setDraft(emptyNextActionDraft());
@@ -548,12 +653,14 @@ function ApplicationRow({
           nextActionMode === "new" ? null : app.next_action_completed_at,
       });
       setNextActionMode(null);
+      onWorkspaceClose();
     } catch {
       // mutation error is surfaced by the toast in the mutation handler
     }
   };
 
   const startEditingNotes = () => {
+    onWorkspaceOpen();
     setActivityOpen(false);
     setNextActionMode(null);
     setNotesDraft(draftNotesFromApplication(app));
@@ -566,6 +673,7 @@ function ApplicationRow({
         notes: notesDraft.trim() || null,
       });
       setNotesMode(null);
+      onWorkspaceClose();
     } catch {
       // mutation error is surfaced by the toast in the mutation handler
     }
@@ -578,6 +686,7 @@ function ApplicationRow({
       });
       setNotesDraft("");
       setNotesMode(null);
+      onWorkspaceClose();
     } catch {
       // mutation error is surfaced by the toast in the mutation handler
     }
@@ -596,6 +705,7 @@ function ApplicationRow({
         next_action_completed_at: new Date().toISOString(),
       });
       setNextActionMode(null);
+      onWorkspaceClose();
     } catch {
       // mutation error is surfaced by the toast in the mutation handler
     }
@@ -613,6 +723,7 @@ function ApplicationRow({
         ...emptyNextActionDraft(),
       });
       setNextActionMode(null);
+      onWorkspaceClose();
     } catch {
       // mutation error is surfaced by the toast in the mutation handler
     }
@@ -625,20 +736,28 @@ function ApplicationRow({
 
   return (
     <>
-      <tr className="border-b last:border-0">
-        <td className="px-4 py-3">
-          <Link href={`/jobs/${app.job_id}`} className="font-medium hover:underline">
-            {app.job_title}
-          </Link>
-          {app.location && (
-            <p className="text-xs text-muted-foreground">{app.location}</p>
-          )}
+      <tr className="block rounded-lg border bg-card p-3 transition-colors hover:bg-muted/20 md:table-row md:rounded-none md:border-0 md:border-b md:border-border/70 md:p-0 md:last:border-b-0">
+        <td className="block px-0 py-2 md:table-cell md:px-4 md:py-2.5 md:pr-10">
+          <div className="flex items-start gap-3">
+            <CompanyLogo company={app.company} logoUrl={app.company_logo} />
+            <div className="min-w-0">
+              <Link href={`/jobs/${app.job_id}`} className="font-medium hover:underline">
+                {app.job_title}
+              </Link>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {app.company ?? "Company not listed"}
+              </p>
+              {app.location && (
+                <p className="mt-0.5 text-xs text-muted-foreground">{app.location}</p>
+              )}
+            </div>
+          </div>
         </td>
-        <td className="px-4 py-3 text-muted-foreground">
-          {app.company ?? "—"}
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex flex-col gap-2">
+        <td className="block px-0 py-2 md:table-cell md:px-4 md:py-2.5">
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground md:hidden">
+            Next action
+          </p>
+          <div className="min-w-0 space-y-1.5">
             <div className="flex flex-wrap items-center gap-1.5">
               {hasNextAction ? (
                 <>
@@ -651,18 +770,16 @@ function ApplicationRow({
                   {nextActionState.isCompleted && (
                     <Badge variant="secondary">Completed</Badge>
                   )}
-                  {statusBadgeLabel && (
+                  {statusBadgeLabel && !nextActionState.isCompleted && (
                     <Badge
-                      variant={
-                        nextActionState.isOverdue ? "destructive" : "outline"
+                      variant={nextActionState.isOverdue ? "destructive" : "outline"}
+                      className={
+                        nextActionState.isDueToday
+                          ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                          : undefined
                       }
                     >
                       {statusBadgeLabel}
-                      {app.next_action_due_date && (
-                        <span className="ml-1 font-normal">
-                          {formatNextActionDateLabel(app.next_action_due_date)}
-                        </span>
-                      )}
                     </Badge>
                   )}
                 </>
@@ -670,8 +787,13 @@ function ApplicationRow({
                 <span className="text-xs text-muted-foreground">No next action set</span>
               )}
             </div>
+            {app.next_action_due_date && (
+              <p className="text-xs text-muted-foreground">
+                Due {formatNextActionDateLabel(app.next_action_due_date)}
+              </p>
+            )}
             {app.next_action_note && (
-              <p className="max-w-[18rem] text-xs text-muted-foreground line-clamp-2">
+              <p className="max-w-[32rem] text-xs text-muted-foreground line-clamp-1">
                 {app.next_action_note}
               </p>
             )}
@@ -680,98 +802,103 @@ function ApplicationRow({
                 Completed {formatDateTimeLabel(app.next_action_completed_at)}
               </p>
             )}
-            {app.next_action_completed_at && app.next_action_due_date && (
-              <p className="text-xs text-muted-foreground">
-                Due {formatNextActionDateLabel(app.next_action_due_date)}
-              </p>
-            )}
-            <div className="flex flex-wrap gap-1.5">
+          </div>
+        </td>
+        <td className="block px-0 py-2 text-left md:table-cell md:px-4 md:py-2.5 md:pr-6 md:text-right md:align-top">
+          <div className="flex flex-wrap items-center justify-between gap-2 md:justify-end">
+            {app.next_action_completed_at ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={startNewNextAction}
+                className="h-8 gap-1.5"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add next action
+              </Button>
+            ) : hasNextAction ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={completeNextAction}
+                className="h-8 gap-1.5"
+              >
+                <Check className="h-3.5 w-3.5" />
+                Complete
+              </Button>
+            ) : (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={startEditing}
-                className="gap-1.5"
+                className="h-8 gap-1.5"
               >
-                <Pencil className="h-3.5 w-3.5" />
-                {hasNextAction ? "Edit" : "Set"}
+                <Plus className="h-3.5 w-3.5" />
+                Set action
               </Button>
-              {!app.next_action_completed_at && hasNextAction && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={completeNextAction}
-                  className="gap-1.5"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  Complete
-                </Button>
-              )}
-              {app.next_action_completed_at && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={startNewNextAction}
-                  className="gap-1.5"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  New next action
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  if (isNotesOpen) {
-                    setNotesMode(null);
-                    setNotesDraft(draftNotesFromApplication(app));
-                    return;
-                  }
-                  startEditingNotes();
-                }}
-                className="gap-1.5"
-              >
-                <StickyNote className="h-3.5 w-3.5" />
-                {isNotesOpen ? "Hide notes" : "Notes"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setNextActionMode(null);
-                  setNotesMode(null);
-                  setActivityOpen((current) => !current);
-                }}
-                className="gap-1.5"
-              >
-                <ChevronDown
-                  className={`h-3.5 w-3.5 transition-transform ${
-                    activityOpen ? "rotate-180" : ""
-                  }`}
-                />
-                {activityOpen ? "Hide activity" : "Recent activity"}
-              </Button>
-            </div>
-          </div>
-        </td>
-        <td className="px-4 py-3">
-          <Button
-            variant={app.cover_letter_id != null ? "secondary" : "outline"}
-            size="sm"
-            onClick={onCoverLetterClick}
-            className="gap-1.5"
-          >
-            <FileText className="h-3.5 w-3.5" />
-            {app.cover_letter_id != null ? "View / Edit" : "Create"}
-          </Button>
-        </td>
-        <td className="px-4 py-3 text-right align-top">
-          <DropdownMenu onOpenChange={(open) => { if (!open) setStatusMenuOpen(false); }}>
+            )}
+          <DropdownMenu modal={false} onOpenChange={(open) => { if (!open) setStatusMenuOpen(false); }}>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label="Application actions">
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`More actions for ${app.job_title}`}
+                className="shrink-0"
+              >
                 <MoreHorizontal className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {hasNextAction && (
+                <>
+                  <DropdownMenuItem onSelect={startEditing}>
+                    <Pencil className="h-4 w-4" />
+                    Edit next action
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={clearNextAction}>
+                    <Trash2 className="h-4 w-4" />
+                    Clear next action
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuItem
+                onSelect={() => {
+                  if (isNotesOpen) {
+                    setNotesMode(null);
+                    setNotesDraft(draftNotesFromApplication(app));
+                    onWorkspaceClose();
+                  } else {
+                    startEditingNotes();
+                  }
+                }}
+              >
+                <StickyNote className="h-4 w-4" />
+                {isNotesOpen ? "Hide notes" : "Notes"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
+                  setNextActionMode(null);
+                  setNotesMode(null);
+                  setActivityOpen((current) => {
+                    if (current) onWorkspaceClose();
+                    else onWorkspaceOpen();
+                    return !current;
+                  });
+                }}
+              >
+                <History className="h-4 w-4" />
+                {activityOpen ? "Hide activity" : "Recent activity"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onCoverLetterClick}>
+                <FileText className="h-4 w-4" />
+                {app.cover_letter_id != null ? "View / Edit cover letter" : "Create cover letter"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onTailorResumeClick}>
+                <FileText className="h-4 w-4" />
+                Tailor resume
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               {app.status === "saved" && (
                 <DropdownMenuItem onSelect={onUnsave} disabled={isUnsaving}>
                   <BookmarkX className="h-4 w-4" />
@@ -804,11 +931,12 @@ function ApplicationRow({
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         </td>
       </tr>
       {isEditing && (
         <tr className="border-b last:border-0 bg-muted/20">
-          <td colSpan={5} className="px-4 pb-4 pt-0">
+          <td colSpan={3} className="px-4 pb-4 pt-0">
             <div className="rounded-lg border bg-background p-3">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
@@ -910,7 +1038,10 @@ function ApplicationRow({
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => setNextActionMode(null)}
+                  onClick={() => {
+                    setNextActionMode(null);
+                    onWorkspaceClose();
+                  }}
                 >
                   Cancel
                 </Button>
@@ -921,7 +1052,7 @@ function ApplicationRow({
       )}
       {isNotesOpen && (
         <tr className="border-b last:border-0 bg-muted/20">
-          <td colSpan={5} className="px-4 pb-4 pt-0">
+          <td colSpan={3} className="px-4 pb-4 pt-0">
             <div className="rounded-lg border bg-background p-3">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
@@ -953,6 +1084,7 @@ function ApplicationRow({
                   onClick={() => {
                     setNotesMode(null);
                     setNotesDraft(draftNotesFromApplication(app));
+                    onWorkspaceClose();
                   }}
                 >
                   Cancel
@@ -966,7 +1098,14 @@ function ApplicationRow({
         </tr>
       )}
       {activityOpen && (
-        <RecentActivityRow applicationId={app.id} isOpen={activityOpen} />
+        <RecentActivityRow
+          applicationId={app.id}
+          isOpen={activityOpen}
+          onClose={() => {
+            setActivityOpen(false);
+            onWorkspaceClose();
+          }}
+        />
       )}
     </>
   );
@@ -975,9 +1114,11 @@ function ApplicationRow({
 function RecentActivityRow({
   applicationId,
   isOpen,
+  onClose,
 }: {
   applicationId: number;
   isOpen: boolean;
+  onClose: () => void;
 }) {
   const activityQuery = useQuery({
     queryKey: ["applications", applicationId, "activity"],
@@ -990,11 +1131,23 @@ function RecentActivityRow({
 
   return (
     <tr className="border-b last:border-0 bg-muted/20">
-      <td colSpan={5} className="px-4 pb-4 pt-0">
+      <td colSpan={3} className="px-4 pb-4 pt-0">
         <div className="rounded-lg border bg-background p-3">
-          <div className="mb-2 flex items-center gap-2">
-            <History className="h-4 w-4 text-muted-foreground" />
-            <p className="text-sm font-medium">Recent activity</p>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <History className="h-4 w-4 text-muted-foreground" />
+              <p className="text-sm font-medium">Recent activity</p>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              aria-label="Hide recent activity"
+              onClick={onClose}
+            >
+              <X className="h-4 w-4" />
+            </Button>
           </div>
           {activityQuery.isLoading ? (
             <p className="text-xs text-muted-foreground">Loading activity…</p>
