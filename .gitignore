@@ -39,16 +39,30 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
-# ── Docs (not tracked) ─────────────────────────────────────────────────────
-docs/
+# ── Docs (not tracked except the canonical workflow guide) ────────────────
+docs/*
+!docs/development-workflow.md
+
+feature-plan-improvements/
 
 # ── Misc ───────────────────────────────────────────────────────────────────
 nul
 
 # Local tooling artifacts
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/plan-feature/
+!.agents/skills/plan-feature/SKILL.md
+!.agents/skills/implement-phase/
+!.agents/skills/implement-phase/SKILL.md
+!.agents/skills/browser-qa/
+!.agents/skills/browser-qa/SKILL.md
+!.agents/skills/review-phase/
+!.agents/skills/review-phase/SKILL.md
+!.agents/skills/done-check/
+!.agents/skills/done-check/SKILL.md
 .cursor/
-AGENTS.md
 .github/copilot-instructions.md
 .github/instructions/*.md
 .github/prompts/
