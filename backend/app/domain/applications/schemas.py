@@ -97,6 +97,23 @@ class ApplicationListResponse(BaseModel):
     """Cursor for the next page (base64-encoded updated_at|id), or None if last page."""
 
 
+class ApplicationStatusCounts(BaseModel):
+    saved: int
+    applied: int
+    interview: int
+    offer: int
+    rejected: int
+    closed: int
+
+
+class ApplicationDashboardSummary(BaseModel):
+    total_applications: int
+    counts_by_status: ApplicationStatusCounts
+    active_pipeline_count: int
+    offer_count: int
+    offer_rate_percent: int
+
+
 class ManualNextActionActivitySnapshot(BaseModel):
     type: str | None
     due_date: date | None

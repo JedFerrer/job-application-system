@@ -10,6 +10,7 @@ from app.api.deps import ApplicationServiceDep, CurrentUser
 from app.domain.applications.schemas import (
     ApplicationActivityResponse,
     ApplicationCreate,
+    ApplicationDashboardSummary,
     ApplicationListResponse,
     ApplicationResponse,
     ApplicationUpdate,
@@ -39,6 +40,14 @@ async def list_applications(
     return await service.list(
         user_id=current_user.id, cursor=cursor, limit=limit
     )
+
+
+@router.get("/dashboard-summary", response_model=ApplicationDashboardSummary)
+async def get_dashboard_summary(
+    current_user: CurrentUser,
+    service: ApplicationServiceDep,
+) -> ApplicationDashboardSummary:
+    return await service.dashboard_summary(user_id=current_user.id)
 
 
 @router.get("/next-actions", response_model=ApplicationListResponse)

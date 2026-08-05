@@ -1,6 +1,7 @@
 import type {
   Application,
   ApplicationActivityResponse,
+  ApplicationDashboardSummary,
   ApplicationListItem,
   ApplicationListResponse,
   ApplicationUpdate,
@@ -398,6 +399,8 @@ export const applicationsApi = {
     qs.set("limit", String(opts.limit ?? 50));
     return apiRequest<ApplicationListResponse>(`/applications?${qs.toString()}`);
   },
+  getDashboardSummary: () =>
+    apiRequest<ApplicationDashboardSummary>("/applications/dashboard-summary"),
   listDueNextActions: (dueBy: string) =>
     apiRequest<ApplicationListResponse>(
       `/applications/next-actions?${new URLSearchParams({ due_by: dueBy }).toString()}`,

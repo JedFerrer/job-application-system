@@ -17,9 +17,11 @@ from app.domain.applications.schemas import (
     MANUAL_NEXT_ACTION_EVENT_UPDATED,
     ApplicationActivityEvent,
     ApplicationActivityResponse,
+    ApplicationDashboardSummary,
     ApplicationListItem,
     ApplicationListResponse,
     ApplicationResponse,
+    ApplicationStatusCounts,
     ApplicationUpdate,
 )
 from app.domain.jobs.exceptions import JobNotFoundError
@@ -171,6 +173,25 @@ class ApplicationService:
         ]
         return ApplicationListResponse(
             items=items, total=total, limit=limit, next_cursor=next_cursor
+        )
+
+    async def dashboard_summary(self, *, user_id: int) -> ApplicationDashboardSummary:
+        counts = await self._repo.get_dashboard_status_counts(user_id=user_id)
+        total = counts["total"]
+        offer_count = counts["offer"]
+        return ApplicationDashboardSummary(
+            total_applications=total,
+            counts_by_status=ApplicationStatusCounts(
+                saved=counts["saved"],
+                applied=counts["applied"],
+                interview=counts["interview"],
+                offer=offer_count,
+                rejected=counts["rejected"],
+                closed=counts["closed"],
+            ),
+            active_pipeline_count=counts["saved"] + counts["applied"] + counts["interview"],
+            offer_count=offer_count,
+            offer_rate_percent=round(100 * offer_count / total) if total else 0,
         )
 
     async def list_due_next_actions(

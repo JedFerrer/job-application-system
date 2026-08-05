@@ -186,6 +186,27 @@ class ApplicationRepository:
 
         return rows, count, next_cursor
 
+    async def get_dashboard_status_counts(self, *, user_id: int) -> dict[str, int]:
+        statuses = ("saved", "applied", "interview", "offer", "rejected", "closed")
+        aggregates: list[Any] = [
+            func.count(Application.id).filter(Application.status.in_(statuses))
+        ]
+        aggregates.extend(
+            func.sum(case((Application.status == status, 1), else_=0))
+            for status in statuses
+        )
+        result = await self._session.execute(
+            select(*aggregates).where(Application.user_id == user_id)
+        )
+        values = result.one()
+        return {
+            "total": int(values[0] or 0),
+            **{
+                status: int(values[index + 1] or 0)
+                for index, status in enumerate(statuses)
+            },
+        }
+
     async def list_due_next_actions(
         self, *, user_id: int, due_by: date
     ) -> tuple[list[tuple[Application, Job]], int]:

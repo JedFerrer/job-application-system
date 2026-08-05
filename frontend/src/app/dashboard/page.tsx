@@ -27,9 +27,9 @@ export default function DashboardHome() {
   const queryClient = useQueryClient();
   const todayIso = getTodayIsoDate();
 
-  const appsQuery = useQuery({
-    queryKey: ["home-applications"],
-    queryFn: () => applicationsApi.list(),
+  const summaryQuery = useQuery({
+    queryKey: ["dashboard-summary"],
+    queryFn: applicationsApi.getDashboardSummary,
   });
 
   const nextActionsQuery = useQuery({
@@ -47,23 +47,14 @@ export default function DashboardHome() {
     queryFn: () => jobsApi.list({ limit: 1 }),
   });
 
-  const apps = appsQuery.data?.items ?? [];
+  const summary = summaryQuery.data;
+  const statusCounts = summary?.counts_by_status;
+  const hasSummary = summary != null;
+  const summaryLoading =
+    !hasSummary &&
+    (summaryQuery.isLoading || summaryQuery.isFetching || summaryQuery.isPending);
   const totalMatches = matchesQuery.data?.total ?? 0;
   const totalJobs = jobsQuery.data?.total ?? 0;
-
-  const statusCounts = {
-    saved: apps.filter((a) => a.status === "saved").length,
-    applied: apps.filter((a) => a.status === "applied").length,
-    interview: apps.filter((a) => a.status === "interview").length,
-    offer: apps.filter((a) => a.status === "offer").length,
-    rejected: apps.filter((a) => a.status === "rejected").length,
-    closed: apps.filter((a) => a.status === "closed").length,
-  };
-
-  const activeApplications =
-    statusCounts.saved + statusCounts.applied + statusCounts.interview;
-  const successRate =
-    apps.length > 0 ? Math.round((statusCounts.offer / apps.length) * 100) : 0;
 
   const completeNextActionMutation = useMutation({
     mutationFn: (applicationId: number) =>
@@ -74,6 +65,7 @@ export default function DashboardHome() {
       toast.success("Marked next action complete");
       queryClient.invalidateQueries({ queryKey: ["home-next-actions"] });
       queryClient.invalidateQueries({ queryKey: ["applications"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
     },
     onError: (err) => {
       toast.error(err instanceof ApiError ? err.message : "Update failed");
@@ -142,6 +134,17 @@ export default function DashboardHome() {
         </CardContent>
       </Card>
 
+      {!hasSummary && summaryQuery.isError && !summaryQuery.isFetching && (
+        <Card>
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 text-sm text-muted-foreground">
+            <span>Couldn’t load application summary.</span>
+            <Button variant="outline" size="sm" onClick={() => summaryQuery.refetch()}>
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Link href="/dashboard/jobs">
           <Card className="hover:bg-muted/50 transition-colors">
@@ -189,10 +192,10 @@ export default function DashboardHome() {
               <ListChecks className="h-5 w-5 shrink-0 text-muted-foreground" />
               <div className="min-w-0">
                 <p className="text-2xl font-semibold leading-tight">
-                  {appsQuery.isLoading ? (
+                  {summaryLoading ? (
                     <Loader2 className="h-5 w-5 animate-spin" />
                   ) : (
-                    activeApplications
+                    summary ? summary.active_pipeline_count : "—"
                   )}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">
@@ -208,10 +211,10 @@ export default function DashboardHome() {
             <TrendingUp className="h-5 w-5 shrink-0 text-muted-foreground" />
             <div className="min-w-0">
               <p className="text-2xl font-semibold leading-tight">
-                {appsQuery.isLoading ? (
+                {summaryLoading ? (
                   <Loader2 className="h-5 w-5 animate-spin" />
                 ) : (
-                  `${successRate}%`
+                  summary ? `${summary.offer_rate_percent}%` : "—"
                 )}
               </p>
               <p className="truncate text-xs text-muted-foreground">Offer rate</p>
@@ -223,12 +226,16 @@ export default function DashboardHome() {
       <Card>
         <CardContent className="px-5 py-4">
           <h3 className="mb-3 text-sm font-semibold">Application pipeline</h3>
-          {appsQuery.isLoading ? (
+          {summaryLoading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading…
             </div>
-          ) : apps.length === 0 ? (
+          ) : !hasSummary ? (
+            <p className="text-sm text-muted-foreground">
+              Application metrics are unavailable. Use Retry above to try again.
+            </p>
+          ) : (summary?.total_applications ?? 0) === 0 ? (
             <p className="text-sm text-muted-foreground">
               No applications yet. Save jobs from the{" "}
               <Link
@@ -244,18 +251,18 @@ export default function DashboardHome() {
               {[
                 {
                   label: "Saved",
-                  count: statusCounts.saved,
+                  count: statusCounts?.saved ?? 0,
                   color: "bg-muted-foreground",
                 },
-                { label: "Applied", count: statusCounts.applied, color: "bg-blue-500" },
+                { label: "Applied", count: statusCounts?.applied ?? 0, color: "bg-blue-500" },
                 {
                   label: "Interview",
-                  count: statusCounts.interview,
+                  count: statusCounts?.interview ?? 0,
                   color: "bg-amber-500",
                 },
-                { label: "Offer", count: statusCounts.offer, color: "bg-green-500" },
-                { label: "Rejected", count: statusCounts.rejected, color: "bg-red-500" },
-                { label: "Closed", count: statusCounts.closed, color: "bg-muted" },
+                { label: "Offer", count: statusCounts?.offer ?? 0, color: "bg-green-500" },
+                { label: "Rejected", count: statusCounts?.rejected ?? 0, color: "bg-red-500" },
+                { label: "Closed", count: statusCounts?.closed ?? 0, color: "bg-muted" },
               ].map((stage) => (
                 <div key={stage.label} className="flex items-center gap-2">
                   <div className={`h-3 w-3 rounded-full ${stage.color}`} />

@@ -450,6 +450,14 @@ export interface ApplicationListResponse {
   next_cursor: string | null;
 }
 
+export interface ApplicationDashboardSummary {
+  total_applications: number;
+  counts_by_status: Record<ApplicationStatus, number>;
+  active_pipeline_count: number;
+  offer_count: number;
+  offer_rate_percent: number;
+}
+
 export const APPLICATION_ACTIVITY_EVENT_TYPES = [
   "manual_next_action_created",
   "manual_next_action_updated",

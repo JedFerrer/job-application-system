@@ -13,6 +13,7 @@ from app.api.deps import get_application_service, get_current_user
 from app.api.v1 import applications as applications_module
 from app.core.lifespan import register_exception_handlers
 from app.domain.applications.schemas import (
+    ApplicationDashboardSummary,
     ApplicationListItem,
     ApplicationListResponse,
 )
@@ -155,3 +156,47 @@ def test_next_actions_route_requires_authentication() -> None:
 
     assert resp.status_code == 401
     service.list_due_next_actions.assert_not_awaited()
+
+
+def test_dashboard_summary_route_is_authenticated_and_returns_contract() -> None:
+    current_user = _make_user(8, "summary-owner@example.com")
+    service = AsyncMock(spec=ApplicationService)
+    service.dashboard_summary = AsyncMock(
+        return_value=ApplicationDashboardSummary(
+            total_applications=61,
+            counts_by_status={
+                "saved": 56,
+                "applied": 1,
+                "interview": 1,
+                "offer": 1,
+                "rejected": 1,
+                "closed": 1,
+            },
+            active_pipeline_count=58,
+            offer_count=1,
+            offer_rate_percent=2,
+        )
+    )
+
+    app = _build_app(current_user=current_user, application_service=service)
+    client = TestClient(app)
+
+    resp = client.get("/applications/dashboard-summary")
+
+    assert resp.status_code == 200, resp.text
+    service.dashboard_summary.assert_awaited_once_with(user_id=current_user.id)
+    assert resp.json()["total_applications"] == 61
+    assert resp.json()["counts_by_status"]["closed"] == 1
+
+
+def test_dashboard_summary_route_requires_authentication() -> None:
+    service = AsyncMock(spec=ApplicationService)
+    service.dashboard_summary = AsyncMock()
+
+    app = _build_app(application_service=service, invalid_auth=True)
+    client = TestClient(app)
+
+    resp = client.get("/applications/dashboard-summary")
+
+    assert resp.status_code == 401
+    service.dashboard_summary.assert_not_awaited()

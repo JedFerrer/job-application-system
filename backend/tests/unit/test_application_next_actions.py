@@ -851,7 +851,182 @@ async def test_application_list_due_next_actions_excludes_future_completed_and_n
             date(2026, 7, 12),
             date(2026, 7, 13),
         ]
-        assert all(item.next_action_completed_at is None for item in result.items)
+    assert all(item.next_action_completed_at is None for item in result.items)
+
+
+async def test_application_dashboard_summary_aggregates_all_statuses_and_is_user_scoped(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="summary-a@test.com")
+        await _seed_user(db, user_id=2, email="summary-b@test.com")
+        for job_id in range(401, 463):
+            await _seed_public_job(db, job_id=job_id, title=f"Engineer {job_id}")
+
+    async with sf() as db:
+        svc = _service(db)
+        statuses = ["saved", "applied", "interview", "offer", "rejected", "closed"]
+        for offset in range(61):
+            application = await svc.create(user_id=1, job_id=401 + offset)
+            if offset < len(statuses):
+                await svc.update(
+                    user_id=1,
+                    application_id=application.id,
+                    payload=ApplicationUpdate(status=statuses[offset]),
+                )
+        other = await svc.create(user_id=2, job_id=462)
+        await svc.update(
+            user_id=2,
+            application_id=other.id,
+            payload=ApplicationUpdate(status="offer"),
+        )
+
+        summary = await svc.dashboard_summary(user_id=1)
+
+        assert summary.total_applications == 61
+        assert summary.counts_by_status.model_dump() == {
+            "saved": 56,
+            "applied": 1,
+            "interview": 1,
+            "offer": 1,
+            "rejected": 1,
+            "closed": 1,
+        }
+        assert sum(summary.counts_by_status.model_dump().values()) == 61
+        assert summary.active_pipeline_count == 58
+        assert summary.offer_count == 1
+        assert summary.offer_rate_percent == 2
+
+
+async def test_application_dashboard_summary_returns_zero_buckets_for_empty_user(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="empty-summary@test.com")
+
+    async with sf() as db:
+        summary = await _service(db).dashboard_summary(user_id=1)
+
+        assert summary.model_dump() == {
+            "total_applications": 0,
+            "counts_by_status": {
+                "saved": 0,
+                "applied": 0,
+                "interview": 0,
+                "offer": 0,
+                "rejected": 0,
+                "closed": 0,
+            },
+            "active_pipeline_count": 0,
+            "offer_count": 0,
+            "offer_rate_percent": 0,
+        }
+
+
+async def test_application_dashboard_summary_ignores_unknown_status_without_mutating_it(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=3, email="unknown-summary@test.com")
+        await _seed_public_job(db, job_id=480)
+        await db.execute(
+            insert(Application).values(user_id=3, job_id=480, status="paused")
+        )
+        await db.commit()
+
+    async with sf() as db:
+        summary = await _service(db).dashboard_summary(user_id=3)
+        persisted = (
+            await db.execute(select(Application).where(Application.user_id == 3))
+        ).scalar_one()
+
+        assert summary.total_applications == 0
+        assert sum(summary.counts_by_status.model_dump().values()) == 0
+        assert summary.active_pipeline_count == 0
+        assert summary.offer_count == 0
+        assert summary.offer_rate_percent == 0
+        assert persisted.status == "paused"
+
+
+async def test_application_dashboard_summary_excludes_unknown_status_from_supported_metrics(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=4, email="mixed-summary@test.com")
+        await _seed_user(db, user_id=5, email="other-summary@test.com")
+        for job_id in range(481, 488):
+            await _seed_public_job(db, job_id=job_id)
+        for status, job_id in zip(
+            ("saved", "applied", "interview", "offer", "rejected", "closed", "paused"),
+            range(481, 488),
+            strict=True,
+        ):
+            await db.execute(
+                insert(Application).values(user_id=4, job_id=job_id, status=status)
+            )
+        await db.execute(
+            insert(Application).values(user_id=5, job_id=481, status="paused")
+        )
+        await db.commit()
+
+    async with sf() as db:
+        summary = await _service(db).dashboard_summary(user_id=4)
+
+        assert summary.total_applications == 6
+        assert sum(summary.counts_by_status.model_dump().values()) == 6
+        assert summary.counts_by_status.model_dump() == {
+            "saved": 1,
+            "applied": 1,
+            "interview": 1,
+            "offer": 1,
+            "rejected": 1,
+            "closed": 1,
+        }
+        assert summary.active_pipeline_count == 3
+        assert summary.offer_count == 1
+        assert summary.offer_rate_percent == 17
+
+        other_summary = await _service(db).dashboard_summary(user_id=5)
+        assert other_summary.total_applications == 0
+        assert other_summary.offer_count == 0
+        assert other_summary.offer_rate_percent == 0
+
+        persisted = (
+            await db.execute(
+                select(Application).where(
+                    Application.user_id == 4, Application.status == "paused"
+                )
+            )
+        ).scalar_one()
+        assert persisted.status == "paused"
+
+
+async def test_application_dashboard_summary_unknown_status_does_not_dilute_offer_rate(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=6, email="offer-summary@test.com")
+        await _seed_public_job(db, job_id=488)
+        await _seed_public_job(db, job_id=489)
+        await db.execute(
+            insert(Application).values(user_id=6, job_id=488, status="offer")
+        )
+        await db.execute(
+            insert(Application).values(user_id=6, job_id=489, status="paused")
+        )
+        await db.commit()
+
+    async with sf() as db:
+        summary = await _service(db).dashboard_summary(user_id=6)
+
+        assert summary.total_applications == 1
+        assert summary.offer_count == 1
+        assert summary.offer_rate_percent == 100
 
 
 async def test_application_list_due_next_actions_is_scoped_to_user(

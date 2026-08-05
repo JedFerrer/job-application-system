@@ -13,6 +13,7 @@ const reactQueryMocks = vi.hoisted(() => {
 const apiMocks = vi.hoisted(() => {
   const applicationsApi = {
     list: vi.fn(),
+    getDashboardSummary: vi.fn(),
     listDueNextActions: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
@@ -78,6 +79,13 @@ describe("Dashboard Today section", () => {
   let root: Root;
   let invalidateQueries: ReturnType<typeof vi.fn>;
   let queryCalls: Array<{ queryKey: unknown; queryFn: () => unknown }> = [];
+  let summaryState: {
+    data: unknown;
+    isLoading: boolean;
+    isError: boolean;
+    isFetching?: boolean;
+    isPending?: boolean;
+  };
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -94,6 +102,7 @@ describe("Dashboard Today section", () => {
     reactQueryMocks.useQueryClient.mockReset();
     apiMocks.applicationsApi.update.mockReset();
     apiMocks.applicationsApi.list.mockReset();
+    apiMocks.applicationsApi.getDashboardSummary.mockReset();
     apiMocks.applicationsApi.listDueNextActions.mockReset();
     apiMocks.jobsApi.list.mockReset();
     apiMocks.matchesApi.list.mockReset();
@@ -134,6 +143,24 @@ describe("Dashboard Today section", () => {
     }));
 
     queryCalls = [];
+    summaryState = {
+      data: {
+        total_applications: 61,
+        counts_by_status: {
+          saved: 56,
+          applied: 1,
+          interview: 1,
+          offer: 1,
+          rejected: 1,
+          closed: 1,
+        },
+        active_pipeline_count: 58,
+        offer_count: 1,
+        offer_rate_percent: 2,
+      },
+      isLoading: false,
+      isError: false,
+    };
     reactQueryMocks.useQuery.mockImplementation((options: any) => {
       queryCalls.push({
         queryKey: options.queryKey,
@@ -194,13 +221,10 @@ describe("Dashboard Today section", () => {
         };
       }
 
-      if (key === "home-applications") {
+      if (key === "dashboard-summary") {
+        void options.queryFn();
         return {
-          data: {
-            items: [{ id: 1, job_id: 101, status: "saved" }],
-          },
-          isLoading: false,
-          isError: false,
+          ...summaryState,
           refetch: vi.fn(),
         };
       }
@@ -252,6 +276,9 @@ describe("Dashboard Today section", () => {
     expect(apiMocks.applicationsApi.listDueNextActions).toHaveBeenCalledWith(
       "2026-07-14",
     );
+    expect(apiMocks.applicationsApi.getDashboardSummary).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("58");
+    expect(container.textContent).toContain("2%");
 
     expect(container.textContent).toContain(
       "User-managed next actions due today or overdue.",
@@ -278,5 +305,105 @@ describe("Dashboard Today section", () => {
     expect(toastMocks.success).toHaveBeenCalledWith(
       "Marked next action complete",
     );
+  });
+
+  it("shows summary retry state without hiding independent dashboard areas", async () => {
+    summaryState = { data: null, isLoading: false, isError: true };
+
+    await act(async () => {
+      root.render(<DashboardHome />);
+    });
+
+    expect(container.textContent).toContain("load application summary.");
+    expect(container.textContent).toContain("Senior Backend Engineer");
+    expect(container.textContent).toContain("Jobs in feed");
+    expect(container.textContent).toContain("Ranked matches");
+    expect(container.textContent).not.toContain("No applications yet.");
+    expect(container.textContent).not.toContain("0%");
+    expect(container.textContent).not.toContain("58");
+  });
+
+  it("keeps unavailable metrics out of the UI while the summary is loading or retrying", async () => {
+    summaryState = {
+      data: null,
+      isLoading: false,
+      isError: true,
+      isFetching: true,
+      isPending: true,
+    };
+
+    await act(async () => {
+      root.render(<DashboardHome />);
+    });
+
+    expect(container.textContent).toContain("Loading");
+    expect(container.textContent).not.toContain("No applications yet.");
+    expect(container.textContent).not.toContain("0%");
+    expect(container.textContent).toContain("Jobs in feed");
+    expect(container.textContent).toContain("Ranked matches");
+  });
+
+  it("shows legitimate zero metrics for a successful empty summary", async () => {
+    summaryState = {
+      data: {
+        total_applications: 0,
+        counts_by_status: {
+          saved: 0,
+          applied: 0,
+          interview: 0,
+          offer: 0,
+          rejected: 0,
+          closed: 0,
+        },
+        active_pipeline_count: 0,
+        offer_count: 0,
+        offer_rate_percent: 0,
+      },
+      isLoading: false,
+      isError: false,
+    };
+
+    await act(async () => {
+      root.render(<DashboardHome />);
+    });
+
+    expect(container.textContent).toContain("No applications yet.");
+    expect(container.textContent).toContain("0%");
+  });
+
+  it("restores populated metrics after a summary retry succeeds", async () => {
+    summaryState = { data: null, isLoading: false, isError: true };
+
+    await act(async () => {
+      root.render(<DashboardHome />);
+    });
+    expect(container.textContent).not.toContain("58");
+
+    summaryState = {
+      data: {
+        total_applications: 61,
+        counts_by_status: {
+          saved: 56,
+          applied: 1,
+          interview: 1,
+          offer: 1,
+          rejected: 1,
+          closed: 1,
+        },
+        active_pipeline_count: 58,
+        offer_count: 1,
+        offer_rate_percent: 2,
+      },
+      isLoading: false,
+      isError: false,
+    };
+
+    await act(async () => {
+      root.render(<DashboardHome />);
+    });
+
+    expect(container.textContent).toContain("58");
+    expect(container.textContent).toContain("2%");
+    expect(container.textContent).not.toContain("load application summary.");
   });
 });
