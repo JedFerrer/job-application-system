@@ -91,7 +91,7 @@ describe("TailorResumeDialog", () => {
 
   const renderedText = () => container.textContent ?? "";
 
-  it("labels generated content as a review-required draft", async () => {
+  it("waits for the user to start generation and labels the result as a review-required draft", async () => {
     apiMocks.tailorResume.mockImplementation(async () => tailoredResume);
 
     await act(async () => {
@@ -107,9 +107,19 @@ describe("TailorResumeDialog", () => {
       );
     });
 
-    await vi.waitFor(() =>
-      expect(renderedText()).toContain("Acme"),
+    expect(apiMocks.tailorResume).not.toHaveBeenCalled();
+    expect(renderedText()).toContain("Generate tailored resume");
+
+    const generateButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Generate tailored resume"),
     );
+    expect(generateButton).toBeDefined();
+    await act(async () => {
+      generateButton?.click();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(renderedText()).toContain("Acme"));
 
     expect(apiMocks.tailorResume).toHaveBeenCalledWith(101);
     expect(renderedText()).toContain(
@@ -133,6 +143,16 @@ describe("TailorResumeDialog", () => {
           <TailorResumeDialog jobId={102} open onOpenChange={vi.fn()} />
         </QueryClientProvider>,
       );
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.tailorResume).not.toHaveBeenCalled();
+    const generateButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Generate tailored resume"),
+    );
+    expect(generateButton).toBeDefined();
+    await act(async () => {
+      generateButton?.click();
       await Promise.resolve();
     });
 
@@ -165,6 +185,15 @@ describe("TailorResumeDialog", () => {
         </QueryClientProvider>,
       );
     });
+    expect(apiMocks.tailorResume).not.toHaveBeenCalled();
+    const generateButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Generate tailored resume"),
+    );
+    expect(generateButton).toBeDefined();
+    await act(async () => {
+      generateButton?.click();
+      await Promise.resolve();
+    });
     await vi.waitFor(() => expect(renderedText()).toContain("Acme"));
 
     const saveButton = Array.from(container.querySelectorAll("button")).find(
@@ -194,10 +223,17 @@ describe("TailorResumeDialog", () => {
       );
     });
 
+    expect(apiMocks.tailorResume).not.toHaveBeenCalled();
+    const generateButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Generate tailored resume"),
+    );
+    expect(generateButton).toBeDefined();
+    await act(async () => {
+      generateButton?.click();
+      await Promise.resolve();
+    });
     await vi.waitFor(() =>
-      expect(renderedText()).toContain(
-        "Could not load tailored resume.",
-      ),
+      expect(renderedText()).toContain("Could not generate tailored resume."),
     );
 
     expect(apiMocks.tailorResume).toHaveBeenCalledWith(103);

@@ -1,7 +1,17 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Briefcase, Copy, FileDown, FileText, Loader2, RefreshCw, Save } from "lucide-react";
+import { useEffect } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  Briefcase,
+  Copy,
+  FileDown,
+  FileText,
+  Loader2,
+  RefreshCw,
+  Save,
+  Sparkles,
+} from "lucide-react";
 import { toast } from "sonner";
 import { resumeApi } from "@/lib/api";
 import { downloadResumePdf, downloadResumeDocx } from "@/lib/cover-letter-export";
@@ -115,11 +125,12 @@ export function TailorResumeDialog({
   readOnly = false,
 }: TailorResumeDialogProps) {
   const queryClient = useQueryClient();
-  const tailorQuery = useQuery({
-    queryKey: ["tailor-resume", jobId],
-    queryFn: () => resumeApi.tailorResume(jobId!),
-    enabled: open && !readOnly && jobId != null && initialData == null,
-    staleTime: 0,
+  const generateMutation = useMutation({
+    mutationFn: () => {
+      if (jobId == null) throw new Error("No job selected");
+      return resumeApi.tailorResume(jobId);
+    },
+    onError: () => toast.error("Could not generate tailored resume."),
   });
   const saveMutation = useMutation({
     mutationFn: (content: TailoredResume) =>
@@ -131,8 +142,19 @@ export function TailorResumeDialog({
     onError: () => toast.error("Could not save tailored resume draft."),
   });
 
-  const data = initialData ?? tailorQuery.data;
-  const isLoading = !readOnly && initialData == null && tailorQuery.isFetching;
+  useEffect(() => {
+    if (open && !readOnly) {
+      generateMutation.reset();
+    }
+  }, [open, readOnly, jobId]);
+
+  const data = initialData ?? generateMutation.data;
+  const isLoading = !readOnly && initialData == null && generateMutation.isPending;
+
+  const handleGenerate = () => {
+    if (readOnly || jobId == null) return;
+    generateMutation.mutate();
+  };
 
   const handleSave = () => {
     if (!data || readOnly) return;
@@ -189,8 +211,20 @@ export function TailorResumeDialog({
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : !data ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">
-            Could not load tailored resume.
+          <div className="flex flex-col items-center gap-3 py-8 text-center">
+            <p className="text-sm text-muted-foreground">
+              {generateMutation.isError
+                ? "Could not generate tailored resume."
+                : "Generate a tailored resume draft, then review it before saving or using it."}
+            </p>
+            <Button onClick={handleGenerate} disabled={generateMutation.isPending}>
+              {generateMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+              {generateMutation.isPending ? "Generating…" : "Generate tailored resume"}
+            </Button>
           </div>
         ) : (
           <div className="flex flex-col gap-5">
@@ -373,8 +407,8 @@ export function TailorResumeDialog({
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => tailorQuery.refetch()}
-                    disabled={tailorQuery.isFetching}
+                    onClick={handleGenerate}
+                    disabled={generateMutation.isPending}
                   >
                     <RefreshCw className="h-4 w-4" />
                     Regenerate

@@ -137,28 +137,31 @@ describe("ResumePanel saved tailored drafts", () => {
     let resolveList!: (value: unknown[]) => void;
     apiMocks.listDrafts.mockReturnValue(new Promise((resolve) => { resolveList = resolve; }));
     await render();
-    expect(container.textContent).toContain("Loading saved drafts");
+    expect(container.textContent).toContain("Loading saved resumes");
     await act(async () => resolveList([]));
-    await vi.waitFor(() => expect(container.textContent).toContain("No saved tailored drafts yet."));
+    await vi.waitFor(() => expect(container.textContent).toContain("No tailored resumes yet"));
   });
 
   it("shows the empty state", async () => {
     apiMocks.listDrafts.mockResolvedValue([]);
     await render();
-    await vi.waitFor(() => expect(container.textContent).toContain("No saved tailored drafts yet."));
+    await vi.waitFor(() => expect(container.textContent).toContain("No tailored resumes yet"));
+    expect(container.querySelector('a[href="/matches"]')?.textContent).toContain("Browse job matches");
   });
 
   it("shows the error state", async () => {
     apiMocks.listDrafts.mockRejectedValue(new Error("failed"));
     await render();
-    await vi.waitFor(() => expect(container.textContent).toContain("Could not load saved drafts."));
+    await vi.waitFor(() => expect(container.textContent).toContain("Could not load saved resumes."));
   });
 
   it("renders metadata and opens the saved snapshot without tailoring", async () => {
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Acme"));
-    expect(container.textContent).toContain("Analytical Engine");
-    expect(container.querySelector('a[href="https://linkedin.com/in/ada"]')?.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(apiMocks.getProfile).not.toHaveBeenCalled();
+    expect(apiMocks.upload).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Upload résumé");
+    expect(container.textContent).not.toContain("Analytical Engine");
     expect(container.textContent).toContain("Jul 14, 2026");
     const open = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Open"));
     await act(async () => open?.click());
