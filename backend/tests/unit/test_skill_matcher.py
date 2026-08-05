@@ -5,11 +5,9 @@ from __future__ import annotations
 import pytest
 
 from app.domain.matching.skill_matcher import (
-    classify_job_skills,
     compute_skill_match,
     extract_known_skills,
     normalize_skill,
-    parse_experience_requirements,
     report_to_dict,
 )
 
@@ -77,34 +75,3 @@ def test_report_to_dict_is_json_safe() -> None:
     data = report_to_dict(report)
     assert set(data) == {"matched_skills", "missing_skills", "recall", "evidence"}
     assert isinstance(data["recall"], float)
-
-
-def test_classify_job_skills_uses_headings_and_immediate_bullets() -> None:
-    groups = classify_job_skills(
-        "Requirements:\n- Python and FastAPI\nPreferred:\n- Docker\nWe also use Kubernetes."
-    )
-
-    assert [item.skill for item in groups["required"]] == ["python", "fastapi"]
-    assert [item.skill for item in groups["preferred"]] == ["docker"]
-    assert [item.skill for item in groups["unclassified"]] == ["kubernetes"]
-
-
-def test_classify_job_skills_bounds_excerpts_and_dedupes_canonical_skills() -> None:
-    groups = classify_job_skills("Required: AWS " + ("details " * 40) + "Amazon Web Services")
-
-    assert [item.skill for item in groups["required"]] == ["aws"]
-    assert len(groups["required"][0].job_excerpt) <= 160
-
-
-def test_parse_explicit_experience_requirements_only() -> None:
-    jd_text = (
-        "5+ years of software engineering experience\n"
-        "5 years of Python experience\n"
-        "Extensive experience required"
-    )
-    findings = parse_experience_requirements(jd_text)
-
-    assert [(item.scope, item.skill) for item in findings] == [
-        ("total_experience", None),
-        ("skill_specific", "python"),
-    ]

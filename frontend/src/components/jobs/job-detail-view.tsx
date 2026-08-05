@@ -28,7 +28,6 @@ import type {
   ApplicationListItem,
   EmployerSummary,
   MatchExplanation,
-  MatchEvidence,
   MatchItem,
   MatchListResponse,
   MatchSkillAnalysis,
@@ -208,82 +207,6 @@ function renderDescription(description: string | null | undefined) {
   });
 }
 
-/** Render source evidence as plain text without leaking markdown markers. */
-function cleanEvidenceText(value: string): string {
-  return stripMarkdown(value).replace(/[*`]/g, "").trim();
-}
-
-function EvidenceDisclosure({
-  evidence,
-  isLoading,
-  isError,
-  onRetry,
-  isOpen,
-  onToggle,
-}: {
-  evidence: MatchEvidence | undefined;
-  isLoading: boolean;
-  isError: boolean;
-  onRetry: () => void;
-  isOpen: boolean;
-  onToggle: (open: boolean) => void;
-}) {
-  const groups = [
-    ["Required", evidence?.skills.required],
-    ["Preferred", evidence?.skills.preferred],
-    ["Unclassified", evidence?.skills.unclassified],
-  ] as const;
-  const hasSkillEvidence = groups.some(([, group]) =>
-    Boolean(group && (group.matched.length > 0 || group.missing.length > 0)),
-  );
-
-  return (
-    <details
-      className="mt-4 rounded-lg border border-border/70 bg-muted/20 p-3"
-      open={isOpen}
-      onToggle={(event) => onToggle(event.currentTarget.open)}
-    >
-      <summary className="cursor-pointer text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-        Evidence
-      </summary>
-      <div className="mt-3 flex flex-col gap-4 text-xs">
-        {isLoading && <p className="text-muted-foreground">Loading source-based evidence…</p>}
-        {isError && (
-          <div className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
-            <span>Could not load evidence.</span>
-            <button type="button" onClick={onRetry} className="underline underline-offset-2">Retry</button>
-          </div>
-        )}
-        {evidence && !hasSkillEvidence && evidence.experience_requirements.length === 0 && (
-          <p className="text-muted-foreground">No deterministic evidence was found for this job.</p>
-        )}
-        {groups.map(([label, group]) => {
-          if (!group || (group.matched.length === 0 && group.missing.length === 0)) return null;
-          return (
-            <section key={label} className="space-y-2">
-              <h3 className="font-medium text-foreground">{label} skills</h3>
-              {[...group.matched.map((item) => ({ ...item, status: "Matched" })), ...group.missing.map((item) => ({ ...item, status: "Missing" }))].map((item) => (
-                <div key={`${item.status}-${item.skill}`} className="rounded-md border border-border/60 bg-background/60 p-2 leading-relaxed">
-                  <p className="font-medium">{item.status}: {item.skill}</p>
-                  <p className="mt-1 text-muted-foreground"><span className="font-medium text-foreground">Job requirement:</span> {cleanEvidenceText(item.job_excerpt)}</p>
-                  {item.profile_excerpt && <p className="mt-1 text-muted-foreground"><span className="font-medium text-foreground">Profile evidence:</span> {cleanEvidenceText(item.profile_excerpt)}</p>}
-                </div>
-              ))}
-            </section>
-          );
-        })}
-        {evidence?.experience_requirements.map((item, index) => (
-          <section key={`${item.job_excerpt}-${index}`} className="rounded-md border border-border/60 bg-background/60 p-2 leading-relaxed">
-            <h3 className="font-medium text-foreground">Experience requirement: {item.assessment === "meets" ? "Meets" : item.assessment === "may_not_meet" ? "May not meet" : "Needs review"}</h3>
-            <p className="mt-1 text-muted-foreground"><span className="font-medium text-foreground">Job requirement:</span> {cleanEvidenceText(item.job_excerpt)}</p>
-            {item.profile_years_experience !== null && <p className="mt-1 text-muted-foreground">Profile reports {item.profile_years_experience} years of total experience.</p>}
-          </section>
-        ))}
-      </div>
-    </details>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -303,7 +226,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const [showCoverLetter, setShowCoverLetter] = useState(false);
   const [showInterviewPrep, setShowInterviewPrep] = useState(false);
   const [showTailorResume, setShowTailorResume] = useState(false);
-  const [evidenceOpenJobId, setEvidenceOpenJobId] = useState<number | null>(null);
   const [highlightedActionTarget, setHighlightedActionTarget] = useState<string | null>(null);
 
   useEffect(() => {
@@ -313,7 +235,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   }, [highlightedActionTarget]);
   useEffect(() => {
     setExplainData(null);
-    setEvidenceOpenJobId(null);
   }, [jobId]);
 
   // The list cache gives immediate continuity when arriving from /matches.
@@ -374,15 +295,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
     staleTime: 5 * 60_000,
   });
   const skillData = skillQuery.data ?? null;
-
-  const evidenceOpen = evidenceOpenJobId === jobId;
-  const evidenceQuery = useQuery({
-    queryKey: ["match-evidence", jobId],
-    queryFn: () => matchesApi.evidence(jobId),
-    enabled: evidenceOpen,
-    staleTime: 0,
-    retry: false,
-  });
 
   const explainMutation = useMutation({
     mutationFn: () => matchesApi.explain(jobId),
@@ -555,7 +467,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
       ? !isApplied && !applyMutation.isPending
       : readinessNavigationTarget === "save"
         ? canSave && !saveMutation.isPending
-        : readinessNavigationTarget === "readiness";
+        : false;
   const navigateToReadinessAction = () => {
     if (!readinessNavigationTarget || !navigationTargetIsAvailable) return;
     const target = document.getElementById(navigationTargetIds[readinessNavigationTarget]);
@@ -574,17 +486,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
       ? match?.missing_keywords
       : skillData?.missing_keywords ?? match?.missing_keywords
   ) ?? [];
-  const evidenceDisclosure = (
-    <EvidenceDisclosure
-      evidence={evidenceQuery.data}
-      isLoading={evidenceQuery.isLoading}
-      isError={evidenceQuery.isError}
-      onRetry={() => evidenceQuery.refetch()}
-      isOpen={evidenceOpen}
-      onToggle={(open) => setEvidenceOpenJobId(open ? jobId : null)}
-    />
-  );
-
   return (
     <div className="flex flex-col gap-6 w-full">
       {/* ── Back button ─────────────────────────────────────── */}
@@ -804,10 +705,10 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             </CardHeader>
             <CardContent>
               {match ? (
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-5">
                   <div
                     data-testid="match-score-summary"
-                    className="flex items-start gap-4"
+                    className="flex items-start gap-5"
                   >
                     <div className="shrink-0">
                       <CircularScore
@@ -819,7 +720,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                       />
                     </div>
                     <div className="min-w-0 pt-1">
-                      <p className="text-xs leading-relaxed text-muted-foreground">
+                      <p className="text-[13px] leading-relaxed text-muted-foreground">
                         {profileRelevanceScore >= 80
                           ? "You're a strong match for this role."
                           : profileRelevanceScore >= 50
@@ -827,7 +728,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                             : "This role may require additional skills beyond your profile."}
                       </p>
                       {currentExplainData?.llm_error && (
-                        <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                        <p className="mt-3 text-[13px] leading-relaxed text-amber-600 dark:text-amber-400">
                           Detailed AI assessment unavailable; deterministic skill results are shown.
                         </p>
                       )}
@@ -863,35 +764,31 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                             <h3 className="text-xs font-medium text-foreground">
                               Application recommendation
                             </h3>
-                            <p className="mt-0.5 text-[11px] text-muted-foreground">
+                            <p className="mt-1 text-xs text-muted-foreground">
                               Based on your preferences and readiness rules
                             </p>
                           </div>
                           <div className="flex shrink-0 flex-col items-end gap-1.5">
                             <Badge
                               variant="outline"
-                              className={`rounded-full text-[11px] font-medium ${RECOMMENDATION_BADGE_CLASS[readinessSuggestion.action]}`}
+                              className={`rounded-full text-xs font-medium ${RECOMMENDATION_BADGE_CLASS[readinessSuggestion.action]}`}
                             >
                               {readinessSuggestion.label}
                             </Badge>
-                            {navigationTargetIsAvailable && (
+                            {(readinessNavigationTarget === "apply" || readinessNavigationTarget === "save") && navigationTargetIsAvailable && (
                               <button
                                 type="button"
                                 onClick={navigateToReadinessAction}
-                                className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                                 aria-label={
-                                  readinessNavigationTarget === "readiness"
-                                    ? "Review recommendation details"
-                                    : readinessNavigationTarget === "apply"
-                                      ? "Go to apply action"
-                                      : "Go to save action"
+                                  readinessNavigationTarget === "apply"
+                                    ? "Go to apply action"
+                                    : "Go to save action"
                                 }
                               >
                                 {readinessNavigationTarget === "apply"
                                   ? "Go to apply"
-                                  : readinessNavigationTarget === "save"
-                                    ? "Go to save"
-                                    : "Review details"}
+                                  : "Go to save"}
                               </button>
                             )}
                           </div>
@@ -899,9 +796,9 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                       )}
 
                       {(readiness.deterministic_blockers ?? []).length > 0 && (
-                        <section className="mt-3 rounded-md border border-red-200 bg-red-50/60 px-2 py-1.5 dark:border-red-900/60 dark:bg-red-950/20">
+                        <section className="mt-4 rounded-md border border-red-200 bg-red-50/60 px-2.5 py-2 dark:border-red-900/60 dark:bg-red-950/20">
                           <h3 className="text-xs font-medium text-red-700 dark:text-red-300">Why we recommend skipping</h3>
-                          <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-red-700 dark:text-red-300">
+                          <ul className="mt-1.5 list-disc space-y-1 pl-4 text-[13px] leading-relaxed text-red-700 dark:text-red-300">
                             {(readiness.deterministic_blockers ?? []).map((blocker) => (
                               <li key={blocker}>{blocker}</li>
                             ))}
@@ -910,9 +807,9 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                       )}
 
                       {([...((readiness.deterministic_warnings ?? [])), ...(readiness.caveats ?? [])].length > 0) && (
-                        <section className="mt-3 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 dark:border-amber-900/60 dark:bg-amber-950/20">
+                        <section className="mt-4 rounded-md border border-amber-200 bg-amber-50/60 px-2.5 py-2 dark:border-amber-900/60 dark:bg-amber-950/20">
                           <h3 className="text-xs font-medium text-amber-700 dark:text-amber-300">What to review</h3>
-                          <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-700 dark:text-amber-300">
+                          <ul className="mt-1.5 list-disc space-y-1 pl-4 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300">
                             {[...(readiness.deterministic_warnings ?? []), ...(readiness.caveats ?? [])].map((item, index) => (
                               <li key={`${item}-${index}`}>{item}</li>
                             ))}
@@ -924,38 +821,38 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                   )}
 
                   {hasAiFitReview && (
-                    <section data-testid="ai-fit-review" className="space-y-2">
+                    <section data-testid="ai-fit-review" className="space-y-3">
                       <div className="flex items-center justify-between gap-2">
                         <div>
                           <h3 className="text-xs font-medium text-foreground">AI fit review</h3>
-                          <p className="mt-0.5 text-[11px] text-muted-foreground">Skills and experience only</p>
+                          <p className="mt-1 text-xs text-muted-foreground">Skills and experience only</p>
                         </div>
                         {aiFitLabel && (
-                          <Badge variant="outline" className="rounded-full text-[11px] font-normal">
+                          <Badge variant="outline" className="rounded-full text-xs font-normal">
                             {aiFitLabel}
                           </Badge>
                         )}
                       </div>
                       {aiReviewExplanation && (
-                        <p className="text-xs leading-relaxed text-muted-foreground">
+                        <p className="text-[13px] leading-relaxed text-muted-foreground">
                           {aiReviewExplanation}
                         </p>
                       )}
                       {!aiReviewExplanation && (
-                        <p className="text-xs leading-relaxed text-muted-foreground">
+                        <p className="text-[13px] leading-relaxed text-muted-foreground">
                           Review the matched and missing requirements below.
                         </p>
                       )}
                       {(analyzedMatchedSkills.length > 0 || analyzedMissingSkills.length > 0) && (
-                        <div className="flex flex-col gap-2 border-t border-border/60 pt-2">
+                        <div className="flex flex-col gap-3 border-t border-border/60 pt-3">
                           <div>
                             <h4 className="text-xs font-medium text-muted-foreground">
                               Matched skills ({analyzedMatchedSkills.length})
                             </h4>
                             {analyzedMatchedSkills.length > 0 && (
-                              <div className="mt-1.5 flex flex-wrap gap-1">
+                              <div className="mt-2 flex flex-wrap gap-1.5">
                                 {analyzedMatchedSkills.map((skill) => (
-                                  <Badge key={skill} variant="secondary" className="text-xs font-normal">{formatSkillLabel(skill)}</Badge>
+                                  <Badge key={skill} variant="secondary" className="text-[13px] font-normal">{formatSkillLabel(skill)}</Badge>
                                 ))}
                               </div>
                             )}
@@ -965,9 +862,9 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                               Skill gaps ({analyzedMissingSkills.length})
                             </h4>
                             {analyzedMissingSkills.length > 0 && (
-                              <div className="mt-1.5 flex flex-wrap gap-1">
+                              <div className="mt-2 flex flex-wrap gap-1.5">
                                 {analyzedMissingSkills.map((keyword) => (
-                                  <Badge key={keyword} variant="outline" className="text-xs font-normal border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300">{formatSkillLabel(keyword)}</Badge>
+                                  <Badge key={keyword} variant="outline" className="text-[13px] font-normal border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300">{formatSkillLabel(keyword)}</Badge>
                                 ))}
                               </div>
                             )}
@@ -991,7 +888,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                         )}
                         {match.llm_score != null ? "View AI fit review" : "Get AI fit review"}
                       </Button>
-                      <p className="text-[11px] text-muted-foreground">
+                      <p className="text-xs leading-relaxed text-muted-foreground">
                         Includes a structured skills-gap review and AI fit explanation.
                       </p>
                     </div>
@@ -1065,7 +962,6 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                   </div>
                 </div>
               )}
-              {match && evidenceDisclosure}
             </CardContent>
           </Card>
 

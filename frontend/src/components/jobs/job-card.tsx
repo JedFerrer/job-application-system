@@ -233,8 +233,8 @@ export function CircularScore({
 }) {
   const pct = Math.round(score);
   const isLg = size === "lg";
-  const radius = isLg ? 34 : 28;
-  const svgSize = isLg ? 88 : 72;
+  const radius = isLg ? 38 : 28;
+  const svgSize = isLg ? 96 : 72;
   const textSize = isLg ? "text-xl" : "text-lg";
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (pct / 100) * circumference;

@@ -58,19 +58,6 @@ class _SummaryMatchService:
         return None
 
 
-class _EvidenceMatchService:
-    def __init__(self) -> None:
-        self.calls: list[tuple[int, int]] = []
-
-    async def get_match_evidence(self, *, user_id: int, job_id: int) -> object:  # noqa: ANN201
-        self.calls.append((user_id, job_id))
-        return {
-            "job_id": job_id,
-            "skills": {},
-            "experience_requirements": [],
-        }
-
-
 class _AnalyzeMatchService:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
@@ -160,20 +147,6 @@ def test_match_summary_returns_200_null_and_uses_current_user_scope() -> None:
     assert response.status_code == 200
     assert response.json() is None
     assert service.calls == [(42, 501)]
-
-
-def test_match_evidence_is_documented_and_user_scoped() -> None:
-    user = User(id=42, email="scoped@test.com", name="Scoped", is_active=True)
-    service = _EvidenceMatchService()
-    app = _build_app_with_overrides(current_user=user, match_service=service)
-    client = TestClient(app)
-
-    response = client.get("/matches/501/evidence")
-
-    assert response.status_code == 200
-    assert service.calls == [(42, 501)]
-    schema = client.get("/openapi.json").json()
-    assert "MatchEvidence" in schema["components"]["schemas"]
 
 
 def test_analyze_match_is_posted_for_the_current_user_only() -> None:

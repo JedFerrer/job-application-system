@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Query, status
 from app.api.deps import CurrentUser, MatchServiceDep, TaskStoreDep
 from app.domain.matching.ranking_dispatch import RankingDispatcher
 from app.domain.matching.schemas import (
-    MatchEvidence,
     MatchExplanation,
     MatchListResponse,
     MatchSkillAnalysis,
@@ -121,16 +120,6 @@ async def analyze_match_skills(
     service: MatchServiceDep,
 ) -> MatchSkillAnalysis:
     return await service.analyze_skills(user_id=current_user.id, job_id=job_id)
-
-
-@router.get("/{job_id}/evidence", response_model=MatchEvidence)
-async def get_match_evidence(
-    job_id: int,
-    current_user: CurrentUser,
-    service: MatchServiceDep,
-) -> MatchEvidence:
-    """Build fresh source-based evidence without reading cached match analysis."""
-    return await service.get_match_evidence(user_id=current_user.id, job_id=job_id)
 
 
 @router.get("/{job_id}/explain", response_model=MatchExplanation)

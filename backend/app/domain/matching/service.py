@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Literal
 
 from app.core.logging import get_logger
 from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
@@ -27,9 +26,6 @@ from app.domain.matching.readiness import build_match_readiness
 from app.domain.matching.readiness_preferences import ReadinessPreferenceRepository
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.schemas import (
-    ClassifiedSkillEvidence,
-    ExperienceRequirement,
-    MatchEvidence,
     MatchExplanation,
     MatchItem,
     MatchListResponse,
@@ -37,16 +33,12 @@ from app.domain.matching.schemas import (
     MatchSkillAnalysis,
     MatchSummary,
     RankResponse,
-    SkillEvidence,
-    SkillEvidenceGroup,
     SkillGapItem,
     SkillsGapSummary,
 )
 from app.domain.matching.skill_matcher import (
-    classify_job_skills,
     compute_skill_match,
     extract_known_skills,
-    parse_experience_requirements,
     report_to_dict,
 )
 from app.infrastructure.llm_client import LLMUnavailableError, llm_chat_completion
@@ -355,72 +347,6 @@ class MatchingService:
             deterministic_match=report_to_dict(report),
         )
         return await self._to_skill_analysis(match, user_id)
-
-    async def get_match_evidence(self, *, user_id: int, job_id: int) -> MatchEvidence:
-        """Build fresh, user-scoped deterministic evidence without persistence."""
-        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
-        profile = await self._repo.get_active_profile(user_id)
-        if job is None or profile is None:
-            raise MatchNotFoundError(job_id)
-
-        profile_parsed = dict(profile.parsed)
-        groups: dict[str, SkillEvidenceGroup] = {}
-        for classification, observed in classify_job_skills(job.description or "").items():
-            report = compute_skill_match([item.skill for item in observed], profile_parsed)
-            matched = set(report.matched_skills)
-            groups[classification] = SkillEvidenceGroup(
-                matched=[
-                    SkillEvidence(
-                        skill=item.skill,
-                        job_excerpt=item.job_excerpt,
-                        profile_excerpt=report.evidence[item.skill],
-                    )
-                    for item in observed
-                    if item.skill in matched
-                ],
-                missing=[
-                    SkillEvidence(skill=item.skill, job_excerpt=item.job_excerpt)
-                    for item in observed
-                    if item.skill not in matched
-                ],
-            )
-
-        profile_years_raw = profile_parsed.get("years_experience")
-        profile_years = (
-            float(profile_years_raw)
-            if isinstance(profile_years_raw, int | float)
-            else None
-        )
-        experience = []
-        for requirement in parse_experience_requirements(job.description or ""):
-            if requirement.scope == "skill_specific" or profile_years is None:
-                assessment: Literal["meets", "may_not_meet", "needs_review"] = "needs_review"
-            elif profile_years < requirement.years_required:
-                assessment = "may_not_meet"
-            else:
-                assessment = "meets"
-            experience.append(
-                ExperienceRequirement(
-                    years_required=requirement.years_required,
-                    scope=requirement.scope,
-                    skill=requirement.skill,
-                    job_excerpt=requirement.job_excerpt,
-                    assessment=assessment,
-                    profile_years_experience=(
-                        profile_years if requirement.scope == "total_experience" else None
-                    ),
-                )
-            )
-
-        return MatchEvidence(
-            job_id=job_id,
-            skills=ClassifiedSkillEvidence(
-                required=groups.get("required", SkillEvidenceGroup()),
-                preferred=groups.get("preferred", SkillEvidenceGroup()),
-                unclassified=groups.get("unclassified", SkillEvidenceGroup()),
-            ),
-            experience_requirements=experience,
-        )
 
     async def _explain_with_llm(
         self,
