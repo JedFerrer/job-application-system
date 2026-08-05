@@ -146,7 +146,7 @@ describe("ResumePanel saved tailored drafts", () => {
     apiMocks.listDrafts.mockResolvedValue([]);
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("No tailored resumes yet"));
-    expect(container.querySelector('a[href="/matches"]')?.textContent).toContain("Browse job matches");
+    expect(container.querySelector('a[href="/applications"]')?.textContent).toContain("Browse applications");
   });
 
   it("shows the error state", async () => {
@@ -194,10 +194,22 @@ describe("ResumePanel saved tailored drafts", () => {
     await vi.waitFor(() => expect(container.textContent).toContain("Acme"));
     await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Open"))?.click());
     await vi.waitFor(() => expect(container.textContent).toContain("Saved AI-generated draft"));
-    const deleteButton = container.querySelector(
-      'button[aria-label="Delete saved draft for Backend Engineer"]',
+    const moreButton = container.querySelector(
+      'button[aria-label="More actions for Backend Engineer"]',
     ) as HTMLButtonElement | null;
-    await act(async () => deleteButton?.click());
+    await act(async () => {
+      moreButton?.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+      moreButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const deleteMenuItem = Array.from(document.querySelectorAll('[role="menuitem"]')).find(
+      (item) => item.textContent?.includes("Delete"),
+    ) as HTMLElement | undefined;
+    expect(deleteMenuItem).toBeDefined();
+    await act(async () => deleteMenuItem?.click());
     await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Delete")?.click());
     await vi.waitFor(() => expect(apiMocks.deleteDraft).toHaveBeenCalledWith(1));
     expect(apiMocks.listDrafts.mock.calls.length).toBeGreaterThan(1);

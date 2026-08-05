@@ -28,6 +28,9 @@ describe("ResumePage", () => {
     });
 
     expect(container.textContent).toContain("Tailored resumes");
-    expect(container.querySelector('a[href="/settings/profile"]')?.textContent).toBe("Manage profile");
+    expect(container.querySelector('a[href="/settings/profile"]')).toBeNull();
+    expect(container.querySelector('a[href="/applications"]')?.textContent).toContain("Applications");
+    expect(container.querySelector('a[href="/resume"]')?.getAttribute("aria-current")).toBe("page");
+    expect(container.querySelector('a[href="/applications"]')?.getAttribute("aria-current")).toBeNull();
   });
 });

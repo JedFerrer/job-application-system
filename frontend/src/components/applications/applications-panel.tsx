@@ -174,7 +174,11 @@ const MANUAL_NEXT_ACTION_ACTIVITY_LABELS: Record<string, string> = {
   manual_next_action_cleared: "Next action cleared",
 };
 
-export function ApplicationsPanel() {
+export function ApplicationsPanel({
+  onTotalChange,
+}: {
+  onTotalChange?: (total: number) => void;
+}) {
   const queryClient = useQueryClient();
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [coverLetterJob, setCoverLetterJob] = useState<{
@@ -278,6 +282,10 @@ export function ApplicationsPanel() {
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (appsQuery.data) onTotalChange?.(total);
+  }, [appsQuery.data, onTotalChange, total]);
 
   const statusMutation = useMutation({
     mutationFn: ({ id, status }: { id: number; status: ApplicationStatus }) =>
@@ -502,11 +510,11 @@ export function ApplicationsPanel() {
         <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-                <table className="w-full table-fixed text-sm">
+                <table className="w-full table-auto text-sm md:table-fixed">
                   <colgroup>
-                    <col className="w-[46%]" />
+                    <col className="md:w-[46%]" />
                     <col />
-                    <col className="w-[132px]" />
+                    <col className="md:w-[132px]" />
                   </colgroup>
                   <thead className="hidden md:table-header-group">
                     <tr className="border-b text-left text-muted-foreground">
@@ -515,7 +523,7 @@ export function ApplicationsPanel() {
                     <th className="px-4 py-3 pr-6 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="block space-y-3 md:table-row-group md:space-y-0">
+                <tbody className="block w-full space-y-3 md:table-row-group md:space-y-0">
                   {filteredItems.map((app) => (
                     <ApplicationRow
                       key={app.id}
@@ -777,8 +785,8 @@ function ApplicationRow({
 
   return (
     <>
-      <tr className="block rounded-lg border bg-card p-3 transition-colors hover:bg-muted/20 md:table-row md:rounded-none md:border-0 md:border-b md:border-border/70 md:p-0 md:last:border-b-0">
-        <td className="block px-0 py-2 md:table-cell md:px-4 md:py-2.5 md:pr-10">
+      <tr className="block w-full rounded-lg border bg-card p-3 transition-colors hover:bg-muted/20 md:table-row md:rounded-none md:border-0 md:border-b md:border-border/70 md:p-0 md:last:border-b-0">
+        <td className="block w-full px-0 py-2 md:table-cell md:px-4 md:py-2.5 md:pr-10">
           <div className="flex items-start gap-3">
             <CompanyLogo company={app.company} logoUrl={app.company_logo} />
             <div className="min-w-0">
@@ -794,7 +802,7 @@ function ApplicationRow({
             </div>
           </div>
         </td>
-        <td className="block px-0 py-2 md:table-cell md:px-4 md:py-2.5">
+        <td className="block w-full px-0 py-2 md:table-cell md:px-4 md:py-2.5">
           <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground md:hidden">
             Next action
           </p>
@@ -845,7 +853,7 @@ function ApplicationRow({
             )}
           </div>
         </td>
-        <td className="block px-0 py-2 text-left md:table-cell md:px-4 md:py-2.5 md:pr-6 md:text-right md:align-top">
+        <td className="block w-full px-0 py-2 text-left md:table-cell md:px-4 md:py-2.5 md:pr-6 md:text-right md:align-top">
           <div className="flex flex-wrap items-center justify-between gap-2 md:justify-end">
             {app.next_action_completed_at ? (
               <Button

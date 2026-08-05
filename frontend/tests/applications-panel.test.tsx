@@ -310,6 +310,8 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(container.textContent).not.toContain("Cover letter");
     expect(appliedRow.querySelector('button[aria-label^="More actions for"]')).toBeDefined();
     expect(appliedRow.querySelector('img[alt="Beta logo"]')).toBeDefined();
+    expect(appliedRow.className).toContain("w-full");
+    expect(container.querySelector("table")?.className).toContain("table-auto");
   });
 
   it("shows completed details and creates a fresh active next action", async () => {
