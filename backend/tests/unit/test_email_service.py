@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import httpx
@@ -13,6 +14,7 @@ from starlette.requests import Request
 
 from app.api.v1.auth import forgot_password as forgot_password_route
 from app.core.config import Settings
+from app.domain.auth.schemas import ForgotPasswordRequest
 from app.domain.auth.service import AuthService
 from app.infrastructure import email_service
 from app.infrastructure.email_service import (
@@ -278,7 +280,7 @@ async def test_unexpected_provider_exception_raises_safe_delivery_error(
 async def test_route_maps_delivery_failure_to_generic_503() -> None:
     service = AsyncMock()
     service.forgot_password.side_effect = EmailDeliveryError()
-    payload = SimpleNamespace(email="user@example.test")
+    payload = SimpleNamespace(email="user@example.com")
 
     request = Request(
         {
@@ -290,12 +292,17 @@ async def test_route_maps_delivery_failure_to_generic_503() -> None:
         }
     )
     with pytest.raises(HTTPException) as caught:
+        class _Redis:
+            async def eval(self, *args: object) -> list[int]:
+                return [1, 3600]
+
         await forgot_password_route(
             request=request,
-            payload=payload,
+            payload=ForgotPasswordRequest(email=payload.email),
             service=service,
             email_provider=MockEmailProvider(),
-            redis=AsyncMock(),
+            settings=_settings(),
+            redis=cast(Any, _Redis()),
         )
 
     response = caught.value

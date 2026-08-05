@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
-from app.api.deps import get_app_settings, get_auth_service
+from app.api.deps import get_app_settings, get_auth_service, get_optional_redis
 from app.core.config import Settings
 from app.domain.auth.exceptions import (
     EmailAlreadyRegisteredError,
@@ -186,8 +186,13 @@ async def test_register_api_returns_conflict_without_token_or_cookie() -> None:
     service = AuthService(repo, _settings())
 
     original_overrides = app.dependency_overrides.copy()
+    class _Redis:
+        async def eval(self, *args: object) -> list[int]:
+            return [1, 3600]
+
     app.dependency_overrides[get_auth_service] = lambda: service
     app.dependency_overrides[get_app_settings] = _settings
+    app.dependency_overrides[get_optional_redis] = lambda: _Redis()
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

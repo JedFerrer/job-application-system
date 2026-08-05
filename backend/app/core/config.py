@@ -43,6 +43,9 @@ class Settings(BaseSettings):
 
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
+    # Forwarded headers are ignored unless the direct peer belongs to one of
+    # these explicitly configured proxy networks.
+    trusted_proxy_cidrs: list[str] = Field(default_factory=list)
 
     # --- CORS ---
     allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
@@ -135,7 +138,9 @@ class Settings(BaseSettings):
     # any region in the future.
     user_timezone: str = "Asia/Manila"
 
-    @field_validator("allowed_origins", "enabled_job_sources", "proxy_list", mode="before")
+    @field_validator(
+        "allowed_origins", "enabled_job_sources", "proxy_list", "trusted_proxy_cidrs", mode="before"
+    )
     @classmethod
     def _parse_list(cls, value: object) -> object:
         """Accept a JSON array string or a comma-separated string from env."""

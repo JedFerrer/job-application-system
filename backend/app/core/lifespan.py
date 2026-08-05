@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.rate_limit import RateLimitBackendUnavailableError, RateLimitExceededError
 from app.domain.applications.exceptions import (
     ApplicationNotFoundError,
     InvalidApplicationStatusTransitionError,
@@ -66,6 +67,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RateLimitExceededError)
+    async def _auth_rate_limited(
+        request: Request, exc: RateLimitExceededError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many authentication attempts. Please try again later."},
+            headers={
+                "Retry-After": str(exc.retry_after_seconds),
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.exception_handler(RateLimitBackendUnavailableError)
+    async def _auth_rate_limiter_unavailable(
+        request: Request, exc: RateLimitBackendUnavailableError
+    ) -> JSONResponse:
+        logger.warning(
+            "auth_rate_limiter_unavailable_response",
+            endpoint=request.url.path,
+            failure_mode="closed",
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Authentication is temporarily unavailable. Please try again later."
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.exception_handler(ProfileNotFoundError)
     async def _profile_not_found(
         request: Request, exc: ProfileNotFoundError

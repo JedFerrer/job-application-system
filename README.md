@@ -163,6 +163,18 @@ cd backend
 docker compose exec api alembic upgrade head
 ```
 
+Authentication abuse controls use the existing Redis service under the
+`auth-rate-limit:` key namespace. Redis-backed login, registration, password
+reset, Google sign-in, and extension pairing limits fail closed with a generic
+503 if Redis is unavailable; refresh-token rate checks alone fail open while
+token validation and rotation remain enforced. Forwarded client IP headers are
+ignored by default. Before a public deployment, set `TRUSTED_PROXY_CIDRS` only
+to verified proxy networks and confirm Redis availability and eviction policy
+are suitable for short-lived limiter keys. Do not copy provider-specific CIDRs
+without verifying the selected deployment topology. The login identifier
+bucket counts requests before password verification and is cleared only after
+an uncontended successful login; the IP bucket is never cleared.
+
 Local URLs:
 
 | Service | URL |
@@ -362,7 +374,11 @@ GET /health/detailed
 
 ## Development Workflow
 
-Research, plan, implement one scoped phase, run relevant tests, review the diff,
-and lock the phase before moving on. Keep changes narrow, avoid unrelated
-metadata churn, and document any new environment variables in the example env
-files.
+Codex follows the canonical contract in [AGENTS.md](AGENTS.md). The reusable
+workflow, handoff templates, validation guidance, Browser QA contract, and
+review verdicts are in
+[docs/development-workflow.md](docs/development-workflow.md).
+
+Browser QA is a separate manual/browser-capable stage when acceptance criteria
+require real browser interaction or visual verification. Runnable browser E2E
+automation is not currently wired in this repository.

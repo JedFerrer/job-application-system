@@ -17,8 +17,10 @@ from app.api.deps import (
     CurrentWebUser,
     DbSession,
     ExtensionAuthServiceDep,
+    OptionalRedisDep,
+    SettingsDep,
 )
-from app.core.rate_limit import limiter
+from app.core.rate_limit import enforce, identifier_bucket, ip_bucket
 from app.domain.extension.exceptions import ExtensionSessionRevokedError
 from app.domain.extension.repository import ExtensionRepository
 from app.domain.extension.schemas import (
@@ -40,13 +42,22 @@ web_router = APIRouter(prefix="/extension", tags=["extension-sessions"])
 
 @router.post("/start", response_model=ExtensionPairingStartResponse)
 async def start_pairing(
+    request: Request,
     current_user: CurrentWebUser,
     service: ExtensionAuthServiceDep,
+    settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> ExtensionPairingStartResponse:
     """Generate a one-time pairing code for the authenticated user.
 
     Called from the web app at /extension/connect.
     """
+    await enforce(
+        request,
+        settings,
+        redis,
+        [identifier_bucket("pairing-start:user", str(current_user.id), 5, 3600)],
+    )
     code, expires_in = await service.generate_pairing_code(user_id=current_user.id)
     return ExtensionPairingStartResponse(
         pairing_code=code,
@@ -55,12 +66,13 @@ async def start_pairing(
 
 
 @router.post("/complete", response_model=ExtensionPairingCompleteResponse)
-@limiter.limit("5/minute")
 async def complete_pairing(
     request: Request,
     payload: ExtensionPairingCompleteRequest,
     service: ExtensionAuthServiceDep,
     db: DbSession,
+    settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> ExtensionPairingCompleteResponse:
     """Exchange a pairing code for extension tokens.
 
@@ -69,6 +81,15 @@ async def complete_pairing(
     """
     from app.models.user import User
 
+    await enforce(
+        request,
+        settings,
+        redis,
+        [
+            ip_bucket(request, settings, "pairing-complete", 10, 600),
+            identifier_bucket("pairing-complete:code", payload.pairing_code, 5, 900),
+        ],
+    )
     response = await service.complete_pairing(payload.pairing_code)
 
     # Populate user info
@@ -82,12 +103,13 @@ async def complete_pairing(
 
 
 @router.post("/refresh", response_model=ExtensionRefreshResponse)
-@limiter.limit("30/minute")
 async def refresh_extension_token(
     request: Request,
     payload: ExtensionRefreshRequest,
     service: ExtensionAuthServiceDep,
     db: DbSession,
+    settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> ExtensionRefreshResponse:
     """Refresh an extension access token using a refresh token.
 
@@ -95,6 +117,13 @@ async def refresh_extension_token(
     Does not require authentication (refresh token IS the auth).
     """
     try:
+        await enforce(
+            request,
+            settings,
+            redis,
+            [ip_bucket(request, settings, "extension-refresh", 30, 60)],
+            fail_open=True,
+        )
         return await service.refresh(payload.refresh_token)
     except ExtensionSessionRevokedError:
         # Reuse detection revokes the session before raising. Preserve that

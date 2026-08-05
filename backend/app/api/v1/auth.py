@@ -12,9 +12,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
-from app.api.deps import AuthServiceDep, CurrentUser, EmailProviderDep, RedisDep, SettingsDep
+from app.api.deps import (
+    AuthServiceDep,
+    CurrentUser,
+    EmailProviderDep,
+    OptionalRedisDep,
+    SettingsDep,
+)
 from app.core.config import Settings
-from app.core.rate_limit import limiter
+from app.core.rate_limit import (
+    RateLimitBackendUnavailableError,
+    enforce,
+    identifier_bucket,
+    ip_bucket,
+    normalize_email,
+)
 from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.auth.schemas import (
     ForgotPasswordRequest,
@@ -54,14 +66,23 @@ def _to_token_response(tokens: IssuedTokens) -> TokenResponse:
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")
 async def register(
     request: Request,
     response: Response,
     payload: RegisterRequest,
     service: AuthServiceDep,
     settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> TokenResponse:
+    await enforce(
+        request,
+        settings,
+        redis,
+        [
+            ip_bucket(request, settings, "register", 10, 3600),
+            identifier_bucket("register:email", normalize_email(payload.email), 3, 3600),
+        ],
+    )
     tokens = await service.register(
         email=payload.email,
         name=payload.name,
@@ -72,44 +93,72 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
-@limiter.limit("5/minute")
 async def login(
     request: Request,
     response: Response,
     payload: LoginRequest,
     service: AuthServiceDep,
     settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> TokenResponse:
+    limiter = await enforce(
+        request,
+        settings,
+        redis,
+        [ip_bucket(request, settings, "login", 20, 600)],
+    )
+    assert limiter is not None
+    # This bucket counts every request that reaches the limiter, not only
+    # failures, so Argon2 work is bounded before authentication executes.
+    email_bucket = identifier_bucket("login:email", normalize_email(payload.email), 5, 900)
+    email_count = await limiter.reserve(email_bucket)
+    email_snapshot = limiter.snapshot_for_count(email_bucket, email_count)
     tokens = await service.authenticate(
         email=payload.email,
         password=payload.password.get_secret_value(),
     )
+    try:
+        await limiter.clear_if_unchanged(email_snapshot)
+    except RateLimitBackendUnavailableError:
+        # Authentication already succeeded; cleanup must not turn it into a
+        # false failure. The next request remains protected by its TTL.
+        pass
     _set_refresh_cookie(response, tokens, settings)
     return _to_token_response(tokens)
 
 
 @router.post("/google", response_model=TokenResponse)
-@limiter.limit("10/minute")
 async def google_login(
     request: Request,
     response: Response,
     payload: GoogleAuthRequest,
     service: AuthServiceDep,
     settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> TokenResponse:
+    await enforce(
+        request, settings, redis, [ip_bucket(request, settings, "google", 10, 60)]
+    )
     tokens = await service.google_auth(id_token_str=payload.id_token.get_secret_value())
     _set_refresh_cookie(response, tokens, settings)
     return _to_token_response(tokens)
 
 
 @router.post("/refresh", response_model=TokenResponse)
-@limiter.limit("30/minute")
 async def refresh(
     request: Request,
     response: Response,
     service: AuthServiceDep,
     settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> TokenResponse:
+    await enforce(
+        request,
+        settings,
+        redis,
+        [ip_bucket(request, settings, "refresh", 30, 60)],
+        fail_open=True,
+    )
     token = request.cookies.get(settings.refresh_cookie_name)
     if not token:
         raise InvalidTokenError
@@ -145,16 +194,25 @@ async def me(current_user: CurrentUser) -> UserResponse:
 
 
 @router.post("/forgot-password")
-@limiter.limit("3/minute")
 async def forgot_password(
     request: Request,
     payload: ForgotPasswordRequest,
     service: AuthServiceDep,
     email_provider: EmailProviderDep,
-    redis: RedisDep,
+    settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> dict[str, str]:
     """Request a password-reset link. The token is returned in the response
     for development; in production it would be sent via email."""
+    await enforce(
+        request,
+        settings,
+        redis,
+        [
+            ip_bucket(request, settings, "forgot-password", 20, 3600),
+            identifier_bucket("forgot-password:email", normalize_email(payload.email), 3, 900),
+        ],
+    )
     try:
         return await service.forgot_password(
             email=payload.email, email_provider=email_provider, cooldown_redis=redis
@@ -167,13 +225,23 @@ async def forgot_password(
 
 
 @router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
-@limiter.limit("5/minute")
 async def reset_password(
     request: Request,
     payload: ResetPasswordRequest,
     service: AuthServiceDep,
+    settings: SettingsDep,
+    redis: OptionalRedisDep,
 ) -> Response:
     """Reset a password using a valid reset token."""
+    await enforce(
+        request,
+        settings,
+        redis,
+        [
+            ip_bucket(request, settings, "reset-password", 10, 600),
+            identifier_bucket("reset-password:token", payload.token, 5, 900),
+        ],
+    )
     await service.reset_password(
         token_str=payload.token,
         new_password=payload.password.get_secret_value(),

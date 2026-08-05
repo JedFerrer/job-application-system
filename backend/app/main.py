@@ -8,8 +8,6 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
 
 from app.api.v1 import (
     applications,
@@ -38,7 +36,6 @@ from app.api.v1.extension import (
 from app.core.config import Settings, get_settings
 from app.core.lifespan import lifespan, register_exception_handlers
 from app.core.logging import configure_logging, get_logger
-from app.core.rate_limit import limiter
 
 configure_logging()
 settings = get_settings()
@@ -176,8 +173,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 app.add_middleware(
     CORSMiddleware,

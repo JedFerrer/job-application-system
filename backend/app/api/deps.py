@@ -71,6 +71,17 @@ EmailProviderDep = Annotated[EmailProvider, Depends(get_password_reset_email_pro
 RedisDep = Annotated[aioredis.Redis, Depends(get_redis)]
 
 
+def get_optional_redis() -> aioredis.Redis | None:
+    """Return Redis when initialized; let auth policy decide outage behavior."""
+    try:
+        return get_redis()
+    except RuntimeError:
+        return None
+
+
+OptionalRedisDep = Annotated[aioredis.Redis | None, Depends(get_optional_redis)]
+
+
 def get_auth_service(db: DbSession) -> AuthService:
     return AuthService(
         UserRepository(db),
@@ -339,7 +350,7 @@ def get_extension_auth_service(db: DbSession) -> ExtensionAuthService:
     return ExtensionAuthService(
         repository=ExtensionRepository(db),
         settings=get_settings(),
-        redis=get_redis(),
+        redis=get_optional_redis(),
     )
 
 
