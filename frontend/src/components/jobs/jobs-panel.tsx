@@ -579,14 +579,14 @@ export function JobsPanel() {
                                 topRightAction={
                                   archiveState === "archived" ? (
                                     <Button
-                                      size="icon"
-                                      variant="secondary"
+                                      size="sm"
+                                      variant="outline"
                                       disabled={restoreMutation.isPending}
                                       title="Restore job"
                                       onClick={() => restoreMutation.mutate(jc.card.jobId)}
-                                      className="h-7 px-2.5 text-xs"
+                                      className="h-7 gap-1.5 whitespace-nowrap px-2.5 text-xs"
                                     >
-                                      {restoreMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+                                      {restoreMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                                       Restore job
                                     </Button>
                                   ) : (

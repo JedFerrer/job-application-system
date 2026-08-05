@@ -171,6 +171,8 @@ describe("JobsPanel archived view", () => {
       (button) => button.textContent?.includes("Restore job"),
     ) as HTMLButtonElement;
     expect(restoreButton).toBeDefined();
+    expect(restoreButton.className).toContain("whitespace-nowrap");
+    expect(restoreButton.className).not.toContain("w-9");
 
     act(() => restoreButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await flush();
