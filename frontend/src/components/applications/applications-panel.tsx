@@ -212,6 +212,30 @@ export function ApplicationsPanel() {
     [appsQuery.data],
   );
   const total = appsQuery.data?.pages[0]?.total ?? 0;
+  const [requestedNextActionId, setRequestedNextActionId] = useState<number | null>(null);
+
+  useEffect(() => {
+    const rawId = new URLSearchParams(window.location.search).get(
+      "next_action_application_id",
+    );
+    const parsedId = rawId ? Number(rawId) : NaN;
+    if (!Number.isSafeInteger(parsedId) || parsedId <= 0) return;
+    setRequestedNextActionId(parsedId);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("next_action_application_id");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
+  useEffect(() => {
+    if (requestedNextActionId === null) return;
+    if (allItems.some((item) => item.id === requestedNextActionId)) {
+      setExpandedApplicationId(requestedNextActionId);
+      return;
+    }
+    if (appsQuery.hasNextPage && !appsQuery.isFetchingNextPage) {
+      void appsQuery.fetchNextPage();
+    }
+  }, [allItems, appsQuery, requestedNextActionId]);
 
   const { filteredItems, statusCounts } = useMemo(() => {
     const counts: Record<ApplicationStatus, number> = {
@@ -290,6 +314,7 @@ export function ApplicationsPanel() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["applications"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
     },
   });
 
@@ -326,6 +351,7 @@ export function ApplicationsPanel() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["applications"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
     },
   });
 
@@ -409,6 +435,7 @@ export function ApplicationsPanel() {
       queryClient.invalidateQueries({ queryKey: ["applications", "infinite"] });
       queryClient.invalidateQueries({ queryKey: ["applications"] });
       queryClient.invalidateQueries({ queryKey: ["home-next-actions"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
     },
   });
 
@@ -517,7 +544,13 @@ export function ApplicationsPanel() {
                         })
                       }
                       isWorkspaceOwner={expandedApplicationId === app.id}
-                      onWorkspaceOpen={() => setExpandedApplicationId(app.id)}
+                      openNextAction={requestedNextActionId === app.id}
+                      onWorkspaceOpen={() => {
+                        setExpandedApplicationId(app.id);
+                        if (requestedNextActionId === app.id) {
+                          setRequestedNextActionId(null);
+                        }
+                      }}
                       onWorkspaceClose={() => setExpandedApplicationId(null)}
                     />
                   ))}
@@ -565,6 +598,7 @@ function ApplicationRow({
   onCoverLetterClick,
   onTailorResumeClick,
   isWorkspaceOwner,
+  openNextAction,
   onWorkspaceOpen,
   onWorkspaceClose,
 }: {
@@ -576,6 +610,7 @@ function ApplicationRow({
   onCoverLetterClick: () => void;
   onTailorResumeClick: () => void;
   isWorkspaceOwner: boolean;
+  openNextAction: boolean;
   onWorkspaceOpen: () => void;
   onWorkspaceClose: () => void;
 }) {
@@ -607,6 +642,12 @@ function ApplicationRow({
       setStatusMenuOpen(false);
     }
   }, [isWorkspaceOwner]);
+
+  useEffect(() => {
+    if (openNextAction && isWorkspaceOwner && nextActionMode === null) {
+      startNewNextAction();
+    }
+  }, [openNextAction, isWorkspaceOwner, nextActionMode]);
 
   const hasNextAction = Boolean(
     app.next_action_type ||

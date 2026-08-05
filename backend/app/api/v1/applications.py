@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, status
 
 from app.api.deps import ApplicationServiceDep, CurrentUser
 from app.domain.applications.schemas import (
+    ApplicationActionCenterResponse,
     ApplicationActivityResponse,
     ApplicationCreate,
     ApplicationDashboardSummary,
@@ -59,6 +60,15 @@ async def list_due_next_actions(
     return await service.list_due_next_actions(
         user_id=current_user.id, due_by=due_by
     )
+
+
+@router.get("/action-center", response_model=ApplicationActionCenterResponse)
+async def get_action_center(
+    current_user: CurrentUser,
+    service: ApplicationServiceDep,
+    today: date = Query(...),
+) -> ApplicationActionCenterResponse:
+    return await service.action_center(user_id=current_user.id, today=today)
 
 
 @router.patch("/{application_id}", response_model=ApplicationResponse)

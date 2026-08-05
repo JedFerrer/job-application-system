@@ -1074,6 +1074,148 @@ async def test_application_list_due_next_actions_is_scoped_to_user(
         assert result.items[0].next_action_due_date == date(2026, 7, 13)
 
 
+async def test_application_action_center_groups_boundaries_statuses_and_ownership(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _sf(engine)
+    async with sf() as db:
+        await _seed_user(db, user_id=1, email="action-center-a@test.com")
+        await _seed_user(db, user_id=2, email="action-center-b@test.com")
+        for job_id in range(601, 615):
+            await _seed_public_job(db, job_id=job_id, title=f"Action Job {job_id}")
+
+    async with sf() as db:
+        svc = _service(db)
+
+        async def add_action(
+            *,
+            user_id: int,
+            job_id: int,
+            status: str,
+            due_date: str | None = None,
+            completed: bool = False,
+            action_type: str | None = "follow_up",
+        ):
+            app = await svc.create(user_id=user_id, job_id=job_id)
+            await svc.update(
+                user_id=user_id,
+                application_id=app.id,
+                payload=ApplicationUpdate(status=status),
+            )
+            payload: dict[str, Any] = {
+                "next_action_type": action_type,
+                "next_action_due_date": due_date,
+            }
+            if completed:
+                payload["next_action_completed_at"] = datetime(
+                    2026, 7, 14, 9, 0, tzinfo=UTC
+                )
+            await svc.update(
+                user_id=user_id,
+                application_id=app.id,
+                payload=ApplicationUpdate.model_validate(payload),
+            )
+            return app.id
+
+        overdue_id = await add_action(
+            user_id=1, job_id=601, status="applied", due_date="2026-07-13"
+        )
+        today_id = await add_action(
+            user_id=1, job_id=602, status="saved", due_date="2026-07-14"
+        )
+        tomorrow_id = await add_action(
+            user_id=1, job_id=603, status="interview", due_date="2026-07-15"
+        )
+        day_seven_id = await add_action(
+            user_id=1, job_id=604, status="offer", due_date="2026-07-21"
+        )
+        day_eight_id = await add_action(
+            user_id=1, job_id=605, status="rejected", due_date="2026-07-22"
+        )
+        completed_id = await add_action(
+            user_id=1,
+            job_id=606,
+            status="applied",
+            due_date="2026-07-14",
+            completed=True,
+        )
+        undated_id = await add_action(
+            user_id=1, job_id=607, status="applied", action_type="networking"
+        )
+        historical_id = await add_action(
+            user_id=1,
+            job_id=608,
+            status="saved",
+            due_date="2026-07-14",
+            completed=True,
+        )
+        no_action_id = await add_action(
+            user_id=1, job_id=609, status="interview", action_type=None
+        )
+        terminal_no_action_id = await add_action(
+            user_id=1, job_id=610, status="offer", action_type=None
+        )
+        other_user_id = await add_action(
+            user_id=2, job_id=611, status="applied", due_date="2026-07-13"
+        )
+        await db.execute(
+            insert(Application).values(user_id=1, job_id=612, status="paused")
+        )
+        unknown_dated_id = int(
+            (
+                await db.execute(
+                    insert(Application)
+                    .values(
+                        user_id=1,
+                        job_id=613,
+                        status="paused",
+                        next_action_type="follow_up",
+                        next_action_due_date=date(2026, 7, 14),
+                    )
+                    .returning(Application.id)
+                )
+            ).scalar_one()
+        )
+        await db.commit()
+
+        result = await svc.action_center(user_id=1, today=date(2026, 7, 14))
+
+        assert [item.application_id for item in result.overdue.items] == [overdue_id]
+        assert [item.application_id for item in result.due_today.items] == [
+            unknown_dated_id,
+            today_id,
+        ]
+        assert [item.application_id for item in result.upcoming.items] == [
+            tomorrow_id,
+            day_seven_id,
+        ]
+        assert [item.application_id for item in result.needs_next_action.items] == [
+            no_action_id,
+            historical_id,
+            completed_id,
+        ]
+        all_ids = {
+            item.application_id
+            for group in (
+                result.overdue,
+                result.due_today,
+                result.upcoming,
+                result.needs_next_action,
+            )
+            for item in group.items
+        }
+        dated_ids = {
+            item.application_id
+            for group in (result.overdue, result.due_today, result.upcoming)
+            for item in group.items
+        }
+        assert completed_id not in dated_ids
+        assert undated_id not in all_ids
+        assert day_eight_id not in all_ids
+        assert terminal_no_action_id not in all_ids
+        assert other_user_id not in all_ids
+
+
 async def test_application_update_rejects_other_users_application(
     engine,
 ) -> None:  # noqa: ANN001

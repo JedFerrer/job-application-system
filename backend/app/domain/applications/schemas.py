@@ -114,6 +114,44 @@ class ApplicationDashboardSummary(BaseModel):
     offer_rate_percent: int
 
 
+class ApplicationActionCenterDatedItem(BaseModel):
+    application_id: int
+    job_id: int
+    job_title: str
+    company: str | None
+    application_status: str
+    next_action_type: str | None
+    next_action_note: str | None
+    next_action_due_date: date
+    updated_at: datetime
+
+
+class ApplicationActionCenterMissingItem(BaseModel):
+    application_id: int
+    job_id: int
+    job_title: str
+    company: str | None
+    application_status: str
+    updated_at: datetime
+
+
+class ApplicationActionCenterDatedGroup(BaseModel):
+    count: int
+    items: list[ApplicationActionCenterDatedItem]
+
+
+class ApplicationActionCenterMissingGroup(BaseModel):
+    count: int
+    items: list[ApplicationActionCenterMissingItem]
+
+
+class ApplicationActionCenterResponse(BaseModel):
+    overdue: ApplicationActionCenterDatedGroup
+    due_today: ApplicationActionCenterDatedGroup
+    upcoming: ApplicationActionCenterDatedGroup
+    needs_next_action: ApplicationActionCenterMissingGroup
+
+
 class ManualNextActionActivitySnapshot(BaseModel):
     type: str | None
     due_date: date | None

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,6 +241,45 @@ class ApplicationRepository:
         ).all()
 
         return [(r[0], r[1]) for r in rows_raw], count
+
+    async def list_action_center_dated(
+        self, *, user_id: int, end_date: date
+    ) -> list[tuple[Application, Job]]:
+        filters: list[Any] = [
+            Application.user_id == user_id,
+            Application.next_action_due_date.is_not(None),
+            Application.next_action_due_date <= end_date,
+            Application.next_action_completed_at.is_(None),
+        ]
+        rows_raw = await self._session.execute(
+            select(Application, Job)
+            .join(Job, Job.id == Application.job_id)
+            .where(*filters)
+        )
+        return [(row[0], row[1]) for row in rows_raw.all()]
+
+    async def list_action_center_needs_next_action(
+        self, *, user_id: int
+    ) -> list[tuple[Application, Job]]:
+        active_statuses = ("saved", "applied", "interview")
+        no_current_incomplete_action = or_(
+            Application.next_action_completed_at.is_not(None),
+            and_(
+                Application.next_action_type.is_(None),
+                Application.next_action_note.is_(None),
+                Application.next_action_due_date.is_(None),
+            ),
+        )
+        rows_raw = await self._session.execute(
+            select(Application, Job)
+            .join(Job, Job.id == Application.job_id)
+            .where(
+                Application.user_id == user_id,
+                Application.status.in_(active_statuses),
+                no_current_incomplete_action,
+            )
+        )
+        return [(row[0], row[1]) for row in rows_raw.all()]
 
 
 # ── Cursor helpers (same pattern as job listing) ──────────────────────────

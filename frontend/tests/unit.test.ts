@@ -491,6 +491,25 @@ describe("applicationsApi.listDueNextActions", () => {
   });
 });
 
+describe("applicationsApi.getActionCenter", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("sends the browser-local today date to the action-center endpoint", async () => {
+    const fm = mockFetch({
+      overdue: { count: 0, items: [] },
+      due_today: { count: 0, items: [] },
+      upcoming: { count: 0, items: [] },
+      needs_next_action: { count: 0, items: [] },
+    });
+
+    await applicationsApi.getActionCenter("2026-07-14");
+
+    const url = lastUrl(fm);
+    expect(url.pathname).toBe("/api/backend/applications/action-center");
+    expect(url.searchParams.get("today")).toBe("2026-07-14");
+  });
+});
+
 describe("applicationsApi.update", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 

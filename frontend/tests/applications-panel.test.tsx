@@ -283,6 +283,7 @@ describe("ApplicationsPanel CRM polish", () => {
     container.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    window.history.replaceState({}, "", "/dashboard/applications");
   });
 
   async function renderPanel() {
@@ -352,6 +353,16 @@ describe("ApplicationsPanel CRM polish", () => {
       next_action_due_date: null,
       next_action_completed_at: null,
     });
+  });
+
+  it("opens a focused blank next-action editor from the dashboard deep link without mutating", async () => {
+    window.history.pushState({}, "", "/dashboard/applications?next_action_application_id=31");
+
+    await renderPanel();
+
+    expect(container.textContent).toContain("Create a new next action");
+    expect(apiMocks.applicationsApi.update).not.toHaveBeenCalled();
+    expect(window.location.search).toBe("");
   });
 
   it("still completes and clears incomplete next actions", async () => {
@@ -715,6 +726,15 @@ describe("ApplicationsPanel CRM polish", () => {
           typeof arg === "object" &&
           JSON.stringify((arg as { queryKey?: unknown }).queryKey) ===
             JSON.stringify(["applications", 42, "activity"]),
+      ),
+    ).toBe(true);
+    expect(
+      invalidateSpy.mock.calls.some(
+        ([arg]) =>
+          Boolean(arg) &&
+          typeof arg === "object" &&
+          JSON.stringify((arg as { queryKey?: unknown }).queryKey) ===
+            JSON.stringify(["dashboard-action-center"]),
       ),
     ).toBe(true);
   });

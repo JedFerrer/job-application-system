@@ -12,7 +12,10 @@ import {
 import Link from "next/link";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, jobsApi, matchesApi } from "@/lib/api";
-import { type ApplicationListItem } from "@/lib/types";
+import {
+  type ApplicationActionCenterDatedItem,
+  type ApplicationActionCenterMissingItem,
+} from "@/lib/types";
 import {
   formatNextActionDateLabel,
   getNextActionLabel,
@@ -32,9 +35,9 @@ export default function DashboardHome() {
     queryFn: applicationsApi.getDashboardSummary,
   });
 
-  const nextActionsQuery = useQuery({
-    queryKey: ["home-next-actions", todayIso],
-    queryFn: () => applicationsApi.listDueNextActions(todayIso),
+  const actionCenterQuery = useQuery({
+    queryKey: ["dashboard-action-center", todayIso],
+    queryFn: () => applicationsApi.getActionCenter(todayIso),
   });
 
   const matchesQuery = useQuery({
@@ -63,7 +66,7 @@ export default function DashboardHome() {
       }),
     onSuccess: () => {
       toast.success("Marked next action complete");
-      queryClient.invalidateQueries({ queryKey: ["home-next-actions"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
       queryClient.invalidateQueries({ queryKey: ["applications"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
     },
@@ -82,53 +85,79 @@ export default function DashboardHome() {
       </div>
 
       <Card>
-        <CardContent className="px-5 py-4">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-sm font-semibold">Today</h3>
-              <p className="text-xs text-muted-foreground">
-                User-managed next actions due today or overdue.
-              </p>
+          <CardContent className="px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold">Action Center</h3>
+                <p className="text-xs text-muted-foreground">
+                  User-managed actions that need attention today and this week.
+                </p>
+              </div>
+              <Badge variant="secondary">
+                {actionCenterQuery.data
+                  ? actionCenterQuery.data.overdue.count +
+                    actionCenterQuery.data.due_today.count +
+                    actionCenterQuery.data.upcoming.count +
+                    actionCenterQuery.data.needs_next_action.count
+                  : 0}
+              </Badge>
             </div>
-            <Badge variant="secondary">{nextActionsQuery.data?.items.length ?? 0}</Badge>
-          </div>
 
-          {nextActionsQuery.isLoading ? (
+          {actionCenterQuery.isLoading ? (
             <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading next actions…
+              Loading action center…
             </div>
-          ) : nextActionsQuery.isError ? (
+          ) : actionCenterQuery.isError ? (
             <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span>Couldn’t load next actions.</span>
+              <span>Couldn’t load action center.</span>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => nextActionsQuery.refetch()}
+                onClick={() => actionCenterQuery.refetch()}
               >
                 Retry
               </Button>
             </div>
-          ) : (nextActionsQuery.data?.items.length ?? 0) === 0 ? (
-            <p className="mt-4 text-sm text-muted-foreground">
-              No due or overdue next actions right now.
-            </p>
           ) : (
-            <div className="mt-4 space-y-3">
-              {nextActionsQuery.data?.items.map((item) => (
-                <TodayNextActionRow
-                  key={item.id}
-                  item={item}
-                  todayIso={todayIso}
-                  isCompleting={
-                    completeNextActionMutation.isPending &&
-                    completeNextActionMutation.variables === item.id
-                  }
-                  onComplete={(applicationId) =>
-                    completeNextActionMutation.mutate(applicationId)
-                  }
-                />
-              ))}
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <ActionCenterGroup
+                title="Overdue"
+                count={actionCenterQuery.data?.overdue.count ?? 0}
+                empty="No overdue actions."
+                items={actionCenterQuery.data?.overdue.items ?? []}
+                todayIso={todayIso}
+                isCompleting={completeNextActionMutation.isPending}
+                completingId={completeNextActionMutation.variables}
+                onComplete={(id) => completeNextActionMutation.mutate(id)}
+                variant="overdue"
+              />
+              <ActionCenterGroup
+                title="Due today"
+                count={actionCenterQuery.data?.due_today.count ?? 0}
+                empty="No actions due today."
+                items={actionCenterQuery.data?.due_today.items ?? []}
+                todayIso={todayIso}
+                isCompleting={completeNextActionMutation.isPending}
+                completingId={completeNextActionMutation.variables}
+                onComplete={(id) => completeNextActionMutation.mutate(id)}
+                variant="today"
+              />
+              <ActionCenterGroup
+                title="Upcoming"
+                count={actionCenterQuery.data?.upcoming.count ?? 0}
+                empty="No actions due in the next seven days."
+                items={actionCenterQuery.data?.upcoming.items ?? []}
+                todayIso={todayIso}
+                isCompleting={completeNextActionMutation.isPending}
+                completingId={completeNextActionMutation.variables}
+                onComplete={(id) => completeNextActionMutation.mutate(id)}
+                variant="upcoming"
+              />
+              <NeedsNextActionGroup
+                count={actionCenterQuery.data?.needs_next_action.count ?? 0}
+                items={actionCenterQuery.data?.needs_next_action.items ?? []}
+              />
             </div>
           )}
         </CardContent>
@@ -280,24 +309,68 @@ export default function DashboardHome() {
   );
 }
 
-function TodayNextActionRow({
+function ActionCenterGroup({
+  title,
+  count,
+  empty,
+  items,
+  todayIso,
+  isCompleting,
+  completingId,
+  onComplete,
+  variant,
+}: {
+  title: string;
+  count: number;
+  empty: string;
+  items: ApplicationActionCenterDatedItem[];
+  todayIso: string;
+  isCompleting: boolean;
+  completingId: number | undefined;
+  onComplete: (applicationId: number) => void;
+  variant: "overdue" | "today" | "upcoming";
+}) {
+  return (
+    <section className="rounded-lg border p-3" aria-labelledby={`action-center-${variant}`}>
+      <div className="flex items-center justify-between gap-2">
+        <h4 id={`action-center-${variant}`} className="text-sm font-semibold">{title}</h4>
+        <Badge variant="secondary">{count}</Badge>
+      </div>
+      {items.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">{empty}</p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {items.map((item) => (
+            <ActionCenterDatedRow
+              key={item.application_id}
+              item={item}
+              todayIso={todayIso}
+              isCompleting={isCompleting && completingId === item.application_id}
+              onComplete={onComplete}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ActionCenterDatedRow({
   item,
   todayIso,
   isCompleting,
   onComplete,
 }: {
-  item: ApplicationListItem;
+  item: ApplicationActionCenterDatedItem;
   todayIso: string;
   isCompleting: boolean;
   onComplete: (applicationId: number) => void;
 }) {
   const dueDate = item.next_action_due_date;
-  if (!dueDate) return null;
-
   const nextActionState = getNextActionState(
     item.next_action_type,
     item.next_action_due_date,
-    item.next_action_completed_at,
+    null,
     todayIso,
   );
 
@@ -318,7 +391,11 @@ function TodayNextActionRow({
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <Badge variant={nextActionState.isOverdue ? "destructive" : "outline"}>
-              {nextActionState.isOverdue ? "Overdue" : "Due today"}
+              {nextActionState.isOverdue
+                ? "Overdue"
+                : nextActionState.isDueToday
+                  ? "Due today"
+                  : "Upcoming"}
             </Badge>
             <Badge variant="secondary">{getNextActionLabel(item.next_action_type)}</Badge>
             <span className="text-xs text-muted-foreground">
@@ -334,7 +411,7 @@ function TodayNextActionRow({
         <Button
           size="sm"
           variant="secondary"
-          onClick={() => onComplete(item.id)}
+          onClick={() => onComplete(item.application_id)}
           disabled={isCompleting}
           className="gap-1.5"
         >
@@ -347,5 +424,48 @@ function TodayNextActionRow({
         </Button>
       </div>
     </div>
+  );
+}
+
+function NeedsNextActionGroup({
+  count,
+  items,
+}: {
+  count: number;
+  items: ApplicationActionCenterMissingItem[];
+}) {
+  return (
+    <section className="rounded-lg border p-3" aria-labelledby="action-center-needs">
+      <div className="flex items-center justify-between gap-2">
+        <h4 id="action-center-needs" className="text-sm font-semibold">Needs a next action</h4>
+        <Badge variant="secondary">{count}</Badge>
+      </div>
+      {items.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">All active applications have a current action.</p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {items.map((item) => (
+            <div key={item.application_id} className="rounded-md bg-muted/30 px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <Link href={`/jobs/${item.job_id}`} className="font-medium hover:underline">
+                    {item.job_title}
+                  </Link>
+                  <p className="text-xs text-muted-foreground">
+                    {item.company ?? "Company not listed"} · {item.application_status}
+                  </p>
+                </div>
+                <Link
+                  href={`/dashboard/applications?next_action_application_id=${item.application_id}`}
+                  className="rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Set action
+                </Link>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

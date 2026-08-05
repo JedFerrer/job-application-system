@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from app.core.logging import get_logger
 from app.domain.applications.exceptions import (
@@ -15,6 +15,11 @@ from app.domain.applications.schemas import (
     MANUAL_NEXT_ACTION_EVENT_COMPLETED,
     MANUAL_NEXT_ACTION_EVENT_CREATED,
     MANUAL_NEXT_ACTION_EVENT_UPDATED,
+    ApplicationActionCenterDatedGroup,
+    ApplicationActionCenterDatedItem,
+    ApplicationActionCenterMissingGroup,
+    ApplicationActionCenterMissingItem,
+    ApplicationActionCenterResponse,
     ApplicationActivityEvent,
     ApplicationActivityResponse,
     ApplicationDashboardSummary,
@@ -223,6 +228,79 @@ class ApplicationService:
         ]
         return ApplicationListResponse(
             items=items, total=total, limit=total, next_cursor=None
+        )
+
+    async def action_center(
+        self, *, user_id: int, today: date
+    ) -> ApplicationActionCenterResponse:
+        dated_rows = await self._repo.list_action_center_dated(
+            user_id=user_id, end_date=today + timedelta(days=7)
+        )
+        missing_rows = await self._repo.list_action_center_needs_next_action(
+            user_id=user_id
+        )
+
+        dated_items = [
+            ApplicationActionCenterDatedItem(
+                application_id=app.id,
+                job_id=job.id,
+                job_title=job.title,
+                company=job.company,
+                application_status=app.status,
+                next_action_type=app.next_action_type,
+                next_action_note=app.next_action_note,
+                next_action_due_date=app.next_action_due_date,
+                updated_at=app.updated_at,
+            )
+            for app, job in dated_rows
+            if app.next_action_due_date is not None
+        ]
+        overdue = sorted(
+            (item for item in dated_items if item.next_action_due_date < today),
+            key=lambda item: (
+                item.next_action_due_date,
+                -item.updated_at.timestamp(),
+                -item.application_id,
+            ),
+        )
+        due_today = sorted(
+            (item for item in dated_items if item.next_action_due_date == today),
+            key=lambda item: (-item.updated_at.timestamp(), -item.application_id),
+        )
+        upcoming = sorted(
+            (
+                item
+                for item in dated_items
+                if today < item.next_action_due_date <= today + timedelta(days=7)
+            ),
+            key=lambda item: (
+                item.next_action_due_date,
+                -item.updated_at.timestamp(),
+                -item.application_id,
+            ),
+        )
+        missing_items = sorted(
+            (
+                ApplicationActionCenterMissingItem(
+                    application_id=app.id,
+                    job_id=job.id,
+                    job_title=job.title,
+                    company=job.company,
+                    application_status=app.status,
+                    updated_at=app.updated_at,
+                )
+                for app, job in missing_rows
+            ),
+            key=lambda item: (-item.updated_at.timestamp(), -item.application_id),
+        )
+
+        return ApplicationActionCenterResponse(
+            overdue=ApplicationActionCenterDatedGroup(count=len(overdue), items=overdue),
+            due_today=ApplicationActionCenterDatedGroup(count=len(due_today), items=due_today),
+            upcoming=ApplicationActionCenterDatedGroup(count=len(upcoming), items=upcoming),
+            needs_next_action=ApplicationActionCenterMissingGroup(
+                count=len(missing_items), items=missing_items
+            ),
         )
 
 

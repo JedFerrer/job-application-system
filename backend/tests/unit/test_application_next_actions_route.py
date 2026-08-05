@@ -13,6 +13,11 @@ from app.api.deps import get_application_service, get_current_user
 from app.api.v1 import applications as applications_module
 from app.core.lifespan import register_exception_handlers
 from app.domain.applications.schemas import (
+    ApplicationActionCenterDatedGroup,
+    ApplicationActionCenterDatedItem,
+    ApplicationActionCenterMissingGroup,
+    ApplicationActionCenterMissingItem,
+    ApplicationActionCenterResponse,
     ApplicationDashboardSummary,
     ApplicationListItem,
     ApplicationListResponse,
@@ -200,3 +205,74 @@ def test_dashboard_summary_route_requires_authentication() -> None:
 
     assert resp.status_code == 401
     service.dashboard_summary.assert_not_awaited()
+
+
+def test_action_center_route_returns_grouped_contract_and_forwards_today() -> None:
+    current_user = _make_user(9, "action-center@example.com")
+    service = AsyncMock(spec=ApplicationService)
+    service.action_center = AsyncMock(
+        return_value=ApplicationActionCenterResponse(
+            overdue=ApplicationActionCenterDatedGroup(
+                count=1,
+                items=[
+                    ApplicationActionCenterDatedItem(
+                        application_id=1,
+                        job_id=2,
+                        job_title="Backend Engineer",
+                        company="Acme",
+                        application_status="applied",
+                        next_action_type="follow_up",
+                        next_action_note="Ping recruiter",
+                        next_action_due_date=date(2026, 7, 13),
+                        updated_at=datetime(2026, 7, 14, tzinfo=UTC),
+                    )
+                ],
+            ),
+            due_today=ApplicationActionCenterDatedGroup(count=0, items=[]),
+            upcoming=ApplicationActionCenterDatedGroup(count=0, items=[]),
+            needs_next_action=ApplicationActionCenterMissingGroup(
+                count=1,
+                items=[
+                    ApplicationActionCenterMissingItem(
+                        application_id=3,
+                        job_id=4,
+                        job_title="Platform Engineer",
+                        company="Beta",
+                        application_status="saved",
+                        updated_at=datetime(2026, 7, 14, tzinfo=UTC),
+                    )
+                ],
+            ),
+        )
+    )
+
+    app = _build_app(current_user=current_user, application_service=service)
+    resp = TestClient(app).get("/applications/action-center?today=2026-07-14")
+
+    assert resp.status_code == 200, resp.text
+    service.action_center.assert_awaited_once_with(
+        user_id=current_user.id, today=date(2026, 7, 14)
+    )
+    assert resp.json()["overdue"]["items"][0]["application_id"] == 1
+    assert resp.json()["needs_next_action"]["items"][0]["application_status"] == "saved"
+
+
+@pytest.mark.parametrize("query", ["", "?today=not-a-date", "?today=2026-02-30"])
+def test_action_center_route_rejects_missing_or_invalid_today(query: str) -> None:
+    service = AsyncMock(spec=ApplicationService)
+    app = _build_app(current_user=_make_user(), application_service=service)
+
+    resp = TestClient(app).get(f"/applications/action-center{query}")
+
+    assert resp.status_code == 422
+    service.action_center.assert_not_awaited()
+
+
+def test_action_center_route_requires_authentication() -> None:
+    service = AsyncMock(spec=ApplicationService)
+    app = _build_app(application_service=service, invalid_auth=True)
+
+    resp = TestClient(app).get("/applications/action-center?today=2026-07-14")
+
+    assert resp.status_code == 401
+    service.action_center.assert_not_awaited()

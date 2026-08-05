@@ -1,6 +1,7 @@
 import type {
   Application,
   ApplicationActivityResponse,
+  ApplicationActionCenterResponse,
   ApplicationDashboardSummary,
   ApplicationListItem,
   ApplicationListResponse,
@@ -404,6 +405,10 @@ export const applicationsApi = {
   listDueNextActions: (dueBy: string) =>
     apiRequest<ApplicationListResponse>(
       `/applications/next-actions?${new URLSearchParams({ due_by: dueBy }).toString()}`,
+    ),
+  getActionCenter: (today: string) =>
+    apiRequest<ApplicationActionCenterResponse>(
+      `/applications/action-center?${new URLSearchParams({ today }).toString()}`,
     ),
   getActivity: (
     id: number,

@@ -458,6 +458,46 @@ export interface ApplicationDashboardSummary {
   offer_rate_percent: number;
 }
 
+export interface ApplicationActionCenterDatedItem {
+  application_id: number;
+  job_id: number;
+  job_title: string;
+  company: string | null;
+  application_status: string;
+  next_action_type: string | null;
+  next_action_note: string | null;
+  next_action_due_date: string;
+  updated_at: string;
+}
+
+export interface ApplicationActionCenterMissingItem {
+  application_id: number;
+  job_id: number;
+  job_title: string;
+  company: string | null;
+  application_status: string;
+  updated_at: string;
+}
+
+export interface ApplicationActionCenterResponse {
+  overdue: {
+    count: number;
+    items: ApplicationActionCenterDatedItem[];
+  };
+  due_today: {
+    count: number;
+    items: ApplicationActionCenterDatedItem[];
+  };
+  upcoming: {
+    count: number;
+    items: ApplicationActionCenterDatedItem[];
+  };
+  needs_next_action: {
+    count: number;
+    items: ApplicationActionCenterMissingItem[];
+  };
+}
+
 export const APPLICATION_ACTIVITY_EVENT_TYPES = [
   "manual_next_action_created",
   "manual_next_action_updated",

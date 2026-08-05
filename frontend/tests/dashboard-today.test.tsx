@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => {
   const applicationsApi = {
     list: vi.fn(),
     getDashboardSummary: vi.fn(),
+    getActionCenter: vi.fn(),
     listDueNextActions: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
@@ -103,6 +104,7 @@ describe("Dashboard Today section", () => {
     apiMocks.applicationsApi.update.mockReset();
     apiMocks.applicationsApi.list.mockReset();
     apiMocks.applicationsApi.getDashboardSummary.mockReset();
+    apiMocks.applicationsApi.getActionCenter.mockReset();
     apiMocks.applicationsApi.listDueNextActions.mockReset();
     apiMocks.jobsApi.list.mockReset();
     apiMocks.matchesApi.list.mockReset();
@@ -171,49 +173,53 @@ describe("Dashboard Today section", () => {
         ? options.queryKey[0]
         : options.queryKey;
 
-      if (key === "home-next-actions") {
+      if (key === "dashboard-action-center") {
         void options.queryFn();
         return {
           data: {
-            items: [
+            overdue: { count: 1, items: [
               {
-                id: 11,
+                application_id: 11,
                 job_id: 201,
                 job_title: "Senior Backend Engineer",
                 company: "Beta",
-                location: "Remote",
-                source_url: "https://example.com/jobs/201",
-                status: "applied",
-                cover_letter_id: null,
-                notes: null,
+                application_status: "applied",
                 next_action_type: "follow_up",
                 next_action_note: "Ping recruiter after panel review.",
                 next_action_due_date: "2026-07-13",
-                next_action_completed_at: null,
-                created_at: "2026-07-10T00:00:00Z",
                 updated_at: "2026-07-13T08:00:00Z",
-              },
+              } ] },
+            due_today: { count: 1, items: [
               {
-                id: 12,
+                application_id: 12,
                 job_id: 202,
                 job_title: "Platform Engineer",
                 company: "Acme",
-                location: "Remote",
-                source_url: "https://example.com/jobs/202",
-                status: "saved",
-                cover_letter_id: null,
-                notes: null,
+                application_status: "saved",
                 next_action_type: "prepare_interview",
                 next_action_note: "Review system design notes.",
                 next_action_due_date: "2026-07-14",
-                next_action_completed_at: null,
-                created_at: "2026-07-10T00:00:00Z",
                 updated_at: "2026-07-13T09:00:00Z",
-              },
-            ],
-            total: 2,
-            limit: 2,
-            next_cursor: null,
+              } ] },
+            upcoming: { count: 1, items: [{
+              application_id: 13,
+              job_id: 203,
+              job_title: "Data Platform Engineer",
+              company: "Gamma",
+              application_status: "interview",
+              next_action_type: "prepare_interview",
+              next_action_note: null,
+              next_action_due_date: "2026-07-21",
+              updated_at: "2026-07-13T10:00:00Z",
+            }] },
+            needs_next_action: { count: 1, items: [{
+              application_id: 14,
+              job_id: 204,
+              job_title: "Product Engineer",
+              company: "Delta",
+              application_status: "saved",
+              updated_at: "2026-07-13T11:00:00Z",
+            }] },
           },
           isLoading: false,
           isError: false,
@@ -270,10 +276,10 @@ describe("Dashboard Today section", () => {
     });
 
     const nextActionsQuery = queryCalls.find(
-      (call) => Array.isArray(call.queryKey) && call.queryKey[0] === "home-next-actions",
+      (call) => Array.isArray(call.queryKey) && call.queryKey[0] === "dashboard-action-center",
     );
-    expect(nextActionsQuery?.queryKey).toEqual(["home-next-actions", "2026-07-14"]);
-    expect(apiMocks.applicationsApi.listDueNextActions).toHaveBeenCalledWith(
+    expect(nextActionsQuery?.queryKey).toEqual(["dashboard-action-center", "2026-07-14"]);
+    expect(apiMocks.applicationsApi.getActionCenter).toHaveBeenCalledWith(
       "2026-07-14",
     );
     expect(apiMocks.applicationsApi.getDashboardSummary).toHaveBeenCalledTimes(1);
@@ -281,7 +287,7 @@ describe("Dashboard Today section", () => {
     expect(container.textContent).toContain("2%");
 
     expect(container.textContent).toContain(
-      "User-managed next actions due today or overdue.",
+      "User-managed actions that need attention today and this week.",
     );
     expect(container.textContent).toContain("Senior Backend Engineer");
     expect(container.textContent).toContain("Platform Engineer");
@@ -291,7 +297,10 @@ describe("Dashboard Today section", () => {
     const buttons = Array.from(container.querySelectorAll("button")).filter(
       (button) => button.textContent?.includes("Complete"),
     );
-    expect(buttons).toHaveLength(2);
+    expect(buttons).toHaveLength(3);
+    expect(container.textContent).toContain("Upcoming");
+    expect(container.textContent).toContain("Needs a next action");
+    expect(container.querySelector('a[href="/dashboard/applications?next_action_application_id=14"]')).not.toBeNull();
 
     await act(async () => {
       buttons[0]?.click();
@@ -305,6 +314,12 @@ describe("Dashboard Today section", () => {
     expect(toastMocks.success).toHaveBeenCalledWith(
       "Marked next action complete",
     );
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["dashboard-action-center"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["dashboard-summary"],
+    });
   });
 
   it("shows summary retry state without hiding independent dashboard areas", async () => {
