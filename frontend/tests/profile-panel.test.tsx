@@ -137,6 +137,54 @@ describe("ProfilePanel projects and professional links", () => {
     expect(toastMocks.success).toHaveBeenCalledWith("Profile updated");
   });
 
+  it("places education in the left-column order before certifications", async () => {
+    apiMocks.getProfile.mockResolvedValue({
+      ...profile,
+      profile: {
+        ...profile.profile,
+        education: [{ degree: "Computer Science", institution: "Polytechnic Institute", year: "2014" }],
+        certifications: ["Hardware Servicing"],
+      },
+    });
+    await render();
+
+    const educationHeading = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent?.trim() === "Education",
+    );
+    const certificationsHeading = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent?.trim() === "Certifications",
+    );
+    expect(educationHeading).toBeDefined();
+    expect(certificationsHeading).toBeDefined();
+    expect(
+      (educationHeading as Node).compareDocumentPosition(certificationsHeading as Node) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("uses a full-width degree field above institution and year", async () => {
+    apiMocks.getProfile.mockResolvedValue({
+      ...profile,
+      profile: {
+        ...profile.profile,
+        education: [{ degree: "Computer Science", institution: "Polytechnic Institute", year: "2014" }],
+      },
+    });
+    await render();
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Edit profile"))
+        ?.click(),
+    );
+
+    const degreeInput = Array.from(container.querySelectorAll("input")).find(
+      (input) => input.placeholder === "e.g. B.S. Computer Science",
+    );
+    const educationGrid = degreeInput?.closest(".grid");
+    expect(degreeInput?.parentElement?.className).toContain("sm:col-span-2");
+    expect(educationGrid?.className).toContain("sm:grid-cols-2");
+  });
+
   it("displays and edits languages with optional proficiency", async () => {
     await render("Spanish");
     expect(container.textContent).toContain("Professional");

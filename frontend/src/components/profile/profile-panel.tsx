@@ -397,6 +397,11 @@ export function ProfilePanel() {
             editing={editing}
             onChange={(skills) => handleChange("skills", skills)}
           />
+          <EducationSection
+            education={displayProfile.education}
+            editing={editing}
+            onChange={(education) => handleChange("education", education)}
+          />
           <CertificationsSection
             certifications={displayProfile.certifications}
             editing={editing}
@@ -418,11 +423,6 @@ export function ProfilePanel() {
             workHistory={displayProfile.work_history}
             editing={editing}
             onChange={(work_history) => handleChange("work_history", work_history)}
-          />
-          <EducationSection
-            education={displayProfile.education}
-            editing={editing}
-            onChange={(education) => handleChange("education", education)}
           />
           <ProjectsSection
             projects={displayProfile.projects}
@@ -1355,8 +1355,8 @@ function EducationSection({
                   >
                     <Minus className="h-3.5 w-3.5" />
                   </Button>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <div className="flex flex-col gap-1.5">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1.5 sm:col-span-2">
                       <Label className="text-xs">Degree</Label>
                       <Input
                         value={item.degree ?? ""}
