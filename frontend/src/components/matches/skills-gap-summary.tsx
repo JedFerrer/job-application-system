@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { TrendingUp } from "lucide-react";
 import { matchesApi } from "@/lib/api";
+import { formatSkillLabel } from "@/lib/skill-display";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -45,7 +46,7 @@ export function SkillsGapSummary() {
             variant={item.frequency >= max * 0.66 ? "default" : "secondary"}
             className="gap-1"
           >
-            {item.keyword}
+            {formatSkillLabel(item.keyword)}
             <span className="text-xs opacity-70">×{item.frequency}</span>
           </Badge>
         ))}
