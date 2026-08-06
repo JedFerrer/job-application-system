@@ -11,6 +11,7 @@ from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.application import Application
 from app.models.job import Job
 from app.models.resume import CandidateProfile, Resume
 from app.models.user_job import UserJob
@@ -285,6 +286,46 @@ class MatchingRepository:
             next_cursor = _encode_cursor(last_match.vector_score, last_job.id)
 
         return [(r[0], r[1]) for r in rows], total, next_cursor, has_more
+
+    async def list_recommendation_candidates(
+        self, *, user_id: int, limit: int = 100
+    ) -> list[tuple[Job, UserJobMatch, str | None]]:
+        """Return a bounded ranked candidate scan with application state."""
+        visibility_filter = or_(
+            Job.visibility == "public",
+            Job.created_by_user_id == user_id,
+        )
+        archived_subq = (
+            select(UserJob.job_id)
+            .where(UserJob.user_id == user_id, UserJob.status == "archived")
+            .scalar_subquery()
+        )
+        stmt = (
+            select(Job, UserJobMatch, Application.status)
+            .join(UserJobMatch, UserJobMatch.job_id == Job.id)
+            .outerjoin(
+                Application,
+                and_(
+                    Application.job_id == UserJobMatch.job_id,
+                    Application.user_id == user_id,
+                ),
+            )
+            .where(
+                UserJobMatch.user_id == user_id,
+                UserJobMatch.vector_score.is_not(None),
+                Job.status == "active",
+                visibility_filter,
+                Job.id.not_in(archived_subq),
+                or_(
+                    Application.status.is_(None),
+                    Application.status.not_in(("rejected", "closed")),
+                ),
+            )
+            .order_by(UserJobMatch.vector_score.desc(), Job.id.desc())
+            .limit(limit)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [(job, match, status) for job, match, status in rows]
 
     async def get_match(self, *, user_id: int, job_id: int) -> UserJobMatch | None:
         result = await self._session.execute(

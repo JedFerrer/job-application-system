@@ -14,6 +14,7 @@ from app.domain.jobs.service import JobService
 from app.domain.matching.exceptions import MatchNotFoundError
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
+from app.models.application import Application
 from app.models.job import Job
 from app.models.user import User
 from app.models.user_job import UserJob
@@ -252,6 +253,77 @@ async def test_public_matched_jobs_still_appear(engine) -> None:  # noqa: ANN001
         assert rows[0][0].title == "Public Role"
         assert next_cursor is None
         assert has_more is False
+
+
+async def test_recommendation_candidates_preserve_visibility_order_and_application_state(
+    engine,
+) -> None:  # noqa: ANN001
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="recommend@test.com", name="Recommend")
+        await _create_user(db, user_id=2, email="private@test.com", name="Private")
+        await _create_job(
+            db,
+            job_id=501,
+            title="High Public",
+            company="Open",
+            visibility="public",
+            created_by_user_id=None,
+            ingest_source="scraper",
+        )
+        await _create_job(
+            db,
+            job_id=502,
+            title="Owned Private",
+            company="Private",
+            visibility="private",
+            created_by_user_id=1,
+            ingest_source="manual",
+        )
+        await _create_job(
+            db,
+            job_id=503,
+            title="Other Private",
+            company="Hidden",
+            visibility="private",
+            created_by_user_id=2,
+            ingest_source="manual",
+        )
+        await _create_job(
+            db,
+            job_id=504,
+            title="Archived Public",
+            company="Old",
+            visibility="public",
+            created_by_user_id=None,
+            ingest_source="scraper",
+        )
+        await _link_user_job(
+            db,
+            user_id=1,
+            job_id=504,
+            relationship_source="manual",
+            import_method="manual",
+            status="archived",
+        )
+        await db.execute(
+            insert(UserJobMatch),
+            [
+                {"user_id": 1, "job_id": 501, "vector_score": 95.0},
+                {"user_id": 1, "job_id": 502, "vector_score": 90.0},
+                {"user_id": 1, "job_id": 503, "vector_score": 99.0},
+                {"user_id": 1, "job_id": 504, "vector_score": 98.0},
+            ],
+        )
+        await db.execute(
+            insert(Application).values(user_id=1, job_id=501, status="applied")
+        )
+        await db.commit()
+
+    async with sf() as db:
+        rows = await MatchingRepository(db).list_recommendation_candidates(user_id=1)
+
+    assert [(job.id, status) for job, _, status in rows] == [(501, "applied"), (502, None)]
 
 
 async def test_match_summary_returns_only_the_current_users_persisted_match(engine) -> None:  # noqa: ANN001

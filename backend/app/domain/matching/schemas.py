@@ -75,6 +75,28 @@ class MatchListResponse(BaseModel):
     has_more: bool = False
 
 
+class MatchRecommendationItem(BaseModel):
+    """Compact, user-scoped match projection for the dashboard."""
+
+    job_id: int
+    title: str
+    company: str | None
+    location: str | None
+    remote: bool | None
+    source: str
+    source_url: str
+    score: float
+    confidence: str | None
+    readiness: Literal["apply", "save", "stretch"]
+    matched_skills: list[str] = Field(default_factory=list)
+    missing_skill: str | None = None
+    application_status: str | None = None
+
+
+class MatchRecommendationsResponse(BaseModel):
+    items: list[MatchRecommendationItem]
+
+
 class MatchExplanation(BaseModel):
     """Layer-2 (deterministic) + layer-3 (LLM) match detail for one job."""
 

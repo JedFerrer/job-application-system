@@ -25,6 +25,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { TopRecommendedMatches } from "@/components/dashboard/top-recommended-matches";
 
 export default function DashboardHome() {
   const queryClient = useQueryClient();
@@ -162,6 +163,8 @@ export default function DashboardHome() {
           )}
         </CardContent>
       </Card>
+
+      <TopRecommendedMatches />
 
       {!hasSummary && summaryQuery.isError && !summaryQuery.isFetching && (
         <Card>

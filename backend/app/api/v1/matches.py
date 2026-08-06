@@ -11,6 +11,7 @@ from app.domain.matching.ranking_dispatch import RankingDispatcher
 from app.domain.matching.schemas import (
     MatchExplanation,
     MatchListResponse,
+    MatchRecommendationsResponse,
     MatchSkillAnalysis,
     MatchSummary,
     RankTaskResponse,
@@ -91,6 +92,15 @@ async def list_matches(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid cursor") from exc
+
+
+@router.get("/recommendations", response_model=MatchRecommendationsResponse)
+async def list_recommendations(
+    current_user: CurrentUser,
+    service: MatchServiceDep,
+    limit: Annotated[int, Query(ge=1, le=5)] = 4,
+) -> MatchRecommendationsResponse:
+    return await service.list_recommendations(user_id=current_user.id, limit=limit)
 
 
 @router.get("/skills-gap-summary", response_model=SkillsGapSummary)

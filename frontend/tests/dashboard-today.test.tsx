@@ -24,6 +24,7 @@ const apiMocks = vi.hoisted(() => {
   };
   const matchesApi = {
     list: vi.fn(),
+    recommendations: vi.fn(),
   };
   class ApiError extends Error {
     status: number;
@@ -108,6 +109,8 @@ describe("Dashboard Today section", () => {
     apiMocks.applicationsApi.listDueNextActions.mockReset();
     apiMocks.jobsApi.list.mockReset();
     apiMocks.matchesApi.list.mockReset();
+    apiMocks.matchesApi.recommendations.mockReset();
+    apiMocks.applicationsApi.create.mockReset();
     toastMocks.success.mockReset();
     toastMocks.error.mockReset();
     apiMocks.applicationsApi.update.mockReturnValue(
@@ -123,6 +126,9 @@ describe("Dashboard Today section", () => {
         created_at: "2026-07-10T00:00:00Z",
         updated_at: "2026-07-14T12:00:00.000Z",
       }),
+    );
+    apiMocks.applicationsApi.create.mockReturnValue(
+      Promise.resolve({ status: "saved" }),
     );
 
     reactQueryMocks.useQueryClient.mockReturnValue({
@@ -253,6 +259,49 @@ describe("Dashboard Today section", () => {
         };
       }
 
+      if (key === "dashboard-recommendations") {
+        void options.queryFn();
+        return {
+          data: {
+            items: [
+              {
+                job_id: 301,
+                title: "Staff Backend Engineer",
+                company: "Acme",
+                location: "Remote",
+                remote: true,
+                source: "test",
+                source_url: "https://example.test/301",
+                score: 91,
+                confidence: "strong",
+                readiness: "apply",
+                matched_skills: ["Python", "FastAPI", "Postgres"],
+                missing_skill: "Kubernetes",
+                application_status: null,
+              },
+              {
+                job_id: 302,
+                title: "Platform Engineer",
+                company: "Beta",
+                location: null,
+                remote: false,
+                source: "test",
+                source_url: "https://example.test/302",
+                score: 72,
+                confidence: "moderate",
+                readiness: "save",
+                matched_skills: [],
+                missing_skill: null,
+                application_status: "saved",
+              },
+            ],
+          },
+          isLoading: false,
+          isError: false,
+          refetch: vi.fn(),
+        };
+      }
+
       return {
         data: null,
         isLoading: false,
@@ -300,6 +349,12 @@ describe("Dashboard Today section", () => {
     expect(buttons).toHaveLength(3);
     expect(container.textContent).toContain("Upcoming");
     expect(container.textContent).toContain("Needs a next action");
+    expect(container.textContent).toContain("Top Recommended Matches");
+    expect(container.textContent).toContain("Staff Backend Engineer");
+    expect(container.textContent).toContain("Missing: Kubernetes");
+    expect(container.textContent).toContain("Saved");
+    expect(container.querySelector('a[href="/dashboard/matches"]')).not.toBeNull();
+    expect(apiMocks.matchesApi.recommendations).toHaveBeenCalledWith(4);
     expect(container.querySelector('a[href="/dashboard/applications?next_action_application_id=14"]')).not.toBeNull();
 
     await act(async () => {
@@ -319,6 +374,31 @@ describe("Dashboard Today section", () => {
     });
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["dashboard-summary"],
+    });
+  });
+
+  it("saves an untracked recommendation and refreshes dashboard data", async () => {
+    await act(async () => {
+      root.render(<DashboardHome />);
+    });
+
+    const save = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Save"),
+    );
+    expect(save).not.toBeUndefined();
+
+    await act(async () => {
+      save?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.create).toHaveBeenCalledWith(301);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["dashboard-recommendations"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["dashboard-action-center"],
     });
   });
 

@@ -49,6 +49,15 @@ class _EmptyMatchService:
         )()
 
 
+class _RecommendationMatchService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+
+    async def list_recommendations(self, *, user_id: int, limit: int) -> object:
+        self.calls.append((user_id, limit))
+        return type("Resp", (), {"items": []})()
+
+
 class _SummaryMatchService:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
@@ -100,6 +109,32 @@ def test_offsetless_first_page_still_works() -> None:
     resp = client.get("/matches")
     assert resp.status_code == 200
     assert resp.json()["items"] == []
+
+
+def test_recommendations_default_limit_is_four_and_user_scoped() -> None:
+    user = User(id=42, email="a@test.com", name="A", is_active=True)
+    service = _RecommendationMatchService()
+    app = _build_app_with_overrides(current_user=user, match_service=service)
+    client = TestClient(app)
+
+    response = client.get("/matches/recommendations")
+
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
+    assert service.calls == [(42, 4)]
+
+
+def test_recommendations_limit_is_constrained_to_one_through_five() -> None:
+    user = User(id=42, email="a@test.com", name="A", is_active=True)
+    app = _build_app_with_overrides(
+        current_user=user, match_service=_RecommendationMatchService()
+    )
+    client = TestClient(app)
+
+    assert client.get("/matches/recommendations?limit=1").status_code == 200
+    assert client.get("/matches/recommendations?limit=5").status_code == 200
+    assert client.get("/matches/recommendations?limit=0").status_code == 422
+    assert client.get("/matches/recommendations?limit=6").status_code == 422
 
 
 def test_offset_query_param_is_deprecated_in_openapi() -> None:

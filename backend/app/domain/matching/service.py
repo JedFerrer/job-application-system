@@ -30,6 +30,8 @@ from app.domain.matching.schemas import (
     MatchItem,
     MatchListResponse,
     MatchReadiness,
+    MatchRecommendationItem,
+    MatchRecommendationsResponse,
     MatchSkillAnalysis,
     MatchSummary,
     RankResponse,
@@ -231,6 +233,47 @@ class MatchingService:
             next_cursor=next_cursor,
             has_more=has_more,
         )
+
+    async def list_recommendations(
+        self, *, user_id: int, limit: int = 4
+    ) -> MatchRecommendationsResponse:
+        preferences = (
+            await self._readiness_repo.get_for_user(user_id)
+            if self._readiness_repo is not None
+            else None
+        )
+        candidates = await self._repo.list_recommendation_candidates(
+            user_id=user_id, limit=100
+        )
+        items: list[MatchRecommendationItem] = []
+        for job, match, application_status in candidates:
+            if application_status in {"rejected", "closed"}:
+                continue
+            readiness = self._build_readiness(match, job, preferences)
+            if readiness.decision not in {"apply", "save", "stretch"}:
+                continue
+            items.append(
+                MatchRecommendationItem(
+                    job_id=job.id,
+                    title=job.title,
+                    company=job.company,
+                    location=job.location,
+                    remote=job.is_remote,
+                    source=job.source,
+                    source_url=job.source_url,
+                    score=match.vector_score,
+                    confidence=match.confidence,
+                    readiness=readiness.decision,
+                    matched_skills=(match.matched_skills or [])[:3],
+                    missing_skill=(
+                        match.missing_keywords[0] if match.missing_keywords else None
+                    ),
+                    application_status=application_status,
+                )
+            )
+            if len(items) >= limit:
+                break
+        return MatchRecommendationsResponse(items=items)
 
     async def skills_gap_summary(self, *, user_id: int, top_n: int = 5) -> SkillsGapSummary:
         """Aggregate the most common missing skills across the user's matches."""

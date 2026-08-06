@@ -18,6 +18,7 @@ import type {
   MatchSummary,
   MatchSkillAnalysis,
   MatchListResponse,
+  MatchRecommendationsResponse,
   ParsedProfile,
   PreferenceResponse,
   PreferenceUpdate,
@@ -325,6 +326,8 @@ export const matchesApi = {
     if (opts.sourceType) qs.set("source_type", opts.sourceType);
     return apiRequest<MatchListResponse>(`/matches?${qs.toString()}`);
   },
+  recommendations: (limit = 4) =>
+    apiRequest<MatchRecommendationsResponse>(`/matches/recommendations?limit=${limit}`),
   explain: (jobId: number) =>
     apiRequest<MatchExplanation>(`/matches/${jobId}/explain`),
   summary: (jobId: number) =>

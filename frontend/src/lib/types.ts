@@ -302,6 +302,28 @@ export interface MatchListResponse {
   has_more: boolean;
 }
 
+export type MatchRecommendationReadiness = "apply" | "save" | "stretch";
+
+export interface MatchRecommendationItem {
+  job_id: number;
+  title: string;
+  company: string | null;
+  location: string | null;
+  remote: boolean | null;
+  source: string;
+  source_url: string;
+  score: number;
+  confidence: string | null;
+  readiness: MatchRecommendationReadiness;
+  matched_skills: string[];
+  missing_skill: string | null;
+  application_status: string | null;
+}
+
+export interface MatchRecommendationsResponse {
+  items: MatchRecommendationItem[];
+}
+
 export interface RankResponse {
   ranked: number;
   profile_id: number;
