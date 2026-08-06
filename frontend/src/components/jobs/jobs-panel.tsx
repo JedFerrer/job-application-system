@@ -204,6 +204,9 @@ export function JobsPanel() {
       if (application.status === "saved") toast.success("Saved to applications");
       else toast.error(`Job is already tracked as ${application.status}`);
       queryClient.invalidateQueries({ queryKey: ["applications"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-recommendations"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Save failed"),
@@ -214,6 +217,9 @@ export function JobsPanel() {
     onSuccess: () => {
       toast.success("Removed from saved");
       queryClient.invalidateQueries({ queryKey: ["applications"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-recommendations"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Unsave failed"),

@@ -323,6 +323,8 @@ export function ApplicationsPanel({
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["applications"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-recommendations"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
     },
   });
 
@@ -360,6 +362,8 @@ export function ApplicationsPanel({
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["applications"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-recommendations"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
     },
   });
 
@@ -444,6 +448,8 @@ export function ApplicationsPanel({
       queryClient.invalidateQueries({ queryKey: ["applications"] });
       queryClient.invalidateQueries({ queryKey: ["home-next-actions"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-recommendations"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
     },
   });
 
