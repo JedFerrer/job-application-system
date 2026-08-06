@@ -34,7 +34,14 @@ export function DashboardNav() {
   return (
     <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
       {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-        const isActive = pathname === href || pathname.startsWith(`${href}/`);
+        const dashboardPath = `/dashboard${href === "/dashboard" ? "" : href}`;
+        const isActive =
+          label === "Dashboard"
+            ? pathname === "/dashboard"
+            : pathname === href ||
+              pathname.startsWith(`${href}/`) ||
+              pathname === dashboardPath ||
+              pathname.startsWith(`${dashboardPath}/`);
         return (
           <Link
             key={href}

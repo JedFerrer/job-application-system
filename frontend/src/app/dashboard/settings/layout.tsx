@@ -30,7 +30,12 @@ export default function SettingsLayout({
       {/* Tab bar */}
       <div className="flex border-b">
         {SETTINGS_TABS.map(({ href, label }) => {
-          const isActive = pathname === href || pathname.startsWith(`${href}/`);
+          const dashboardPath = `/dashboard${href}`;
+          const isActive =
+            pathname === href ||
+            pathname.startsWith(`${href}/`) ||
+            pathname === dashboardPath ||
+            pathname.startsWith(`${dashboardPath}/`);
           return (
             <Link
               key={href}

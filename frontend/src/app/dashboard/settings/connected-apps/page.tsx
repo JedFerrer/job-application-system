@@ -88,7 +88,7 @@ export default function ConnectedAppsPage() {
                 To connect, open{" "}
                 <a
                   href="/extension/connect"
-                  className="text-accent underline underline-offset-2"
+                  className="text-primary underline underline-offset-2 hover:text-primary/80"
                 >
                   the pairing page
                 </a>{" "}
