@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { TopRecommendedMatches } from "@/components/dashboard/top-recommended-matches";
+import { SearchReadinessCard } from "@/components/dashboard/search-readiness-card";
 
 export default function DashboardHome() {
   const queryClient = useQueryClient();
@@ -84,6 +85,8 @@ export default function DashboardHome() {
           Overview of your job search pipeline.
         </p>
       </div>
+
+      <SearchReadinessCard />
 
       <Card>
           <CardContent className="px-5 py-4">

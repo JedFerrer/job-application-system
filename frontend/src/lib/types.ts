@@ -155,6 +155,35 @@ export interface ProfileResponse {
   matching_profile_changed?: boolean;
 }
 
+// ---- Dashboard search readiness --------------------------------------------
+export type SearchReadinessOverallState = "needs_setup" | "almost_ready" | "ready";
+export type SearchReadinessResumeState = "ready" | "needs_import" | "draft_review";
+export type SearchReadinessSetupState = "ready" | "needs_setup";
+export type SearchReadinessReason =
+  | "draft_review"
+  | "import_resume"
+  | "complete_profile"
+  | "set_job_preferences"
+  | "view_matches";
+
+export interface SearchReadinessCheck {
+  state: SearchReadinessResumeState | SearchReadinessSetupState;
+  has_pending_draft?: boolean | null;
+}
+
+export interface SearchReadinessResponse {
+  overall_state: SearchReadinessOverallState;
+  checks: {
+    resume: SearchReadinessCheck;
+    profile: SearchReadinessCheck;
+    preferences: SearchReadinessCheck;
+  };
+  next_action: {
+    reason: SearchReadinessReason;
+    label: string;
+  };
+}
+
 export interface TailoredWorkItem {
   company: string | null;
   title: string | null;

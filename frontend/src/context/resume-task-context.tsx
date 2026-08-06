@@ -107,6 +107,7 @@ export function ResumeTaskProvider({ children }: { children: React.ReactNode }) 
     } else {
       queryClient.invalidateQueries({ queryKey: ["profile"] });
     }
+    queryClient.invalidateQueries({ queryKey: ["dashboard-search-readiness"] });
   }, [taskQuery.data?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isRunning =

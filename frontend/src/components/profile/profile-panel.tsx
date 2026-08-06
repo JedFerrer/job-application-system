@@ -176,6 +176,7 @@ export function ProfilePanel() {
           : "Profile updated",
       );
       queryClient.invalidateQueries({ queryKey: ["profile"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-search-readiness"] });
       setEditing(false);
     },
     onError: (err) =>
@@ -465,6 +466,7 @@ function ImportedResumeDrafts() {
       actionInFlightRef.current = false;
       closeReview();
       void queryClient.invalidateQueries({ queryKey: ["profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard-search-readiness"] });
       void queryClient.invalidateQueries({ queryKey: ["resume-imports"] });
       void queryClient.removeQueries({ queryKey: ["resume-import", resumeId] });
       toast.success(
@@ -484,6 +486,7 @@ function ImportedResumeDrafts() {
       actionInFlightRef.current = false;
       closeReview();
       void queryClient.invalidateQueries({ queryKey: ["resume-imports"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard-search-readiness"] });
       void queryClient.removeQueries({ queryKey: ["resume-import", resumeId] });
       toast.success("Imported resume draft rejected.");
     },

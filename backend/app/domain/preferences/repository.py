@@ -20,6 +20,18 @@ class PreferenceRepository:
         )
         return result.scalar_one_or_none()
 
+    async def has_configured_search_titles(self, user_id: int) -> bool:
+        """Check configured search titles without loading the preference row."""
+        result = await self._session.execute(
+            select(UserJobPreference.is_active, UserJobPreference.job_titles).where(
+                UserJobPreference.user_id == user_id
+            )
+        )
+        row = result.one_or_none()
+        if row is None or not row[0]:
+            return False
+        return any(isinstance(title, str) and title.strip() for title in (row[1] or []))
+
     async def list_active(self) -> list[UserJobPreference]:
         result = await self._session.execute(
             select(UserJobPreference).where(UserJobPreference.is_active.is_(True))

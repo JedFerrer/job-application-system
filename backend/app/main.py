@@ -13,6 +13,7 @@ from app.api.v1 import (
     applications,
     auth,
     cover_letters,
+    dashboard,
     health,
     interview,
     jobs,
@@ -211,6 +212,7 @@ app.include_router(preferences.router, prefix="/api/v1")
 app.include_router(readiness_preferences.router, prefix="/api/v1")
 app.include_router(interview.router, prefix="/api/v1")
 app.include_router(cover_letters.router, prefix="/api/v1")
+app.include_router(dashboard.router, prefix="/api/v1")
 app.include_router(applications.router, prefix="/api/v1")
 app.include_router(ext_auth.router, prefix="/api/v1")
 app.include_router(ext_jobs.router, prefix="/api/v1")

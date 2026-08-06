@@ -25,6 +25,7 @@ import type {
   ReadinessPreferenceResponse,
   ReadinessPreferenceUpdate,
   ProfileResponse,
+  SearchReadinessResponse,
   RankResponse,
   RankTaskResponse,
   RefreshResponse,
@@ -363,6 +364,12 @@ export const readinessPreferencesApi = {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
+};
+
+// ---- Dashboard --------------------------------------------------------------
+export const dashboardApi = {
+  getSearchReadiness: () =>
+    apiRequest<SearchReadinessResponse>("/dashboard/search-readiness"),
 };
 
 // ---- Interview prep (Phase 2) -----------------------------------------------

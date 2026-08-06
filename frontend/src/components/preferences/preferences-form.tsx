@@ -97,6 +97,7 @@ export function PreferencesForm() {
     mutationFn: (payload: PreferenceUpdate) => preferencesApi.upsert(payload),
     onSuccess: (saved) => {
       queryClient.setQueryData(["preferences"], saved);
+      queryClient.invalidateQueries({ queryKey: ["dashboard-search-readiness"] });
       toast.success("Preferences saved");
     },
     onError: (error) =>

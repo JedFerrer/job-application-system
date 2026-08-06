@@ -26,6 +26,9 @@ const apiMocks = vi.hoisted(() => {
     list: vi.fn(),
     recommendations: vi.fn(),
   };
+  const dashboardApi = {
+    getSearchReadiness: vi.fn(),
+  };
   class ApiError extends Error {
     status: number;
     detail: unknown;
@@ -37,7 +40,7 @@ const apiMocks = vi.hoisted(() => {
       this.detail = detail;
     }
   }
-  return { applicationsApi, jobsApi, matchesApi, ApiError };
+  return { applicationsApi, jobsApi, matchesApi, dashboardApi, ApiError };
 });
 
 const toastMocks = vi.hoisted(() => {
@@ -110,6 +113,7 @@ describe("Dashboard Today section", () => {
     apiMocks.jobsApi.list.mockReset();
     apiMocks.matchesApi.list.mockReset();
     apiMocks.matchesApi.recommendations.mockReset();
+    apiMocks.dashboardApi.getSearchReadiness.mockReset();
     apiMocks.applicationsApi.create.mockReset();
     toastMocks.success.mockReset();
     toastMocks.error.mockReset();
@@ -130,6 +134,15 @@ describe("Dashboard Today section", () => {
     apiMocks.applicationsApi.create.mockReturnValue(
       Promise.resolve({ status: "saved" }),
     );
+    apiMocks.dashboardApi.getSearchReadiness.mockReturnValue(Promise.resolve({
+      overall_state: "ready",
+      checks: {
+        resume: { state: "ready", has_pending_draft: false },
+        profile: { state: "ready" },
+        preferences: { state: "ready" },
+      },
+      next_action: { reason: "view_matches", label: "View matches" },
+    }));
 
     reactQueryMocks.useQueryClient.mockReturnValue({
       invalidateQueries,
@@ -226,6 +239,24 @@ describe("Dashboard Today section", () => {
               application_status: "saved",
               updated_at: "2026-07-13T11:00:00Z",
             }] },
+          },
+          isLoading: false,
+          isError: false,
+          refetch: vi.fn(),
+        };
+      }
+
+      if (key === "dashboard-search-readiness") {
+        void options.queryFn();
+        return {
+          data: {
+            overall_state: "ready",
+            checks: {
+              resume: { state: "ready", has_pending_draft: false },
+              profile: { state: "ready" },
+              preferences: { state: "ready" },
+            },
+            next_action: { reason: "view_matches", label: "View matches" },
           },
           isLoading: false,
           isError: false,

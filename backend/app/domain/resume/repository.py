@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,6 +103,41 @@ class ResumeRepository:
             .order_by(CandidateProfile.updated_at.desc())
         )
         return result.scalars().first()
+
+    async def get_search_readiness_snapshot(
+        self, user_id: int
+    ) -> tuple[bool, bool, bool]:
+        """Return active-profile eligibility and whether a draft is pending.
+
+        This deliberately selects only ownership/lifecycle/embedding metadata;
+        readiness must never load parsed profile or resume content.
+        """
+        active_result = await self._session.execute(
+            select(Resume.id, Resume.user_id, CandidateProfile.user_id, CandidateProfile.embedding)
+            .outerjoin(CandidateProfile, CandidateProfile.resume_id == Resume.id)
+            .where(Resume.user_id == user_id, Resume.is_active.is_(True))
+        )
+        active_rows = list(active_result.all())
+        if len(active_rows) > 1:
+            raise ValueError("Multiple active resumes found; readiness unavailable")
+        if active_rows:
+            _resume_id, resume_owner, profile_owner, embedding = active_rows[0]
+            if profile_owner != user_id or resume_owner != user_id:
+                raise ValueError("Active profile ownership invariant failed")
+            usable = embedding is not None
+        else:
+            usable = False
+
+        draft_result = await self._session.execute(
+            select(
+                exists().where(
+                    Resume.user_id == user_id,
+                    Resume.is_active.is_(False),
+                    Resume.lifecycle_status == ResumeLifecycleStatus.DRAFT.value,
+                )
+            )
+        )
+        return bool(active_rows), usable, bool(draft_result.scalar())
 
     async def list_import_drafts(
         self, user_id: int
