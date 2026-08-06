@@ -36,6 +36,10 @@ export function SearchReadinessCard() {
     queryFn: dashboardApi.getSearchReadiness,
   });
 
+  if (readinessQuery.data?.overall_state === "ready") {
+    return null;
+  }
+
   return (
     <Card aria-labelledby="search-readiness-title">
       <CardContent className="px-5 py-4">
@@ -49,7 +53,7 @@ export function SearchReadinessCard() {
             </p>
           </div>
           {readinessQuery.data && (
-            <Badge variant={readinessQuery.data.overall_state === "ready" ? "default" : "secondary"}>
+            <Badge variant="secondary">
               {OVERALL_LABELS[readinessQuery.data.overall_state]}
             </Badge>
           )}

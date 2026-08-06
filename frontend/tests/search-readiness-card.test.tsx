@@ -73,7 +73,7 @@ describe("SearchReadinessCard", () => {
       next_action: { reason: "view_matches", label: "View matches" },
     };
     await render();
-    expect(container.querySelector('a[href="/dashboard/matches"]')?.textContent).toBe("View matches");
+    expect(container.textContent).not.toContain("Search Readiness");
     expect(container.textContent).not.toContain("Review draft");
   });
 

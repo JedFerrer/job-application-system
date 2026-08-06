@@ -20,6 +20,19 @@ function titleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function fitBadgeClass(score: number): string {
+  if (score >= 85) {
+    return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-400/35 dark:bg-emerald-500/10 dark:text-emerald-200";
+  }
+  if (score >= 70) {
+    return "border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-400/35 dark:bg-blue-500/10 dark:text-blue-200";
+  }
+  if (score >= 55) {
+    return "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/35 dark:bg-amber-500/10 dark:text-amber-200";
+  }
+  return "border-red-300 bg-red-50 text-red-700 dark:border-red-400/35 dark:bg-red-500/10 dark:text-red-200";
+}
+
 export function TopRecommendedMatches() {
   const queryClient = useQueryClient();
   const recommendationsQuery = useQuery({
@@ -69,7 +82,10 @@ export function TopRecommendedMatches() {
             </Button>
           </div>
         ) : recommendationsQuery.data?.items.length ? (
-          <div className="mt-4 space-y-2">
+          <div
+            className="mt-4 grid gap-2 sm:grid-cols-2"
+            aria-label="Recommended matches"
+          >
             {recommendationsQuery.data.items.map((item) => (
               <RecommendationRow
                 key={item.job_id}
@@ -114,10 +130,18 @@ function RecommendationRow({
             {item.location ? " · " + item.location : item.remote ? " · Remote" : ""}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <Badge variant="outline" className={"rounded-full text-[11px] " + readinessClass[item.readiness]}>
-              {titleCase(item.readiness)}
+            {item.readiness === "apply" && (
+              <Badge variant="outline" className={"rounded-full text-[11px] " + readinessClass[item.readiness]}>
+                {titleCase(item.readiness)}
+              </Badge>
+            )}
+            <Badge
+              variant="outline"
+              data-testid={`recommendation-fit-${item.job_id}`}
+              className={`text-[11px] ${fitBadgeClass(item.score)}`}
+            >
+              {Math.round(item.score)}% fit
             </Badge>
-            <Badge variant="secondary" className="text-[11px]">{Math.round(item.score)}% fit</Badge>
             {item.matched_skills.slice(0, 3).map((skill) => (
               <Badge key={skill} variant="outline" className="text-[11px] font-normal">
                 {skill}

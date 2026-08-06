@@ -384,6 +384,12 @@ describe("Dashboard Today section", () => {
     expect(container.textContent).toContain("Staff Backend Engineer");
     expect(container.textContent).toContain("Missing: Kubernetes");
     expect(container.textContent).toContain("Saved");
+    expect(container.querySelector('[role="img"][aria-label="Application pipeline by status"]')).not.toBeNull();
+    expect(
+      container.querySelector('[role="img"][aria-label="Application pipeline by status"]')
+        ?.closest(".order-2"),
+    ).not.toBeNull();
+    expect(container.textContent).not.toContain("Search Readiness");
     expect(container.querySelector('a[href="/dashboard/matches"]')).not.toBeNull();
     expect(apiMocks.matchesApi.recommendations).toHaveBeenCalledWith(4);
     expect(container.querySelector('a[href="/dashboard/applications?next_action_application_id=14"]')).not.toBeNull();

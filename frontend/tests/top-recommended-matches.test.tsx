@@ -113,6 +113,10 @@ describe("TopRecommendedMatches", () => {
     expect(container.textContent).toContain("Missing: Kubernetes");
     expect(container.textContent).not.toContain("Docker");
     expect(container.textContent).toContain("Applied");
+    expect(container.querySelector('[aria-label="Recommended matches"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="recommendation-fit-11"]')?.className).toContain(
+      "border-emerald-300",
+    );
     expect(container.querySelector('a[href="/dashboard/matches"]')).not.toBeNull();
     expect(container.querySelector('a[href="/jobs/11"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="Save Platform Engineer"]')).toBeNull();

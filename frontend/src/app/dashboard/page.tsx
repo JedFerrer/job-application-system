@@ -60,6 +60,15 @@ export default function DashboardHome() {
     (summaryQuery.isLoading || summaryQuery.isFetching || summaryQuery.isPending);
   const totalMatches = matchesQuery.data?.total ?? 0;
   const totalJobs = jobsQuery.data?.total ?? 0;
+  const pipelineStages = [
+    { label: "Saved", count: statusCounts?.saved ?? 0, color: "bg-muted-foreground" },
+    { label: "Applied", count: statusCounts?.applied ?? 0, color: "bg-blue-500" },
+    { label: "Interview", count: statusCounts?.interview ?? 0, color: "bg-amber-500" },
+    { label: "Offer", count: statusCounts?.offer ?? 0, color: "bg-green-500" },
+    { label: "Rejected", count: statusCounts?.rejected ?? 0, color: "bg-red-500" },
+    { label: "Closed", count: statusCounts?.closed ?? 0, color: "bg-muted" },
+  ];
+  const pipelineTotal = summary?.total_applications ?? 1;
 
   const completeNextActionMutation = useMutation({
     mutationFn: (applicationId: number) =>
@@ -86,9 +95,90 @@ export default function DashboardHome() {
         </p>
       </div>
 
-      <SearchReadinessCard />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <Link href="/dashboard/jobs">
+          <Card className="transition-colors hover:bg-muted/50">
+            <CardContent className="flex items-center gap-3 px-5 py-4">
+              <Briefcase className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <p className="text-2xl font-semibold leading-tight">
+                  {jobsQuery.isLoading ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    totalJobs.toLocaleString()
+                  )}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  Jobs in feed
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
 
-      <Card>
+        <Link href="/dashboard/matches">
+          <Card className="transition-colors hover:bg-muted/50">
+            <CardContent className="flex items-center gap-3 px-5 py-4">
+              <Sparkles className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <p className="text-2xl font-semibold leading-tight">
+                  {matchesQuery.isLoading ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    totalMatches.toLocaleString()
+                  )}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  Ranked matches
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+
+        <Link href="/dashboard/applications">
+          <Card className="transition-colors hover:bg-muted/50">
+            <CardContent className="flex items-center gap-3 px-5 py-4">
+              <ListChecks className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <p className="text-2xl font-semibold leading-tight">
+                  {summaryLoading ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    summary ? summary.active_pipeline_count : "—"
+                  )}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  Active applications
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+
+        <Card>
+          <CardContent className="flex items-center gap-3 px-5 py-4">
+            <TrendingUp className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0">
+              <p className="text-2xl font-semibold leading-tight">
+                {summaryLoading ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  summary ? `${summary.offer_rate_percent}%` : "—"
+                )}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">Offer rate</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="order-3 empty:hidden">
+        <SearchReadinessCard />
+      </div>
+
+      <div className="order-4">
+        <Card>
           <CardContent className="px-5 py-4">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -165,100 +255,28 @@ export default function DashboardHome() {
             </div>
           )}
         </CardContent>
-      </Card>
+        </Card>
+      </div>
 
-      <TopRecommendedMatches />
+      <div className="order-5">
+        <TopRecommendedMatches />
+      </div>
 
       {!hasSummary && summaryQuery.isError && !summaryQuery.isFetching && (
-        <Card>
+        <div className="order-1">
+          <Card>
           <CardContent className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 text-sm text-muted-foreground">
             <span>Couldn’t load application summary.</span>
             <Button variant="outline" size="sm" onClick={() => summaryQuery.refetch()}>
               Retry
             </Button>
           </CardContent>
-        </Card>
+          </Card>
+        </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Link href="/dashboard/jobs">
-          <Card className="hover:bg-muted/50 transition-colors">
-            <CardContent className="flex items-center gap-3 px-5 py-4">
-              <Briefcase className="h-5 w-5 shrink-0 text-muted-foreground" />
-              <div className="min-w-0">
-                <p className="text-2xl font-semibold leading-tight">
-                  {jobsQuery.isLoading ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    totalJobs.toLocaleString()
-                  )}
-                </p>
-                <p className="truncate text-xs text-muted-foreground">
-                  Jobs in feed
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
-
-        <Link href="/dashboard/matches">
-          <Card className="hover:bg-muted/50 transition-colors">
-            <CardContent className="flex items-center gap-3 px-5 py-4">
-              <Sparkles className="h-5 w-5 shrink-0 text-muted-foreground" />
-              <div className="min-w-0">
-                <p className="text-2xl font-semibold leading-tight">
-                  {matchesQuery.isLoading ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    totalMatches.toLocaleString()
-                  )}
-                </p>
-                <p className="truncate text-xs text-muted-foreground">
-                  Ranked matches
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
-
-        <Link href="/dashboard/applications">
-          <Card className="hover:bg-muted/50 transition-colors">
-            <CardContent className="flex items-center gap-3 px-5 py-4">
-              <ListChecks className="h-5 w-5 shrink-0 text-muted-foreground" />
-              <div className="min-w-0">
-                <p className="text-2xl font-semibold leading-tight">
-                  {summaryLoading ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    summary ? summary.active_pipeline_count : "—"
-                  )}
-                </p>
-                <p className="truncate text-xs text-muted-foreground">
-                  Active applications
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
-
+      <div className="order-2">
         <Card>
-          <CardContent className="flex items-center gap-3 px-5 py-4">
-            <TrendingUp className="h-5 w-5 shrink-0 text-muted-foreground" />
-            <div className="min-w-0">
-              <p className="text-2xl font-semibold leading-tight">
-                {summaryLoading ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  summary ? `${summary.offer_rate_percent}%` : "—"
-                )}
-              </p>
-              <p className="truncate text-xs text-muted-foreground">Offer rate</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
         <CardContent className="px-5 py-4">
           <h3 className="mb-3 text-sm font-semibold">Application pipeline</h3>
           {summaryLoading ? (
@@ -282,35 +300,37 @@ export default function DashboardHome() {
               page to start tracking.
             </p>
           ) : (
-            <div className="flex flex-wrap gap-4">
-              {[
-                {
-                  label: "Saved",
-                  count: statusCounts?.saved ?? 0,
-                  color: "bg-muted-foreground",
-                },
-                { label: "Applied", count: statusCounts?.applied ?? 0, color: "bg-blue-500" },
-                {
-                  label: "Interview",
-                  count: statusCounts?.interview ?? 0,
-                  color: "bg-amber-500",
-                },
-                { label: "Offer", count: statusCounts?.offer ?? 0, color: "bg-green-500" },
-                { label: "Rejected", count: statusCounts?.rejected ?? 0, color: "bg-red-500" },
-                { label: "Closed", count: statusCounts?.closed ?? 0, color: "bg-muted" },
-              ].map((stage) => (
-                <div key={stage.label} className="flex items-center gap-2">
-                  <div className={`h-3 w-3 rounded-full ${stage.color}`} />
-                  <span className="text-sm">
-                    {stage.label}{" "}
-                    <span className="text-muted-foreground">({stage.count})</span>
-                  </span>
-                </div>
-              ))}
+            <div>
+              <div
+                className="flex h-3 overflow-hidden rounded-full bg-muted"
+                role="img"
+                aria-label="Application pipeline by status"
+              >
+                {pipelineStages.map((stage) => (
+                  <div
+                    key={stage.label}
+                    className={`h-full ${stage.color}`}
+                    style={{ width: `${(stage.count / pipelineTotal) * 100}%` }}
+                    title={`${stage.label}: ${stage.count}`}
+                  />
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
+                {pipelineStages.map((stage) => (
+                  <div key={stage.label} className="flex items-center gap-2">
+                    <div className={`h-3 w-3 rounded-full ${stage.color}`} />
+                    <span className="text-sm">
+                      {stage.label}{" "}
+                      <span className="text-muted-foreground">({stage.count})</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </CardContent>
-      </Card>
+        </Card>
+      </div>
     </div>
   );
 }
