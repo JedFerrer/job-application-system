@@ -16,6 +16,7 @@ from app.domain.matching.skill_matcher import (
     SkillMatchReport,
     compute_skill_match,
     extract_jd_skills,
+    extract_known_skills,
     normalize_skill,
 )
 from app.domain.resume.completeness import find_completeness_warnings
@@ -88,11 +89,15 @@ def build_summary_text(profile: ParsedProfile) -> str:
 
 
 def _untailored_fallback(
-    profile: ParsedProfile, job_id: int, report: SkillMatchReport,
+    profile: ParsedProfile,
+    job_id: int,
+    report: SkillMatchReport,
+    bullet_orders: list[list[int]] | None = None,
 ) -> TailoredResume:
     """Return the profile as-is when LLM tailoring is unavailable."""
     matched_set = set(report.matched_skills)
     other_skills = [s for s in profile.skills if normalize_skill(s) not in matched_set]
+    orders = bullet_orders or [list(range(len(w.highlights))) for w in profile.work_history]
     return TailoredResume(
         job_id=job_id,
         professional_summary=profile.headline or None,
@@ -109,14 +114,44 @@ def _untailored_fallback(
                 start=w.start,
                 end=w.end,
                 original_highlights=list(w.highlights),
-                tailored_highlights=list(w.highlights),
+                tailored_highlights=[w.highlights[index] for index in orders[index_role]],
             )
-            for w in profile.work_history
+            for index_role, w in enumerate(profile.work_history)
         ],
         matched_skills=report.matched_skills,
         other_skills=other_skills,
         missing_keywords=report.missing_skills,
     )
+
+
+def _bullet_relevance(
+    profile: ParsedProfile, job_description: str
+) -> tuple[list[list[int]], dict[int, set[int]], list[list[dict[str, object]]]]:
+    """Return stable per-role ordering and the source bullets eligible for rewriting."""
+    jd_skills = set(extract_jd_skills(job_description))
+    orders: list[list[int]] = []
+    eligible: dict[int, set[int]] = {}
+    prompt_roles: list[list[dict[str, object]]] = []
+    for role_index, role in enumerate(profile.work_history):
+        scored: list[tuple[int, int, list[str]]] = []
+        for source_index, bullet in enumerate(role.highlights):
+            bullet_skills = sorted(jd_skills & set(extract_known_skills(bullet)))
+            scored.append((len(bullet_skills), source_index, bullet_skills))
+        ordered = sorted(scored, key=lambda item: (-item[0], item[1]))
+        orders.append([source_index for _, source_index, _ in ordered])
+        eligible[role_index] = {source_index for score, source_index, _ in scored if score > 0}
+        prompt_roles.append([
+            {
+                "role_index": role_index,
+                "source_index": source_index,
+                "source_text": role.highlights[source_index],
+                "relevance_score": score,
+                "matched_skills": skills,
+            }
+            for score, source_index, skills in scored
+            if score > 0
+        ])
+    return orders, eligible, prompt_roles
 
 
 class ResumeService:
@@ -441,12 +476,7 @@ class ResumeService:
         job_id: int,
         job_repository: JobRepository,
     ) -> TailoredResume:
-        """Tailor the user's work history highlights for a specific job.
-
-        Uses deterministic skill matching (free) to ground the LLM, then
-        calls the LLM to rewrite highlights for relevance. Never invents
-        skills or experience — only rephrases what already exists.
-        """
+        """Selectively tailor source bullets for a specific job."""
         profile_row = await self._repository.get_active_profile(user_id)
         if profile_row is None:
             raise ProfileNotFoundError(user_id)
@@ -463,23 +493,16 @@ class ResumeService:
         jd_skills = extract_jd_skills(job.description)
         report = compute_skill_match(jd_skills, profile.model_dump())
 
-        # Build work history JSON for the prompt (original highlights only).
-        work_json = [
-            {
-                "company": w.company,
-                "title": w.title,
-                "start": w.start,
-                "end": w.end,
-                "highlights": w.highlights,
-            }
-            for w in profile.work_history
-        ]
+        bullet_orders, eligible_bullets, prompt_roles = _bullet_relevance(
+            profile, job.description
+        )
+        if not any(eligible_bullets.values()):
+            return _untailored_fallback(profile, job_id, report, bullet_orders)
 
         prompt = TAILOR_RESUME_PROMPT.format(
             job_description=job.description,
-            work_history_json=json.dumps(work_json, default=str),
+            eligible_bullets_json=json.dumps(prompt_roles, default=str),
             matched_skills=json.dumps(report.matched_skills),
-            candidate_skills=json.dumps(profile.skills),
             missing_skills=json.dumps(report.missing_skills),
         )
 
@@ -499,13 +522,15 @@ class ResumeService:
                 exc_info=True,
             )
             # Graceful fallback: return untailored profile with skill report.
-            return _untailored_fallback(profile, job_id, report)
+            return _untailored_fallback(profile, job_id, report, bullet_orders)
 
         try:
             sanitized = sanitize_tailoring_output(
                 profile,
                 data,
                 report.missing_skills,
+                eligible_bullets,
+                bullet_orders,
             )
         except Exception:
             logger.warning(
@@ -514,7 +539,7 @@ class ResumeService:
                 job_id=job_id,
                 exc_info=True,
             )
-            return _untailored_fallback(profile, job_id, report)
+            return _untailored_fallback(profile, job_id, report, bullet_orders)
 
         matched = list(report.matched_skills)
         matched_set = set(matched)
@@ -545,6 +570,7 @@ class ResumeService:
             summary_fallback=sanitized.summary_fallback,
             role_fallbacks=sanitized.role_fallbacks,
             bullet_fallbacks=sanitized.bullet_fallbacks,
+            rejected_patches=sanitized.rejected_patches,
         )
         return TailoredResume(
             job_id=job_id,

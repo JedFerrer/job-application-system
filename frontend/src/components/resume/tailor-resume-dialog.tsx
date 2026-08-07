@@ -198,8 +198,8 @@ export function TailorResumeDialog({
             {readOnly
               ? "Saved AI-generated draft. Review every claim before use."
               : jobTitle
-              ? `Your experience rewritten to emphasize relevance for "${jobTitle}".`
-              : "Your experience rewritten for this job."}
+              ? `Your experience selectively tailored to emphasize relevance for "${jobTitle}".`
+              : "Your experience selectively tailored for this job."}
             {!readOnly && (
               <> AI-generated draft based on your profile. Review every claim before copying or downloading.</>
             )}

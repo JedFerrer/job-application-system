@@ -125,6 +125,8 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).toContain(
       "AI-generated draft based on your profile. Review every claim before copying or downloading.",
     );
+    expect(renderedText()).toContain("Your experience selectively tailored to emphasize relevance");
+    expect(renderedText()).not.toContain("Your experience rewritten");
     expect(renderedText()).not.toContain("No skills or experience were invented.");
     expect(renderedText()).toContain("Acme");
     expect(renderedText()).toContain("Built Python APIs");

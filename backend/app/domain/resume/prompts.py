@@ -75,7 +75,7 @@ Resume text:
 {resume_text}"""
 
 
-TAILOR_RESUME_PROMPT = """You are an expert resume writer helping a candidate \
+LEGACY_TAILOR_RESUME_PROMPT = """You are an expert resume writer helping a candidate \
 tailor their resume for a specific job description.
 
 RULES:
@@ -126,4 +126,43 @@ CANDIDATE_SKILLS (all skills from profile):
 {candidate_skills}
 
 MISSING_SKILLS (skills in the JD but not supported by the profile):
+{missing_skills}"""
+
+
+TAILOR_RESUME_PROMPT = """You are making a conservative, selective resume-tailoring pass \
+for a specific job description.
+
+The candidate profile is the sole source of truth. Return valid JSON only — \
+no markdown or explanation.
+
+Rules:
+- Return only optional rewrite patches for the eligible source bullets below.
+- Omit a bullet when it should be kept unchanged. Do not regenerate the resume.
+- A rewrite must preserve the exact meaning and every substantive fact of its exact source bullet.
+- Do not add or strengthen metrics, tools, skills, responsibilities, scope, \
+ownership, architecture, leadership, seniority, employers, dates, certifications, \
+education, projects, languages, or licenses.
+- Do not use JD wording to claim a missing skill. In particular, never turn \
+Docker into Kubernetes.
+- Do not change role identity or move a bullet between roles. The application \
+supplies all identity fields and preserves all bullets.
+- Use a rewrite only when it is materially clearer for this JD; otherwise omit it.
+
+Return exactly this shape:
+{{
+  "rewrites": [
+    {{"role_index": 0, "source_index": 1, "rewritten_text": "..."}}
+  ]
+}}
+
+JOB DESCRIPTION:
+{job_description}
+
+ELIGIBLE SOURCE BULLETS (only these may be patched):
+{eligible_bullets_json}
+
+MATCHED_SKILLS:
+{matched_skills}
+
+MISSING_SKILLS (never claim these):
 {missing_skills}"""
