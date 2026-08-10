@@ -12,7 +12,10 @@ from app.domain.resume import service as resume_service
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
 from app.domain.resume.schemas import ParsedProfile
 from app.domain.resume.service import ResumeService
-from app.domain.resume.truthfulness import sanitize_tailoring_output
+from app.domain.resume.truthfulness import (
+    build_evidence_catalog,
+    sanitize_tailoring_output,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -58,7 +61,15 @@ def _eligible() -> dict[int, set[int]]:
 
 
 def _payload(rewrites: list[dict[str, object]] | None = None) -> dict[str, object]:
-    return {"rewrites": rewrites or []}
+    normalized = []
+    for rewrite in rewrites or []:
+        item = dict(rewrite)
+        if "evidence_ids" not in item:
+            item["evidence_ids"] = [
+                f"r{item['role_index']}:b{item['source_index']}"
+            ]
+        normalized.append(item)
+    return {"rewrites": normalized}
 
 
 def _service_and_job(
@@ -87,6 +98,13 @@ def test_prompt_is_sparse_and_source_preserving() -> None:
     assert "same NUMBER" not in TAILOR_RESUME_PROMPT
     assert "Do not regenerate the resume" in TAILOR_RESUME_PROMPT
     assert "Docker into Kubernetes" in TAILOR_RESUME_PROMPT
+    assert "evidence_ids" in TAILOR_RESUME_PROMPT
+    assert "neutral combinations" in TAILOR_RESUME_PROMPT
+    assert '"evidence_ids": ["r0:b0", "r0:b1"]' in TAILOR_RESUME_PROMPT
+    assert "automated internal workflows" in TAILOR_RESUME_PROMPT
+    assert "include the target ID in every" in TAILOR_RESUME_PROMPT
+    assert "Prefer exact" in TAILOR_RESUME_PROMPT
+    assert "source wording joined with a semicolon" in TAILOR_RESUME_PROMPT
 
 
 def test_keep_and_identical_rewrite_preserve_source_text() -> None:
@@ -126,7 +144,16 @@ def test_punctuation_bearing_technology_substitution_falls_back(
     profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
     result = sanitize_tailoring_output(
         profile,
-        {"rewrites": [{"role_index": 0, "source_index": 0, "rewritten_text": rewritten}]},
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
         [],
         {0: {0}},
         [[0]],
@@ -208,7 +235,16 @@ def test_safe_technical_tokens_and_punctuation_only_changes_remain_supported() -
     profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
     result = sanitize_tailoring_output(
         profile,
-        {"rewrites": [{"role_index": 0, "source_index": 0, "rewritten_text": rewritten}]},
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
         [],
         {0: {0}},
         [[0]],
@@ -223,13 +259,122 @@ def test_numeric_claims_allow_source_supported_decimal_normalization() -> None:
     profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
     result = sanitize_tailoring_output(
         profile,
-        {"rewrites": [{"role_index": 0, "source_index": 0, "rewritten_text": rewritten}]},
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
         [],
         {0: {0}},
         [[0]],
     )
     assert result.tailored_highlights == [[rewritten]]
     assert result.rejected_patches == 0
+
+
+@pytest.mark.parametrize(
+    ("source", "rewritten"),
+    [
+        ("Managed 1,000 services.", "Managed 1000 services."),
+        ("Saved $1,000 annually.", "Saved $1000 annually."),
+        ("Improved latency by 20 %.", "Improved latency by 20%."),
+    ],
+)
+def test_numeric_span_formatting_equivalence_is_preserved(
+    source: str, rewritten: str
+) -> None:
+    profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [[rewritten]]
+    assert result.rejected_patches == 0
+
+
+@pytest.mark.parametrize(
+    ("source", "rewritten"),
+    [
+        (
+            "Improved latency by 20% and throughput by 10% using Redis.",
+            "Improved latency by 10% and throughput by 20% using Redis.",
+        ),
+        (
+            "Reduced API latency by 20% and database load by 10%.",
+            "Reduced API latency by 10% and database load by 20%.",
+        ),
+        (
+            "Managed 3 services and supported 5 applications.",
+            "Managed 5 services and supported 3 applications.",
+        ),
+    ],
+)
+def test_numeric_association_swaps_fall_back_to_source(
+    source: str, rewritten: str
+) -> None:
+    profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [[source]]
+    assert result.rejected_patches == 1
+
+
+def test_metric_relationship_reassignment_falls_back_to_source() -> None:
+    source = "Improved latency by 20% using Redis."
+    rewritten = "Improved Redis performance by 20% using Redis."
+    profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [[source]]
+    assert result.rejected_patches == 1
 
 
 @pytest.mark.parametrize(
@@ -284,6 +429,553 @@ def test_ineligible_duplicate_and_cross_role_targets_are_rejected() -> None:
 def test_malformed_top_level_payload_is_rejected_for_full_fallback() -> None:
     with pytest.raises(ValueError):
         sanitize_tailoring_output(_profile(), {}, ["kubernetes"], _eligible(), _orders())
+
+
+def test_same_role_neutral_combination_allows_explicitly_cited_evidence() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {
+                    "company": "Acme",
+                    "highlights": [
+                        "Built FastAPI APIs.",
+                        "Automated internal workflows.",
+                    ],
+                }
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Built FastAPI APIs; automated internal workflows.",
+                    "evidence_ids": ["r0:b0", "r0:b1"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights[0][0] == (
+        "Built FastAPI APIs; automated internal workflows."
+    )
+    assert result.rejected_patches == 0
+
+
+def test_natural_model_relationship_wording_falls_back_to_source() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {
+                    "highlights": [
+                        "Built FastAPI APIs.",
+                        "Automated internal workflows.",
+                    ]
+                }
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Built FastAPI APIs supporting internal workflow automation.",
+                    "evidence_ids": ["r0:b0", "r0:b1"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights[0][0] == "Built FastAPI APIs."
+    assert result.rejected_patches == 1
+
+
+def test_multiple_cited_supplements_select_one_highest_relevance() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {
+                    "highlights": [
+                        "Built FastAPI APIs.",
+                        "Automated internal workflows.",
+                        "Implemented Redis caching.",
+                        "Improved deployment processes.",
+                    ]
+                }
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Built FastAPI APIs that improve workflows and caching.",
+                    "evidence_ids": ["r0:b0", "r0:b1", "r0:b2", "r0:b3"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1, 2, 3]],
+        build_evidence_catalog(profile),
+        {(0, 1): 1, (0, 2): 3, (0, 3): 2},
+    )
+    assert result.tailored_highlights[0][0] == (
+        "Built FastAPI APIs; Implemented Redis caching."
+    )
+    assert result.multi_evidence_selections == 1
+    assert "Automated internal workflows" not in result.tailored_highlights[0][0]
+
+
+def test_multiple_cited_supplements_tie_breaks_by_source_order_and_excludes_uncited() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {
+                    "highlights": [
+                        "Built FastAPI APIs.",
+                        "Automated internal workflows.",
+                        "Implemented Redis caching.",
+                        "Improved deployment processes.",
+                    ]
+                }
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Built FastAPI APIs that improve workflows.",
+                    "evidence_ids": ["r0:b0", "r0:b1", "r0:b3"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1, 2, 3]],
+        build_evidence_catalog(profile),
+        {(0, 1): 2, (0, 3): 2, (0, 2): 9},
+    )
+    assert result.tailored_highlights[0][0] == (
+        "Built FastAPI APIs; Automated internal workflows."
+    )
+    assert "Redis" not in result.tailored_highlights[0][0]
+
+
+def test_rejection_reason_counts_are_safe_and_do_not_include_source_text() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {
+                    "highlights": [
+                        "Implemented Redis caching.",
+                        "Reduced response time by 20%.",
+                    ]
+                }
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Implemented Redis caching, reducing response time by 20%.",
+                    "evidence_ids": ["r0:b0", "r0:b1"],
+                },
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Implemented Redis caching safely.",
+                    "evidence_ids": ["r0:b0", "r0:b9"],
+                },
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1]],
+        build_evidence_catalog(profile),
+    )
+    assert result.rejection_reasons == {
+        "relationship_inference": 1,
+        "invalid_evidence_id": 1,
+    }
+    assert all("Redis" not in key for key in result.rejection_reasons)
+
+
+@pytest.mark.parametrize(
+    "rewritten",
+    [
+        "Led FastAPI API delivery.",
+    ],
+)
+def test_same_role_evidence_does_not_infer_relationships_or_protected_claims(
+    rewritten: str,
+) -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {
+                    "highlights": [
+                        "Built FastAPI APIs.",
+                        "Implemented Redis caching.",
+                        "Reduced response time by 20%.",
+                        "Collaborated with product teams.",
+                    ]
+                }
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0", "r0:b1", "r0:b2", "r0:b3"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1, 2, 3]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights[0][0] == (
+        "Built FastAPI APIs; Implemented Redis caching."
+    )
+    assert result.rejected_patches == 0
+
+
+def test_source_supported_relationship_is_preserved() -> None:
+    source = "Built FastAPI APIs using Redis."
+    profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Built FastAPI APIs using Redis",
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [["Built FastAPI APIs using Redis"]]
+    assert result.rejected_patches == 0
+
+
+@pytest.mark.parametrize(
+    ("source", "rewritten"),
+    [
+        ("Deployed services on AWS.", "Deployed services on AWS"),
+        ("Built internal tools for operations teams.", "Built internal tools for operations teams"),
+    ],
+)
+def test_source_supported_connector_relationships_are_preserved(
+    source: str, rewritten: str
+) -> None:
+    profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [[rewritten]]
+    assert result.rejected_patches == 0
+
+
+def test_source_supported_clause_initial_relationship_is_preserved() -> None:
+    source = "On AWS, deployed backend services."
+    profile = ParsedProfile.model_validate({"work_history": [{"highlights": [source]}]})
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "On AWS, deployed backend services",
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [["On AWS, deployed backend services"]]
+    assert result.rejected_patches == 0
+
+
+@pytest.mark.parametrize(
+    ("source", "supplement", "rewritten"),
+    [
+        (
+            "On AWS, deployed backend services.",
+            "Built FastAPI APIs.",
+            "On AWS, deployed FastAPI APIs.",
+        ),
+        (
+            "Deployed services on AWS.",
+            "Built services.",
+            "Built services on AWS.",
+        ),
+        (
+            "Implemented caching with Redis.",
+            "Monitored caching.",
+            "Monitored caching with Redis.",
+        ),
+        (
+            "On AWS, deployed backend services.",
+            "Maintained worker services.",
+            "On AWS, deployed worker services.",
+        ),
+        (
+            "Built internal tools for operations teams.",
+            "Supported finance teams.",
+            "Built internal tools for finance teams.",
+        ),
+        (
+            "Deployed services on AWS.",
+            "Implemented Redis caching.",
+            "Deployed services on AWS using Redis.",
+        ),
+    ],
+)
+def test_relationship_context_substitutions_fall_back_to_source(
+    source: str, supplement: str, rewritten: str
+) -> None:
+    profile = ParsedProfile.model_validate(
+        {"work_history": [{"highlights": [source, supplement]}]}
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0", "r0:b1"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [[source, supplement]]
+    assert result.rejected_patches == 1
+    assert result.rejection_reasons == {"relationship_inference": 1}
+
+
+def test_multiple_cited_facts_cannot_recombine_relationship_context() -> None:
+    source = "On AWS, deployed backend services."
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {
+                    "highlights": [
+                        source,
+                        "Built FastAPI APIs.",
+                        "Implemented Redis caching.",
+                    ]
+                }
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "On AWS, deployed FastAPI APIs using Redis.",
+                    "evidence_ids": ["r0:b0", "r0:b1", "r0:b2"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1, 2]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights[0] == [
+        source,
+        "Built FastAPI APIs.",
+        "Implemented Redis caching.",
+    ]
+    assert result.rejected_patches == 1
+    assert result.rejection_reasons == {"relationship_inference": 1}
+
+
+@pytest.mark.parametrize(
+    "rewritten",
+    [
+        "On Redis, built FastAPI APIs.",
+        "In Redis, built FastAPI APIs.",
+        "For operations teams, built FastAPI APIs.",
+        "Using Redis, built FastAPI APIs.",
+        "Built FastAPI APIs using Redis.",
+        "Built FastAPI APIs with Redis.",
+        "Built FastAPI APIs backed by Redis.",
+        "Built FastAPI APIs powered by Redis.",
+        "Built FastAPI APIs integrated with Redis.",
+        "Integrated Redis into FastAPI APIs.",
+        "Built FastAPI APIs supporting internal workflows.",
+        "Built FastAPI APIs enabling internal workflows.",
+        "Built FastAPI APIs, reducing response time by 20%.",
+        "Built FastAPI APIs on Redis.",
+        "Built FastAPI APIs in Redis.",
+        "Built FastAPI APIs for Redis caching.",
+        "Built FastAPI APIs for operations teams.",
+        "Built FastAPI APIs via Redis.",
+        "Built FastAPI APIs through Redis.",
+        "Built FastAPI APIs leveraging Redis.",
+    ],
+)
+def test_new_technical_relationships_fall_back_to_target_source(rewritten: str) -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {"highlights": ["Built FastAPI APIs.", "Implemented Redis caching."]}
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": rewritten,
+                    "evidence_ids": ["r0:b0", "r0:b1"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0, 1]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [["Built FastAPI APIs.", "Implemented Redis caching."]]
+    assert result.rejected_patches == 1
+    assert result.rejection_reasons == {"relationship_inference": 1}
+
+
+@pytest.mark.parametrize(
+    "evidence_ids",
+    [
+        [],
+        ["r0:b9"],
+        ["r0:b0", "r0:b0"],
+        ["r0:b0", "r1:b0"],
+        ["r0:b0", "r0:bTrue"],
+    ],
+)
+def test_invalid_evidence_ids_fall_back_to_source(evidence_ids: list[str]) -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {"highlights": ["Built FastAPI APIs."]},
+                {"highlights": ["Built AWS services."]},
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Built FastAPI APIs for workflows.",
+                    "evidence_ids": evidence_ids,
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0], [0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights[0] == ["Built FastAPI APIs."]
+    assert result.rejected_patches == 1
+
+
+def test_profile_skills_and_projects_never_become_role_evidence() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "skills": ["AWS"],
+            "projects": [{"name": "Platform", "technologies": ["Kubernetes"]}],
+            "work_history": [{"highlights": ["Built FastAPI APIs."]}],
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "role_index": 0,
+                    "source_index": 0,
+                    "rewritten_text": "Built FastAPI APIs on AWS with Kubernetes.",
+                    "evidence_ids": ["r0:b0"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [["Built FastAPI APIs."]]
+    assert result.rejected_patches == 1
 
 
 @pytest.mark.asyncio

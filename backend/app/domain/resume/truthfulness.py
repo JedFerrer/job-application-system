@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -31,6 +32,66 @@ _CONNECTORS = {
     "a", "an", "and", "as", "at", "by", "for", "from", "in", "into",
     "of", "on", "or", "the", "through", "to", "using", "via", "with",
 }
+_RELATIONSHIP_CONNECTORS = {
+    "by", "for", "from", "in", "into", "on", "through", "to", "using",
+    "via", "with",
+}
+_RELATIONSHIP_MARKERS = {
+    "backed",
+    "backing",
+    "caused",
+    "enabling",
+    "integrated",
+    "powered",
+    "reducing",
+    "resulting",
+    "supporting",
+}
+_RELATIONSHIP_PATTERNS = (
+    r"\busing\s+[^,.;]+",
+    r"\bwith\s+[^,.;]+",
+    r"\bthrough\s+[^,.;]+",
+    r"\bvia\s+[^,.;]+",
+    r"\bleveraging\s+[^,.;]+",
+    r"\bbacked\s+by\s+[^,.;]+",
+    r"\bpowered\s+by\s+[^,.;]+",
+    r"\bintegrated\s+(?:with|into)\s+[^,.;]+",
+    r"\bintegrated\s+[^,.;]+\s+into\s+[^,.;]+",
+    r"\bto\s+automate\s+[^,.;]+",
+    r"\bsupporting\s+[^,.;]+",
+    r"\benabling\s+[^,.;]+",
+    r"\bresulting\s+in\s+[^,.;]+",
+    r"\bleading\s+to\s+[^,.;]+",
+    r"\breducing\s+[^,.;]+",
+    r"\b(?:serving|powering|improving|increasing|decreasing|causing)\s+[^,.;]+",
+)
+_CLAUSE_BOUNDARY = r"[.!?;:\u2012\u2013\u2014\u2026\n\r]"
+_PROTECTED_CLAIMS = {
+    "architected", "architect", "designed", "drove", "led", "managed",
+    "mentored", "owned", "oversaw", "spearheaded", "supervised",
+}
+
+
+@dataclass(frozen=True)
+class EvidenceRef:
+    evidence_id: str
+    role_index: int
+    source_index: int
+    text: str
+
+
+def build_evidence_catalog(profile: ParsedProfile) -> dict[str, EvidenceRef]:
+    """Build request-local, role-scoped evidence IDs from active profile text."""
+    return {
+        f"r{role_index}:b{source_index}": EvidenceRef(
+            evidence_id=f"r{role_index}:b{source_index}",
+            role_index=role_index,
+            source_index=source_index,
+            text=bullet,
+        )
+        for role_index, role in enumerate(profile.work_history)
+        for source_index, bullet in enumerate(role.highlights)
+    }
 
 
 def numeric_claims(text: str) -> frozenset[str]:
@@ -75,6 +136,85 @@ def _technical_tokens(text: str) -> frozenset[str]:
     )
 
 
+def _relationship_claims(text: str) -> frozenset[str]:
+    """Return normalized relationship phrases for semantic policy checks."""
+    claims: set[str] = set()
+    for pattern in _RELATIONSHIP_PATTERNS:
+        claims.update(
+            re.sub(r"\s+", " ", match.group()).casefold().strip()
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE)
+        )
+    return frozenset(claims)
+
+
+def _relationship_structures(text: str) -> frozenset[tuple[str, ...]]:
+    """Return normalized, context-complete clauses containing relationships."""
+    token_matches = list(_TOKEN.finditer(text))
+    numeric_matches = list(_NUMERIC_CLAIM.finditer(text))
+    if not token_matches and not numeric_matches:
+        return frozenset()
+
+    events: list[tuple[int, int, str, bool]] = []
+    token_index = 0
+    for numeric_match in numeric_matches:
+        while (
+            token_index < len(token_matches)
+            and token_matches[token_index].end() <= numeric_match.start()
+        ):
+            token_match = token_matches[token_index]
+            events.append(
+                (token_match.start(), token_match.end(), token_match.group().casefold(), False)
+            )
+            token_index += 1
+        canonical_number = next(
+            iter(numeric_claims(numeric_match.group())), numeric_match.group()
+        )
+        events.append(
+            (
+                numeric_match.start(),
+                numeric_match.end(),
+                f"<number:{canonical_number}>",
+                True,
+            )
+        )
+        while (
+            token_index < len(token_matches)
+            and token_matches[token_index].start() < numeric_match.end()
+        ):
+            token_index += 1
+    while token_index < len(token_matches):
+        token_match = token_matches[token_index]
+        events.append(
+            (token_match.start(), token_match.end(), token_match.group().casefold(), False)
+        )
+        token_index += 1
+
+    structures: set[tuple[str, ...]] = set()
+    clause_tokens: list[str] = []
+    has_relationship = False
+    has_numeric = False
+    previous_end = 0
+
+    def flush_clause() -> None:
+        if (has_relationship or has_numeric) and clause_tokens:
+            structures.add(("clause", *clause_tokens))
+
+    for start, end, token, is_numeric in events:
+        gap = text[previous_end:start]
+        if clause_tokens and re.search(_CLAUSE_BOUNDARY, gap):
+            flush_clause()
+            clause_tokens.clear()
+            has_relationship = False
+            has_numeric = False
+        clause_tokens.append(token)
+        if is_numeric:
+            has_numeric = True
+        has_relationship = has_relationship or token in _RELATIONSHIP_CONNECTORS
+        previous_end = end
+    flush_clause()
+    return frozenset(structures)
+
+
 def _safe_text(generated: object, source: str, missing_skills: set[str]) -> bool:
     if not isinstance(generated, str) or not generated.strip():
         return False
@@ -87,6 +227,90 @@ def _safe_text(generated: object, source: str, missing_skills: set[str]) -> bool
     return _substantive_tokens(generated).issubset(_substantive_tokens(source))
 
 
+def _safe_text_with_evidence(
+    generated: object,
+    source: str,
+    cited: list[EvidenceRef],
+    missing_skills: set[str],
+) -> bool:
+    if not isinstance(generated, str) or not generated.strip():
+        return False
+    if not numeric_claims(generated).issubset(numeric_claims(source)):
+        return False
+    if _mentions_missing_skill(generated, missing_skills):
+        return False
+    # Relationship policy is independent from lexical connector filtering:
+    # words such as ``using`` and ``with`` may be omitted from substantive
+    # tokens, but a newly introduced relationship must still be rejected.
+    if (
+        not _relationship_claims(generated).issubset(_relationship_claims(source))
+        or not _relationship_structures(generated).issubset(
+            _relationship_structures(source)
+        )
+    ):
+        return False
+
+    source_technical = _technical_tokens(source)
+    generated_technical = _technical_tokens(generated)
+    cited_technical = set().union(*(_technical_tokens(item.text) for item in cited))
+    if not source_technical.issubset(generated_technical):
+        return False
+    if not generated_technical.issubset(source_technical | cited_technical):
+        return False
+
+    allowed_tokens = set().union(
+        *(_substantive_tokens(item.text) for item in cited)
+    )
+    if not _substantive_tokens(generated).issubset(allowed_tokens):
+        return False
+
+    source_tokens = _substantive_tokens(source)
+    generated_tokens = _substantive_tokens(generated)
+    added_tokens = generated_tokens - source_tokens
+    if added_tokens & _PROTECTED_CLAIMS:
+        return False
+    if added_tokens & _RELATIONSHIP_MARKERS:
+        return False
+    return True
+
+
+def _neutral_combination(
+    source: str,
+    target_source_index: int,
+    cited: list[EvidenceRef],
+    missing_skills: set[str],
+    evidence_relevance: dict[tuple[int, int], int],
+) -> str | None:
+    """Compose one neutral, source-exact same-role combination.
+
+    This is intentionally a tiny fallback grammar: one target bullet plus one
+    non-quantified supporting bullet, joined with a semicolon. It never copies
+    metrics or protected responsibility claims into another bullet.
+    """
+    supplements = [
+        item
+        for item in cited
+        if item.source_index != target_source_index
+        and item.text.strip() != source.strip()
+    ]
+    if not supplements:
+        return None
+    supplement_ref = max(
+        supplements,
+        key=lambda item: (
+            evidence_relevance.get((item.role_index, item.source_index), 0),
+            -item.source_index,
+        ),
+    )
+    supplement = supplement_ref.text.strip()
+    if numeric_claims(supplement) or _mentions_missing_skill(supplement, missing_skills):
+        return None
+    if _substantive_tokens(supplement) & _PROTECTED_CLAIMS:
+        return None
+    candidate = f"{source.rstrip(' .;')}; {supplement.rstrip(' .;')}."
+    return candidate if _safe_text_with_evidence(candidate, source, cited, missing_skills) else None
+
+
 @dataclass(frozen=True)
 class SanitizedTailoring:
     professional_summary: str | None
@@ -95,6 +319,8 @@ class SanitizedTailoring:
     role_fallbacks: int
     bullet_fallbacks: int
     rejected_patches: int
+    rejection_reasons: dict[str, int] = field(default_factory=dict)
+    multi_evidence_selections: int = 0
 
 
 def sanitize_tailoring_output(
@@ -103,6 +329,8 @@ def sanitize_tailoring_output(
     missing_skills: list[str],
     eligible_bullets: dict[int, set[int]],
     bullet_orders: list[list[int]],
+    evidence_catalog: dict[str, EvidenceRef] | None = None,
+    evidence_relevance: dict[tuple[int, int], int] | None = None,
 ) -> SanitizedTailoring:
     """Apply sparse, source-indexed rewrites while preserving source structure."""
     if not isinstance(payload, dict):
@@ -114,9 +342,18 @@ def sanitize_tailoring_output(
     missing_set = set(missing_skills)
     rewrites: dict[tuple[int, int], str] = {}
     rejected = 0
+    reasons: Counter[str] = Counter()
+    selected_multi_evidence = 0
+    relevance = evidence_relevance or {}
+
+    def reject(reason: str) -> None:
+        nonlocal rejected
+        rejected += 1
+        reasons[reason] += 1
+
     for raw in raw_rewrites:
         if not isinstance(raw, dict):
-            rejected += 1
+            reject("malformed_patch")
             continue
         role_index = raw.get("role_index")
         source_index = raw.get("source_index")
@@ -127,7 +364,7 @@ def sanitize_tailoring_output(
             or not isinstance(source_index, int)
             or isinstance(source_index, bool)
         ):
-            rejected += 1
+            reject("malformed_patch")
             continue
         key = (role_index, source_index)
         if (
@@ -139,15 +376,77 @@ def sanitize_tailoring_output(
             or not isinstance(rewritten, str)
             or not rewritten.strip()
         ):
-            rejected += 1
+            reject("malformed_patch")
             continue
         source = profile.work_history[role_index].highlights[source_index]
         if rewritten.strip() == source.strip():
             continue
-        if _safe_text(rewritten, source, missing_set):
+        raw_evidence_ids = raw.get("evidence_ids")
+        if raw_evidence_ids is None:
+            reject("missing_target_evidence")
+            continue
+        if not isinstance(raw_evidence_ids, list):
+            reject("invalid_evidence_id")
+            continue
+        catalog = evidence_catalog or build_evidence_catalog(profile)
+        if (
+            not raw_evidence_ids
+            or any(type(item) is not str for item in raw_evidence_ids)
+            or len(set(raw_evidence_ids)) != len(raw_evidence_ids)
+        ):
+            reject("invalid_evidence_id")
+            continue
+        refs = [catalog.get(item) for item in raw_evidence_ids]
+        if any(ref is None for ref in refs):
+            reject("invalid_evidence_id")
+            continue
+        valid_refs = [ref for ref in refs if ref is not None]
+        own_id = f"r{role_index}:b{source_index}"
+        if own_id not in raw_evidence_ids or any(
+            ref.role_index != role_index for ref in valid_refs
+        ):
+            reason = (
+                "cross_role_evidence"
+                if any(ref.role_index != role_index for ref in valid_refs)
+                else "missing_target_evidence"
+            )
+            reject(reason)
+            continue
+        if (
+            not _relationship_claims(rewritten).issubset(_relationship_claims(source))
+            or not _relationship_structures(rewritten).issubset(
+                _relationship_structures(source)
+            )
+        ):
+            reject("relationship_inference")
+            continue
+        if _safe_text_with_evidence(rewritten, source, valid_refs, missing_set):
             rewrites[key] = rewritten.strip()
         else:
-            rejected += 1
+            composed = _neutral_combination(
+                source,
+                source_index,
+                valid_refs,
+                missing_set,
+                relevance,
+            )
+            if composed is not None:
+                rewrites[key] = composed
+                if len(valid_refs) > 2:
+                    selected_multi_evidence += 1
+                continue
+            if numeric_claims(rewritten) - numeric_claims(source):
+                reject("numeric_claim")
+            elif (
+                _substantive_tokens(rewritten) - _substantive_tokens(source)
+            ) & _PROTECTED_CLAIMS:
+                reject("protected_claim")
+            elif (
+                _substantive_tokens(rewritten) - _substantive_tokens(source)
+            ) & _RELATIONSHIP_MARKERS:
+                reject("relationship_inference")
+            else:
+                reject("unsupported_token")
 
     sanitized_roles: list[list[str]] = []
     bullet_fallbacks = rejected
@@ -168,4 +467,6 @@ def sanitize_tailoring_output(
         role_fallbacks=0,
         bullet_fallbacks=bullet_fallbacks,
         rejected_patches=rejected,
+        rejection_reasons=dict(reasons),
+        multi_evidence_selections=selected_multi_evidence,
     )

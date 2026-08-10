@@ -151,9 +151,32 @@ supplies all identity fields and preserves all bullets.
 Return exactly this shape:
 {{
   "rewrites": [
-    {{"role_index": 0, "source_index": 1, "rewritten_text": "..."}}
+    {{"role_index": 0, "source_index": 1, "rewritten_text": "...", "evidence_ids": ["r0:b1"]}}
   ]
 }}
+
+Every rewrite must cite its target bullet's evidence ID. Additional factual
+words may come only from explicitly cited bullets in the same role. Cite no
+other role, project, skill-list, education, credential, or JD evidence. Do not
+invent relationships between separately cited facts: neutral combinations are
+allowed, but purpose, causality, integration, architecture, ownership,
+leadership, and metrics remain source-local.
+
+Concrete evidence-ID example:
+- target evidence `r0:b0`: "Built FastAPI APIs."
+- same-role evidence `r0:b1`: "Automated internal workflows."
+- valid patch: {{"role_index": 0, "source_index": 0,
+  "rewritten_text": "Built FastAPI APIs; automated internal workflows.",
+  "evidence_ids": ["r0:b0", "r0:b1"]}}
+- invalid patch: use no patch when the target ID is missing, an ID is from
+  another role, or the rewrite says the APIs caused, enabled, backed, or
+  integrated the separately cited workflow fact.
+Use only IDs shown in the evidence bundle, include the target ID in every
+patch, and omit the patch when no safe neutral rewrite is possible. Prefer exact
+source wording joined with a semicolon; do not invent inflections or
+use purpose, causal, dependency, or technical-integration language. Cite only
+the target and the one strongest supporting bullet needed for the rewrite;
+do not cite every relevant bullet in the role.
 
 JOB DESCRIPTION:
 {job_description}

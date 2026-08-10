@@ -50,7 +50,10 @@ from app.domain.resume.schemas import (
     TailoredResumeDraftResponse,
     TailoredWorkItem,
 )
-from app.domain.resume.truthfulness import sanitize_tailoring_output
+from app.domain.resume.truthfulness import (
+    build_evidence_catalog,
+    sanitize_tailoring_output,
+)
 from app.infrastructure.embeddings import embed_text
 from app.infrastructure.llm_client import llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
@@ -140,13 +143,23 @@ def _bullet_relevance(
         ordered = sorted(scored, key=lambda item: (-item[0], item[1]))
         orders.append([source_index for _, source_index, _ in ordered])
         eligible[role_index] = {source_index for score, source_index, _ in scored if score > 0}
+        same_role_evidence = [
+            {
+                "evidence_id": f"r{role_index}:b{source_index}",
+                "source_index": source_index,
+                "source_text": role.highlights[source_index],
+            }
+            for source_index in range(len(role.highlights))
+        ]
         prompt_roles.append([
             {
                 "role_index": role_index,
                 "source_index": source_index,
                 "source_text": role.highlights[source_index],
+                "evidence_id": f"r{role_index}:b{source_index}",
                 "relevance_score": score,
                 "matched_skills": skills,
+                "same_role_evidence": same_role_evidence,
             }
             for score, source_index, skills in scored
             if score > 0
@@ -525,12 +538,26 @@ class ResumeService:
             return _untailored_fallback(profile, job_id, report, bullet_orders)
 
         try:
+            evidence_relevance: dict[tuple[int, int], int] = {}
+            for role_entries in prompt_roles:
+                for entry in role_entries:
+                    role_value = entry.get("role_index")
+                    source_value = entry.get("source_index")
+                    score_value = entry.get("relevance_score")
+                    if (
+                        isinstance(role_value, int)
+                        and isinstance(source_value, int)
+                        and isinstance(score_value, int)
+                    ):
+                        evidence_relevance[(role_value, source_value)] = score_value
             sanitized = sanitize_tailoring_output(
                 profile,
                 data,
                 report.missing_skills,
                 eligible_bullets,
                 bullet_orders,
+                build_evidence_catalog(profile),
+                evidence_relevance,
             )
         except Exception:
             logger.warning(
@@ -571,6 +598,12 @@ class ResumeService:
             role_fallbacks=sanitized.role_fallbacks,
             bullet_fallbacks=sanitized.bullet_fallbacks,
             rejected_patches=sanitized.rejected_patches,
+            rejection_reasons=sanitized.rejection_reasons,
+            rejection_reason_counts=", ".join(
+                f"{key}={value}"
+                for key, value in sorted(sanitized.rejection_reasons.items())
+            ),
+            multi_evidence_selections=sanitized.multi_evidence_selections,
         )
         return TailoredResume(
             job_id=job_id,
