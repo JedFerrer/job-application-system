@@ -8,14 +8,17 @@ const apiMocks = vi.hoisted(() => ({
   tailorResume: vi.fn(),
   createDraft: vi.fn(),
 }));
+const exportMocks = vi.hoisted(() => ({
+  downloadResumePdf: vi.fn(),
+  downloadResumeDocx: vi.fn(),
+}));
 
 vi.mock("@/lib/api", () => ({
   resumeApi: apiMocks,
 }));
 
 vi.mock("@/lib/cover-letter-export", () => ({
-  downloadResumePdf: vi.fn(),
-  downloadResumeDocx: vi.fn(),
+  ...exportMocks,
 }));
 
 vi.mock("@/components/ui/dialog", () => {
@@ -51,6 +54,7 @@ const tailoredResume = {
       end: "2022-01",
       original_highlights: ["Built APIs"],
       tailored_highlights: ["Built Python APIs"],
+      tailored_highlight_source_indices: [0],
     },
   ],
   education: [],
@@ -80,6 +84,8 @@ describe("TailorResumeDialog", () => {
     });
     apiMocks.tailorResume.mockReset();
     apiMocks.createDraft.mockReset();
+    exportMocks.downloadResumePdf.mockReset();
+    exportMocks.downloadResumeDocx.mockReset();
   });
 
   afterEach(() => {
@@ -239,5 +245,85 @@ describe("TailorResumeDialog", () => {
     );
 
     expect(apiMocks.tailorResume).toHaveBeenCalledWith(103);
+  });
+
+  it("uses the reviewed original for save and every export path", async () => {
+    apiMocks.tailorResume.mockResolvedValue(tailoredResume);
+    apiMocks.createDraft.mockResolvedValue({ content: tailoredResume });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(renderedText()).toContain("Use original"));
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Use original"))?.click());
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save draft"))?.click());
+    expect(apiMocks.createDraft.mock.calls[0]?.[0].content.work_history[0].tailored_highlights).toEqual(["Built APIs"]);
+    const copyButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"));
+    await act(async () => { copyButton?.click(); await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Built APIs"));
+    expect(writeText.mock.calls[0]?.[0]).not.toContain("Built Python APIs");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "PDF")?.click());
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "DOCX")?.click());
+    for (const exportMock of [exportMocks.downloadResumePdf, exportMocks.downloadResumeDocx]) {
+      expect(exportMock).toHaveBeenCalledWith(
+        expect.objectContaining({ work_history: [expect.objectContaining({ tailored_highlights: ["Built APIs"] })] }),
+        "Ada_Lovelace_Resume",
+      );
+    }
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Restore suggestion"))?.click());
+    expect(container.textContent).not.toContain("Restore all suggestions");
+  });
+
+  it("shows source bullets when the mapping is unsafe", async () => {
+    apiMocks.tailorResume.mockResolvedValue({
+      ...tailoredResume,
+      work_history: [{ ...tailoredResume.work_history[0], tailored_highlight_source_indices: [1] }],
+    });
+    apiMocks.createDraft.mockResolvedValue({ content: tailoredResume });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Comparison unavailable; showing source bullets safely."));
+    expect(renderedText()).toContain("Built APIs");
+    expect(renderedText()).not.toContain("Built Python APIs");
+    expect(renderedText()).not.toContain("Use original");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save draft"))?.click());
+    expect(apiMocks.createDraft.mock.calls[0]?.[0].content.work_history[0].tailored_highlights).toEqual(["Built APIs"]);
+    expect(apiMocks.createDraft.mock.calls[0]?.[0].content.work_history[0]).not.toHaveProperty("tailored_highlight_source_indices");
+  });
+
+  it("shows moved-higher for reorder-only bullets without review controls", async () => {
+    apiMocks.tailorResume.mockResolvedValue({
+      ...tailoredResume,
+      work_history: [{
+        ...tailoredResume.work_history[0],
+        original_highlights: ["First bullet", "Second bullet", "Third bullet"],
+        tailored_highlights: ["Third bullet", "First bullet", "Second bullet"],
+        tailored_highlight_source_indices: [2, 0, 1],
+      }],
+    });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Moved higher"));
+    expect(renderedText()).not.toContain("Original:");
+    expect(renderedText()).not.toContain("Suggested:");
+    expect(renderedText()).not.toContain("Use original");
+    expect(renderedText()).not.toContain("Restore suggestion");
+    expect(renderedText()).not.toContain("Restore all suggestions");
   });
 });

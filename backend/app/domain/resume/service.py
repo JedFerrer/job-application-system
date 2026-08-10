@@ -120,6 +120,7 @@ def _untailored_fallback(
                 end=w.end,
                 original_highlights=list(w.highlights),
                 tailored_highlights=[w.highlights[index] for index in orders[index_role]],
+                tailored_highlight_source_indices=list(orders[index_role]),
             )
             for index_role, w in enumerate(profile.work_history)
         ],
@@ -618,11 +619,10 @@ class ResumeService:
                 end=source.end,
                 original_highlights=list(source.highlights),
                 tailored_highlights=sanitized_bullets,
+                tailored_highlight_source_indices=list(bullet_orders[role_index]),
             )
-            for source, sanitized_bullets in zip(
-                profile.work_history,
-                sanitized.tailored_highlights,
-                strict=True,
+            for role_index, (source, sanitized_bullets) in enumerate(
+                zip(profile.work_history, sanitized.tailored_highlights, strict=True)
             )
         ]
 

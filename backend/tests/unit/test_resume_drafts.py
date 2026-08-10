@@ -23,11 +23,28 @@ from app.domain.resume.schemas import (
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
     TailoredResumeDraftResponse,
+    TailoredWorkItem,
 )
 from app.domain.resume.service import ResumeService
 from app.models.user import User
 
 pytestmark = pytest.mark.unit
+
+
+def test_tailored_work_item_rejects_inconsistent_source_mapping() -> None:
+    with pytest.raises(ValueError):
+        TailoredWorkItem(
+            original_highlights=["A", "B"],
+            tailored_highlights=["B", "A"],
+            tailored_highlight_source_indices=[1],
+        )
+
+    with pytest.raises(ValueError):
+        TailoredWorkItem(
+            original_highlights=["A", "B"],
+            tailored_highlights=["B", "A"],
+            tailored_highlight_source_indices=[1, 1],
+        )
 
 
 def _content() -> dict[str, object]:

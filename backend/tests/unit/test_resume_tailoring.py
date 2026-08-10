@@ -1020,6 +1020,7 @@ async def test_service_reorders_within_role_and_preserves_identity(
     assert result.work_history[0].original_highlights[0] == "Improved page performance"
     assert result.work_history[0].tailored_highlights[0] == "Implemented Redis caching"
     assert result.work_history[0].tailored_highlights[-1] == "Improved latency by 20%"
+    assert result.work_history[0].tailored_highlight_source_indices == [1, 2, 0, 3, 4]
     assert result.work_history[1].tailored_highlights == ["Supported backend releases"]
     assert result.professional_summary == "Backend Engineer"
     assert [item.requirement for item in result.requirement_classifications] == [
@@ -1033,6 +1034,36 @@ async def test_service_reorders_within_role_and_preserves_identity(
         for item in result.requirement_classifications
         if item.requirement == "kubernetes"
     ) == "missing"
+
+
+@pytest.mark.asyncio
+async def test_mixed_bullet_fallback_keeps_mapping_in_public_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _payload(
+        [
+            {
+                "role_index": 0,
+                "source_index": 1,
+                "rewritten_text": "Implemented caching with Kubernetes",
+            }
+        ]
+    )
+    service, job_repository, llm_mock = _service_and_job(payload)
+    monkeypatch.setattr(resume_service, "llm_chat_completion", llm_mock)
+
+    result = await service.tailor_for_job(user_id=7, job_id=11, job_repository=job_repository)
+    response_json = TailoredResume.model_validate(result.model_dump(mode="json")).model_dump(
+        mode="json"
+    )
+
+    for role in response_json["work_history"]:
+        assert len(role["tailored_highlights"]) == len(
+            role["tailored_highlight_source_indices"]
+        )
+        assert set(role["tailored_highlight_source_indices"]) == set(
+            range(len(role["original_highlights"]))
+        )
 
 
 @pytest.mark.asyncio

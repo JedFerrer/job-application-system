@@ -1,424 +1,95 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Briefcase,
-  Copy,
-  FileDown,
-  FileText,
-  Loader2,
-  RefreshCw,
-  Save,
-  Sparkles,
-} from "lucide-react";
+import { Briefcase, Copy, FileDown, FileText, Loader2, RefreshCw, RotateCcw, Save, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { resumeApi } from "@/lib/api";
-import { downloadResumePdf, downloadResumeDocx } from "@/lib/cover-letter-export";
+import { downloadResumeDocx, downloadResumePdf } from "@/lib/cover-letter-export";
 import type { TailoredResume } from "@/lib/types";
-import { Button } from "@/components/ui/button";
+import { createReviewState, reviewItems, reviewedResume, sourceOnlyResume, wordDiff, type ReviewState } from "@/lib/tailoring-review";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
-interface TailorResumeDialogProps {
-  jobId: number | null;
-  jobTitle?: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  initialData?: TailoredResume | null;
-  readOnly?: boolean;
-}
+interface TailorResumeDialogProps { jobId: number | null; jobTitle?: string; open: boolean; onOpenChange: (open: boolean) => void; initialData?: TailoredResume | null; readOnly?: boolean; }
 
-function formatDateNice(start: string | null, end: string | null): string {
-  const fmt = (d: string | null) => {
-    if (!d) return "";
-    // "2025-01-01" → "Jan 2025"
-    const m = d.match(/^(\d{4})-(\d{2})/);
-    if (m) {
-      const months = [
-        "Jan","Feb","Mar","Apr","May","Jun",
-        "Jul","Aug","Sep","Oct","Nov","Dec",
-      ];
-      const idx = parseInt(m[2]!, 10) - 1;
-      return `${months[idx] || m[2]} ${m[1]}`;
-    }
-    return d;
+function dateLabel(start: string | null, end: string | null): string {
+  const fmt = (value: string | null) => {
+    if (!value) return "";
+    const match = value.match(/^(\d{4})-(\d{2})/);
+    if (!match) return value;
+    return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(match[2]) - 1] ?? match[2]} ${match[1]}`;
   };
-  const s = fmt(start);
-  const e = end ? fmt(end) : "Present";
-  if (!s && !e) return "";
-  return `${s} – ${e}`;
+  const from = fmt(start);
+  const to = end ? fmt(end) : "Present";
+  return from || end ? `${from} – ${to}` : "";
 }
 
 function formatTailoredText(data: TailoredResume): string {
   const lines: string[] = [];
-
-  if (data.full_name) {
-    lines.push(data.full_name.toUpperCase());
-    lines.push("");
-  }
-
+  if (data.full_name) lines.push(data.full_name.toUpperCase(), "");
   const contact = [data.email, data.phone].filter(Boolean).join(" | ");
-  if (contact) {
-    lines.push(contact);
-    lines.push("");
-  }
-
-  if (data.professional_summary) {
-    lines.push("PROFESSIONAL SUMMARY");
-    lines.push(data.professional_summary);
-    lines.push("");
-  }
-
-  const allSkills = [...data.matched_skills, ...data.other_skills];
-  if (allSkills.length > 0) {
-    lines.push("TECHNICAL SKILLS");
-    lines.push(allSkills.join(", "));
-    lines.push("");
-  }
-
-  if (data.work_history.length > 0) {
-    lines.push("PROFESSIONAL EXPERIENCE");
-    lines.push("");
+  if (contact) lines.push(contact, "");
+  if (data.professional_summary) lines.push("PROFESSIONAL SUMMARY", data.professional_summary, "");
+  const skills = [...data.matched_skills, ...data.other_skills];
+  if (skills.length) lines.push("TECHNICAL SKILLS", skills.join(", "), "");
+  if (data.work_history.length) {
+    lines.push("PROFESSIONAL EXPERIENCE", "");
     for (const role of data.work_history) {
-      const title = role.title || "Role";
-      const company = role.company || "";
-      const date = formatDateNice(role.start, role.end);
-      lines.push(`${title} | ${company}${date ? ` | ${date}` : ""}`);
-      for (const h of role.tailored_highlights) {
-        lines.push(`  • ${h}`);
-      }
-      lines.push("");
+      const date = dateLabel(role.start, role.end);
+      lines.push(`${role.title || "Role"} | ${role.company || ""}${date ? ` | ${date}` : ""}`);
+      lines.push(...role.tailored_highlights.map((highlight) => `  • ${highlight}`), "");
     }
   }
-
-  if (data.education.length > 0) {
-    lines.push("EDUCATION");
-    for (const edu of data.education) {
-      const entry = [edu.degree, edu.institution, edu.year].filter(Boolean).join(" | ");
-      if (entry) lines.push(entry);
-    }
-    lines.push("");
-  }
-
-  if (data.certifications.length > 0) {
-    lines.push("CERTIFICATIONS");
-    lines.push(data.certifications.join(" | "));
-    lines.push("");
-  }
-
+  if (data.education.length) { lines.push("EDUCATION"); lines.push(...data.education.map((item) => [item.degree, item.institution, item.year].filter(Boolean).join(" | ")), ""); }
+  if (data.certifications.length) lines.push("CERTIFICATIONS", data.certifications.join(" | "), "");
   return lines.join("\n").trim();
 }
 
-export function TailorResumeDialog({
-  jobId,
-  jobTitle,
-  open,
-  onOpenChange,
-  initialData = null,
-  readOnly = false,
-}: TailorResumeDialogProps) {
+function DiffText({ original, suggestion, mode }: { original: string; suggestion: string; mode: "original" | "suggested" }) {
+  return <>{wordDiff(original, suggestion).map((part, index) => mode === "original" ? (part.removed ? <del key={index}>{part.text}</del> : !part.added ? <span key={index}>{part.text}</span> : null) : (part.added ? <mark key={index}>{part.text}</mark> : !part.removed ? <span key={index}>{part.text}</span> : null))}</>;
+}
+
+export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initialData = null, readOnly = false }: TailorResumeDialogProps) {
   const queryClient = useQueryClient();
   const generateMutation = useMutation({
-    mutationFn: () => {
-      if (jobId == null) throw new Error("No job selected");
-      return resumeApi.tailorResume(jobId);
-    },
+    mutationFn: () => { if (jobId == null) throw new Error("No job selected"); return resumeApi.tailorResume(jobId); },
     onError: () => toast.error("Could not generate tailored resume."),
   });
   const saveMutation = useMutation({
-    mutationFn: (content: TailoredResume) =>
-      resumeApi.createDraft({ job_id: jobId!, content }),
-    onSuccess: () => {
-      toast.success("Tailored resume draft saved");
-      void queryClient.invalidateQueries({ queryKey: ["resume-drafts"] });
-    },
+    mutationFn: (content: TailoredResume) => resumeApi.createDraft({ job_id: jobId!, content }),
+    onSuccess: () => { toast.success("Tailored resume draft saved"); void queryClient.invalidateQueries({ queryKey: ["resume-drafts"] }); },
     onError: () => toast.error("Could not save tailored resume draft."),
   });
+  const [reviewState, setReviewState] = useState<ReviewState | null>(null);
+  const generatedData = initialData ?? generateMutation.data;
+  const items = useMemo(() => generatedData ? reviewItems(generatedData) : null, [generatedData]);
+  useEffect(() => { if (open && !readOnly) { generateMutation.reset(); setReviewState(null); } }, [open, readOnly, jobId]);
+  useEffect(() => { if (generatedData && !readOnly && items) setReviewState(createReviewState(generatedData)); }, [generatedData, items, readOnly]);
 
-  useEffect(() => {
-    if (open && !readOnly) {
-      generateMutation.reset();
-    }
-  }, [open, readOnly, jobId]);
-
-  const data = initialData ?? generateMutation.data;
+  const data = generatedData ? (!readOnly && !items ? sourceOnlyResume(generatedData) : reviewState ? reviewedResume(reviewState) : generatedData) : null;
   const isLoading = !readOnly && initialData == null && generateMutation.isPending;
+  const generate = () => { if (!readOnly && jobId != null) { setReviewState(null); generateMutation.reset(); generateMutation.mutate(); } };
+  const toggleOriginal = (key: string) => setReviewState((current) => { if (!current) return current; const rejected = new Set(current.rejected); if (rejected.has(key)) rejected.delete(key); else rejected.add(key); return { ...current, rejected }; });
+  const restoreAll = () => setReviewState((current) => current ? { ...current, rejected: new Set() } : current);
+  const save = () => { if (data && !readOnly) saveMutation.mutate(data); };
+  const copy = () => { if (data) navigator.clipboard.writeText(formatTailoredText(data)).then(() => toast.success("Copied to clipboard"), () => toast.error("Copy failed")); };
+  const stem = data?.full_name ? `${data.full_name.replace(/\s+/g, "_")}_Resume` : "Tailored_Resume";
+  const downloadPdf = () => { if (data) downloadResumePdf(data, stem); };
+  const downloadDocx = async () => { if (!data) return; try { await downloadResumeDocx(data, stem); } catch { toast.error("Failed to create Word document"); } };
 
-  const handleGenerate = () => {
-    if (readOnly || jobId == null) return;
-    generateMutation.mutate();
-  };
-
-  const handleSave = () => {
-    if (!data || readOnly) return;
-    saveMutation.mutate(data);
-  };
-
-  const handleCopy = () => {
-    if (!data) return;
-    navigator.clipboard.writeText(formatTailoredText(data)).then(
-      () => toast.success("Copied to clipboard"),
-      () => toast.error("Copy failed"),
-    );
-  };
-
-  const handleDownloadPdf = () => {
-    if (!data) return;
-    const stem = data.full_name
-      ? `${data.full_name.replace(/\s+/g, "_")}_Resume`
-      : "Tailored_Resume";
-    downloadResumePdf(data, stem);
-  };
-
-  const handleDownloadDocx = async () => {
-    if (!data) return;
-    const stem = data.full_name
-      ? `${data.full_name.replace(/\s+/g, "_")}_Resume`
-      : "Tailored_Resume";
-    try {
-      await downloadResumeDocx(data, stem);
-    } catch {
-      toast.error("Failed to create Word document");
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Tailored resume</DialogTitle>
-          <DialogDescription>
-            {readOnly
-              ? "Saved AI-generated draft. Review every claim before use."
-              : jobTitle
-              ? `Your experience selectively tailored to emphasize relevance for "${jobTitle}".`
-              : "Your experience selectively tailored for this job."}
-            {!readOnly && (
-              <> AI-generated draft based on your profile. Review every claim before copying or downloading.</>
-            )}
-          </DialogDescription>
-        </DialogHeader>
-
-        {isLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        ) : !data ? (
-          <div className="flex flex-col items-center gap-3 py-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              {generateMutation.isError
-                ? "Could not generate tailored resume."
-                : "Generate a tailored resume draft, then review it before saving or using it."}
-            </p>
-            <Button onClick={handleGenerate} disabled={generateMutation.isPending}>
-              {generateMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Sparkles className="h-4 w-4" />
-              )}
-              {generateMutation.isPending ? "Generating…" : "Generate tailored resume"}
-            </Button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-5">
-            {/* Header */}
-            {(data.full_name || data.headline) && (
-              <div>
-                {data.full_name && (
-                  <h3 className="text-lg font-semibold">{data.full_name}</h3>
-                )}
-                {data.headline && (
-                  <p className="text-sm text-muted-foreground">{data.headline}</p>
-                )}
-                {(data.email || data.phone) && (
-                  <p className="text-sm text-muted-foreground">
-                    {[data.email, data.phone].filter(Boolean).join(" | ")}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Skills */}
-            {data.matched_skills.length > 0 && (
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Matched skills
-                </h4>
-                <div className="flex flex-wrap gap-1.5">
-                  {data.matched_skills.map((s) => (
-                    <Badge key={s} variant="secondary">
-                      {s}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {data.other_skills.length > 0 && (
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Other skills
-                </h4>
-                <div className="flex flex-wrap gap-1.5">
-                  {data.other_skills.map((s) => (
-                    <Badge key={s} variant="outline">
-                      {s}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {data.missing_keywords.length > 0 && (
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-amber-600">
-                  Missing from your profile
-                </h4>
-                <div className="flex flex-wrap gap-1.5">
-                  {data.missing_keywords.map((k) => (
-                    <Badge key={k} variant="outline" className="border-amber-500 text-amber-600">
-                      {k}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Work history */}
-            <div>
-              <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold">
-                <Briefcase className="h-4 w-4 text-blue-500" />
-                Work experience
-              </h4>
-              <div className="flex flex-col gap-4">
-                {data.work_history.map((role, i) => (
-                  <div key={i} className="rounded-md border p-4">
-                    <div className="mb-2 flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium">
-                          {role.title ?? "Role"}
-                        </p>
-                        {role.company && (
-                          <p className="text-sm text-muted-foreground">
-                            {role.company}
-                          </p>
-                        )}
-                      </div>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {role.start
-                          ? `${role.start} – ${role.end ?? "Present"}`
-                          : role.end ?? ""}
-                      </span>
-                    </div>
-                    {role.tailored_highlights.length > 0 && (
-                      <ul className="space-y-1.5">
-                        {role.tailored_highlights.map((h, j) => (
-                          <li
-                            key={j}
-                            className="text-sm leading-relaxed text-muted-foreground"
-                          >
-                            • {h}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Education */}
-            {data.education.length > 0 && (
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Education
-                </h4>
-                <div className="flex flex-col gap-2">
-                  {data.education.map((edu, i) => (
-                    <div
-                      key={i}
-                      className="flex items-start justify-between gap-3 text-sm"
-                    >
-                      <span>
-                        {[edu.degree, edu.institution].filter(Boolean).join(" — ")}
-                      </span>
-                      {edu.year && (
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          {edu.year}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Certifications */}
-            {data.certifications.length > 0 && (
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Certifications
-                </h4>
-                <div className="flex flex-wrap gap-1.5">
-                  {data.certifications.map((c) => (
-                    <Badge key={c} variant="outline">
-                      {c}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Footer actions */}
-            <div className="flex flex-wrap gap-2 border-t pt-4">
-              <Button size="sm" onClick={handleCopy}>
-                <Copy className="h-4 w-4" />
-                Copy all
-              </Button>
-              <Button size="sm" variant="outline" onClick={handleDownloadPdf}>
-                <FileDown className="h-4 w-4" />
-                PDF
-              </Button>
-              <Button size="sm" variant="outline" onClick={handleDownloadDocx}>
-                <FileText className="h-4 w-4" />
-                DOCX
-              </Button>
-              {!readOnly && (
-                <>
-                  <Button
-                    size="sm"
-                    onClick={handleSave}
-                    disabled={saveMutation.isPending}
-                  >
-                    {saveMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Save className="h-4 w-4" />
-                    )}
-                    Save draft
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleGenerate}
-                    disabled={generateMutation.isPending}
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    Regenerate
-                  </Button>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto"><DialogHeader><DialogTitle>Tailored resume</DialogTitle><DialogDescription>{readOnly ? "Saved AI-generated draft. Review every claim before use." : jobTitle ? `Your experience selectively tailored to emphasize relevance for "${jobTitle}".` : "Your experience selectively tailored for this job."}{!readOnly && " AI-generated draft based on your profile. Review every claim before copying or downloading."}</DialogDescription></DialogHeader>
+    {isLoading ? <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div> : !data ? <div className="flex flex-col items-center gap-3 py-8 text-center"><p className="text-sm text-muted-foreground">{generateMutation.isError ? "Could not generate tailored resume." : "Generate a tailored resume draft, then review it before saving or using it."}</p><Button onClick={generate} disabled={generateMutation.isPending}><Sparkles className="h-4 w-4" />{generateMutation.isPending ? "Generating…" : "Generate tailored resume"}</Button></div> : <div className="flex flex-col gap-5">
+      {(data.full_name || data.headline) && <div>{data.full_name && <h3 className="text-lg font-semibold">{data.full_name}</h3>}{data.headline && <p className="text-sm text-muted-foreground">{data.headline}</p>}{(data.email || data.phone) && <p className="text-sm text-muted-foreground">{[data.email, data.phone].filter(Boolean).join(" | ")}</p>}</div>}
+      {data.matched_skills.length > 0 && <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Matched skills</h4><div className="flex flex-wrap gap-1.5">{data.matched_skills.map((skill) => <Badge key={skill} variant="secondary">{skill}</Badge>)}</div></div>}
+      {data.other_skills.length > 0 && <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Other skills</h4><div className="flex flex-wrap gap-1.5">{data.other_skills.map((skill) => <Badge key={skill} variant="outline">{skill}</Badge>)}</div></div>}
+      {data.missing_keywords.length > 0 && <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-amber-600">Missing from your profile</h4><div className="flex flex-wrap gap-1.5">{data.missing_keywords.map((keyword) => <Badge key={keyword} variant="outline" className="border-amber-500 text-amber-600">{keyword}</Badge>)}</div></div>}
+      <div><h4 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Briefcase className="h-4 w-4 text-blue-500" />Work experience</h4><div className="flex flex-col gap-4">{data.work_history.map((role, roleIndex) => { const roleItems = items?.[roleIndex]; const rejected = reviewState?.rejected ?? new Set<string>(); return <div key={roleIndex} className="rounded-md border p-4"><div className="mb-2 flex items-start justify-between gap-3"><div><p className="text-sm font-medium">{role.title ?? "Role"}</p>{role.company && <p className="text-sm text-muted-foreground">{role.company}</p>}</div><span className="shrink-0 text-xs text-muted-foreground">{dateLabel(role.start, role.end)}</span></div>{roleItems ? <div className="space-y-2">{roleItems.map((item) => { const isRejected = rejected.has(item.key); if (!item.changed) return item.label ? <div key={item.key} className="flex items-center gap-2"><Badge variant="secondary">{item.label}</Badge><p className="text-sm leading-relaxed text-muted-foreground">• {item.suggestionText}</p></div> : <p key={item.key} className="text-sm leading-relaxed text-muted-foreground">• {item.suggestionText}</p>; return <div key={item.key} data-testid={`review-item-${item.key}`} className="rounded-md bg-muted/30 p-2.5"><div className="mb-1 flex flex-wrap items-center gap-2"><Badge variant={isRejected ? "outline" : "secondary"}>{isRejected ? "Original restored" : item.label}</Badge>{!readOnly && <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => toggleOriginal(item.key)} aria-label={`${isRejected ? "Restore suggestion" : "Use original"} for bullet ${item.outputIndex + 1}`}>{isRejected ? <RotateCcw className="mr-1 h-3.5 w-3.5" /> : null}{isRejected ? "Restore suggestion" : "Use original"}</Button>}</div><p className="text-xs text-muted-foreground"><span className="font-medium">Original:</span> <DiffText original={item.originalText} suggestion={item.suggestionText} mode="original" /></p><p className="text-sm leading-relaxed"><span className="font-medium">Suggested:</span> <DiffText original={item.originalText} suggestion={item.suggestionText} mode="suggested" /></p></div>; })}</div> : <div><p className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">Comparison unavailable; showing source bullets safely.</p><ul className="mt-2 space-y-1.5">{role.original_highlights.map((highlight, index) => <li key={index} className="text-sm leading-relaxed text-muted-foreground">• {highlight}</li>)}</ul></div>}</div>; })}</div></div>
+      {!readOnly && reviewState && reviewState.rejected.size > 0 && <Button size="sm" variant="outline" onClick={restoreAll}><RotateCcw className="h-4 w-4" />Restore all suggestions</Button>}
+      {data.education.length > 0 && <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Education</h4><div className="flex flex-col gap-2">{data.education.map((item, index) => <div key={index} className="flex items-start justify-between gap-3 text-sm"><span>{[item.degree, item.institution].filter(Boolean).join(" — ")}</span>{item.year && <span className="shrink-0 text-xs text-muted-foreground">{item.year}</span>}</div>)}</div></div>}
+      {data.certifications.length > 0 && <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Certifications</h4><div className="flex flex-wrap gap-1.5">{data.certifications.map((certification) => <Badge key={certification} variant="outline">{certification}</Badge>)}</div></div>}
+      <div className="flex flex-wrap gap-2 border-t pt-4"><Button size="sm" onClick={copy}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={downloadPdf}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={downloadDocx}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button size="sm" onClick={save} disabled={saveMutation.isPending}>{saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save draft</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate</Button></>}</div>
+    </div>}
+  </DialogContent></Dialog>;
 }

@@ -191,6 +191,7 @@ export interface TailoredWorkItem {
   end: string | null;
   original_highlights: string[];
   tailored_highlights: string[];
+  tailored_highlight_source_indices?: number[];
 }
 
 export interface TailoredResume {
@@ -206,6 +207,14 @@ export interface TailoredResume {
   matched_skills: string[];
   other_skills: string[];
   missing_keywords: string[];
+  requirement_classifications?: RequirementClassification[];
+}
+
+export interface RequirementClassification {
+  requirement: string;
+  status: "verified" | "missing";
+  priority: "unclassified";
+  evidence_categories: string[];
 }
 
 export interface TailoredResumeDraftCreate {

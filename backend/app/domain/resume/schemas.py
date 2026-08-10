@@ -389,6 +389,27 @@ class TailoredWorkItem(BaseModel):
     end: str | None = None
     original_highlights: list[str] = Field(default_factory=list)
     tailored_highlights: list[str] = Field(default_factory=list)
+    # Source identity is additive so legacy saved snapshots remain readable.
+    # When present, this is a role-local permutation aligned with
+    # ``tailored_highlights``.
+    tailored_highlight_source_indices: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_source_mapping(self) -> TailoredWorkItem:
+        if "tailored_highlight_source_indices" not in self.model_fields_set:
+            return self
+        mapping = self.tailored_highlight_source_indices
+        if len(mapping) != len(self.tailored_highlights):
+            raise ValueError(
+                "tailored_highlight_source_indices must align with tailored_highlights"
+            )
+        if len(mapping) != len(self.original_highlights) or len(set(mapping)) != len(mapping):
+            raise ValueError(
+                "tailored_highlight_source_indices must map each source bullet once"
+            )
+        if set(mapping) != set(range(len(self.original_highlights))):
+            raise ValueError("tailored_highlight_source_indices contains an invalid source index")
+        return self
 
 
 class RequirementClassification(BaseModel):
