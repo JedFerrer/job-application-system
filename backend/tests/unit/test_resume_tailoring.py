@@ -10,7 +10,7 @@ import pytest
 
 from app.domain.resume import service as resume_service
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
-from app.domain.resume.schemas import ParsedProfile
+from app.domain.resume.schemas import ParsedProfile, RequirementClassification, TailoredResume
 from app.domain.resume.service import ResumeService
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
@@ -70,6 +70,29 @@ def _payload(rewrites: list[dict[str, object]] | None = None) -> dict[str, objec
             ]
         normalized.append(item)
     return {"rewrites": normalized}
+
+
+def test_requirement_classifications_are_publicly_serialized_when_empty_or_non_empty() -> None:
+    empty = TailoredResume(job_id=11)
+    assert empty.model_dump(mode="json")["requirement_classifications"] == []
+
+    non_empty = TailoredResume(
+        job_id=11,
+        requirement_classifications=[
+            RequirementClassification(
+                requirement="kubernetes",
+                status="missing",
+            )
+        ],
+    )
+    assert non_empty.model_dump(mode="json")["requirement_classifications"] == [
+        {
+            "requirement": "kubernetes",
+            "status": "missing",
+            "priority": "unclassified",
+            "evidence_categories": [],
+        }
+    ]
 
 
 def _service_and_job(
@@ -999,6 +1022,17 @@ async def test_service_reorders_within_role_and_preserves_identity(
     assert result.work_history[0].tailored_highlights[-1] == "Improved latency by 20%"
     assert result.work_history[1].tailored_highlights == ["Supported backend releases"]
     assert result.professional_summary == "Backend Engineer"
+    assert [item.requirement for item in result.requirement_classifications] == [
+        "fastapi",
+        "kubernetes",
+        "python",
+        "redis",
+    ]
+    assert next(
+        item.status
+        for item in result.requirement_classifications
+        if item.requirement == "kubernetes"
+    ) == "missing"
 
 
 @pytest.mark.asyncio
@@ -1012,6 +1046,8 @@ async def test_no_eligible_bullets_skips_llm_and_preserves_source(
 
     llm_mock.assert_not_awaited()
     assert result.work_history[0].tailored_highlights == _profile().work_history[0].highlights
+    assert result.requirement_classifications[0].requirement == "kubernetes"
+    assert result.requirement_classifications[0].status == "missing"
 
 
 @pytest.mark.asyncio
@@ -1038,3 +1074,4 @@ async def test_malformed_output_and_llm_failure_use_source_fallback(
     assert failed.work_history[0].tailored_highlights == (
         malformed.work_history[0].tailored_highlights
     )
+    assert failed.requirement_classifications == malformed.requirement_classifications

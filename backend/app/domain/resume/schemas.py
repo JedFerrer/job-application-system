@@ -19,6 +19,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -390,6 +391,15 @@ class TailoredWorkItem(BaseModel):
     tailored_highlights: list[str] = Field(default_factory=list)
 
 
+class RequirementClassification(BaseModel):
+    """Ephemeral deterministic status for one recognized JD skill."""
+
+    requirement: str
+    status: Literal["verified", "missing"]
+    priority: Literal["unclassified"] = "unclassified"
+    evidence_categories: list[str] = Field(default_factory=list)
+
+
 class TailoredResume(BaseModel):
     """A profile rewritten to emphasize relevance for a specific job posting."""
 
@@ -405,6 +415,9 @@ class TailoredResume(BaseModel):
     matched_skills: list[str] = Field(default_factory=list)
     other_skills: list[str] = Field(default_factory=list)
     missing_keywords: list[str] = Field(default_factory=list)
+    requirement_classifications: list[RequirementClassification] = Field(
+        default_factory=list,
+    )
 
 
 class TailoredResumeDraftCreate(BaseModel):
@@ -432,3 +445,12 @@ class TailoredResumeDraftListItem(BaseModel):
 
 class TailoredResumeDraftResponse(TailoredResumeDraftListItem):
     content: TailoredResume
+
+    @field_serializer("content")
+    def _serialize_content(self, content: TailoredResume) -> dict[str, object]:
+        """Keep legacy draft JSON snapshots compact without changing the public model."""
+        if not content.requirement_classifications:
+            return content.model_dump(
+                mode="json", exclude={"requirement_classifications"}
+            )
+        return content.model_dump(mode="json")

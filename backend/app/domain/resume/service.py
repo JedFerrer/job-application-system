@@ -14,7 +14,6 @@ from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.domain.matching.skill_matcher import (
     SkillMatchReport,
-    compute_skill_match,
     extract_jd_skills,
     extract_known_skills,
     normalize_skill,
@@ -36,11 +35,13 @@ from app.domain.resume.provenance import (
     build_resume_import_provenance,
 )
 from app.domain.resume.repository import ResumeRepository
+from app.domain.resume.requirement_classification import classify_requirements
 from app.domain.resume.schemas import (
     ExtractionEvidence,
     ParsedProfile,
     ParsedResumeResult,
     ProfileResponse,
+    RequirementClassification,
     ResumeImportDetail,
     ResumeImportListItem,
     ResumeResponse,
@@ -95,6 +96,7 @@ def _untailored_fallback(
     profile: ParsedProfile,
     job_id: int,
     report: SkillMatchReport,
+    requirement_classifications: list[RequirementClassification] | None = None,
     bullet_orders: list[list[int]] | None = None,
 ) -> TailoredResume:
     """Return the profile as-is when LLM tailoring is unavailable."""
@@ -124,6 +126,7 @@ def _untailored_fallback(
         matched_skills=report.matched_skills,
         other_skills=other_skills,
         missing_keywords=report.missing_skills,
+        requirement_classifications=requirement_classifications or [],
     )
 
 
@@ -445,13 +448,24 @@ class ResumeService:
         if job is None:
             raise JobNotFoundError(payload.job_id)
 
+        content = payload.content.model_dump(mode="json")
+        # Keep legacy client-submitted snapshots unchanged when they do not
+        # provide the additive Phase 3 field. Newly generated responses with
+        # classifications retain that field in their immutable snapshot.
+        if (
+            not payload.content.requirement_classifications
+            and "requirement_classifications"
+            not in payload.content.model_fields_set
+        ):
+            content.pop("requirement_classifications", None)
+
         draft = await self._repository.create_tailored_draft(
             user_id=user_id,
             job_id=payload.job_id,
             source_profile_id=profile.id,
             job_title=job.title,
             job_company=job.company,
-            content=payload.content.model_dump(mode="json"),
+            content=content,
         )
         return self._draft_response(draft)
 
@@ -498,19 +512,39 @@ class ResumeService:
         job = await job_repository.get_visible_by_id(user_id=user_id, job_id=job_id)
         if job is None:
             raise JobNotFoundError(job_id)
+        classifications = classify_requirements(job.description, profile)
+        matched_skills = [
+            item.requirement
+            for item in classifications
+            if item.status == "verified"
+        ]
+        missing_skills = [
+            item.requirement
+            for item in classifications
+            if item.status == "missing"
+        ]
+        report = SkillMatchReport(
+            matched_skills=matched_skills,
+            missing_skills=missing_skills,
+            recall=(
+                len(matched_skills) / len(classifications)
+                if classifications
+                else 0.0
+            ),
+        )
         if not job.description:
             # Return untailored — nothing to match against.
-            return _untailored_fallback(profile, job_id, SkillMatchReport())
-
-        # Deterministic: which profile skills are in the JD?
-        jd_skills = extract_jd_skills(job.description)
-        report = compute_skill_match(jd_skills, profile.model_dump())
+            return _untailored_fallback(
+                profile, job_id, report, classifications
+            )
 
         bullet_orders, eligible_bullets, prompt_roles = _bullet_relevance(
             profile, job.description
         )
         if not any(eligible_bullets.values()):
-            return _untailored_fallback(profile, job_id, report, bullet_orders)
+            return _untailored_fallback(
+                profile, job_id, report, classifications, bullet_orders
+            )
 
         prompt = TAILOR_RESUME_PROMPT.format(
             job_description=job.description,
@@ -535,7 +569,9 @@ class ResumeService:
                 exc_info=True,
             )
             # Graceful fallback: return untailored profile with skill report.
-            return _untailored_fallback(profile, job_id, report, bullet_orders)
+            return _untailored_fallback(
+                profile, job_id, report, classifications, bullet_orders
+            )
 
         try:
             evidence_relevance: dict[tuple[int, int], int] = {}
@@ -566,7 +602,9 @@ class ResumeService:
                 job_id=job_id,
                 exc_info=True,
             )
-            return _untailored_fallback(profile, job_id, report, bullet_orders)
+            return _untailored_fallback(
+                profile, job_id, report, classifications, bullet_orders
+            )
 
         matched = list(report.matched_skills)
         matched_set = set(matched)
@@ -618,4 +656,5 @@ class ResumeService:
             matched_skills=matched,
             other_skills=other,
             missing_keywords=missing,
+            requirement_classifications=classifications,
         )

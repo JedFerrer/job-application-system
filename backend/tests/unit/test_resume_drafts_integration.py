@@ -199,7 +199,11 @@ async def test_snapshot_survives_real_linked_record_deletes(
         assert draft.job_title == "Backend Engineer"
         assert draft.job_company == "Acme"
         assert draft.content == content_snapshot
+        legacy_content = TailoredResume.model_validate(draft.content)
+        assert legacy_content.requirement_classifications == []
         assert (
-            TailoredResume.model_validate(draft.content).model_dump(mode="json")
+            legacy_content.model_dump(
+                mode="json", exclude={"requirement_classifications"}
+            )
             == content_snapshot
         )

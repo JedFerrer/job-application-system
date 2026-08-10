@@ -1,0 +1,116 @@
+"""Tests for deterministic candidate-level requirement classification."""
+
+from __future__ import annotations
+
+import pytest
+
+from app.domain.resume.requirement_classification import classify_requirements
+from app.domain.resume.schemas import ParsedProfile
+
+pytestmark = pytest.mark.unit
+
+
+def _profile() -> ParsedProfile:
+    return ParsedProfile.model_validate(
+        {
+            "headline": "Kubernetes Platform Engineer",
+            "preferred_roles": ["TypeScript Developer"],
+            "skills": ["Python", "Amazon Web Services", "JavaScript"],
+            "work_history": [
+                {
+                    "company": "Kubernetes Corp",
+                    "title": "Kubernetes Engineer",
+                    "highlights": ["Built FastAPI services."],
+                }
+            ],
+            "projects": [
+                {
+                    "name": "Platform",
+                    "technologies": ["Docker"],
+                    "description": "Automated container deployments.",
+                }
+            ],
+            "certifications": ["Certified Kubernetes Administrator"],
+            "licenses": [{"name": "AWS Solutions Architect"}],
+            "education": [{"degree": "TypeScript and Kubernetes course"}],
+        }
+    )
+
+
+def test_classification_is_deterministic_and_alias_normalized() -> None:
+    result = classify_requirements(
+        "TypeScript, Python, AWS, Amazon Web Services, Docker, PostgreSQL, FastAPI",
+        _profile(),
+    )
+
+    assert [item.requirement for item in result] == [
+        "aws",
+        "docker",
+        "fastapi",
+        "postgresql",
+        "python",
+        "typescript",
+    ]
+    assert [item.status for item in result] == [
+        "verified",
+        "verified",
+        "verified",
+        "missing",
+        "verified",
+        "missing",
+    ]
+    assert result[0].evidence_categories == ["credential", "profile_skill"]
+    assert result[1].evidence_categories == ["project"]
+    assert result[2].evidence_categories == ["work_history"]
+    assert all(item.priority == "unclassified" for item in result)
+
+
+def test_direct_profile_evidence_categories_are_supported() -> None:
+    result = classify_requirements(
+        "Python Docker Kubernetes AWS",
+        _profile(),
+    )
+    by_requirement = {item.requirement: item for item in result}
+
+    assert by_requirement["python"].evidence_categories == ["profile_skill"]
+    assert by_requirement["docker"].evidence_categories == ["project"]
+    assert by_requirement["kubernetes"].evidence_categories == ["certification"]
+    assert by_requirement["aws"].evidence_categories == [
+        "credential",
+        "profile_skill",
+    ]
+
+
+@pytest.mark.parametrize(
+    "job_description",
+    [
+        None,
+        "",
+        "Kubernetes",
+    ],
+)
+def test_job_only_or_empty_input_never_creates_evidence(
+    job_description: str | None,
+) -> None:
+    result = classify_requirements(job_description, ParsedProfile())
+    if job_description:
+        assert result[0].status == "missing"
+        assert result[0].evidence_categories == []
+    else:
+        assert result == []
+
+
+def test_excluded_profile_fields_do_not_verify_skills() -> None:
+    result = classify_requirements(
+        "Kubernetes TypeScript",
+        _profile(),
+    )
+    by_requirement = {item.requirement: item for item in result}
+
+    # Kubernetes appears in the certification, so it is verified there; the
+    # education/title/headline occurrences are not independently consulted.
+    assert by_requirement["kubernetes"].status == "verified"
+    assert by_requirement["kubernetes"].evidence_categories == ["certification"]
+    assert by_requirement["typescript"].status == "missing"
+    assert by_requirement["typescript"].evidence_categories == []
+
