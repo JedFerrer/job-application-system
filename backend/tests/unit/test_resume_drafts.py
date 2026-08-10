@@ -47,6 +47,15 @@ def test_tailored_work_item_rejects_inconsistent_source_mapping() -> None:
         )
 
 
+def test_legacy_skill_snapshots_preserve_absent_and_null_values() -> None:
+    absent = TailoredResume.model_validate(_content_without_skills())
+    null_value = TailoredResume.model_validate(_content_without_skills() | {"skills": None})
+    explicit_empty = TailoredResume.model_validate(_content_without_skills() | {"skills": []})
+
+    assert absent.skills is None
+    assert null_value.skills is None
+    assert explicit_empty.skills == []
+
 def _content() -> dict[str, object]:
     return {
         "job_id": 11,
@@ -55,6 +64,24 @@ def _content() -> dict[str, object]:
         "email": "ada@example.com",
         "phone": None,
         "headline": "Backend Engineer",
+        "skills": ["python"],
+        "links": {
+            "linkedin": "https://linkedin.com/in/ada",
+            "github": None,
+            "portfolio": None,
+            "website": None,
+        },
+        "projects": [
+            {
+                "name": "Analytical Engine",
+                "description": "A computing project",
+                "technologies": ["Python"],
+                "achievements": ["Reduced errors"],
+                "url": "https://example.com/project",
+            }
+        ],
+        "languages": [{"language": "Spanish", "proficiency": "Fluent"}],
+        "licenses": [{"name": "Registered Engineer", "issuer": "State Board"}],
         "work_history": [],
         "education": [],
         "certifications": [],
@@ -62,6 +89,12 @@ def _content() -> dict[str, object]:
         "other_skills": [],
         "missing_keywords": [],
     }
+
+
+def _content_without_skills() -> dict[str, object]:
+    content = _content()
+    content.pop("skills", None)
+    return content
 
 
 def _draft() -> SimpleNamespace:
@@ -76,6 +109,20 @@ def _draft() -> SimpleNamespace:
         created_at=now,
         updated_at=now,
     )
+
+
+def test_draft_response_preserves_legacy_skill_semantics() -> None:
+    cases = [
+        (_content_without_skills(), None),
+        (_content_without_skills() | {"skills": None}, None),
+        (_content_without_skills() | {"skills": []}, []),
+    ]
+
+    for content, expected in cases:
+        draft = _draft()
+        draft.content = content
+        response = ResumeService._draft_response(draft)
+        assert response.content.skills == expected
 
 
 def _response(*, draft_id: int = 4, job_id: int = 11) -> TailoredResumeDraftResponse:
@@ -246,6 +293,8 @@ class TestDraftRouteContract:
         [
             {"job_id": 11, "content": {"job_id": 11, "work_history": "invalid"}},
             _payload(job_id=11) | {"content": _content() | {"job_id": 12}},
+            _payload(job_id=11) | {"content": _content_without_skills()},
+            _payload(job_id=11) | {"content": _content_without_skills() | {"skills": None}},
         ],
     )
     def test_create_rejects_malformed_or_mismatched_content(
@@ -259,6 +308,18 @@ class TestDraftRouteContract:
 
         assert response.status_code == 422
         service.create_tailored_draft.assert_not_awaited()
+
+    def test_create_accepts_explicit_empty_skills(self) -> None:
+        service = AsyncMock(spec=ResumeService)
+        service.create_tailored_draft.return_value = _response()
+        jobs = AsyncMock()
+        payload = _payload() | {"content": _content() | {"skills": []}}
+        response = TestClient(_build_route_app(service=service, job_repository=jobs)).post(
+            "/resume/drafts", json=payload
+        )
+
+        assert response.status_code == 201
+        service.create_tailored_draft.assert_awaited_once()
 
     def test_list_is_user_scoped_newest_first_and_metadata_only(self) -> None:
         service = AsyncMock(spec=ResumeService)

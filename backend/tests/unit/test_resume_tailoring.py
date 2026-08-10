@@ -26,6 +26,23 @@ def _profile() -> ParsedProfile:
             "headline": "Backend Engineer",
             "years_experience": 5,
             "skills": ["Python", "FastAPI", "Redis", "Docker"],
+            "links": {
+                "linkedin": "https://linkedin.com/in/ada",
+                "github": "https://github.com/ada",
+                "portfolio": "https://ada.example.com",
+                "website": None,
+            },
+            "projects": [
+                {
+                    "name": "Analytical Engine",
+                    "description": "A computing project",
+                    "technologies": ["Python"],
+                    "achievements": ["Reduced errors"],
+                    "url": "https://example.com/project",
+                }
+            ],
+            "languages": [{"language": "Spanish", "proficiency": "Fluent"}],
+            "licenses": [{"name": "Registered Engineer", "issuer": "State Board"}],
             "work_history": [
                 {
                     "company": "Acme",
@@ -1023,6 +1040,11 @@ async def test_service_reorders_within_role_and_preserves_identity(
     assert result.work_history[0].tailored_highlight_source_indices == [1, 2, 0, 3, 4]
     assert result.work_history[1].tailored_highlights == ["Supported backend releases"]
     assert result.professional_summary == "Backend Engineer"
+    assert result.skills == _profile().skills
+    assert result.links == _profile().links
+    assert result.projects == _profile().projects
+    assert result.languages == _profile().languages
+    assert result.licenses == _profile().licenses
     assert [item.requirement for item in result.requirement_classifications] == [
         "fastapi",
         "kubernetes",

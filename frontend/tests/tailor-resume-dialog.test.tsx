@@ -46,6 +46,11 @@ const tailoredResume = {
   email: "ada@example.com",
   phone: null,
   headline: "Backend Engineer",
+  skills: ["Python", "FastAPI"],
+  links: { linkedin: "https://linkedin.com/in/ada", github: null, portfolio: null, website: null },
+  projects: [{ name: "Analytical Engine", description: "A computing project", technologies: ["Python"], achievements: ["Reduced errors"], url: "https://example.com/project" }],
+  languages: [{ language: "Spanish", proficiency: "Fluent" }],
+  licenses: [{ name: "Registered Engineer", issuer: "State Board" }],
   work_history: [
     {
       company: "Acme",
@@ -136,6 +141,10 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).not.toContain("No skills or experience were invented.");
     expect(renderedText()).toContain("Acme");
     expect(renderedText()).toContain("Built Python APIs");
+    expect(renderedText()).toContain("Analytical Engine");
+    expect(renderedText()).toContain("Registered Engineer");
+    expect(renderedText()).toContain("Spanish");
+    expect(renderedText()).toContain("https://linkedin.com/in/ada");
     expect(renderedText()).toContain("Copy all");
     expect(renderedText()).toContain("PDF");
     expect(renderedText()).toContain("DOCX");
@@ -166,6 +175,49 @@ describe("TailorResumeDialog", () => {
 
     expect(renderedText()).toContain("Tailored resume");
     expect(container.querySelector("svg")).not.toBeNull();
+  });
+
+  it("does not turn match context into candidate skills when the current snapshot is empty", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    apiMocks.tailorResume.mockResolvedValue({
+      ...tailoredResume,
+      skills: [],
+      matched_skills: ["kubernetes"],
+      other_skills: ["mongodb"],
+    });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Matched skills"));
+    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).not.toContain("Skills");
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"))?.click(); await Promise.resolve(); });
+    expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining("kubernetes"));
+  });
+
+  it("keeps the legacy matched/other fallback when skills is absent", async () => {
+    const { skills: _skills, ...legacyResume } = tailoredResume;
+    apiMocks.tailorResume.mockResolvedValue(legacyResume);
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Skills"));
+    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).toContain("Skills");
+  });
+
+  it("keeps the legacy matched/other fallback when skills is null", async () => {
+    apiMocks.tailorResume.mockResolvedValue({ ...tailoredResume, skills: null });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Skills"));
+    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).toContain("Skills");
   });
 
   it("saves the displayed tailored snapshot with its job id", async () => {
@@ -278,7 +330,14 @@ describe("TailorResumeDialog", () => {
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "DOCX")?.click());
     for (const exportMock of [exportMocks.downloadResumePdf, exportMocks.downloadResumeDocx]) {
       expect(exportMock).toHaveBeenCalledWith(
-        expect.objectContaining({ work_history: [expect.objectContaining({ tailored_highlights: ["Built APIs"] })] }),
+        expect.objectContaining({
+          skills: ["Python", "FastAPI"],
+          projects: [expect.objectContaining({ name: "Analytical Engine" })],
+          links: expect.objectContaining({ linkedin: "https://linkedin.com/in/ada" }),
+          languages: [expect.objectContaining({ language: "Spanish" })],
+          licenses: [expect.objectContaining({ name: "Registered Engineer" })],
+          work_history: [expect.objectContaining({ tailored_highlights: ["Built APIs"] })],
+        }),
         "Ada_Lovelace_Resume",
       );
     }

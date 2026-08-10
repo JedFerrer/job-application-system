@@ -77,6 +77,11 @@ const content = {
   email: "ada@example.com",
   phone: null,
   headline: "Backend Engineer",
+  skills: ["python"],
+  links: { linkedin: "https://linkedin.com/in/ada", github: null, portfolio: null, website: null },
+  projects: [{ name: "Analytical Engine", description: "A computing project", technologies: ["Python"], achievements: ["Reduced errors"], url: "https://example.com/project" }],
+  languages: [{ language: "Spanish", proficiency: "Fluent" }],
+  licenses: [{ name: "Registered Engineer", issuer: "State Board" }],
   work_history: [],
   education: [],
   certifications: [],
@@ -171,9 +176,10 @@ describe("ResumePanel saved tailored drafts", () => {
   });
 
   it("uses the saved snapshot for copy and exports", async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      value: { writeText: clipboardWrite },
     });
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Acme"));
@@ -182,7 +188,8 @@ describe("ResumePanel saved tailored drafts", () => {
     await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Copy all"))?.click());
     await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "PDF")?.click());
     await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "DOCX")?.click());
-    expect(navigator.clipboard.writeText).toHaveBeenCalled();
+    expect(clipboardWrite).toHaveBeenCalledWith(expect.stringContaining("Analytical Engine"));
+    expect(clipboardWrite).toHaveBeenCalledWith(expect.stringContaining("Registered Engineer"));
     expect(exportMocks.downloadResumePdf).toHaveBeenCalledWith(content, "Ada_Lovelace_Resume");
     expect(exportMocks.downloadResumeDocx).toHaveBeenCalledWith(content, "Ada_Lovelace_Resume");
   });

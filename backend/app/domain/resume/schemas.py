@@ -430,6 +430,13 @@ class TailoredResume(BaseModel):
     email: str | None = None
     phone: str | None = None
     headline: str | None = None
+    # ``None`` preserves the distinction between legacy snapshots that did not
+    # carry a skills field and current snapshots that explicitly carry ``[]``.
+    skills: list[str] | None = None
+    links: ProfessionalLinks = Field(default_factory=ProfessionalLinks)
+    projects: list[ProjectItem] = Field(default_factory=list)
+    languages: list[LanguageItem] = Field(default_factory=list)
+    licenses: list[ProfessionalCredential] = Field(default_factory=list)
     work_history: list[TailoredWorkItem] = Field(default_factory=list)
     education: list[EducationItem] = Field(default_factory=list)
     certifications: list[str] = Field(default_factory=list)
@@ -449,6 +456,8 @@ class TailoredResumeDraftCreate(BaseModel):
     def _content_matches_job(self) -> TailoredResumeDraftCreate:
         if self.content.job_id != self.job_id:
             raise ValueError("content.job_id must match job_id")
+        if self.content.skills is None:
+            raise ValueError("content.skills must be an explicit list for new drafts")
         return self
 
 

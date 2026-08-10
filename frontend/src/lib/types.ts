@@ -201,6 +201,11 @@ export interface TailoredResume {
   email: string | null;
   phone: string | null;
   headline: string | null;
+  skills?: string[] | null;
+  links?: ProfessionalLinks;
+  projects?: ProjectItem[];
+  languages?: LanguageItem[];
+  licenses?: ProfessionalCredential[];
   work_history: TailoredWorkItem[];
   education: EducationItem[];
   certifications: string[];

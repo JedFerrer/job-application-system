@@ -103,6 +103,16 @@ function dateRange(start: string | null, end: string | null): string {
   return `${s} – ${e}`;
 }
 
+function resumeSkills(data: TailoredResume): string[] {
+  return data.skills ?? [...data.matched_skills, ...data.other_skills];
+}
+
+function resumeLinks(data: TailoredResume): string[] {
+  return Object.entries(data.links ?? {})
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .map(([label, url]) => `${label[0]!.toUpperCase()}${label.slice(1)}: ${url}`);
+}
+
 interface PdfCtx {
   pdf: jsPDF;
   y: number;
@@ -186,6 +196,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
     ctx.y += 1;
     writeLine(ctx, contact, BODY_SIZE, false);
   }
+  for (const link of resumeLinks(data)) writeLine(ctx, link, BODY_SIZE, false);
   ctx.y += 4;
 
   // Professional Summary
@@ -196,7 +207,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
   }
 
   // Technical Skills (categorized)
-  const allSkills = [...data.matched_skills, ...data.other_skills];
+  const allSkills = resumeSkills(data);
   if (allSkills.length > 0) {
     writeSectionHeading(ctx, "TECHNICAL SKILLS");
     writeWrapped(ctx, allSkills.join(", "), BODY_SIZE, textW);
@@ -251,6 +262,18 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
     ctx.y += SECTION_GAP;
   }
 
+  if (data.projects?.length) {
+    writeSectionHeading(ctx, "PROJECTS");
+    for (const project of data.projects) {
+      if (project.name) writeLine(ctx, project.name, BODY_SIZE, true);
+      if (project.description) writeWrapped(ctx, project.description, BODY_SIZE, textW);
+      if (project.technologies.length) writeWrapped(ctx, `Technologies: ${project.technologies.join(", ")}`, BODY_SIZE, textW);
+      for (const achievement of project.achievements) writeBullet(ctx, achievement);
+      if (project.url) writeWrapped(ctx, `URL: ${project.url}`, BODY_SIZE, textW);
+    }
+    ctx.y += SECTION_GAP;
+  }
+
   // Education
   if (data.education.length > 0) {
     writeSectionHeading(ctx, "EDUCATION");
@@ -266,6 +289,16 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
     writeSectionHeading(ctx, "CERTIFICATIONS");
     writeWrapped(ctx, data.certifications.join(" | "), BODY_SIZE, textW);
     ctx.y += SECTION_GAP;
+  }
+
+  if (data.licenses?.length) {
+    writeSectionHeading(ctx, "LICENSES & CREDENTIALS");
+    for (const item of data.licenses) writeLine(ctx, [item.name, item.issuer].filter(Boolean).join(" | "), BODY_SIZE, false);
+    ctx.y += SECTION_GAP;
+  }
+  if (data.languages?.length) {
+    writeSectionHeading(ctx, "LANGUAGES");
+    for (const item of data.languages) writeLine(ctx, [item.language, item.proficiency].filter(Boolean).join(" | "), BODY_SIZE, false);
   }
 
   pdf.save(buildFilename(stem, "pdf"));
@@ -296,6 +329,7 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   // Contact
   const contact = [data.email, data.phone].filter(Boolean).join(" | ");
   if (contact) p(contact, { spaceAfter: 120 });
+  for (const link of resumeLinks(data)) p(link);
 
   // Section helper
   function section(title: string) {
@@ -309,7 +343,7 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   }
 
   // Technical Skills
-  const allSkills = [...data.matched_skills, ...data.other_skills];
+  const allSkills = resumeSkills(data);
   if (allSkills.length > 0) {
     section("TECHNICAL SKILLS");
     p(allSkills.join(", "), { spaceAfter: 100 });
@@ -330,6 +364,18 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
     }
   }
 
+  if (data.projects?.length) {
+    section("PROJECTS");
+    for (const project of data.projects) {
+      if (project.name) p(project.name, { bold: true });
+      if (project.description) p(project.description);
+      if (project.technologies.length) p(`Technologies: ${project.technologies.join(", ")}`);
+      for (const achievement of project.achievements) p(`  • ${achievement}`);
+      if (project.url) p(`URL: ${project.url}`);
+      p("", { spaceAfter: 40 });
+    }
+  }
+
   // Education
   if (data.education.length > 0) {
     section("EDUCATION");
@@ -344,6 +390,15 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   if (data.certifications.length > 0) {
     section("CERTIFICATIONS");
     p(data.certifications.join(" | "), { spaceAfter: 20 });
+  }
+
+  if (data.licenses?.length) {
+    section("LICENSES & CREDENTIALS");
+    for (const item of data.licenses) p([item.name, item.issuer].filter(Boolean).join(" | "));
+  }
+  if (data.languages?.length) {
+    section("LANGUAGES");
+    for (const item of data.languages) p([item.language, item.proficiency].filter(Boolean).join(" | "));
   }
 
   const doc = new Document({ sections: [{ children }] });
