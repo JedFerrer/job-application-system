@@ -86,7 +86,11 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   });
   const saveMutation = useMutation({
     mutationFn: (content: TailoredResume) => resumeApi.createDraft({ job_id: jobId!, content }),
-    onSuccess: () => { toast.success("Tailored resume draft saved"); void queryClient.invalidateQueries({ queryKey: ["resume-drafts"] }); },
+    onSuccess: (saved) => {
+      toast.success("Tailored resume saved");
+      void queryClient.invalidateQueries({ queryKey: ["resume-drafts"] });
+      void queryClient.removeQueries({ queryKey: ["resume-draft", saved.id] });
+    },
     onError: () => toast.error("Could not save tailored resume draft."),
   });
   const coverageMutation = useMutation({
@@ -145,7 +149,7 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
       {data.certifications.length > 0 && <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Certifications</h4><div className="flex flex-wrap gap-1.5">{data.certifications.map((certification) => <Badge key={certification} variant="outline">{certification}</Badge>)}</div></div>}
       {data.licenses?.length ? <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Licenses & credentials</h4><div className="flex flex-col gap-1 text-sm">{data.licenses.map((item, index) => <p key={`${item.name}-${index}`}>{[item.name, item.issuer].filter(Boolean).join(" — ")}</p>)}</div></div> : null}
       {data.languages?.length ? <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Languages</h4><div className="flex flex-wrap gap-1.5">{data.languages.map((item, index) => <Badge key={`${item.language}-${index}`} variant="outline">{[item.language, item.proficiency].filter(Boolean).join(" — ")}</Badge>)}</div></div> : null}
-      <div className="flex flex-wrap gap-2 border-t pt-4"><Button size="sm" onClick={copy}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={downloadPdf}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={downloadDocx}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button size="sm" onClick={save} disabled={saveMutation.isPending}>{saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save draft</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate</Button></>}</div>
+      <div className="flex flex-wrap gap-2 border-t pt-4"><Button size="sm" onClick={copy}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={downloadPdf}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={downloadDocx}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button size="sm" onClick={save} disabled={saveMutation.isPending}>{saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save resume</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate</Button></>}</div>
     </div>}
   </DialogContent></Dialog>;
 }

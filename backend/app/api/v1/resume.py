@@ -238,6 +238,7 @@ async def create_tailored_resume_draft(
     service: ResumeServiceDep,
     job_repo: JobRepositoryDep,
 ) -> TailoredResumeDraftResponse:
+    """Create or replace the authenticated user's saved resume for this job."""
     return await service.create_tailored_draft(
         user_id=current_user.id, payload=payload, job_repository=job_repo
     )

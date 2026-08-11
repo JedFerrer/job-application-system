@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
-from sqlalchemy import delete, exists, select, update
+from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -313,23 +314,42 @@ class ResumeRepository:
         *,
         user_id: int,
         job_id: int,
-        source_profile_id: int,
+        source_profile_id: int | None,
         job_title: str,
         job_company: str | None,
         content: dict[str, object],
     ) -> TailoredResumeDraft:
-        draft = TailoredResumeDraft(
-            user_id=user_id,
-            job_id=job_id,
-            source_profile_id=source_profile_id,
-            job_title=job_title,
-            job_company=job_company,
-            content=content,
+        statement = (
+            pg_insert(TailoredResumeDraft)
+            .values(
+                user_id=user_id,
+                job_id=job_id,
+                source_profile_id=source_profile_id,
+                job_title=job_title,
+                job_company=job_company,
+                content=content,
+            )
+            .on_conflict_do_update(
+                constraint="uq_tailored_resume_drafts_user_job",
+                set_={
+                    "source_profile_id": source_profile_id,
+                    "job_title": job_title,
+                    "job_company": job_company,
+                    "content": content,
+                    "updated_at": func.now(),
+                },
+            )
+            .returning(TailoredResumeDraft.id)
         )
-        self._session.add(draft)
+        result = await self._session.execute(statement)
+        draft_id = result.scalar_one()
         await self._session.flush()
-        await self._session.refresh(draft)
-        return draft
+        refreshed = await self._session.execute(
+            select(TailoredResumeDraft)
+            .where(TailoredResumeDraft.id == draft_id)
+            .execution_options(populate_existing=True)
+        )
+        return refreshed.scalar_one()
 
     async def list_tailored_drafts(
         self, *, user_id: int

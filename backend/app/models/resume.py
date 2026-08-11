@@ -10,7 +10,16 @@ from __future__ import annotations
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -67,6 +76,11 @@ class TailoredResumeDraft(Base):
     """An explicit, immutable user-saved tailored resume snapshot."""
 
     __tablename__ = "tailored_resume_drafts"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "job_id", name="uq_tailored_resume_drafts_user_job"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(

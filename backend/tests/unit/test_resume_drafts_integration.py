@@ -207,3 +207,96 @@ async def test_snapshot_survives_real_linked_record_deletes(
             )
             == content_snapshot
         )
+
+
+@pytest.mark.asyncio
+async def test_upsert_replaces_same_user_job_and_keeps_id(
+    session_factory,
+) -> None:  # noqa: ANN001
+    async with session_factory() as db:
+        await _seed_user(db, 1)
+        job = Job(
+            fingerprint="phase7-upsert-test",
+            title="Backend Engineer",
+            company="Acme",
+            source="test",
+            source_url="https://example.com/phase7-upsert-test",
+            raw_response={},
+            description="Backend role",
+        )
+        db.add(job)
+        await db.flush()
+        repository = ResumeRepository(db)
+
+        first = await repository.create_tailored_draft(
+            user_id=1,
+            job_id=job.id,
+            source_profile_id=None,
+            job_title=job.title,
+            job_company=job.company,
+            content=_content(job.id) | {"professional_summary": "First"},
+        )
+        second = await repository.create_tailored_draft(
+            user_id=1,
+            job_id=job.id,
+            source_profile_id=None,
+            job_title=job.title,
+            job_company=job.company,
+            content=_content(job.id) | {"professional_summary": "Replacement"},
+        )
+        await db.commit()
+
+        assert second.id == first.id
+        assert second.source_profile_id is None
+        assert second.content["professional_summary"] == "Replacement"
+        rows = (
+            await db.execute(
+                select(TailoredResumeDraft).where(
+                    TailoredResumeDraft.user_id == 1,
+                    TailoredResumeDraft.job_id == job.id,
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_is_independent_by_user_and_job(
+    session_factory,
+) -> None:  # noqa: ANN001
+    async with session_factory() as db:
+        await _seed_user(db, 1)
+        await _seed_user(db, 2)
+        jobs = [
+            Job(
+                fingerprint=f"phase7-scope-test-{index}",
+                title=f"Role {index}",
+                company="Acme",
+                source="test",
+                source_url=f"https://example.com/phase7-scope-test-{index}",
+                raw_response={},
+                description="Role",
+            )
+            for index in range(2)
+        ]
+        db.add_all(jobs)
+        await db.flush()
+        repository = ResumeRepository(db)
+
+        rows = []
+        for user_id, job in ((1, jobs[0]), (2, jobs[0]), (1, jobs[1])):
+            rows.append(
+                await repository.create_tailored_draft(
+                    user_id=user_id,
+                    job_id=job.id,
+                    source_profile_id=None,
+                    job_title=job.title,
+                    job_company=job.company,
+                    content=_content(job.id),
+                )
+            )
+        await db.commit()
+
+        assert len({row.id for row in rows}) == 3
+        assert len(await repository.list_tailored_drafts(user_id=1)) == 2
+        assert len(await repository.list_tailored_drafts(user_id=2)) == 1
