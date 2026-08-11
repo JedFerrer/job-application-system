@@ -1,0 +1,57 @@
+{
+  "schema_version": "resume-tailoring-eval-v1",
+  "provenance": "Fully synthetic evaluation data. Do not replace with real resumes.",
+  "cases": [
+    {
+      "id": "strong-match-selective-rewrite",
+      "profile": {"skills": ["Python", "FastAPI", "Redis"], "headline": "Backend Engineer", "work_history": [{"company": "Fictional Orbit", "title": "Engineer", "highlights": ["Improved page performance.", "Implemented caching with Redis.", "Built REST APIs with FastAPI."]}]},
+      "job_description": "Build Python FastAPI services with Redis.",
+      "locked_response": {"rewrites": [{"role_index": 0, "source_index": 2, "rewritten_text": "Built FastAPI REST APIs.", "evidence_ids": ["r0:b2"]}]},
+      "expected": {"requirements": [{"requirement": "fastapi", "status": "verified", "evidence_categories": ["profile_skill", "work_history"]}, {"requirement": "python", "status": "verified", "evidence_categories": ["profile_skill"]}, {"requirement": "redis", "status": "verified", "evidence_categories": ["profile_skill", "work_history"]}], "coverage": [{"requirement": "fastapi", "status": "covered"}, {"requirement": "python", "status": "covered"}, {"requirement": "redis", "status": "covered"}], "accepted_rewrites": 1, "rejected_patches": 0, "source_order": [1, 2, 0]}
+    },
+    {
+      "id": "unsupported-technology-rejected",
+      "profile": {"skills": ["Docker"], "work_history": [{"company": "Fictional Signal", "title": "Engineer", "highlights": ["Deployed services with Docker."]}]},
+      "job_description": "Deploy Docker and Kubernetes services.",
+      "locked_response": {"rewrites": [{"role_index": 0, "source_index": 0, "rewritten_text": "Deployed services with Kubernetes.", "evidence_ids": ["r0:b0"]}]},
+      "expected": {"requirements": [{"requirement": "docker", "status": "verified", "evidence_categories": ["profile_skill", "work_history"]}, {"requirement": "kubernetes", "status": "missing", "evidence_categories": []}], "coverage": [{"requirement": "docker", "status": "covered"}, {"requirement": "kubernetes", "status": "not_applicable"}], "accepted_rewrites": 0, "rejected_patches": 1, "source_order": [0]}
+    },
+    {
+      "id": "metrics-leadership-cross-role-rejected",
+      "profile": {"skills": ["Python"], "work_history": [{"company": "Fictional A", "title": "Engineer", "highlights": ["Built Python services."]}, {"company": "Fictional B", "title": "Engineer", "highlights": ["Tested Python services."]}]},
+      "job_description": "Build Python services.",
+      "locked_response": {"rewrites": [{"role_index": 0, "source_index": 0, "rewritten_text": "Built Python services with 50% faster delivery.", "evidence_ids": ["r0:b0"]}, {"role_index": 0, "source_index": 0, "rewritten_text": "Built Python services with team leadership.", "evidence_ids": ["r0:b0", "r1:b0"]}, {"role_index": 1, "source_index": 0, "rewritten_text": "Tested Python services and led the team.", "evidence_ids": ["r1:b0"]}]},
+      "expected": {"requirements": [{"requirement": "python", "status": "verified", "evidence_categories": ["profile_skill", "work_history"]}], "coverage": [{"requirement": "python", "status": "covered"}], "accepted_rewrites": 0, "rejected_patches": 3, "source_order": [0]}
+    },
+    {
+      "id": "verified-not-represented",
+      "profile": {"skills": ["Python"], "work_history": [{"company": "Fictional Labs", "title": "Analyst", "highlights": ["Improved operational reporting."]}]},
+      "job_description": "Python analyst.",
+      "locked_response": {"rewrites": []},
+      "resume_skills": [],
+      "expected": {"requirements": [{"requirement": "python", "status": "verified", "evidence_categories": ["profile_skill"]}], "coverage": [{"requirement": "python", "status": "not_represented"}], "accepted_rewrites": 0, "rejected_patches": 0, "source_order": [0]}
+    },
+    {
+      "id": "aliases-and-explicit-empty-skills",
+      "profile": {"skills": ["Amazon Web Services"], "projects": [{"name": "Fictional Platform", "technologies": ["Docker"]}], "work_history": []},
+      "job_description": "AWS and Kubernetes.",
+      "locked_response": {"rewrites": []},
+      "resume_skills": [],
+      "expected": {"requirements": [{"requirement": "aws", "status": "verified", "evidence_categories": ["profile_skill"]}, {"requirement": "kubernetes", "status": "missing", "evidence_categories": []}], "coverage": [{"requirement": "aws", "status": "not_represented"}, {"requirement": "kubernetes", "status": "not_applicable"}], "accepted_rewrites": 0, "rejected_patches": 0, "source_order": []}
+    },
+    {
+      "id": "malformed-fallback",
+      "profile": {"skills": ["FastAPI"], "work_history": [{"company": "Fictional Systems", "title": "Engineer", "highlights": ["Improved operational reporting.", "Built APIs with FastAPI.", "Improved FastAPI reliability."]}]},
+      "job_description": "Build FastAPI APIs.",
+      "locked_response": {"rewrites": "malformed"},
+      "expected": {"requirements": [{"requirement": "fastapi", "status": "verified", "evidence_categories": ["profile_skill", "work_history"]}], "coverage": [{"requirement": "fastapi", "status": "covered"}], "accepted_rewrites": 0, "rejected_patches": 0, "fallback": true, "source_order": [1, 2, 0], "source_preserved": true}
+    },
+    {
+      "id": "unicode-unsafe-substitution",
+      "profile": {"skills": ["Python"], "work_history": [{"company": "Fictional 東京", "title": "工程师", "highlights": ["维护 Python 服务。"]}]},
+      "job_description": "Maintain Python services and Kubernetes.",
+      "locked_response": {"rewrites": [{"role_index": 0, "source_index": 0, "rewritten_text": "维护 Kubernetes 服务。", "evidence_ids": ["r0:b0"]}]},
+      "expected": {"requirements": [{"requirement": "kubernetes", "status": "missing", "evidence_categories": []}, {"requirement": "python", "status": "verified", "evidence_categories": ["profile_skill", "work_history"]}], "coverage": [{"requirement": "kubernetes", "status": "not_applicable"}, {"requirement": "python", "status": "covered"}], "accepted_rewrites": 0, "rejected_patches": 1, "source_order": [0]}
+    }
+  ]
+}
