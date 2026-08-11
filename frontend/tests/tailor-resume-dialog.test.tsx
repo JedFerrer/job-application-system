@@ -24,10 +24,10 @@ vi.mock("@/lib/cover-letter-export", () => ({
 
 vi.mock("@/components/ui/dialog", () => {
   const Dialog = ({ children }: { children: ReactNode }) => <>{children}</>;
-  const DialogContent = ({ children }: { children: ReactNode }) => (
-    <div role="dialog">{children}</div>
+  const DialogContent = ({ children, className, "data-testid": testId }: { children: ReactNode; className?: string; "data-testid"?: string }) => (
+    <div role="dialog" className={className} data-testid={testId}>{children}</div>
   );
-  const DialogHeader = ({ children }: { children: ReactNode }) => <div>{children}</div>;
+  const DialogHeader = ({ children, className }: { children: ReactNode; className?: string }) => <div className={className}>{children}</div>;
   const DialogTitle = ({ children }: { children: ReactNode }) => <h2>{children}</h2>;
   const DialogDescription = ({ children }: { children: ReactNode }) => <p>{children}</p>;
 
@@ -221,6 +221,10 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).toContain("Verified and shown on this resume");
     expect(renderedText()).toContain("Verified, not shown on this resume");
     expect(renderedText()).toContain("Missing requirements");
+    expect(container.querySelector('[data-testid="tailor-resume-scroll-region"]')?.className).toContain("overflow-y-auto");
+    expect(container.querySelector('[data-testid="tailor-resume-actions"]')?.className).toContain("shrink-0");
+    expect(container.querySelector('[data-testid="tailor-resume-actions"]')?.className).not.toContain("px-");
+    expect(container.querySelector(".text-amber-800.dark\\:text-amber-200")).not.toBeNull();
 
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Keep original"))?.click(); await Promise.resolve(); });
     expect(apiMocks.previewCoverage).toHaveBeenCalledWith(expect.objectContaining({ job_id: 101 }));
