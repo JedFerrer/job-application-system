@@ -9,6 +9,12 @@ from app.domain.cover_letters.exceptions import (
     CoverLetterGenerationError,
     CoverLetterNotFoundError,
 )
+from app.domain.cover_letters.grounding import (
+    CoverLetterEvidence,
+    build_evidence_catalog,
+    evidence_bundle,
+    validate_cover_letter_payload,
+)
 from app.domain.cover_letters.prompts import COVER_LETTER_SYSTEM_PROMPT
 from app.domain.cover_letters.repository import CoverLetterRepository
 from app.domain.cover_letters.schemas import CoverLetterResponse
@@ -16,6 +22,8 @@ from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.domain.resume.exceptions import ProfileNotFoundError
 from app.domain.resume.repository import ResumeRepository
+from app.domain.resume.requirement_classification import classify_requirements
+from app.domain.resume.schemas import ParsedProfile
 from app.infrastructure.llm_client import LLMUnavailableError, llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
 
@@ -44,12 +52,16 @@ class CoverLetterService:
         if job is None:
             raise JobNotFoundError(job_id)
 
-        candidate_profile = dict(profile.parsed)
-        candidate_profile.pop("links", None)
-        candidate_profile.pop("projects", None)
+        candidate_profile = ParsedProfile.model_validate(profile.parsed)
+        catalog = build_evidence_catalog(candidate_profile)
+        classifications = classify_requirements(job.description, candidate_profile)
+        missing_skills = {
+            item.requirement for item in classifications if item.status == "missing"
+        }
 
         content, model = await self._generate_with_llm(
-            candidate_profile=candidate_profile,
+            evidence_catalog=catalog,
+            missing_skills=missing_skills,
             job_title=job.title,
             company=job.company,
             job_description=job.description or "",
@@ -107,17 +119,20 @@ class CoverLetterService:
     async def _generate_with_llm(
         self,
         *,
-        candidate_profile: dict[str, object],
+        evidence_catalog: dict[str, CoverLetterEvidence],
+        missing_skills: set[str],
         job_title: str,
         company: str | None,
         job_description: str,
         tone: str,
     ) -> tuple[str, str]:
         user_payload = {
-            "candidate_profile": candidate_profile,
-            "job_title": job_title,
-            "company": company,
-            "job_description": job_description,
+            "candidate_evidence": evidence_bundle(evidence_catalog),
+            "job_context": {
+                "job_title": job_title,
+                "company": company,
+                "job_description": job_description,
+            },
             "tone": tone,
         }
         messages = [
@@ -137,7 +152,14 @@ class CoverLetterService:
         except json.JSONDecodeError as exc:
             raise CoverLetterGenerationError("LLM returned invalid JSON") from exc
 
-        content = data.get("content") if isinstance(data, dict) else None
-        if not isinstance(content, str) or not content.strip():
-            raise CoverLetterGenerationError("LLM returned no cover letter content")
-        return content.strip(), model
+        try:
+            content = validate_cover_letter_payload(
+                data,
+                catalog=evidence_catalog,
+                missing_skills=missing_skills,
+                job_title=job_title,
+                company=company,
+            )
+        except ValueError as exc:
+            raise CoverLetterGenerationError("LLM returned unsafe cover letter content") from exc
+        return content, model
