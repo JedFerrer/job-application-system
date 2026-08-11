@@ -19,6 +19,8 @@ from app.domain.resume.exceptions import (
     TailoredResumeDraftNotFoundError,
 )
 from app.domain.resume.schemas import (
+    ParsedProfile,
+    RequirementClassification,
     TailoredResume,
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
@@ -112,7 +114,7 @@ def _draft() -> SimpleNamespace:
 
 
 def test_draft_response_preserves_legacy_skill_semantics() -> None:
-    cases = [
+    cases: list[tuple[dict[str, object], list[str] | None]] = [
         (_content_without_skills(), None),
         (_content_without_skills() | {"skills": None}, None),
         (_content_without_skills() | {"skills": []}, []),
@@ -213,6 +215,99 @@ async def test_create_draft_persists_job_and_profile_snapshot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_draft_recomputes_phase6_analysis_server_side() -> None:
+    repository = AsyncMock()
+    repository.get_active_profile.return_value = SimpleNamespace(
+        id=8,
+        parsed=ParsedProfile.model_validate({"skills": ["Python"]}).model_dump(),
+    )
+    repository.create_tailored_draft.return_value = _draft()
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description="Python Kubernetes"
+    )
+    content = TailoredResume(
+        job_id=11,
+        skills=[],
+        requirement_classifications=[
+            RequirementClassification(requirement="kubernetes", status="verified")
+        ],
+    )
+    service = ResumeService(repository)
+
+    await service.create_tailored_draft(
+        user_id=7,
+        payload=TailoredResumeDraftCreate(job_id=11, content=content),
+        job_repository=jobs,
+    )
+
+    saved = repository.create_tailored_draft.await_args.kwargs["content"]
+    classifications = saved["requirement_classifications"]
+    assert [(item["requirement"], item["status"]) for item in classifications] == [
+        ("kubernetes", "missing"),
+        ("python", "verified"),
+    ]
+    assert classifications[0]["resume_coverage_status"] == "not_applicable"
+    assert classifications[1]["resume_coverage_status"] == "not_represented"
+
+
+@pytest.mark.asyncio
+async def test_coverage_preview_recomputes_reviewed_snapshot_and_ignores_client_analysis() -> None:
+    repository = AsyncMock()
+    repository.get_active_profile.return_value = SimpleNamespace(
+        id=8,
+        parsed=ParsedProfile.model_validate(
+            {"skills": ["Python"], "work_history": [{"highlights": ["Built Python services"]}]}
+        ).model_dump(),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        description="Python Kubernetes", title="Backend Engineer", company="Acme"
+    )
+    service = ResumeService(repository)
+    reviewed = TailoredResume(
+        job_id=11,
+        skills=[],
+        work_history=[
+            {
+                "original_highlights": ["Built Python services"],
+                "tailored_highlights": ["Built Python services"],
+                "tailored_highlight_source_indices": [0],
+            }
+        ],
+        requirement_classifications=[
+            RequirementClassification(
+                requirement="kubernetes",
+                status="verified",
+                resume_coverage_status="covered",
+            )
+        ],
+    )
+
+    covered = await service.preview_resume_coverage(
+        user_id=7, resume=reviewed, job_repository=jobs
+    )
+    by_requirement = {
+        item.requirement: item for item in covered.requirement_classifications
+    }
+    assert by_requirement["python"].status == "verified"
+    assert by_requirement["python"].resume_coverage_status == "covered"
+    assert by_requirement["kubernetes"].status == "missing"
+    assert by_requirement["kubernetes"].resume_coverage_status == "not_applicable"
+    assert covered.work_history[0].tailored_highlights == ["Built Python services"]
+
+    reviewed.work_history[0].tailored_highlights = ["Supported services"]
+    uncovered = await service.preview_resume_coverage(
+        user_id=7, resume=reviewed, job_repository=jobs
+    )
+    python = next(
+        item for item in uncovered.requirement_classifications if item.requirement == "python"
+    )
+    assert python.resume_coverage_status == "not_represented"
+    assert uncovered.work_history[0].tailored_highlights == ["Supported services"]
+
+
+@pytest.mark.asyncio
 async def test_create_draft_requires_active_profile() -> None:
     repository = AsyncMock()
     repository.get_active_profile.return_value = None
@@ -276,6 +371,58 @@ async def test_missing_draft_uses_not_found_behavior() -> None:
 
 
 class TestDraftRouteContract:
+    def test_tailor_response_json_includes_coverage_fields(self) -> None:
+        service = AsyncMock(spec=ResumeService)
+        service.tailor_for_job.return_value = TailoredResume(
+            job_id=11,
+            requirement_classifications=[
+                RequirementClassification(
+                    requirement="python",
+                    status="verified",
+                    resume_coverage_status="covered",
+                    resume_evidence_categories=["skills"],
+                )
+            ],
+        )
+        client = TestClient(_build_route_app(service=service, job_repository=AsyncMock()))
+
+        response = client.get("/resume/tailor/11")
+
+        assert response.status_code == 200
+        assert response.json()["requirement_classifications"][0][
+            "resume_coverage_status"
+        ] == "covered"
+
+    def test_coverage_preview_is_authenticated_and_non_persisting(self) -> None:
+        service = AsyncMock(spec=ResumeService)
+        response = _response()
+        response.content.requirement_classifications = [
+            RequirementClassification(
+                requirement="python",
+                status="verified",
+                resume_coverage_status="covered",
+                resume_evidence_categories=["skills"],
+            )
+        ]
+        service.preview_resume_coverage.return_value = response.content
+        client = TestClient(_build_route_app(service=service, job_repository=AsyncMock()))
+
+        response = client.post("/resume/coverage", json=_payload()["content"])
+
+        assert response.status_code == 200
+        assert response.json()["requirement_classifications"] == [
+            {
+                "requirement": "python",
+                "status": "verified",
+                "priority": "unclassified",
+                "evidence_categories": [],
+                "resume_coverage_status": "covered",
+                "resume_evidence_categories": ["skills"],
+            }
+        ]
+        service.preview_resume_coverage.assert_awaited_once()
+        assert service.create_tailored_draft.await_count == 0
+
     def test_create_valid_request_returns_201_and_exact_snapshot(self) -> None:
         service = AsyncMock(spec=ResumeService)
         service.create_tailored_draft.return_value = _response()

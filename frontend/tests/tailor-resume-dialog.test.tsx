@@ -6,6 +6,7 @@ import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 
 const apiMocks = vi.hoisted(() => ({
   tailorResume: vi.fn(),
+  previewCoverage: vi.fn(),
   createDraft: vi.fn(),
 }));
 const exportMocks = vi.hoisted(() => ({
@@ -88,6 +89,7 @@ describe("TailorResumeDialog", () => {
       },
     });
     apiMocks.tailorResume.mockReset();
+    apiMocks.previewCoverage.mockReset();
     apiMocks.createDraft.mockReset();
     exportMocks.downloadResumePdf.mockReset();
     exportMocks.downloadResumeDocx.mockReset();
@@ -195,6 +197,34 @@ describe("TailorResumeDialog", () => {
     expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).not.toContain("Skills");
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"))?.click(); await Promise.resolve(); });
     expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining("kubernetes"));
+  });
+
+  it("separates candidate fit from resume coverage and refreshes after review", async () => {
+    const analyzed = {
+      ...tailoredResume,
+      requirement_classifications: [
+        { requirement: "python", status: "verified", priority: "unclassified", evidence_categories: ["profile_skill"], resume_coverage_status: "covered", resume_evidence_categories: ["skills"] },
+        { requirement: "docker", status: "verified", priority: "unclassified", evidence_categories: ["project"], resume_coverage_status: "not_represented", resume_evidence_categories: [] },
+        { requirement: "kubernetes", status: "missing", priority: "unclassified", evidence_categories: [], resume_coverage_status: "not_applicable", resume_evidence_categories: [] },
+      ],
+    };
+    apiMocks.tailorResume.mockResolvedValue(analyzed);
+    apiMocks.previewCoverage.mockResolvedValue({
+      ...analyzed,
+      requirement_classifications: analyzed.requirement_classifications,
+    });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Candidate fit & resume coverage"));
+    expect(renderedText()).toContain("Verified and shown on this resume");
+    expect(renderedText()).toContain("Verified, not shown on this resume");
+    expect(renderedText()).toContain("Missing from your profile");
+
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Use original"))?.click(); await Promise.resolve(); });
+    expect(apiMocks.previewCoverage).toHaveBeenCalledWith(expect.objectContaining({ job_id: 101 }));
   });
 
   it("keeps the legacy matched/other fallback when skills is absent", async () => {

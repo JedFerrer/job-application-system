@@ -220,6 +220,8 @@ export interface RequirementClassification {
   status: "verified" | "missing";
   priority: "unclassified";
   evidence_categories: string[];
+  resume_coverage_status?: "covered" | "not_represented" | "not_applicable" | null;
+  resume_evidence_categories?: string[];
 }
 
 export interface TailoredResumeDraftCreate {

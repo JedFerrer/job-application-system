@@ -419,6 +419,12 @@ class RequirementClassification(BaseModel):
     status: Literal["verified", "missing"]
     priority: Literal["unclassified"] = "unclassified"
     evidence_categories: list[str] = Field(default_factory=list)
+    resume_coverage_status: Literal[
+        "covered", "not_represented", "not_applicable"
+    ] | None = Field(default=None, exclude_if=lambda value: value is None)
+    resume_evidence_categories: list[str] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
 
 
 class TailoredResume(BaseModel):

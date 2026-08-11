@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.domain.resume.requirement_classification import classify_requirements
-from app.domain.resume.schemas import ParsedProfile
+from app.domain.resume.requirement_classification import (
+    classify_requirements,
+    classify_resume_coverage,
+)
+from app.domain.resume.schemas import ParsedProfile, TailoredResume
 
 pytestmark = pytest.mark.unit
 
@@ -114,3 +117,63 @@ def test_excluded_profile_fields_do_not_verify_skills() -> None:
     assert by_requirement["typescript"].status == "missing"
     assert by_requirement["typescript"].evidence_categories == []
 
+
+def test_resume_coverage_separates_verified_missing_and_snapshot_evidence() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "skills": ["Python", "FastAPI"],
+            "projects": [{"technologies": ["Docker"]}],
+            "work_history": [{"highlights": ["Built REST services"]}],
+        }
+    )
+    classifications = classify_requirements(
+        "Python FastAPI Docker REST API Kubernetes", profile
+    )
+    snapshot = TailoredResume(
+        job_id=1,
+        skills=[],
+        projects=[{"technologies": ["Docker"]}],
+        work_history=[
+            {
+                "original_highlights": ["Built REST services"],
+                "tailored_highlights": ["Built REST services"],
+            }
+        ],
+    )
+
+    result = classify_resume_coverage(classifications, snapshot)
+    by_requirement = {item.requirement: item for item in result}
+
+    assert by_requirement["python"].status == "verified"
+    assert by_requirement["python"].resume_coverage_status == "not_represented"
+    snapshot.skills = ["Python"]
+    with_explicit_skill = classify_resume_coverage(classifications, snapshot)
+    assert {
+        item.requirement: item.resume_coverage_status
+        for item in with_explicit_skill
+    }["python"] == "covered"
+    assert by_requirement["docker"].resume_coverage_status == "covered"
+    assert by_requirement["docker"].resume_evidence_categories == ["project"]
+    assert by_requirement["rest api"].resume_coverage_status == "covered"
+    assert by_requirement["rest api"].resume_evidence_categories == ["work_history"]
+    assert by_requirement["kubernetes"].status == "missing"
+    assert by_requirement["kubernetes"].resume_coverage_status == "not_applicable"
+    assert by_requirement["kubernetes"].resume_evidence_categories == []
+
+
+def test_resume_coverage_aliases_and_explicit_empty_skills_are_safe() -> None:
+    profile = ParsedProfile.model_validate({"skills": ["Amazon Web Services"]})
+    classifications = classify_requirements("AWS Kubernetes", profile)
+    result = classify_resume_coverage(
+        classifications,
+        TailoredResume(
+            job_id=1,
+            skills=[],
+            projects=[{"description": "Kubernetes deployment project"}],
+        ),
+    )
+    by_requirement = {item.requirement: item for item in result}
+
+    assert by_requirement["aws"].resume_coverage_status == "not_represented"
+    assert by_requirement["kubernetes"].status == "missing"
+    assert by_requirement["kubernetes"].resume_coverage_status == "not_applicable"

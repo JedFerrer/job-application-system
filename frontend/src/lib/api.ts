@@ -213,6 +213,15 @@ export const resumeApi = {
     }),
   tailorResume: (jobId: number) =>
     apiRequest<TailoredResume>(`/resume/tailor/${jobId}`),
+  previewCoverage: (content: TailoredResume) => {
+    // Coverage is advisory; omit any client analysis so the server can
+    // recompute Candidate Fit from the authenticated profile and job.
+    const { requirement_classifications: _ignored, ...snapshot } = content;
+    return apiRequest<TailoredResume>("/resume/coverage", {
+      method: "POST",
+      body: JSON.stringify(snapshot),
+    });
+  },
   createDraft: (payload: TailoredResumeDraftCreate) =>
     apiRequest<TailoredResumeDraft>("/resume/drafts", {
       method: "POST",

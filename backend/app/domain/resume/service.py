@@ -35,7 +35,10 @@ from app.domain.resume.provenance import (
     build_resume_import_provenance,
 )
 from app.domain.resume.repository import ResumeRepository
-from app.domain.resume.requirement_classification import classify_requirements
+from app.domain.resume.requirement_classification import (
+    classify_requirements,
+    classify_resume_coverage,
+)
 from app.domain.resume.schemas import (
     ExtractionEvidence,
     ParsedProfile,
@@ -103,7 +106,7 @@ def _untailored_fallback(
     matched_set = set(report.matched_skills)
     other_skills = [s for s in profile.skills if normalize_skill(s) not in matched_set]
     orders = bullet_orders or [list(range(len(w.highlights))) for w in profile.work_history]
-    return TailoredResume(
+    resume = TailoredResume(
         job_id=job_id,
         professional_summary=profile.headline or None,
         full_name=profile.full_name,
@@ -134,6 +137,10 @@ def _untailored_fallback(
         missing_keywords=report.missing_skills,
         requirement_classifications=requirement_classifications or [],
     )
+    resume.requirement_classifications = classify_resume_coverage(
+        resume.requirement_classifications, resume
+    )
+    return resume
 
 
 def _bullet_relevance(
@@ -454,12 +461,23 @@ class ResumeService:
         if job is None:
             raise JobNotFoundError(payload.job_id)
 
-        content = payload.content.model_dump(mode="json")
+        profile_model = ParsedProfile.model_validate(profile.parsed)
+        classifications = classify_requirements(
+            getattr(job, "description", None), profile_model
+        )
+        authoritative_content = payload.content.model_copy(
+            update={
+                "requirement_classifications": classify_resume_coverage(
+                    classifications, payload.content
+                )
+            }
+        )
+        content = authoritative_content.model_dump(mode="json")
         # Keep legacy client-submitted snapshots unchanged when they do not
         # provide the additive Phase 3 field. Newly generated responses with
         # classifications retain that field in their immutable snapshot.
         if (
-            not payload.content.requirement_classifications
+            not classifications
             and "requirement_classifications"
             not in payload.content.model_fields_set
         ):
@@ -474,6 +492,33 @@ class ResumeService:
             content=content,
         )
         return self._draft_response(draft)
+
+    async def preview_resume_coverage(
+        self,
+        *,
+        user_id: int,
+        resume: TailoredResume,
+        job_repository: JobRepository,
+    ) -> TailoredResume:
+        """Return advisory analysis for the submitted reviewed snapshot."""
+        profile = await self._repository.get_active_profile(user_id)
+        if profile is None:
+            raise ProfileNotFoundError(user_id)
+        job = await job_repository.get_visible_by_id(
+            user_id=user_id, job_id=resume.job_id
+        )
+        if job is None:
+            raise JobNotFoundError(resume.job_id)
+        classifications = classify_requirements(
+            getattr(job, "description", None), ParsedProfile.model_validate(profile.parsed)
+        )
+        return resume.model_copy(
+            update={
+                "requirement_classifications": classify_resume_coverage(
+                    classifications, resume
+                )
+            }
+        )
 
     async def list_tailored_drafts(
         self, *, user_id: int
@@ -648,7 +693,7 @@ class ResumeService:
             ),
             multi_evidence_selections=sanitized.multi_evidence_selections,
         )
-        return TailoredResume(
+        resume = TailoredResume(
             job_id=job_id,
             professional_summary=sanitized.professional_summary,
             full_name=profile.full_name,
@@ -668,3 +713,7 @@ class ResumeService:
             missing_keywords=missing,
             requirement_classifications=classifications,
         )
+        resume.requirement_classifications = classify_resume_coverage(
+            resume.requirement_classifications, resume
+        )
+        return resume

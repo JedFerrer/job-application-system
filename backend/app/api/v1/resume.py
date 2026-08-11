@@ -243,6 +243,21 @@ async def create_tailored_resume_draft(
     )
 
 
+@router.post("/coverage", response_model=TailoredResume)
+async def preview_resume_coverage(
+    payload: TailoredResume,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+    job_repo: JobRepositoryDep,
+) -> TailoredResume:
+    """Preview coverage for the current reviewed snapshot without saving it."""
+    return await service.preview_resume_coverage(
+        user_id=current_user.id,
+        resume=payload,
+        job_repository=job_repo,
+    )
+
+
 @router.get("/drafts", response_model=list[TailoredResumeDraftListItem])
 async def list_tailored_resume_drafts(
     current_user: CurrentUser,
