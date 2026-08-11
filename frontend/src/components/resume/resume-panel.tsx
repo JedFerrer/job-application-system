@@ -64,8 +64,8 @@ export function ResumePanel({
 
   const summary =
     draftCount == null
-      ? "Saved job-specific snapshots remain user-controlled. Review every claim before use."
-      : `${draftCount} saved ${draftCount === 1 ? "resume" : "resumes"}. Review every claim before use.`;
+      ? "Each job has one saved tailored resume. Saving again replaces it; review every claim before use."
+      : `${draftCount} saved ${draftCount === 1 ? "resume" : "resumes"}. Each job has one saved tailored resume; saving again replaces it.`;
 
   return (
     <div className="flex flex-col gap-4">

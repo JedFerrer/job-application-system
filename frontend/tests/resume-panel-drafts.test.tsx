@@ -163,6 +163,7 @@ describe("ResumePanel saved tailored drafts", () => {
   it("renders metadata and opens the saved snapshot without tailoring", async () => {
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Acme"));
+    expect(container.textContent).toContain("Each job has one saved tailored resume");
     expect(apiMocks.getProfile).not.toHaveBeenCalled();
     expect(apiMocks.upload).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Upload résumé");
