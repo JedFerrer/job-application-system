@@ -25,14 +25,20 @@ from app.api.v1 import resume as resume_module
 from app.core.config import get_settings
 from app.domain.resume.provenance import build_resume_import_provenance
 from app.domain.resume.repository import ResumeRepository
-from app.domain.resume.schemas import ParsedProfile
+from app.domain.resume.schemas import ExtractionEvidence, ParsedProfile, ParsedResumeResult
 from app.domain.resume.service import ResumeService, build_summary_text
+from app.domain.resume.source_content import verify_source_document
 from app.infrastructure.database import get_db
 from app.models.application import Application
 from app.models.application_event import ApplicationEvent
 from app.models.cover_letter import CoverLetter
 from app.models.job import Job
-from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
+from app.models.resume import (
+    CandidateProfile,
+    Resume,
+    SourceResumeContent,
+    TailoredResumeDraft,
+)
 from app.models.user import User
 from app.models.user_job_match import UserJobMatch
 
@@ -128,6 +134,19 @@ async def _seed_profile(
     )
     db.add(resume)
     await db.flush()
+    db.add(
+        SourceResumeContent(
+            resume_id=resume.id,
+            schema_version="source-resume-v1",
+            content={
+                "schema_version": "source-resume-v1",
+                "document": {"sections": [{"text": "dummy", "order": 0}]},
+            },
+            validation_status="verified",
+            validation_errors=[],
+        )
+    )
+    await db.flush()
 
     parsed = ParsedProfile(
         full_name=full_name,
@@ -161,6 +180,7 @@ async def _seed_import_draft(
     is_active: bool = False,
     profile: ParsedProfile | None = None,
     embedding: list[float] | None = None,
+    source_status: str | None = "verified",
 ) -> Resume:
     filename = f"{full_name.lower().replace(' ', '-')}.pdf"
     resume = Resume(
@@ -175,6 +195,20 @@ async def _seed_import_draft(
     )
     db.add(resume)
     await db.flush()
+    if source_status is not None:
+        db.add(
+            SourceResumeContent(
+                resume_id=resume.id,
+                schema_version="source-resume-v1",
+                content={
+                    "schema_version": "source-resume-v1",
+                    "document": {"sections": [{"text": "draft text", "order": 0}]},
+                },
+                validation_status=source_status,
+                validation_errors=[] if source_status == "verified" else ["invalid"],
+            )
+        )
+        await db.flush()
     parsed = profile or ParsedProfile(full_name=full_name, headline="Engineer")
     db.add(
         CandidateProfile(
@@ -213,8 +247,18 @@ class TestProfileIntegration:
                 lambda *_: "replacement text",
             )
 
-            async def parse(_: str) -> ParsedProfile:
-                return replacement
+            async def parse(_: str) -> ParsedResumeResult:
+                source = verify_source_document(
+                    {"sections": [{"text": "replacement text", "order": 0}]},
+                    "replacement text",
+                )
+                return ParsedResumeResult(
+                    profile=replacement,
+                    extraction_evidence=ExtractionEvidence(),
+                    source_content=source.payload,
+                    source_validation_status=source.status,
+                    source_validation_errors=source.errors,
+                )
 
             async def embed(_: str) -> list[float]:
                 return [0.1] * 1536
@@ -519,6 +563,7 @@ class TestProfileIntegration:
         ) as client:
             response = client.post(f"/resume/imports/{first_draft.id}/approve")
             assert response.status_code == 200
+
             assert response.json()["profile"]["full_name"] == "Approved User"
             assert response.json()["matching_profile_changed"] is False
             async with session_factory() as approval_db:
@@ -660,6 +705,111 @@ class TestProfileIntegration:
         assert response.status_code == 200
         assert response.json()["matching_profile_changed"] is True
         assert events == [user.id]
+
+    @pytest.mark.asyncio
+    async def test_approve_without_verified_source_preserves_active_pair(
+        self, session_factory
+    ) -> None:  # noqa: ANN001
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            active = await _seed_profile(db, user_id=user.id, full_name="Active User")
+            draft = await _seed_import_draft(
+                db, user_id=user.id, full_name="Missing Source", source_status=None
+            )
+            await db.commit()
+
+        with TestClient(
+            _build_app(current_user=user, session_factory=session_factory)
+        ) as client:
+            with pytest.raises(ValueError, match="verified canonical source"):
+                client.post(f"/resume/imports/{draft.id}/approve")
+
+        async with session_factory() as db:
+            active_resume = await db.get(Resume, active.resume_id)
+            active_profile = await db.get(CandidateProfile, active.id)
+            draft_resume = await db.get(Resume, draft.id)
+            assert active_resume is not None and active_resume.is_active is True
+            assert active_profile is not None
+            assert draft_resume is not None and draft_resume.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_verified_source_round_trips_with_stable_ids_and_order(
+        self, session_factory
+    ) -> None:  # noqa: ANN001
+        from app.domain.resume.source_content import verify_source_document
+
+        raw_text = "• Built APIs.\n• Built APIs."
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            resume = Resume(
+                user_id=user.id,
+                filename="source.pdf",
+                raw_text=raw_text,
+                is_active=False,
+                lifecycle_status="draft",
+            )
+            db.add(resume)
+            await db.flush()
+            verified = verify_source_document(
+                {
+                    "sections": [
+                        {"text": "Built APIs.", "order": 0},
+                        {"text": "Built APIs.", "order": 1},
+                    ]
+                },
+                raw_text,
+            )
+            assert verified.payload is not None
+            verified_sections = verified.payload.model_dump(mode="json")["document"][
+                "sections"
+            ]
+            assert len(verified_sections) == 2
+            assert verified_sections[0]["source_id"] != verified_sections[1]["source_id"]
+            assert [item["occurrence_ordinal"] for item in verified_sections] == [0, 1]
+            source = await ResumeRepository(db).add_source_content(
+                resume_id=resume.id,
+                content=verified.payload.model_dump(mode="json"),
+                validation_status="verified",
+            )
+            ids = [item["source_id"] for item in verified_sections]
+            expected = [
+                {
+                    "text": item["text"],
+                    "start_offset": item["start_offset"],
+                    "end_offset": item["end_offset"],
+                    "occurrence_ordinal": item["occurrence_ordinal"],
+                    "source_id": item["source_id"],
+                    "order": item["order"],
+                    "fingerprint": item["fingerprint"],
+                }
+                for item in verified_sections
+            ]
+            await db.commit()
+            source_id = source.id
+            resume_id = resume.id
+
+        async with session_factory() as db:
+            loaded = await db.get(SourceResumeContent, source_id)
+            assert loaded is not None
+            assert loaded.resume_id == resume_id
+            assert loaded.schema_version == "source-resume-v1"
+            assert loaded.content["schema_version"] == "source-resume-v1"
+            sections = loaded.content["document"]["sections"]
+            actual = [
+                {
+                    "text": item["text"],
+                    "start_offset": item["start_offset"],
+                    "end_offset": item["end_offset"],
+                    "occurrence_ordinal": item["occurrence_ordinal"],
+                    "source_id": item["source_id"],
+                    "order": item["order"],
+                    "fingerprint": item["fingerprint"],
+                }
+                for item in sections
+            ]
+            assert actual == expected
+            assert [item["source_id"] for item in sections] == ids
+            assert len({item["source_id"] for item in sections}) == 2
 
     @pytest.mark.asyncio
     async def test_reject_import_keeps_active_and_does_not_dispatch(

@@ -59,6 +59,14 @@ Principal; makes architectural decisions
   When in doubt between mid and senior, prefer "senior" for candidates with 6+ years of \
 professional experience.
 
+- source_content (object containing the literal, globally ordered source resume. Include
+  summary, skills, sections, work_history, projects, education, certifications,
+  licenses, and languages when present. Work-history highlights and every other
+  prose value must be copied literally from the resume text; do not summarize,
+  merge, normalize wording, or invent values. Every source-text item must be an
+  object with an explicit unique integer `order` representing document reading
+  order across the entire resume (not merely within a section), plus its literal
+  `text`. Use [] or {{}} when absent.)
 - extraction_evidence (object with optional arrays for work_history, education,
   certifications, projects, languages, and licenses). Each item must contain
   item_index (the zero-based

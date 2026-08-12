@@ -13,6 +13,7 @@ import re
 from datetime import datetime
 from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
+from uuid import UUID, uuid4
 
 from pydantic import (
     AliasChoices,
@@ -28,6 +29,7 @@ from app.domain.resume.lifecycle import ResumeLifecycleStatus
 from app.domain.resume.provenance import ResumeImportProvenance
 
 PARSED_PROFILE_SCHEMA_VERSION = "parsed-profile-v3"
+SOURCE_RESUME_SCHEMA_VERSION = "source-resume-v1"
 
 
 def _normalize_optional_text(value: object) -> object:
@@ -300,6 +302,70 @@ class ParsedResumeResult(NamedTuple):
 
     profile: ParsedProfile
     extraction_evidence: ExtractionEvidence
+    source_content: SourceResumeContentPayload | None = None
+    source_validation_status: Literal["verified", "invalid"] | None = None
+    source_validation_errors: tuple[str, ...] = ()
+
+
+class SourceTextItem(BaseModel):
+    """One literal source item with durable identity and raw-text proof."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    source_id: UUID = Field(default_factory=uuid4)
+    text: str = Field(min_length=1)
+    order: int = Field(ge=0)
+    fingerprint: str = ""
+    start_offset: int = Field(default=0, ge=0)
+    end_offset: int = Field(default=0, ge=0)
+    occurrence_ordinal: int = Field(default=0, ge=0)
+
+class SourceRole(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source_id: UUID = Field(default_factory=uuid4)
+    order: int = Field(default=0, ge=0)
+    company: SourceTextItem | None = None
+    title: SourceTextItem | None = None
+    start: SourceTextItem | None = None
+    end: SourceTextItem | None = None
+    description: SourceTextItem | None = None
+    highlights: list[SourceTextItem] = Field(default_factory=list)
+
+
+class SourceProject(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source_id: UUID = Field(default_factory=uuid4)
+    order: int = Field(ge=0)
+    name: SourceTextItem | None = None
+    description: SourceTextItem | None = None
+    technologies: list[SourceTextItem] = Field(default_factory=list)
+    achievements: list[SourceTextItem] = Field(default_factory=list)
+    url: SourceTextItem | None = None
+
+
+class SourceResumeDocument(BaseModel):
+    """Ordered source content; text items are always verified before storage."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    contact: dict[str, SourceTextItem] = Field(default_factory=dict)
+    links: dict[str, SourceTextItem] = Field(default_factory=dict)
+    summary: SourceTextItem | None = None
+    skills: list[SourceTextItem] = Field(default_factory=list)
+    sections: list[SourceTextItem] = Field(default_factory=list)
+    work_history: list[SourceRole] = Field(default_factory=list)
+    projects: list[SourceProject] = Field(default_factory=list)
+    education: list[SourceTextItem] = Field(default_factory=list)
+    certifications: list[SourceTextItem] = Field(default_factory=list)
+    licenses: list[SourceTextItem] = Field(default_factory=list)
+    languages: list[SourceTextItem] = Field(default_factory=list)
+
+
+class SourceResumeContentPayload(BaseModel):
+    schema_version: Literal["source-resume-v1"] = "source-resume-v1"
+    document: SourceResumeDocument
 
 
 class ExtractionWarning(BaseModel):

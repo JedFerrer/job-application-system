@@ -28,12 +28,13 @@ from app.domain.resume.schemas import (
     ParsedProfile,
     ParsedResumeResult,
 )
+from app.domain.resume.source_content import verify_source_document
 from app.infrastructure.llm_client import llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
 
 logger = get_logger("resume_parser")
 
-RESUME_PARSER_CONFIG_ID = "resume-parser-v3"
+RESUME_PARSER_CONFIG_ID = "resume-parser-v4"
 EVIDENCE_VERIFIER_VERSION = "evidence-verifier-v3"
 NATIVE_EXTRACTION_VERSION = "native-extraction-v1"
 
@@ -207,6 +208,7 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                 highlights_sample=str(h)[:200],
             )
 
+    candidate_source = payload.pop("source_content", None)
     candidate_evidence = payload.pop("extraction_evidence", None)
 
     try:
@@ -222,7 +224,14 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
         evidence = _verify_extraction_evidence(
             candidate_evidence, resume_text, profile
         )
-        return ParsedResumeResult(profile=profile, extraction_evidence=evidence)
+        source_result = verify_source_document(candidate_source, resume_text)
+        return ParsedResumeResult(
+            profile=profile,
+            extraction_evidence=evidence,
+            source_content=source_result.payload,
+            source_validation_status=source_result.status,
+            source_validation_errors=source_result.errors,
+        )
     except ValidationError as exc:
         logger.warning("resume_parse_validation_failed", model=model, error=str(exc))
         raise ValueError(f"Resume data failed validation: {exc}") from exc

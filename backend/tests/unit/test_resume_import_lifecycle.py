@@ -6,15 +6,23 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.domain.resume.exceptions import ResumeParseError
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
-from app.domain.resume.schemas import ParsedProfile, ResumeResponse
+from app.domain.resume.schemas import (
+    ExtractionEvidence,
+    ParsedProfile,
+    ParsedResumeResult,
+    ResumeResponse,
+)
 from app.domain.resume.service import ResumeService, build_summary_text
+from app.domain.resume.source_content import verify_source_document
 
 
 class LifecycleRepository:
     def __init__(self, previous: object | None) -> None:
         self.previous = previous
         self.added_resume: dict[str, object] | None = None
+        self.added_source: dict[str, object] | None = None
 
     async def get_active_profile(self, user_id: int) -> object | None:
         del user_id
@@ -40,14 +48,27 @@ class LifecycleRepository:
     async def add_profile(self, **kwargs: object) -> object:
         return SimpleNamespace(**kwargs)
 
+    async def add_source_content(self, **kwargs: object) -> object:
+        self.added_source = kwargs
+        return SimpleNamespace(**kwargs)
+
 
 async def _run_upload(
     monkeypatch: pytest.MonkeyPatch, repository: LifecycleRepository
 ) -> ResumeResponse:
     profile = ParsedProfile(headline="Backend engineer", skills=["Python"])
 
-    async def parse(_: str) -> ParsedProfile:
-        return profile
+    async def parse(_: str) -> ParsedResumeResult:
+        source = verify_source_document(
+            {"sections": [{"text": "text", "order": 0}]}, "text"
+        )
+        return ParsedResumeResult(
+            profile=profile,
+            extraction_evidence=ExtractionEvidence(),
+            source_content=source.payload,
+            source_validation_status=source.status,
+            source_validation_errors=source.errors,
+        )
 
     monkeypatch.setattr("app.domain.resume.service.extract_text_from_bytes", lambda *_: "text")
     monkeypatch.setattr("app.domain.resume.service.parse_resume_text", parse)
@@ -72,6 +93,32 @@ async def test_first_import_becomes_active(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.is_active is True
     assert result.lifecycle_status == "active"
     assert result.matching_profile_changed is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_source_fails_before_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = LifecycleRepository(None)
+    profile = ParsedProfile(headline="Backend engineer")
+
+    async def parse(_: str) -> ParsedResumeResult:
+        return ParsedResumeResult(
+            profile=profile,
+            extraction_evidence=ExtractionEvidence(),
+            source_validation_status="invalid",
+            source_validation_errors=("unverifiable:item",),
+        )
+
+    monkeypatch.setattr("app.domain.resume.service.extract_text_from_bytes", lambda *_: "text")
+    monkeypatch.setattr("app.domain.resume.service.parse_resume_text", parse)
+    monkeypatch.setattr("app.domain.resume.service.embed_text", lambda _: _embedding())
+    with pytest.raises(ResumeParseError, match="source extraction failed verification"):
+        await ResumeService(repository).upload_and_parse(  # type: ignore[arg-type]
+            user_id=7, filename="resume.pdf", content=b"test"
+        )
+    assert repository.added_resume is None
+    assert repository.added_source is None
 
 
 @pytest.mark.asyncio

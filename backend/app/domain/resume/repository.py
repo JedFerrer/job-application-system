@@ -11,7 +11,12 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
-from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
+from app.models.resume import (
+    CandidateProfile,
+    Resume,
+    SourceResumeContent,
+    TailoredResumeDraft,
+)
 from app.models.user import User
 
 
@@ -94,6 +99,26 @@ class ResumeRepository:
         self._session.add(profile)
         await self._session.flush()
         return profile
+
+    async def add_source_content(
+        self,
+        *,
+        resume_id: int,
+        content: dict[str, object],
+        validation_status: str,
+        validation_errors: list[str] | None = None,
+        schema_version: str = "source-resume-v1",
+    ) -> SourceResumeContent:
+        source = SourceResumeContent(
+            resume_id=resume_id,
+            schema_version=schema_version,
+            content=content,
+            validation_status=validation_status,
+            validation_errors=validation_errors or [],
+        )
+        self._session.add(source)
+        await self._session.flush()
+        return source
 
     async def get_active_profile(self, user_id: int) -> CandidateProfile | None:
         """Return the profile tied to the user's active resume, if any."""
@@ -236,6 +261,17 @@ class ResumeRepository:
                 return None
             return ResumeImportApprovalResult(profile=profile, activated=False)
         resume, profile = draft
+        source_result = await self._session.execute(
+            select(SourceResumeContent).where(
+                SourceResumeContent.resume_id == resume.id,
+                SourceResumeContent.validation_status == "verified",
+            )
+        )
+        source = source_result.scalar_one_or_none()
+        if source is None or not source.content:
+            raise ValueError(
+                "Cannot activate a resume without verified canonical source content"
+            )
         previous = await self._capture_previous_active_source(user_id=user_id)
         previous_summary_text: str | None = None
         previous_parsed: dict[str, object] | None = None

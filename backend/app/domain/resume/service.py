@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from app.core.logging import get_logger
 from app.domain.jobs.exceptions import JobNotFoundError
@@ -220,10 +220,37 @@ class ResumeService:
         if isinstance(parsed_result, ParsedResumeResult):
             profile = parsed_result.profile
             extraction_evidence = parsed_result.extraction_evidence
+            source_content = parsed_result.source_content
+            source_validation_status = cast(
+                str | None, parsed_result.source_validation_status
+            )
+            source_validation_errors = list(parsed_result.source_validation_errors)
+            if (
+                source_validation_status is None
+                and not hasattr(self._repository, "add_source_content")
+            ):
+                source_validation_status = "legacy-test-seam"
         else:
-            # Preserve compatibility with focused test seams and older callers.
+            # Legacy focused test seams may still return only a profile. The
+            # production repository exposes source persistence, so a real
+            # import with this shape fails closed below rather than creating a
+            # source-less supported resume.
+            if hasattr(self._repository, "add_source_content"):
+                raise ResumeParseError(
+                    "Resume source extraction was missing; the resume was not imported."
+                )
             profile = parsed_result
             extraction_evidence = ExtractionEvidence()
+            source_content = None
+            source_validation_status = "legacy-test-seam"
+            source_validation_errors = []
+        if source_validation_status not in {"verified", "legacy-test-seam"} or (
+            source_validation_status == "verified" and source_content is None
+        ):
+            details = ", ".join(source_validation_errors) or "source content could not be verified"
+            raise ResumeParseError(
+                f"Resume source extraction failed verification: {details}"
+            )
         extraction_warning_codes = [warning.code for warning in extraction_warnings]
         response_warnings = list(extraction_warnings)
         response_warnings.extend(find_completeness_warnings(raw_text, profile))
@@ -251,19 +278,32 @@ class ResumeService:
             assert previous_profile is not None
             embedding = previous_profile.embedding
 
+        source_ready = source_validation_status in {"verified", "legacy-test-seam"}
         lifecycle_status = (
             ResumeLifecycleStatus.ACTIVE
-            if is_first_import
+            if is_first_import and source_ready
             else ResumeLifecycleStatus.DRAFT
         )
+        is_active = lifecycle_status == ResumeLifecycleStatus.ACTIVE
         resume = await self._repository.add_resume(
             user_id=user_id,
             filename=filename,
             raw_text=raw_text,
-            is_active=is_first_import,
+            is_active=is_active,
             lifecycle_status=lifecycle_status,
             import_provenance=provenance.model_dump(mode="json"),
         )
+        if source_validation_status == "verified":
+            await self._repository.add_source_content(
+                resume_id=resume.id,
+                content=(
+                    source_content.model_dump(mode="json")
+                    if source_content is not None
+                    else {}
+                ),
+                validation_status=source_validation_status,
+                validation_errors=source_validation_errors,
+            )
         await self._repository.add_profile(
             user_id=user_id,
             resume_id=resume.id,
@@ -279,7 +319,7 @@ class ResumeService:
             is_active=resume.is_active,
             lifecycle_status=ResumeLifecycleStatus(resume.lifecycle_status),
             profile=profile,
-            matching_profile_changed=is_first_import,
+            matching_profile_changed=is_active,
             extraction_warnings=response_warnings,
             provenance=provenance,
         )

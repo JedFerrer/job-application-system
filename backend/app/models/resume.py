@@ -52,6 +52,25 @@ class Resume(Base):
     )
 
 
+class SourceResumeContent(Base):
+    """Verified, ordered source-resume snapshot for one uploaded resume."""
+
+    __tablename__ = "source_resume_contents"
+    __table_args__ = (UniqueConstraint("resume_id", name="uq_source_resume_contents_resume"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    resume_id: Mapped[int] = mapped_column(
+        ForeignKey("resumes.id", ondelete="CASCADE"), index=True
+    )
+    schema_version: Mapped[str] = mapped_column(String(64))
+    content: Mapped[dict[str, object]] = mapped_column(JSONB)
+    validation_status: Mapped[str] = mapped_column(String(16))
+    validation_errors: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class CandidateProfile(Base):
     __tablename__ = "candidate_profiles"
 
