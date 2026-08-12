@@ -122,35 +122,91 @@ class ResumeRepository:
 
     async def get_active_profile(self, user_id: int) -> CandidateProfile | None:
         """Return the profile tied to the user's active resume, if any."""
-        result = await self._session.execute(
-            select(CandidateProfile)
-            .join(Resume, Resume.id == CandidateProfile.resume_id)
-            .where(CandidateProfile.user_id == user_id, Resume.is_active.is_(True))
-            .order_by(CandidateProfile.updated_at.desc())
+        resumes = list(
+            (
+                await self._session.execute(
+                    select(Resume).where(
+                        Resume.user_id == user_id,
+                        Resume.is_active.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
         )
-        return result.scalars().first()
+        if not resumes:
+            return None
+        if len(resumes) != 1 or resumes[0].lifecycle_status != ResumeLifecycleStatus.ACTIVE.value:
+            raise ValueError("Active resume lifecycle invariant failed")
+        return await self._get_complete_profile_for_resume(
+            user_id=user_id, resume=resumes[0], require_active=True
+        )
+
+    async def _get_complete_profile_for_resume(
+        self,
+        *,
+        user_id: int,
+        resume: Resume,
+        require_active: bool = False,
+    ) -> CandidateProfile:
+        """Load exactly one owned profile and one verified source, or fail closed."""
+        if resume.user_id != user_id:
+            raise ValueError("Resume ownership invariant failed")
+        if require_active and (
+            not resume.is_active
+            or resume.lifecycle_status != ResumeLifecycleStatus.ACTIVE.value
+        ):
+            raise ValueError("Active resume lifecycle invariant failed")
+        profiles = list(
+            (
+                await self._session.execute(
+                    select(CandidateProfile).where(
+                        CandidateProfile.resume_id == resume.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(profiles) != 1 or profiles[0].user_id != user_id:
+            raise ValueError("Resume must have exactly one owned candidate profile")
+        sources = list(
+            (
+                await self._session.execute(
+                    select(SourceResumeContent).where(
+                        SourceResumeContent.resume_id == resume.id,
+                        SourceResumeContent.validation_status == "verified",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(sources) != 1 or not sources[0].content:
+            raise ValueError(
+                "Resume must have exactly one verified canonical source content"
+            )
+        return profiles[0]
 
     async def get_search_readiness_snapshot(
         self, user_id: int
     ) -> tuple[bool, bool, bool]:
         """Return active-profile eligibility and whether a draft is pending.
 
-        This deliberately selects only ownership/lifecycle/embedding metadata;
-        readiness must never load parsed profile or resume content.
+        Readiness validates the complete supported source/profile pair before
+        reporting an active profile as usable.
         """
         active_result = await self._session.execute(
-            select(Resume.id, Resume.user_id, CandidateProfile.user_id, CandidateProfile.embedding)
-            .outerjoin(CandidateProfile, CandidateProfile.resume_id == Resume.id)
-            .where(Resume.user_id == user_id, Resume.is_active.is_(True))
+            select(Resume).where(Resume.user_id == user_id, Resume.is_active.is_(True))
         )
-        active_rows = list(active_result.all())
-        if len(active_rows) > 1:
+        active_resumes = list(active_result.scalars().all())
+        if len(active_resumes) > 1:
             raise ValueError("Multiple active resumes found; readiness unavailable")
-        if active_rows:
-            _resume_id, resume_owner, profile_owner, embedding = active_rows[0]
-            if profile_owner != user_id or resume_owner != user_id:
-                raise ValueError("Active profile ownership invariant failed")
-            usable = embedding is not None
+        if active_resumes:
+            profile = await self._get_complete_profile_for_resume(
+                user_id=user_id, resume=active_resumes[0], require_active=True
+            )
+            usable = profile.embedding is not None
         else:
             usable = False
 
@@ -163,7 +219,7 @@ class ResumeRepository:
                 )
             )
         )
-        return bool(active_rows), usable, bool(draft_result.scalar())
+        return bool(active_resumes), usable, bool(draft_result.scalar())
 
     async def list_import_drafts(
         self, user_id: int
@@ -179,7 +235,16 @@ class ResumeRepository:
             )
             .order_by(Resume.created_at.desc(), Resume.id.desc())
         )
-        return list(result.tuples().all())
+        rows = list(result.tuples().all())
+        for resume, profile in rows:
+            if resume.lifecycle_status != ResumeLifecycleStatus.DRAFT.value:
+                raise ValueError("Import draft lifecycle invariant failed")
+            verified = await self._get_complete_profile_for_resume(
+                user_id=user_id, resume=resume
+            )
+            if verified.id != profile.id:
+                raise ValueError("Import draft profile invariant failed")
+        return rows
 
     async def get_import_draft(
         self, *, user_id: int, resume_id: int
@@ -195,24 +260,31 @@ class ResumeRepository:
                 Resume.lifecycle_status == ResumeLifecycleStatus.DRAFT.value,
             )
         )
-        return result.tuples().one_or_none()
+        rows = list(result.tuples().all())
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError("Import draft must have exactly one candidate profile")
+        resume, profile = rows[0]
+        verified = await self._get_complete_profile_for_resume(
+            user_id=user_id, resume=resume
+        )
+        if verified.id != profile.id:
+            raise ValueError("Import draft profile invariant failed")
+        return resume, profile
 
     async def get_active_profile_for_resume(
         self, *, user_id: int, resume_id: int
     ) -> CandidateProfile | None:
         """Return an already-approved profile only when it is still active and owned."""
-        result = await self._session.execute(
-            select(CandidateProfile)
-            .join(Resume, Resume.id == CandidateProfile.resume_id)
-            .where(
-                Resume.id == resume_id,
-                Resume.user_id == user_id,
-                Resume.is_active.is_(True),
-                Resume.lifecycle_status == ResumeLifecycleStatus.ACTIVE.value,
-                CandidateProfile.user_id == user_id,
-            )
+        resume = await self._session.get(Resume, resume_id)
+        if resume is None or resume.user_id != user_id or not resume.is_active:
+            return None
+        if resume.lifecycle_status != ResumeLifecycleStatus.ACTIVE.value:
+            raise ValueError("Active resume lifecycle invariant failed")
+        return await self._get_complete_profile_for_resume(
+            user_id=user_id, resume=resume, require_active=True
         )
-        return result.scalar_one_or_none()
 
     async def _capture_previous_active_source(
         self, *, user_id: int
@@ -233,17 +305,10 @@ class ResumeRepository:
         previous_resume = active_resumes[0]
         if previous_resume.lifecycle_status != ResumeLifecycleStatus.ACTIVE.value:
             raise ValueError("Active resume has an inconsistent lifecycle state")
-        profile_result = await self._session.execute(
-            select(CandidateProfile).where(
-                CandidateProfile.resume_id == previous_resume.id,
-            )
+        profile = await self._get_complete_profile_for_resume(
+            user_id=user_id, resume=previous_resume, require_active=True
         )
-        profiles = list(profile_result.scalars().all())
-        if len(profiles) != 1 or profiles[0].user_id != user_id:
-            raise ValueError(
-                "Active resume does not have exactly one owned candidate profile"
-            )
-        return previous_resume, profiles[0]
+        return previous_resume, profile
 
     async def approve_import_draft(
         self, *, user_id: int, resume_id: int
@@ -261,17 +326,9 @@ class ResumeRepository:
                 return None
             return ResumeImportApprovalResult(profile=profile, activated=False)
         resume, profile = draft
-        source_result = await self._session.execute(
-            select(SourceResumeContent).where(
-                SourceResumeContent.resume_id == resume.id,
-                SourceResumeContent.validation_status == "verified",
-            )
+        await self._get_complete_profile_for_resume(
+            user_id=user_id, resume=resume
         )
-        source = source_result.scalar_one_or_none()
-        if source is None or not source.content:
-            raise ValueError(
-                "Cannot activate a resume without verified canonical source content"
-            )
         previous = await self._capture_previous_active_source(user_id=user_id)
         previous_summary_text: str | None = None
         previous_parsed: dict[str, object] | None = None
@@ -320,14 +377,10 @@ class ResumeRepository:
         draft = await self.get_import_draft(user_id=user_id, resume_id=resume_id)
         if draft is None:
             return False
-        await self._session.execute(
-            update(Resume)
-            .where(Resume.id == resume_id, Resume.user_id == user_id)
-            .values(
-                is_active=False,
-                lifecycle_status=ResumeLifecycleStatus.INACTIVE.value,
-            )
-        )
+        draft_resume, draft_profile = draft
+        await self._session.delete(draft_profile)
+        await self._session.flush()
+        await self._session.delete(draft_resume)
         await self._session.flush()
         return True
 

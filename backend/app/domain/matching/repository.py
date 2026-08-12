@@ -11,9 +11,10 @@ from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.resume.repository import ResumeRepository
 from app.models.application import Application
 from app.models.job import Job
-from app.models.resume import CandidateProfile, Resume
+from app.models.resume import CandidateProfile
 from app.models.user_job import UserJob
 from app.models.user_job_match import UserJobMatch
 
@@ -23,17 +24,8 @@ class MatchingRepository:
         self._session = session
 
     async def get_active_profile(self, user_id: int) -> CandidateProfile | None:
-        """Return the user's active candidate profile (with embedding)."""
-        result = await self._session.execute(
-            select(CandidateProfile)
-            .join(Resume, Resume.id == CandidateProfile.resume_id)
-            .where(
-                CandidateProfile.user_id == user_id,
-                Resume.is_active.is_(True),
-            )
-            .order_by(CandidateProfile.updated_at.desc())
-        )
-        return result.scalars().first()
+        """Return only a complete, supported active profile."""
+        return await ResumeRepository(self._session).get_active_profile(user_id)
 
     async def rank_jobs_by_vector(
         self, embedding: list[float], limit: int, *, user_id: int

@@ -77,6 +77,9 @@ class CandidateProfile(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     resume_id: Mapped[int] = mapped_column(ForeignKey("resumes.id"), index=True)
+    __table_args__ = (
+        UniqueConstraint("resume_id", name="uq_candidate_profiles_resume"),
+    )
     # Structured ParsedProfile payload.
     parsed: Mapped[dict[str, object]] = mapped_column(JSONB)
     # Verified source excerpts for replacement-draft review only.

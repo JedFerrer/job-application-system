@@ -23,6 +23,8 @@ from sqlalchemy.pool import NullPool
 from app.api.deps import get_current_user
 from app.api.v1 import resume as resume_module
 from app.core.config import get_settings
+from app.domain.interview.repository import InterviewRepository
+from app.domain.matching.repository import MatchingRepository
 from app.domain.resume.provenance import build_resume_import_provenance
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import ExtractionEvidence, ParsedProfile, ParsedResumeResult
@@ -851,6 +853,61 @@ class TestProfileIntegration:
                 assert client.post(f"/resume/imports/{resume_id}/reject").status_code == 404
 
         assert events == []
+        async with session_factory() as db:
+            assert await db.get(Resume, draft.id) is None
+            assert (
+                await db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM candidate_profiles "
+                        "WHERE resume_id = :resume_id"
+                    ),
+                    {"resume_id": draft.id},
+                )
+            ).scalar_one() == 0
+            assert (
+                await db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM source_resume_contents "
+                        "WHERE resume_id = :resume_id"
+                    ),
+                    {"resume_id": draft.id},
+                )
+            ).scalar_one() == 0
+
+    @pytest.mark.asyncio
+    async def test_matching_and_interview_require_verified_active_source(
+        self, session_factory
+    ) -> None:  # noqa: ANN001
+        async with session_factory() as db:
+            user = await _seed_user(db)
+            active = await _seed_profile(db, user_id=user.id, full_name="Active User")
+            await db.execute(
+                text("DELETE FROM source_resume_contents WHERE resume_id = :resume_id"),
+                {"resume_id": active.resume_id},
+            )
+            await db.commit()
+
+            with pytest.raises(ValueError, match="verified canonical source"):
+                await MatchingRepository(db).get_active_profile(user.id)
+            with pytest.raises(ValueError, match="verified canonical source"):
+                await InterviewRepository(db).get_active_profile(user.id)
+
+            source = SourceResumeContent(
+                resume_id=active.resume_id,
+                schema_version="source-resume-v1",
+                content={"document": {"sections": [{"text": "active", "order": 0}]}},
+                validation_status="verified",
+                validation_errors=[],
+            )
+            db.add(source)
+            await db.commit()
+
+            matching_profile = await MatchingRepository(db).get_active_profile(user.id)
+            interview_profile = await InterviewRepository(db).get_active_profile(user.id)
+            assert matching_profile is not None
+            assert interview_profile is not None
+            assert matching_profile.id == active.id
+            assert interview_profile.id == active.id
 
     @pytest.mark.asyncio
     async def test_approved_retry_is_idempotent_and_does_not_delete_new_source(

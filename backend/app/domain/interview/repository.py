@@ -8,9 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.resume.repository import ResumeRepository
 from app.models.interview_prep import InterviewPrep
 from app.models.job import Job
-from app.models.resume import CandidateProfile, Resume
+from app.models.resume import CandidateProfile
 
 
 class InterviewRepository:
@@ -90,13 +91,5 @@ class InterviewRepository:
         return result.scalar_one_or_none()
 
     async def get_active_profile(self, user_id: int) -> CandidateProfile | None:
-        result = await self._session.execute(
-            select(CandidateProfile)
-            .join(Resume, Resume.id == CandidateProfile.resume_id)
-            .where(
-                CandidateProfile.user_id == user_id,
-                Resume.is_active.is_(True),
-            )
-            .order_by(CandidateProfile.updated_at.desc())
-        )
-        return result.scalars().first()
+        """Return only a complete, supported active profile."""
+        return await ResumeRepository(self._session).get_active_profile(user_id)
