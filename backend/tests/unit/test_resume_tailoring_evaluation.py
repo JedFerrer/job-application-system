@@ -11,7 +11,7 @@ pytestmark = pytest.mark.unit
 
 def test_manifest_has_exactly_seven_synthetic_cases() -> None:
     cases = evaluation.load_manifest()
-    assert len(cases) == 7
+    assert len(cases) == 8
     assert "synthetic" in evaluation.FIXTURE_PATH.read_text(encoding="utf-8").casefold()
 
 
@@ -32,6 +32,29 @@ def test_safety_and_fallback_cases_are_reported() -> None:
     fallback = reports["malformed-fallback"]
     assert fallback["selectivity"]["fallback"] is True
     assert fallback["source_order"] == [1, 2, 0]
+
+
+def test_uuid_reorder_and_duplicate_identity_are_exercised() -> None:
+    report = {
+        item["scenario"]: item for item in evaluation.evaluate_offline()
+    }["duplicate-literal-uuid-reorder"]
+    assert report["passed"] is True
+    assert report["source_order"] == [0, 1]
+    assert len(report["source_uuid_order"]) == 2
+    assert len(set(report["source_uuid_order"])) == 2
+
+
+def test_nontrivial_uuid_reorder_has_static_projection_and_pairing_proof() -> None:
+    report = {
+        item["scenario"]: item for item in evaluation.evaluate_offline()
+    }["strong-match-selective-rewrite"]
+    assert report["source_uuid_order"] == [
+        "88d43517-9e7a-57ec-9c1e-e61181fa28d5",
+        "dd223476-9337-53b8-bddd-eeccfd3bc785",
+        "8fe6a8ef-257b-529f-8d4d-d22f0a4a0fb6",
+    ]
+    assert report["source_order"] == [1, 2, 0]
+    assert report["passed"] is True
 
 
 def test_classification_and_coverage_are_separate() -> None:
@@ -86,5 +109,5 @@ def test_manifest_rejects_wrong_case_count(tmp_path) -> None:  # type: ignore[no
     raw["cases"].pop()
     path = tmp_path / "bad.json"
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="exactly 7 cases"):
+    with pytest.raises(ValueError, match="exactly 8 cases"):
         evaluation.load_manifest(path)

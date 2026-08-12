@@ -48,6 +48,7 @@ from app.domain.resume.schemas import (
     ResumeImportDetail,
     ResumeImportListItem,
     ResumeResponse,
+    SourceResumeContentPayload,
     TailoredResume,
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
@@ -56,6 +57,7 @@ from app.domain.resume.schemas import (
 )
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
+    build_source_evidence_catalog,
     sanitize_tailoring_output,
 )
 from app.infrastructure.embeddings import embed_text
@@ -100,12 +102,32 @@ def _untailored_fallback(
     job_id: int,
     report: SkillMatchReport,
     requirement_classifications: list[RequirementClassification] | None = None,
-    bullet_orders: list[list[int]] | None = None,
+    bullet_orders: list[list[str]] | None = None,
+    source_roles: list[Any] | None = None,
 ) -> TailoredResume:
     """Return the profile as-is when LLM tailoring is unavailable."""
     matched_set = set(report.matched_skills)
     other_skills = [s for s in profile.skills if normalize_skill(s) not in matched_set]
-    orders = bullet_orders or [list(range(len(w.highlights))) for w in profile.work_history]
+    roles = source_roles if source_roles is not None else profile.work_history
+    orders = bullet_orders or [
+        [f"profile-bullet:{role_index}:{source_index}" for source_index in range(len(w.highlights))]
+        for role_index, w in enumerate(roles)
+    ]
+    source_indices = [
+        [
+            next(
+                index
+                for index, bullet in enumerate(role.highlights)
+                if (
+                    str(bullet.source_id) == source_uuid
+                    if source_roles is not None
+                    else f"profile-bullet:{role_index}:{index}" == source_uuid
+                )
+            )
+            for source_uuid in role_order
+        ]
+        for role_index, (role, role_order) in enumerate(zip(roles, orders, strict=True))
+    ]
     resume = TailoredResume(
         job_id=job_id,
         professional_summary=profile.headline or None,
@@ -122,15 +144,22 @@ def _untailored_fallback(
         certifications=list(profile.certifications),
         work_history=[
             TailoredWorkItem(
-                company=w.company,
-                title=w.title,
-                start=w.start,
-                end=w.end,
-                original_highlights=list(w.highlights),
-                tailored_highlights=[w.highlights[index] for index in orders[index_role]],
-                tailored_highlight_source_indices=list(orders[index_role]),
+                company=w.company.text if source_roles is not None and w.company else w.company,
+                title=w.title.text if source_roles is not None and w.title else w.title,
+                start=w.start.text if source_roles is not None and w.start else w.start,
+                end=w.end.text if source_roles is not None and w.end else w.end,
+                original_highlights=(
+                    [b.text for b in w.highlights]
+                    if source_roles is not None
+                    else list(w.highlights)
+                ),
+                tailored_highlights=[
+                    (w.highlights[index].text if source_roles is not None else w.highlights[index])
+                    for index in source_indices[index_role]
+                ],
+                tailored_highlight_source_indices=source_indices[index_role],
             )
-            for index_role, w in enumerate(profile.work_history)
+            for index_role, w in enumerate(roles)
         ],
         matched_skills=report.matched_skills,
         other_skills=other_skills,
@@ -144,26 +173,49 @@ def _untailored_fallback(
 
 
 def _bullet_relevance(
-    profile: ParsedProfile, job_description: str
-) -> tuple[list[list[int]], dict[int, set[int]], list[list[dict[str, object]]]]:
+    profile: ParsedProfile, job_description: str, source_roles: list[Any] | None = None
+) -> tuple[list[list[str]], dict[int, set[str]], list[list[dict[str, object]]]]:
     """Return stable per-role ordering and the source bullets eligible for rewriting."""
     jd_skills = set(extract_jd_skills(job_description))
-    orders: list[list[int]] = []
-    eligible: dict[int, set[int]] = {}
+    orders: list[list[str]] = []
+    eligible: dict[int, set[str]] = {}
     prompt_roles: list[list[dict[str, object]]] = []
-    for role_index, role in enumerate(profile.work_history):
+    roles = source_roles if source_roles is not None else profile.work_history
+    for role_index, role in enumerate(roles):
         scored: list[tuple[int, int, list[str]]] = []
         for source_index, bullet in enumerate(role.highlights):
-            bullet_skills = sorted(jd_skills & set(extract_known_skills(bullet)))
+            text = bullet.text if source_roles is not None else bullet
+            bullet_skills = sorted(jd_skills & set(extract_known_skills(text)))
             scored.append((len(bullet_skills), source_index, bullet_skills))
         ordered = sorted(scored, key=lambda item: (-item[0], item[1]))
-        orders.append([source_index for _, source_index, _ in ordered])
-        eligible[role_index] = {source_index for score, source_index, _ in scored if score > 0}
+        orders.append(
+            [
+                str(role.highlights[source_index].source_id)
+                if source_roles is not None
+                else f"profile-bullet:{role_index}:{source_index}"
+                for _, source_index, _ in ordered
+            ]
+        )
+        eligible[role_index] = {
+            str(role.highlights[source_index].source_id)
+            if source_roles is not None
+            else f"profile-bullet:{role_index}:{source_index}"
+            for score, source_index, _ in scored
+            if score > 0
+        }
         same_role_evidence = [
             {
                 "evidence_id": f"r{role_index}:b{source_index}",
+                "target_alias": f"r{role_index}:b{source_index}",
+                "source_uuid": str(role.highlights[source_index].source_id)
+                if source_roles is not None
+                else f"profile-bullet:{role_index}:{source_index}",
                 "source_index": source_index,
-                "source_text": role.highlights[source_index],
+                "source_text": (
+                    role.highlights[source_index].text
+                    if source_roles is not None
+                    else role.highlights[source_index]
+                ),
             }
             for source_index in range(len(role.highlights))
         ]
@@ -171,8 +223,16 @@ def _bullet_relevance(
             {
                 "role_index": role_index,
                 "source_index": source_index,
-                "source_text": role.highlights[source_index],
+                "source_text": (
+                    role.highlights[source_index].text
+                    if source_roles is not None
+                    else role.highlights[source_index]
+                ),
                 "evidence_id": f"r{role_index}:b{source_index}",
+                "target_alias": f"r{role_index}:b{source_index}",
+                "source_uuid": str(role.highlights[source_index].source_id)
+                if source_roles is not None
+                else f"profile-bullet:{role_index}:{source_index}",
                 "relevance_score": score,
                 "matched_skills": skills,
                 "same_role_evidence": same_role_evidence,
@@ -595,10 +655,23 @@ class ResumeService:
         job_repository: JobRepository,
     ) -> TailoredResume:
         """Selectively tailor source bullets for a specific job."""
-        profile_row = await self._repository.get_active_profile(user_id)
+        source_pair = (
+            await self._repository.get_active_tailoring_source(user_id)
+            if hasattr(self._repository, "get_active_tailoring_source")
+            else None
+        )
+        if source_pair is None and hasattr(self._repository, "get_active_tailoring_source"):
+            raise ProfileNotFoundError(user_id)
+        if not isinstance(source_pair, tuple) or len(source_pair) != 2:
+            profile_row = await self._repository.get_active_profile(user_id)
+            source_row = None
+            source_roles = None
+        else:
+            profile_row, source_row = source_pair
+            source_payload = SourceResumeContentPayload.model_validate(source_row.content)
+            source_roles = source_payload.document.work_history
         if profile_row is None:
             raise ProfileNotFoundError(user_id)
-
         profile = ParsedProfile.model_validate(profile_row.parsed)
         job = await job_repository.get_visible_by_id(user_id=user_id, job_id=job_id)
         if job is None:
@@ -626,15 +699,15 @@ class ResumeService:
         if not job.description:
             # Return untailored — nothing to match against.
             return _untailored_fallback(
-                profile, job_id, report, classifications
+                profile, job_id, report, classifications, source_roles=source_roles
             )
 
         bullet_orders, eligible_bullets, prompt_roles = _bullet_relevance(
-            profile, job.description
+            profile, job.description, source_roles
         )
         if not any(eligible_bullets.values()):
             return _untailored_fallback(
-                profile, job_id, report, classifications, bullet_orders
+                profile, job_id, report, classifications, bullet_orders, source_roles
             )
 
         prompt = TAILOR_RESUME_PROMPT.format(
@@ -661,30 +734,33 @@ class ResumeService:
             )
             # Graceful fallback: return untailored profile with skill report.
             return _untailored_fallback(
-                profile, job_id, report, classifications, bullet_orders
+                profile, job_id, report, classifications, bullet_orders, source_roles
             )
 
         try:
-            evidence_relevance: dict[tuple[int, int], int] = {}
+            evidence_relevance: dict[str, int] = {}
             for role_entries in prompt_roles:
                 for entry in role_entries:
-                    role_value = entry.get("role_index")
-                    source_value = entry.get("source_index")
+                    source_uuid = entry.get("source_uuid")
                     score_value = entry.get("relevance_score")
                     if (
-                        isinstance(role_value, int)
-                        and isinstance(source_value, int)
+                        isinstance(source_uuid, str)
                         and isinstance(score_value, int)
                     ):
-                        evidence_relevance[(role_value, source_value)] = score_value
+                        evidence_relevance[source_uuid] = score_value
             sanitized = sanitize_tailoring_output(
                 profile,
                 data,
                 report.missing_skills,
                 eligible_bullets,
                 bullet_orders,
-                build_evidence_catalog(profile),
+                (
+                    build_source_evidence_catalog(source_roles)
+                    if source_roles is not None
+                    else build_evidence_catalog(profile)
+                ),
                 evidence_relevance,
+                source_roles,
             )
         except Exception:
             logger.warning(
@@ -694,25 +770,57 @@ class ResumeService:
                 exc_info=True,
             )
             return _untailored_fallback(
-                profile, job_id, report, classifications, bullet_orders
+                profile, job_id, report, classifications, bullet_orders, source_roles
             )
 
         matched = list(report.matched_skills)
         matched_set = set(matched)
         other = [s for s in profile.skills if normalize_skill(s) not in matched_set]
         missing = list(report.missing_skills)
+        output_roles: list[Any] = (
+            source_roles if source_roles is not None else profile.work_history
+        )
         tailored_wh = [
             TailoredWorkItem(
-                company=source.company,
-                title=source.title,
-                start=source.start,
-                end=source.end,
-                original_highlights=list(source.highlights),
+                company=(
+                    source.company.text
+                    if source_roles is not None and source.company
+                    else source.company
+                ),
+                title=(
+                    source.title.text
+                    if source_roles is not None and source.title
+                    else source.title
+                ),
+                start=(
+                    source.start.text
+                    if source_roles is not None and source.start
+                    else source.start
+                ),
+                end=(
+                    source.end.text
+                    if source_roles is not None and source.end
+                    else source.end
+                ),
+                original_highlights=(
+                    [item.text for item in source.highlights]
+                    if source_roles is not None
+                    else list(source.highlights)
+                ),
                 tailored_highlights=sanitized_bullets,
-                tailored_highlight_source_indices=list(bullet_orders[role_index]),
+                tailored_highlight_source_indices=[
+                    next(
+                        index
+                        for index, bullet in enumerate(source.highlights)
+                        if str(bullet.source_id) == source_uuid
+                    )
+                    if source_roles is not None
+                    else int(source_uuid.rsplit(":", 1)[-1])
+                    for source_uuid in bullet_orders[role_index]
+                ],
             )
             for role_index, (source, sanitized_bullets) in enumerate(
-                zip(profile.work_history, sanitized.tailored_highlights, strict=True)
+                zip(output_roles, sanitized.tailored_highlights, strict=True)
             )
         ]
 

@@ -140,10 +140,14 @@ MISSING_SKILLS (skills in the JD but not supported by the profile):
 TAILOR_RESUME_PROMPT = """You are making a conservative, selective resume-tailoring pass \
 for a specific job description.
 
-The candidate profile is the sole source of truth. Return valid JSON only — \
+The supplied canonical source bullets are the sole authority for resume prose. \
+The candidate profile, matched skills, missing skills, and job description are \
+relevance context only and never authorize a new resume fact. Return valid JSON only — \
 no markdown or explanation.
 
 Rules:
+- Canonical source bullets are the only resume-prose evidence. Profile and job
+  fields are context only and cannot authorize new facts.
 - Return only optional rewrite patches for the eligible source bullets below.
 - Omit a bullet when it should be kept unchanged. Do not regenerate the resume.
 - A rewrite must preserve the exact meaning and every substantive fact of its exact source bullet.
@@ -156,10 +160,10 @@ Docker into Kubernetes.
 supplies all identity fields and preserves all bullets.
 - Use a rewrite only when it is materially clearer for this JD; otherwise omit it.
 
-Return exactly this shape:
+Return exactly this shape (target_alias/evidence_aliases are preferred):
 {{
   "rewrites": [
-    {{"role_index": 0, "source_index": 1, "rewritten_text": "...", "evidence_ids": ["r0:b1"]}}
+    {{"target_alias": "r0:b1", "rewritten_text": "...", "evidence_aliases": ["r0:b1"]}}
   ]
 }}
 

@@ -78,6 +78,8 @@ class EvidenceRef:
     role_index: int
     source_index: int
     text: str
+    role_uuid: str | None = None
+    source_uuid: str | None = None
 
 
 def build_evidence_catalog(profile: ParsedProfile) -> dict[str, EvidenceRef]:
@@ -88,10 +90,30 @@ def build_evidence_catalog(profile: ParsedProfile) -> dict[str, EvidenceRef]:
             role_index=role_index,
             source_index=source_index,
             text=bullet,
+            role_uuid=f"profile-role:{role_index}",
+            source_uuid=f"profile-bullet:{role_index}:{source_index}",
         )
         for role_index, role in enumerate(profile.work_history)
         for source_index, bullet in enumerate(role.highlights)
     }
+
+
+def build_source_evidence_catalog(source_roles: list[Any]) -> dict[str, EvidenceRef]:
+    """Build deterministic request aliases backed by canonical source UUIDs."""
+    catalog: dict[str, EvidenceRef] = {}
+    for role_index, role in enumerate(source_roles):
+        role_uuid = str(role.source_id)
+        for source_index, bullet in enumerate(role.highlights):
+            alias = f"r{role_index}:b{source_index}"
+            catalog[alias] = EvidenceRef(
+                evidence_id=alias,
+                role_index=role_index,
+                source_index=source_index,
+                text=bullet.text,
+                role_uuid=role_uuid,
+                source_uuid=str(bullet.source_id),
+            )
+    return catalog
 
 
 def numeric_claims(text: str) -> frozenset[str]:
@@ -279,7 +301,7 @@ def _neutral_combination(
     target_source_index: int,
     cited: list[EvidenceRef],
     missing_skills: set[str],
-    evidence_relevance: dict[tuple[int, int], int],
+    evidence_relevance: dict[Any, int],
 ) -> str | None:
     """Compose one neutral, source-exact same-role combination.
 
@@ -298,7 +320,10 @@ def _neutral_combination(
     supplement_ref = max(
         supplements,
         key=lambda item: (
-            evidence_relevance.get((item.role_index, item.source_index), 0),
+            evidence_relevance.get(
+                item.source_uuid or item.evidence_id,
+                evidence_relevance.get((item.role_index, item.source_index), 0),
+            ),
             -item.source_index,
         ),
     )
@@ -327,10 +352,12 @@ def sanitize_tailoring_output(
     profile: ParsedProfile,
     payload: Any,
     missing_skills: list[str],
-    eligible_bullets: dict[int, set[int]],
-    bullet_orders: list[list[int]],
+    eligible_bullets: dict[int, set[Any]],
+    bullet_orders: list[list[Any]],
     evidence_catalog: dict[str, EvidenceRef] | None = None,
-    evidence_relevance: dict[tuple[int, int], int] | None = None,
+    evidence_relevance: dict[Any, int] | None = None,
+    source_roles: list[Any] | None = None,
+    source_order_ids: list[list[str]] | None = None,
 ) -> SanitizedTailoring:
     """Apply sparse, source-indexed rewrites while preserving source structure."""
     if not isinstance(payload, dict):
@@ -340,7 +367,7 @@ def sanitize_tailoring_output(
         raise ValueError("Tailoring output rewrites must be a list")
 
     missing_set = set(missing_skills)
-    rewrites: dict[tuple[int, int], str] = {}
+    rewrites: dict[str, str] = {}
     rejected = 0
     reasons: Counter[str] = Counter()
     selected_multi_evidence = 0
@@ -351,12 +378,24 @@ def sanitize_tailoring_output(
         rejected += 1
         reasons[reason] += 1
 
+    roles = source_roles if source_roles is not None else profile.work_history
+    catalog = evidence_catalog or build_evidence_catalog(profile)
     for raw in raw_rewrites:
         if not isinstance(raw, dict):
             reject("malformed_patch")
             continue
+        target_alias = raw.get("target_alias")
+        evidence_aliases = raw.get("evidence_aliases")
         role_index = raw.get("role_index")
         source_index = raw.get("source_index")
+        if isinstance(target_alias, str):
+            target_ref = (evidence_catalog or {}).get(target_alias)
+            if target_ref is None:
+                reject("invalid_evidence_id")
+                continue
+            role_index, source_index = target_ref.role_index, target_ref.source_index
+        if isinstance(evidence_aliases, list):
+            raw["evidence_ids"] = evidence_aliases
         rewritten = raw.get("rewritten_text")
         if (
             not isinstance(role_index, int)
@@ -366,19 +405,31 @@ def sanitize_tailoring_output(
         ):
             reject("malformed_patch")
             continue
-        key = (role_index, source_index)
+        eligible_keys = eligible_bullets.get(role_index, set())
+        target_ref = catalog.get(target_alias or f"r{role_index}:b{source_index}")
+        if target_ref is None or target_ref.source_uuid is None:
+            reject("invalid_evidence_id")
+            continue
+        key = target_ref.source_uuid
         if (
             role_index < 0
-            or role_index >= len(profile.work_history)
+            or role_index >= len(roles)
             or source_index < 0
-            or source_index not in eligible_bullets.get(role_index, set())
+            or (
+                target_ref.source_uuid not in eligible_keys
+                and source_index not in eligible_keys
+            )
             or key in rewrites
             or not isinstance(rewritten, str)
             or not rewritten.strip()
         ):
             reject("malformed_patch")
             continue
-        source = profile.work_history[role_index].highlights[source_index]
+        source = (
+            source_roles[role_index].highlights[source_index].text
+            if source_roles is not None
+            else profile.work_history[role_index].highlights[source_index]
+        )
         if rewritten.strip() == source.strip():
             continue
         raw_evidence_ids = raw.get("evidence_ids")
@@ -388,7 +439,6 @@ def sanitize_tailoring_output(
         if not isinstance(raw_evidence_ids, list):
             reject("invalid_evidence_id")
             continue
-        catalog = evidence_catalog or build_evidence_catalog(profile)
         if (
             not raw_evidence_ids
             or any(type(item) is not str for item in raw_evidence_ids)
@@ -401,13 +451,13 @@ def sanitize_tailoring_output(
             reject("invalid_evidence_id")
             continue
         valid_refs = [ref for ref in refs if ref is not None]
-        own_id = f"r{role_index}:b{source_index}"
+        own_id = target_ref.evidence_id
         if own_id not in raw_evidence_ids or any(
-            ref.role_index != role_index for ref in valid_refs
+            ref.role_uuid != target_ref.role_uuid for ref in valid_refs
         ):
             reason = (
                 "cross_role_evidence"
-                if any(ref.role_index != role_index for ref in valid_refs)
+                if any(ref.role_uuid != target_ref.role_uuid for ref in valid_refs)
                 else "missing_target_evidence"
             )
             reject(reason)
@@ -450,13 +500,33 @@ def sanitize_tailoring_output(
 
     sanitized_roles: list[list[str]] = []
     bullet_fallbacks = rejected
-    for role_index, source_role in enumerate(profile.work_history):
-        source_bullets = list(source_role.highlights)
+    roles = source_roles if source_roles is not None else profile.work_history
+    for role_index, source_role in enumerate(roles):
+        source_bullets = (
+            [item.text for item in source_role.highlights]
+            if source_roles is not None
+            else list(source_role.highlights)
+        )
         ordered = bullet_orders[role_index]
+        ordered_ids = source_order_ids[role_index] if source_order_ids is not None else ordered
         sanitized_roles.append(
             [
-                rewrites.get((role_index, source_index), source_bullets[source_index])
-                for source_index in ordered
+                rewrites.get(
+                    catalog[alias].source_uuid or "",
+                    source_bullets[catalog[alias].source_index],
+                )
+                for alias in (
+                    [
+                        f"r{role_index}:b{source_index}"
+                        if isinstance(source_index, int)
+                        else next(
+                            alias
+                            for alias, ref in catalog.items()
+                            if ref.source_uuid == source_index
+                        )
+                        for source_index in ordered_ids
+                    ]
+                )
             ]
         )
 

@@ -142,6 +142,46 @@ class ResumeRepository:
             user_id=user_id, resume=resumes[0], require_active=True
         )
 
+    async def get_active_tailoring_source(
+        self, user_id: int
+    ) -> tuple[CandidateProfile, SourceResumeContent] | None:
+        """Return the owned active profile and its verified canonical source."""
+        resumes = list(
+            (
+                await self._session.execute(
+                    select(Resume).where(
+                        Resume.user_id == user_id,
+                        Resume.is_active.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not resumes:
+            return None
+        if len(resumes) != 1 or resumes[0].lifecycle_status != ResumeLifecycleStatus.ACTIVE.value:
+            raise ValueError("Active resume lifecycle invariant failed")
+        resume = resumes[0]
+        profile = await self._get_complete_profile_for_resume(
+            user_id=user_id, resume=resume, require_active=True
+        )
+        sources = list(
+            (
+                await self._session.execute(
+                    select(SourceResumeContent).where(
+                        SourceResumeContent.resume_id == resume.id,
+                        SourceResumeContent.validation_status == "verified",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(sources) != 1 or not sources[0].content:
+            raise ValueError("Active resume must have exactly one verified source")
+        return profile, sources[0]
+
     async def _get_complete_profile_for_resume(
         self,
         *,

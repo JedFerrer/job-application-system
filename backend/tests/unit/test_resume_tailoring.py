@@ -10,10 +10,16 @@ import pytest
 
 from app.domain.resume import service as resume_service
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
-from app.domain.resume.schemas import ParsedProfile, RequirementClassification, TailoredResume
+from app.domain.resume.schemas import (
+    ParsedProfile,
+    RequirementClassification,
+    SourceResumeContentPayload,
+    TailoredResume,
+)
 from app.domain.resume.service import ResumeService
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
+    build_source_evidence_catalog,
     sanitize_tailoring_output,
 )
 
@@ -1016,6 +1022,145 @@ def test_profile_skills_and_projects_never_become_role_evidence() -> None:
     )
     assert result.tailored_highlights == [["Built FastAPI APIs."]]
     assert result.rejected_patches == 1
+
+
+def test_source_aliases_use_distinct_durable_ids_for_duplicate_bullets() -> None:
+    payload = SourceResumeContentPayload.model_validate(
+        {
+            "document": {
+                "work_history": [
+                    {
+                        "company": {"text": "Acme", "order": 0},
+                        "highlights": [
+                            {"text": "Built APIs.", "order": 1},
+                            {"text": "Built APIs.", "order": 2},
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+    catalog = build_source_evidence_catalog(payload.document.work_history)
+    assert catalog["r0:b0"].source_uuid != catalog["r0:b1"].source_uuid
+    assert catalog["r0:b0"].role_uuid == catalog["r0:b1"].role_uuid
+
+
+def test_relevance_uuid_order_projects_patch_to_original_position() -> None:
+    source = SourceResumeContentPayload.model_validate(
+        {
+            "document": {
+                "work_history": [
+                    {
+                        "company": {"text": "Acme", "order": 0},
+                        "highlights": [
+                            {"text": "Improved page performance.", "order": 0},
+                            {"text": "Built FastAPI REST APIs.", "order": 1},
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+    roles = source.document.work_history
+    orders, eligible, _ = resume_service._bullet_relevance(
+        _profile(), "Build FastAPI APIs.", roles
+    )
+    assert all(isinstance(item, str) for item in orders[0])
+    assert orders[0][0] == str(roles[0].highlights[1].source_id)
+    assert eligible[0] == {str(roles[0].highlights[1].source_id)}
+    result = sanitize_tailoring_output(
+        _profile(),
+        {
+            "rewrites": [
+                {
+                    "target_alias": "r0:b1",
+                    "rewritten_text": "Built FastAPI APIs.",
+                    "evidence_aliases": ["r0:b1"],
+                }
+            ]
+        },
+        [],
+        eligible,
+        orders,
+        build_source_evidence_catalog(roles),
+        {str(roles[0].highlights[1].source_id): 1},
+        roles,
+    )
+    assert result.tailored_highlights == [
+        ["Built FastAPI APIs.", "Improved page performance."]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_service_uses_canonical_source_for_original_and_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = AsyncMock()
+    profile = _profile().model_copy(update={
+        "skills": ["Kubernetes"],
+        "work_history": [
+            _profile().work_history[0].model_copy(
+                update={"highlights": ["PROFILE-ONLY wording"]}
+            )
+        ]
+    })
+    source_payload = SourceResumeContentPayload.model_validate(
+        {
+            "document": {
+                "work_history": [
+                    {
+                        "source_id": "11111111-1111-1111-1111-111111111111",
+                        "company": {"text": "Acme", "order": 0},
+                        "title": {"text": "Engineer", "order": 1},
+                        "highlights": [
+                            {
+                                "source_id": "22222222-2222-2222-2222-222222222222",
+                                "text": "Built FastAPI APIs",
+                                "order": 2,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=profile.model_dump()),
+        SimpleNamespace(content=source_payload.model_dump(mode="json")),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        description="FastAPI and Kubernetes"
+    )
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "rewrites": [
+                                {
+                                    "target_alias": "r0:b0",
+                                    "rewritten_text": "Built FastAPI APIs with Kubernetes",
+                                    "evidence_aliases": ["r0:b0"],
+                                }
+                            ]
+                        }
+                    )
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        resume_service,
+        "llm_chat_completion",
+        AsyncMock(return_value=(response, "test-model")),
+    )
+    service = ResumeService(repository)
+    result = await service.tailor_for_job(user_id=7, job_id=11, job_repository=jobs)
+    assert result.work_history[0].original_highlights == ["Built FastAPI APIs"]
+    assert result.work_history[0].tailored_highlights == ["Built FastAPI APIs"]
+    assert "PROFILE-ONLY" not in result.work_history[0].tailored_highlights[0]
 
 
 @pytest.mark.asyncio

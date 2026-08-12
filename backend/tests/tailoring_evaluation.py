@@ -9,6 +9,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, cast
+from uuid import NAMESPACE_URL, uuid5
 
 from app.domain.matching.skill_matcher import SkillMatchReport
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
@@ -16,10 +17,15 @@ from app.domain.resume.requirement_classification import (
     classify_requirements,
     classify_resume_coverage,
 )
-from app.domain.resume.schemas import ParsedProfile, TailoredResume, TailoredWorkItem
+from app.domain.resume.schemas import (
+    ParsedProfile,
+    SourceResumeContentPayload,
+    TailoredResume,
+    TailoredWorkItem,
+)
 from app.domain.resume.service import _bullet_relevance, _untailored_fallback
 from app.domain.resume.truthfulness import (
-    build_evidence_catalog,
+    build_source_evidence_catalog,
     sanitize_tailoring_output,
 )
 from app.infrastructure.llm_client import LLMUnavailableError, llm_chat_completion
@@ -27,7 +33,34 @@ from app.infrastructure.llm_utils import strip_code_fences
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "resume_tailoring_evaluation.json"
 SCHEMA_VERSION = "resume-tailoring-eval-v1"
-EXPECTED_CASE_COUNT = 7
+EXPECTED_CASE_COUNT = 8
+
+
+def _source_roles(case: dict[str, Any]) -> list[Any]:
+    raw = case.get("source")
+    if raw is None:
+        if case["profile"].get("work_history"):
+            raise _error(f"{case['id']} must provide explicit canonical source")
+        raw = {"work_history": []}
+    for role_index, role in enumerate(raw.get("work_history", [])):
+        role["source_id"] = str(uuid5(NAMESPACE_URL, f"tfr3:{case['id']}:role:{role_index}"))
+        for field in ("company", "title", "start", "end"):
+            if isinstance(role.get(field), str):
+                role[field] = {"text": role[field], "order": role_index}
+        role["highlights"] = [
+            {"text": bullet, "order": index}
+            if isinstance(bullet, str) else bullet
+            for index, bullet in enumerate(role.get("highlights", []))
+        ]
+        for bullet_index, bullet in enumerate(role["highlights"]):
+            bullet["source_id"] = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"tfr3:{case['id']}:role:{role_index}:bullet:{bullet_index}",
+                )
+            )
+            bullet["order"] = bullet_index
+    return SourceResumeContentPayload.model_validate({"document": raw}).document.work_history
 
 
 def _error(message: str) -> ValueError:
@@ -68,9 +101,10 @@ def load_manifest(path: Path = FIXTURE_PATH) -> tuple[dict[str, Any], ...]:
 
 
 def _resume(
-    profile: ParsedProfile, job_id: int, *, skills: list[str] | None = None
+    profile: ParsedProfile, source_roles: list[Any], job_id: int, *, skills: list[str] | None = None
 ) -> TailoredResume:
-    orders, _, _ = _bullet_relevance(profile, "")
+    orders, _, _ = _bullet_relevance(profile, "", source_roles)
+    indices = _project_indices(source_roles, orders)
     return TailoredResume(
         job_id=job_id,
         professional_summary=profile.headline or None,
@@ -87,23 +121,24 @@ def _resume(
         certifications=list(profile.certifications),
         work_history=[
             TailoredWorkItem(
-                company=role.company,
-                title=role.title,
-                start=role.start,
-                end=role.end,
-                original_highlights=list(role.highlights),
-                tailored_highlights=[role.highlights[i] for i in orders[index]],
-                tailored_highlight_source_indices=list(orders[index]),
+                company=role.company.text if role.company else None,
+                title=role.title.text if role.title else None,
+                start=role.start.text if role.start else None,
+                end=role.end.text if role.end else None,
+                original_highlights=[item.text for item in role.highlights],
+                tailored_highlights=[role.highlights[i].text for i in indices[index]],
+                tailored_highlight_source_indices=indices[index],
             )
-            for index, role in enumerate(profile.work_history)
+            for index, role in enumerate(source_roles)
         ],
     )
 
 
 def _fallback_resume(
     profile: ParsedProfile,
+    source_roles: list[Any],
     classifications: list[Any],
-    orders: list[list[int]],
+    orders: list[list[str]],
     *,
     skills: list[str] | None,
 ) -> TailoredResume:
@@ -114,10 +149,24 @@ def _fallback_resume(
         missing_skills=missing,
         recall=len(matched) / len(classifications) if classifications else 0.0,
     )
-    resume = _untailored_fallback(profile, 1, report, classifications, orders)
+    resume = _untailored_fallback(profile, 1, report, classifications, orders, source_roles)
     if skills is not None:
         resume.skills = skills
     return resume
+
+
+def _project_indices(source_roles: list[Any], orders: list[list[str]]) -> list[list[int]]:
+    return [
+        [
+            next(
+                index
+                for index, bullet in enumerate(role.highlights)
+                if str(bullet.source_id) == source_uuid
+            )
+            for source_uuid in role_order
+        ]
+        for role, role_order in zip(source_roles, orders, strict=True)
+    ]
 
 
 def _evaluate_payload(
@@ -127,9 +176,20 @@ def _evaluate_payload(
     model: str | None = None,
 ) -> dict[str, Any]:
     profile = ParsedProfile.model_validate(case["profile"])
+    source_roles = _source_roles(case)
     description = case["job_description"]
     classifications = classify_requirements(description, profile)
-    orders, eligible, prompt_roles = _bullet_relevance(profile, description)
+    orders, eligible, prompt_roles = _bullet_relevance(profile, description, source_roles)
+    projected_orders = _project_indices(source_roles, orders)
+    source_uuid_sets = [
+        {str(bullet.source_id) for bullet in role.highlights} for role in source_roles
+    ]
+    if any(
+        not all(isinstance(source_uuid, str) for source_uuid in role_order)
+        or set(role_order) != source_uuid_sets[role_index]
+        for role_index, role_order in enumerate(orders)
+    ):
+        raise _error(f"{case['id']} relevance order is not a complete UUID permutation")
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "scenario": case["id"],
@@ -151,7 +211,7 @@ def _evaluate_payload(
             item.requirement for item in classifications if item.status == "missing"
         ]
         relevance = {
-            (int(cast(int, item["role_index"])), int(cast(int, item["source_index"]))): int(
+            str(item["source_uuid"]): int(
                 cast(int, item["relevance_score"])
             )
             for role in prompt_roles
@@ -163,45 +223,46 @@ def _evaluate_payload(
             missing,
             eligible,
             orders,
-            build_evidence_catalog(profile),
+            build_source_evidence_catalog(source_roles),
             relevance,
+            source_roles,
         )
         fallback = False
     except Exception:
         sanitized = None
         fallback = True
     if sanitized is None:
-        resume = _fallback_resume(profile, classifications, orders, skills=skills)
+        resume = _fallback_resume(profile, source_roles, classifications, orders, skills=skills)
         rejection_reasons: dict[str, int] = {}
         rejected = 0
         accepted = 0
     else:
-        resume = _resume(profile, 1, skills=skills)
+        resume = _resume(profile, source_roles, 1, skills=skills)
         resume.professional_summary = sanitized.professional_summary
         resume.work_history = [
             TailoredWorkItem(
-                company=source.company,
-                title=source.title,
-                start=source.start,
-                end=source.end,
-                original_highlights=list(source.highlights),
+                company=source.company.text if source.company else None,
+                title=source.title.text if source.title else None,
+                start=source.start.text if source.start else None,
+                end=source.end.text if source.end else None,
+                original_highlights=[item.text for item in source.highlights],
                 tailored_highlights=tailored,
-                tailored_highlight_source_indices=list(orders[index]),
+                tailored_highlight_source_indices=projected_orders[index],
             )
             for index, (source, tailored) in enumerate(
-                zip(profile.work_history, sanitized.tailored_highlights, strict=True)
+                zip(source_roles, sanitized.tailored_highlights, strict=True)
             )
         ]
         rejection_reasons = sanitized.rejection_reasons
         rejected = sanitized.rejected_patches
         accepted = 0
         for role_index, (source, output_bullets) in enumerate(
-            zip(profile.work_history, sanitized.tailored_highlights, strict=True)
+            zip(source_roles, sanitized.tailored_highlights, strict=True)
         ):
             accepted += sum(
-                output != source.highlights[source_index]
+                output != source.highlights[source_index].text
                 for output, source_index in zip(
-                    output_bullets, orders[role_index], strict=True
+                    output_bullets, projected_orders[role_index], strict=True
                 )
             )
     resume.requirement_classifications = classify_resume_coverage(classifications, resume)
@@ -222,7 +283,8 @@ def _evaluate_payload(
         "changed_bullets": accepted,
         "unchanged_bullets": total_bullets - accepted,
         "reorder_only_positions": sum(
-            order != list(range(len(order))) for order in orders
+            projected_order != list(range(len(projected_order)))
+            for projected_order in projected_orders
         ),
         "fallback": fallback,
         "changed_bullet_percentage": accepted / total_bullets if total_bullets else 0.0,
@@ -270,8 +332,36 @@ def _evaluate_payload(
         for index in role.tailored_highlight_source_indices
     ]
     report["source_order"] = actual_order
+    report["source_uuid_order"] = [
+        source_uuid for role_order in orders for source_uuid in role_order
+    ]
+    expected_uuid_order = expected.get("source_uuid_order")
+    if expected_uuid_order is not None and report["source_uuid_order"] != expected_uuid_order:
+        report["invariant_failures"].append("UUID ordering mismatch")
+    for expected_rewrite in expected.get("expected_rewrites", []):
+        source_uuid = expected_rewrite.get("source_uuid")
+        expected_text = expected_rewrite.get("text")
+        matches = [
+            (role_index, source_index)
+            for role_index, role in enumerate(source_roles)
+            for source_index, bullet in enumerate(role.highlights)
+            if str(bullet.source_id) == source_uuid
+        ]
+        if len(matches) != 1:
+            report["invariant_failures"].append("rewrite UUID missing or duplicated")
+            continue
+        role_index, source_index = matches[0]
+        projected_index = projected_orders[role_index].index(source_index)
+        output_role = resume.work_history[role_index]
+        if (
+            output_role.tailored_highlights[projected_index] != expected_text
+            or output_role.original_highlights[source_index]
+            != source_roles[role_index].highlights[source_index].text
+            or output_role.tailored_highlight_source_indices[projected_index] != source_index
+        ):
+            report["invariant_failures"].append("rewrite/original UUID pairing mismatch")
     report["source_preserved"] = all(
-        output == profile.work_history[role_index].highlights[source_index]
+        output == source_roles[role_index].highlights[source_index].text
         for role_index, role in enumerate(resume.work_history)
         for output, source_index in zip(
             role.tailored_highlights,
@@ -297,7 +387,10 @@ def evaluate_offline() -> tuple[dict[str, Any], ...]:
 
 def _prompt(case: dict[str, Any]) -> str:
     profile = ParsedProfile.model_validate(case["profile"])
-    orders, eligible, prompt_roles = _bullet_relevance(profile, case["job_description"])
+    source_roles = _source_roles(case)
+    orders, eligible, prompt_roles = _bullet_relevance(
+        profile, case["job_description"], source_roles
+    )
     del orders, eligible
     classifications = classify_requirements(case["job_description"], profile)
     return TAILOR_RESUME_PROMPT.format(
