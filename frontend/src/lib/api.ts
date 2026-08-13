@@ -166,23 +166,34 @@ async function apiRequest<T>(
   return response.json() as Promise<T>;
 }
 
-/** Attempt a silent refresh. Returns true on success. De-duped across calls. */
-let refreshInFlight: Promise<boolean> | null = null;
-function tryRefresh(): Promise<boolean> {
+/**
+ * Exchange the httpOnly refresh cookie for a fresh access token.
+ * Every browser consumer uses this single-flight coordinator so refresh-token
+ * rotation cannot race two refresh requests against one another.
+ */
+let refreshInFlight: Promise<TokenResponse> | null = null;
+export function refreshAccessToken(): Promise<TokenResponse> {
   if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = (async () => {
-    try {
-      const res = await authApi.refresh();
-      setAccessToken(res.access_token);
-      return true;
-    } catch {
+  refreshInFlight = apiRequest<TokenResponse>("/auth/refresh", {
+    method: "POST",
+    skipAuth: true,
+  }).then((res) => {
+    setAccessToken(res.access_token);
+    return res;
+  }).finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+/** Attempt a silent refresh. Returns true on success. De-duped across calls. */
+function tryRefresh(): Promise<boolean> {
+  return refreshAccessToken()
+    .then(() => true)
+    .catch(() => {
       setAccessToken(null);
       return false;
-    } finally {
-      refreshInFlight = null;
-    }
-  })();
-  return refreshInFlight;
+    });
 }
 
 // ---- Resume -----------------------------------------------------------------
@@ -494,11 +505,7 @@ export const authApi = {
       skipAuth: true,
     }),
   /** Exchange the httpOnly refresh cookie for a fresh access token. */
-  refresh: () =>
-    apiRequest<TokenResponse>("/auth/refresh", {
-      method: "POST",
-      skipAuth: true,
-    }),
+  refresh: refreshAccessToken,
   logout: () =>
     apiRequest<void>("/auth/logout", { method: "POST", skipAuth: true }),
   me: () => apiRequest<AuthUser>("/auth/me"),

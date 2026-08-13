@@ -14,7 +14,8 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { jobsApi } from "@/lib/api";
+import { ApiError, jobsApi } from "@/lib/api";
+import { useAuth } from "@/context/auth-context";
 import type { IngestResponse } from "@/lib/types";
 
 interface JobsTaskContextValue {
@@ -37,6 +38,7 @@ const PROXY_REQUIRED_SOURCES = new Set(["google"]);
 export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const router = useRouter();
+  const { status: authStatus } = useAuth();
 
   // Seed from sessionStorage so navigating away and back restores the indicator.
   const [taskId, setTaskIdState] = useState<string | null>(() => {
@@ -70,12 +72,24 @@ export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
   const taskQuery = useQuery({
     queryKey: ["job-task", taskId],
     queryFn: () => jobsApi.getTaskStatus(taskId!),
-    enabled: !!taskId,
+    enabled: !!taskId && authStatus === "authenticated",
+    retry: (failureCount, error) =>
+      !(error instanceof ApiError && error.status === 404) && failureCount < 1,
     refetchInterval: (query) => {
       const s = query.state.data?.status;
       return !s || s === "queued" || s === "running" ? 2000 : false;
     },
   });
+
+  useEffect(() => {
+    const error = taskQuery.error;
+    if (!(error instanceof ApiError && error.status === 404) || !taskId) return;
+    clearTask();
+    toast.error("Job refresh status is no longer available. Start a new refresh.", {
+      action: { label: "View jobs", onClick: () => router.push("/dashboard/jobs") },
+      duration: 8000,
+    });
+  }, [taskQuery.error, taskId]);
 
   // Fire toast from any page when the task settles.
   useEffect(() => {

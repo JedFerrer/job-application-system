@@ -632,7 +632,7 @@ describe("ApplicationListResponse shape", () => {
 
 // ── Profile empty-state contract (smoke) ─────────────────────────────────
 
-import { resumeApi, ApiError } from "../src/lib/api";
+import { refreshAccessToken, resumeApi, ApiError, setAccessToken } from "../src/lib/api";
 import { validateProfileUrl } from "../src/lib/validators";
 
 describe("validateProfileUrl", () => {
@@ -687,7 +687,51 @@ describe("resumeApi.getProfile — empty-state contract", () => {
 
 // ── Extension sessions API ───────────────────────────────────────────────
 
-import { extensionApi, setAccessToken } from "../src/lib/api";
+describe("shared refresh coordinator", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setAccessToken(null);
+  });
+
+  it("shares one refresh request and lets a protected retry use its result", async () => {
+    let resolveRefresh: ((value: unknown) => void) | undefined;
+    const refreshResponse = new Promise((resolve) => { resolveRefresh = resolve; });
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/backend/auth/refresh") {
+        return refreshResponse.then((body) => ({ ok: true, status: 200, json: async () => body }));
+      }
+      if (url === "/api/backend/resume/profile" && fetchMock.mock.calls.length === 2) {
+        return Promise.resolve({ ok: false, status: 401, json: async () => ({ detail: "expired" }) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => null });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setAccessToken("expired-access");
+
+    const bootstrapRefresh = refreshAccessToken();
+    const protectedRequest = resumeApi.getProfile();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/backend/auth/refresh")).toHaveLength(1);
+
+    resolveRefresh?.({ access_token: "fresh-access", user: { id: 1 } });
+    await expect(bootstrapRefresh).resolves.toMatchObject({ access_token: "fresh-access" });
+    await expect(protectedRequest).resolves.toBeNull();
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/backend/auth/refresh")).toHaveLength(1);
+  });
+
+  it("keeps a failed shared refresh as an authentication failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ detail: "Invalid or expired token" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(Promise.all([refreshAccessToken(), refreshAccessToken()])).rejects.toThrow(ApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+import { extensionApi } from "../src/lib/api";
 
 describe("extensionApi", () => {
   afterEach(() => {

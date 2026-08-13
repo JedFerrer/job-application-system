@@ -4,11 +4,22 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ResumeTaskProvider, useResumeTask } from "@/context/resume-task-context";
 
-const apiMocks = vi.hoisted(() => ({ getTaskStatus: vi.fn() }));
+const apiMocks = vi.hoisted(() => {
+  class MockApiError extends Error {
+    status: number;
+    constructor(message: string, status: number) {
+      super(message);
+      this.status = status;
+    }
+  }
+  return { getTaskStatus: vi.fn(), ApiError: MockApiError };
+});
+const authMocks = vi.hoisted(() => ({ status: "authenticated" as "loading" | "authenticated" }));
 const toastMocks = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }));
 const routerMocks = vi.hoisted(() => ({ push: vi.fn() }));
 
-vi.mock("@/lib/api", () => ({ resumeApi: apiMocks }));
+vi.mock("@/lib/api", () => ({ resumeApi: apiMocks, ApiError: apiMocks.ApiError }));
+vi.mock("@/context/auth-context", () => ({ useAuth: () => ({ status: authMocks.status }) }));
 vi.mock("sonner", () => ({ toast: toastMocks }));
 vi.mock("next/navigation", () => ({ useRouter: () => routerMocks }));
 
@@ -41,13 +52,67 @@ describe("resume task completion messaging", () => {
     });
     toastMocks.success.mockReset();
     toastMocks.warning.mockReset();
+    toastMocks.error.mockReset();
     routerMocks.push.mockReset();
+    authMocks.status = "authenticated";
+    sessionStorage.clear();
   });
 
   afterEach(() => {
     act(() => root.unmount());
     queryClient.clear();
     container.remove();
+    sessionStorage.clear();
+  });
+
+  it("waits for authentication before polling a restored task", async () => {
+    sessionStorage.setItem("resume_task_id", "restored-task");
+    sessionStorage.setItem("resume_task_name", "restored.pdf");
+    authMocks.status = "loading";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ResumeTaskProvider><Harness /></ResumeTaskProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(apiMocks.getTaskStatus).not.toHaveBeenCalled();
+
+    authMocks.status = "authenticated";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ResumeTaskProvider><Harness /></ResumeTaskProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(apiMocks.getTaskStatus).toHaveBeenCalledWith("restored-task");
+  });
+
+  it("clears a stale restored task and shows one recovery toast", async () => {
+    sessionStorage.setItem("resume_task_id", "stale-task");
+    sessionStorage.setItem("resume_task_name", "stale.pdf");
+    apiMocks.getTaskStatus.mockRejectedValue(new apiMocks.ApiError("Task not found", 404));
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ResumeTaskProvider><Harness /></ResumeTaskProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    expect(sessionStorage.getItem("resume_task_id")).toBeNull();
+    expect(sessionStorage.getItem("resume_task_name")).toBeNull();
+    expect(toastMocks.error).toHaveBeenCalledTimes(1);
+    expect(toastMocks.error).toHaveBeenCalledWith(
+      "Upload status is no longer available. Please upload the résumé again.",
+      expect.objectContaining({ action: expect.any(Object) }),
+    );
+    const calls = apiMocks.getTaskStatus.mock.calls.length;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    expect(apiMocks.getTaskStatus).toHaveBeenCalledTimes(calls);
   });
 
   it("explains that replacement imports are drafts", async () => {

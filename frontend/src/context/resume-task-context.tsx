@@ -14,7 +14,8 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { resumeApi } from "@/lib/api";
+import { ApiError, resumeApi } from "@/lib/api";
+import { useAuth } from "@/context/auth-context";
 import type { ResumeResponse } from "@/lib/types";
 
 interface ResumeTaskContextValue {
@@ -35,6 +36,7 @@ const ResumeTaskContext = createContext<ResumeTaskContextValue>({
 export function ResumeTaskProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const router = useRouter();
+  const { status: authStatus } = useAuth();
 
   // Seed from sessionStorage so a page refresh / navigation-back restores state.
   const [taskId, setTaskIdState] = useState<string | null>(() => {
@@ -64,12 +66,24 @@ export function ResumeTaskProvider({ children }: { children: React.ReactNode }) 
   const taskQuery = useQuery({
     queryKey: ["resume-task", taskId],
     queryFn: () => resumeApi.getTaskStatus(taskId!),
-    enabled: !!taskId,
+    enabled: !!taskId && authStatus === "authenticated",
+    retry: (failureCount, error) =>
+      !(error instanceof ApiError && error.status === 404) && failureCount < 1,
     refetchInterval: (query) => {
       const s = query.state.data?.status;
       return !s || s === "queued" || s === "running" ? 2000 : false;
     },
   });
+
+  useEffect(() => {
+    const error = taskQuery.error;
+    if (!(error instanceof ApiError && error.status === 404) || !taskId) return;
+    clearTask();
+    toast.error("Upload status is no longer available. Please upload the résumé again.", {
+      action: { label: "Upload résumé", onClick: () => router.push("/dashboard/settings/profile") },
+      duration: 8000,
+    });
+  }, [taskQuery.error, taskId]);
 
   // Fire toast (from any page) when the task settles.
   useEffect(() => {

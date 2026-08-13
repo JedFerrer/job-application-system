@@ -27,6 +27,7 @@ import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   authApi,
+  refreshAccessToken,
   setAccessToken,
   setAuthExpiredHandler,
 } from "@/lib/api";
@@ -78,7 +79,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await authApi.refresh();
+        const res = await refreshAccessToken();
         if (!cancelled) applySession(res);
       } catch {
         if (!cancelled) {
