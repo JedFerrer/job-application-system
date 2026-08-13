@@ -13,6 +13,7 @@ from app.domain.matching.ranking_dispatch import RankingDispatcher
 from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeParseError,
+    ResumeSourceLayoutUnavailableError,
     ResumeTextTooLongError,
     UnsupportedResumeFormatError,
 )
@@ -103,8 +104,18 @@ async def _run_resume_bg(
         await store.update(task_id, status="failed", error=exc.detail, message=exc.detail)
     except ResumeTextTooLongError as exc:
         await store.update(task_id, status="failed", error=str(exc), message=str(exc))
-    except ResumeParseError:
-        msg = "Failed to parse resume with AI"
+    except ResumeParseError as exc:
+        logger.warning(
+            "bg_resume.parse_failed",
+            task_id=task_id,
+            failure_stage=("source_verification" if "source" in exc.detail.lower() else "parse"),
+        )
+        msg = (
+            "We couldn't verify the résumé text extracted from this file. "
+            "Please try again or use another PDF/DOCX."
+            if "source" in exc.detail.lower()
+            else "We couldn't parse this résumé. Please try again or use another PDF/DOCX."
+        )
         await store.update(task_id, status="failed", error=msg, message=msg)
     except Exception as exc:
         logger.exception("bg_resume.failed", task_id=task_id)
@@ -318,9 +329,12 @@ async def tailor_resume(
     Rewrites highlights to emphasize JD-relevant experience. Never invents
     skills — only rephrases what the user's profile already contains.
     """
-    return await service.tailor_for_job(
-        user_id=current_user.id,
-        job_id=job_id,
-        job_repository=job_repo,
-    )
+    try:
+        return await service.tailor_for_job(
+            user_id=current_user.id,
+            job_id=job_id,
+            job_repository=job_repo,
+        )
+    except ResumeSourceLayoutUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 

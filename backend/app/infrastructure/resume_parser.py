@@ -27,14 +27,19 @@ from app.domain.resume.schemas import (
     ExtractionWarning,
     ParsedProfile,
     ParsedResumeResult,
+    SourceResumeContentPayloadV2,
 )
-from app.domain.resume.source_content import verify_source_document
+from app.domain.resume.source_content import (
+    build_source_candidate_ledger,
+    resolve_source_layout,
+    verify_source_candidate_ledger,
+)
 from app.infrastructure.llm_client import llm_chat_completion
 from app.infrastructure.llm_utils import strip_code_fences
 
 logger = get_logger("resume_parser")
 
-RESUME_PARSER_CONFIG_ID = "resume-parser-v4"
+RESUME_PARSER_CONFIG_ID = "resume-parser-v5"
 EVIDENCE_VERIFIER_VERSION = "evidence-verifier-v3"
 NATIVE_EXTRACTION_VERSION = "native-extraction-v1"
 
@@ -42,6 +47,102 @@ SUPPORTED_EXTENSIONS = {"pdf", "docx"}
 # Defence-in-depth size cap (handlers also enforce this at the boundary).
 MAX_RESUME_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_RESUME_TEXT_CHARS = 60_000
+_MAX_SOURCE_CONTRACT_ATTEMPTS = 2
+
+
+def _profile_alias_leak_paths(
+    payload: dict[str, Any], issued_aliases: set[str]
+) -> tuple[str, ...]:
+    """Find request-local source aliases in normalized profile prose fields.
+
+    Candidate aliases are valid only inside ``source_references`` (removed from
+    the profile payload before this function runs). Walk every normalized
+    profile scalar/list field so aliases cannot silently pass schema validation
+    and reach persistence, matching, or embeddings.
+    """
+    paths: list[str] = []
+
+    def visit(value: object, path: str) -> None:
+        if isinstance(value, str):
+            if value in issued_aliases:
+                paths.append(path)
+            return
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{path}.{index}")
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(key, str):
+                    visit(item, f"{path}.{key}" if path else key)
+
+    visit(payload, "")
+    return tuple(paths)
+
+
+def _source_contract_retry_prompt(base_prompt: str) -> str:
+    return base_prompt + (
+        "\n\nRETRY: The previous output mixed the two contracts. Return a separate "
+        "normalized CandidateProfile and semantic source_references object. "
+        "Every CandidateProfile field must contain normalized human-readable "
+        "values; no request-local cN alias may appear anywhere in the profile. "
+        "The separate source_references object must use only exact aliases from "
+        "the server-issued candidate list: contact/links maps, summary scalar, "
+        "skills/sections/education/certifications/licenses/languages arrays, "
+        "work_history entries with header plus highlights arrays, and project "
+        "name/description/url scalars plus technologies/achievements arrays. "
+        "Work-history role order is derived by the server from each header and "
+        "the model-provided order is ignored. Do not return source prose, UUIDs, "
+        "offsets, fingerprints, or verification metadata."
+    )
+
+
+def _normalize_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep normalized profile highlights as strings when the model mirrors source items.
+
+    Source content uses ``{"text", "order"}`` items, while ParsedProfile uses
+    plain highlight strings. This narrow adapter separates the two contracts
+    without accepting arbitrary objects or changing canonical source data.
+    """
+    work_history = payload.get("work_history")
+    if not isinstance(work_history, list):
+        return payload
+    normalized_roles: list[Any] = []
+    for role in work_history:
+        if not isinstance(role, dict):
+            normalized_roles.append(role)
+            continue
+        normalized_role = dict(role)
+        highlights = normalized_role.get("highlights")
+        if isinstance(highlights, list):
+            normalized_role["highlights"] = [
+                item["text"]
+                if isinstance(item, dict)
+                and isinstance(item.get("text"), str)
+                and set(item) == {"text", "order"}
+                and type(item.get("order")) is int
+                else item
+                for item in highlights
+            ]
+        normalized_roles.append(normalized_role)
+    result = dict(payload)
+    result["work_history"] = normalized_roles
+    return result
+
+
+def _validation_log_fields(exc: ValidationError) -> dict[str, object]:
+    """Return structural validation metadata without values from the resume."""
+    errors = exc.errors()
+    return {
+        "error_count": len(errors),
+        "error_types": tuple(
+            str(error.get("type", "unknown")) for error in errors
+        ),
+        "error_paths": tuple(
+            ".".join(str(part) for part in error.get("loc", ()))
+            for error in errors
+        ),
+    }
 SHORT_TEXT_WARNING_THRESHOLD = 600
 PDF_MEANINGFUL_PAGE_TEXT_THRESHOLD = 40
 PDF_LOW_COVERAGE_THRESHOLD = 0.5
@@ -177,64 +278,122 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
     Raises ``ValueError`` when the LLM output is not valid JSON or fails schema
     validation (normalized so callers handle a single exception type).
     """
-    prompt = RESUME_EXTRACTION_PROMPT.format(resume_text=resume_text)
-    response, model = await llm_chat_completion(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        json_mode=True,
+    ledger = build_source_candidate_ledger(resume_text)
+    ledger_errors = verify_source_candidate_ledger(ledger, resume_text)
+    if ledger_errors:
+        raise ValueError("Server source candidate ledger failed verification")
+    candidate_prompt = json.dumps(
+        [
+            {"candidate_alias": f"c{candidate.order}", "text": candidate.text}
+            for candidate in ledger.candidates
+        ],
+        ensure_ascii=False,
     )
-    raw = response.choices[0].message.content or ""
-    cleaned = strip_code_fences(raw)
+    issued_aliases = {f"c{candidate.order}" for candidate in ledger.candidates}
+    base_prompt = (
+        RESUME_EXTRACTION_PROMPT.format(resume_text=resume_text)
+        + "\n\nSERVER-OWNED SOURCE CANDIDATES:\n"
+        + candidate_prompt
+        + "\n\nReturn semantic source_references using only candidate_alias values from this list. "
+        "Never return source prose, UUIDs, offsets, fingerprints, occurrence ordinals, "
+        "or verification status. For each work-history role use one `header` alias "
+        "for the complete raw role header and `highlights` aliases; do not split "
+        "company/title/date fields from a combined line. Every non-null reference "
+        "value must be exactly a listed cN alias; omit absent contact/link keys, "
+        "use null only for nullable scalar fields, and use [] for empty arrays. "
+        "Never return candidate text in source_references. CandidateProfile fields "
+        "must contain normalized, human-readable values; cN aliases are forbidden "
+        "outside source_references. Do not add `header` to CandidateProfile "
+        "work-history objects."
+    )
+    prompt = base_prompt
+    for attempt in range(_MAX_SOURCE_CONTRACT_ATTEMPTS):
+        response, model = await llm_chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            json_mode=True,
+        )
+        raw = response.choices[0].message.content or ""
+        cleaned = strip_code_fences(raw)
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            logger.warning("resume_parse_invalid_json", model=model, error=str(exc))
+            raise ValueError("LLM did not return valid JSON for resume data") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("LLM did not return a JSON object for resume data")
 
-    try:
-        payload = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        logger.warning("resume_parse_invalid_json", model=model, error=str(exc))
-        raise ValueError("LLM did not return valid JSON for resume data") from exc
+        raw_layout = payload.pop("source_references", None)
+        # A model-generated source_content field is never an accepted input to
+        # the canonical source pipeline. It is deliberately discarded.
+        payload.pop("source_content", None)
+        candidate_evidence = payload.pop("extraction_evidence", None)
+        normalized_payload = _normalize_profile_payload(payload)
+        alias_leak_paths = _profile_alias_leak_paths(normalized_payload, issued_aliases)
+        if alias_leak_paths:
+            logger.warning(
+                "resume_profile_alias_leak",
+                model=model,
+                attempt=attempt + 1,
+                error_paths=alias_leak_paths,
+                error_count=len(alias_leak_paths),
+            )
+            if attempt + 1 >= _MAX_SOURCE_CONTRACT_ATTEMPTS:
+                raise ValueError(
+                    "Resume profile contained source aliases instead of normalized text"
+                )
+            prompt = _source_contract_retry_prompt(base_prompt)
+            continue
+        try:
+            profile = ParsedProfile.model_validate(normalized_payload)
+            evidence = _verify_extraction_evidence(
+                candidate_evidence, resume_text, profile
+            )
+        except ValidationError as exc:
+            logger.warning(
+                "resume_parse_validation_failed",
+                model=model,
+                **_validation_log_fields(exc),
+            )
+            raise ValueError(f"Resume data failed validation: {exc}") from exc
 
-    if not isinstance(payload, dict):
-        raise ValueError("LLM did not return a JSON object for resume data")
-
-    # Log work history highlights for debugging.
-    wh = payload.get("work_history") or payload.get("experience") or []
-    for i, role in enumerate(wh if isinstance(wh, list) else []):
-        if isinstance(role, dict):
-            h = role.get("highlights", [])
-            logger.debug(
-                "resume_parse.role_highlights",
-                role_index=i,
-                title=role.get("title"),
-                highlights_count=len(h) if isinstance(h, list) else "not_list",
-                highlights_sample=str(h)[:200],
+        layout_result = resolve_source_layout(raw_layout, ledger)
+        source_content = SourceResumeContentPayloadV2(
+            document=ledger.model_copy(update={"layout": layout_result.layout}),
+            layout_validation_status=layout_result.status,
+            layout_validation_errors=list(layout_result.errors),
+        )
+        if layout_result.status == "verified":
+            return ParsedResumeResult(
+                profile=profile,
+                extraction_evidence=evidence,
+                source_content=source_content,
+                source_validation_status="verified",
+                source_validation_errors=(),
+                source_layout_status=layout_result.status,
+                source_layout_errors=layout_result.errors,
             )
 
-    candidate_source = payload.pop("source_content", None)
-    candidate_evidence = payload.pop("extraction_evidence", None)
-
-    try:
-        profile = ParsedProfile.model_validate(payload)
-        # Log what actually got validated.
-        for i, item in enumerate(profile.work_history):
-            logger.debug(
-                "resume_parse.validated_highlights",
-                role_index=i,
-                title=item.title,
-                highlights_count=len(item.highlights),
+        error_codes = layout_result.errors or ("missing_source_references",)
+        logger.warning(
+            "resume_source_layout_validation_failed",
+            model=model,
+            attempt=attempt + 1,
+            error_codes=error_codes,
+            error_count=len(error_codes),
+        )
+        if attempt + 1 >= _MAX_SOURCE_CONTRACT_ATTEMPTS:
+            return ParsedResumeResult(
+                profile=profile,
+                extraction_evidence=evidence,
+                source_content=source_content,
+                source_validation_status="verified",
+                source_validation_errors=(),
+                source_layout_status=layout_result.status,
+                source_layout_errors=layout_result.errors,
             )
-        evidence = _verify_extraction_evidence(
-            candidate_evidence, resume_text, profile
-        )
-        source_result = verify_source_document(candidate_source, resume_text)
-        return ParsedResumeResult(
-            profile=profile,
-            extraction_evidence=evidence,
-            source_content=source_result.payload,
-            source_validation_status=source_result.status,
-            source_validation_errors=source_result.errors,
-        )
-    except ValidationError as exc:
-        logger.warning("resume_parse_validation_failed", model=model, error=str(exc))
-        raise ValueError(f"Resume data failed validation: {exc}") from exc
+        prompt = _source_contract_retry_prompt(base_prompt)
+    raise AssertionError("unreachable")
 
 
 _EVIDENCE_CATEGORIES = {

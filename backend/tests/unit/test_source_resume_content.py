@@ -8,7 +8,11 @@ import pytest
 
 from app.domain.resume.source_content import (
     SOURCE_VALIDATION_VERSION,
+    build_source_candidate_ledger,
+    materialize_source_document,
+    resolve_source_layout,
     source_fingerprint,
+    verify_source_candidate_ledger,
     verify_source_document,
 )
 
@@ -320,3 +324,193 @@ def test_fingerprint_is_stable_across_allowed_normalization() -> None:
     assert source_fingerprint("Built  FastAPI APIs") == source_fingerprint(
         "Built FastAPI APIs"
     )
+
+
+def test_v2_candidate_ledger_is_server_owned_and_line_bounded() -> None:
+    raw = "Ada Lovelace\r\n\r\n- Built APIs.\r\nBuilt APIs."
+    ledger = build_source_candidate_ledger(raw)
+
+    assert [candidate.order for candidate in ledger.candidates] == [0, 1, 2]
+    assert [candidate.text for candidate in ledger.candidates] == [
+        "Ada Lovelace",
+        "Built APIs.",
+        "Built APIs.",
+    ]
+    assert ledger.candidates[1].occurrence_ordinal == 0
+    assert ledger.candidates[2].occurrence_ordinal == 1
+    assert ledger.candidates[1].start_offset > ledger.candidates[0].end_offset
+    assert ledger.candidates[1].fingerprint == source_fingerprint("Built APIs.")
+    assert verify_source_candidate_ledger(ledger, raw) == ()
+
+
+def test_v2_ledger_rejects_cross_line_candidate_tampering() -> None:
+    ledger = build_source_candidate_ledger("First\nSecond")
+    tampered = ledger.candidates[0].model_copy(update={"text": "First Second"})
+    invalid = ledger.model_copy(update={"candidates": [tampered, ledger.candidates[1]]})
+
+    assert "candidate_text_mismatch" in verify_source_candidate_ledger(invalid, "First\nSecond")
+
+
+def test_v2_ledger_rejects_occurrence_and_order_tampering() -> None:
+    raw = "Built APIs.\nBuilt APIs."
+    ledger = build_source_candidate_ledger(raw)
+    tampered = ledger.model_copy(
+        update={
+            "candidates": [
+                ledger.candidates[0].model_copy(update={"occurrence_ordinal": 1}),
+                ledger.candidates[1].model_copy(update={"order": 3}),
+            ]
+        }
+    )
+
+    errors = verify_source_candidate_ledger(tampered, raw)
+
+    assert "candidate_order_not_contiguous" in errors
+    assert "candidate_occurrence_mismatch" in errors
+
+
+def test_v2_layout_resolves_aliases_without_accepting_model_prose_or_metadata() -> None:
+    ledger = build_source_candidate_ledger("Acme - Engineer (2020-2022)\nBuilt APIs.")
+    result = resolve_source_layout(
+        {
+            "work_history": [
+                {
+                    "order": 0,
+                    "header": "c0",
+                    "highlights": ["c1"],
+                }
+            ]
+        },
+        ledger,
+    )
+
+    assert result.status == "verified"
+    assert result.layout is not None
+    document = materialize_source_document(ledger.model_copy(update={"layout": result.layout}))
+    assert document is not None
+    assert document.work_history[0].company is not None
+    assert document.work_history[0].company.text == "Acme - Engineer (2020-2022)"
+    assert document.work_history[0].title is not None
+    assert document.work_history[0].title.text == document.work_history[0].company.text
+    assert document.work_history[0].highlights[0].text == "Built APIs."
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {},
+        {"work_history": [{"highlights": ["c0"]}]},
+        {"work_history": [{"header": "unknown", "highlights": []}]},
+        {"work_history": [{"header": "c0", "highlights": ["c0"]}]},
+        {"work_history": [{"header": "c0", "highlights": ["c2", "c1"]}]},
+        {"work_history": [{"header": "c0", "text": "forbidden", "highlights": []}]},
+    ],
+)
+def test_v2_layout_rejects_unknown_duplicate_out_of_order_or_text_fields(
+    layout: dict[str, object],
+) -> None:
+    ledger = build_source_candidate_ledger("Acme\nEngineer\nBuilt APIs.")
+
+    result = resolve_source_layout(layout, ledger)
+
+    assert result.status == "invalid"
+
+
+def test_v2_layout_materializes_two_roles_without_splitting_headers() -> None:
+    raw = "Acme - Engineer (2020-2022)\nBuilt APIs.\nBeta - Lead (2022-2024)\nLed releases."
+    ledger = build_source_candidate_ledger(raw)
+    result = resolve_source_layout(
+        {
+            "work_history": [
+                {"order": 0, "header": "c0", "highlights": ["c1"]},
+                {"order": 1, "header": "c2", "highlights": ["c3"]},
+            ]
+        },
+        ledger,
+    )
+
+    assert result.status == "verified"
+    assert result.layout is not None
+    document = materialize_source_document(ledger.model_copy(update={"layout": result.layout}))
+    assert document is not None
+    assert [role.company.text for role in document.work_history if role.company] == [
+        "Acme - Engineer (2020-2022)",
+        "Beta - Lead (2022-2024)",
+    ]
+    assert [role.highlights[0].text for role in document.work_history] == [
+        "Built APIs.",
+        "Led releases.",
+    ]
+
+
+def test_v2_layout_derives_role_order_from_header_candidates() -> None:
+    raw = "Acme - Engineer\nBuilt APIs.\nBeta - Lead\nLed releases."
+    ledger = build_source_candidate_ledger(raw)
+    result = resolve_source_layout(
+        {
+            "work_history": [
+                {"order": 99, "header": "c2", "highlights": ["c3"]},
+                {"order": 99, "header": "c0", "highlights": ["c1"]},
+            ]
+        },
+        ledger,
+    )
+
+    assert result.status == "verified"
+    assert result.layout is not None
+    assert [role.order for role in result.layout.work_history] == [0, 2]
+    document = materialize_source_document(ledger.model_copy(update={"layout": result.layout}))
+    assert document is not None
+    assert [role.company.text for role in document.work_history if role.company] == [
+        "Acme - Engineer",
+        "Beta - Lead",
+    ]
+
+
+def test_v2_layout_allows_shared_contact_candidate_for_email_and_phone() -> None:
+    ledger = build_source_candidate_ledger("ada@example.com | +1 555 0100")
+
+    result = resolve_source_layout(
+        {"contact": {"email": "c0", "phone": "c0"}},
+        ledger,
+    )
+
+    assert result.status == "verified"
+    assert result.layout is not None
+    assert result.layout.contact["email"] == result.layout.contact["phone"]
+    document = materialize_source_document(ledger.model_copy(update={"layout": result.layout}))
+    assert document is not None
+    assert document.contact["email"].source_id == document.contact["phone"].source_id
+
+
+def test_v2_layout_keeps_duplicate_work_bullet_rejected() -> None:
+    ledger = build_source_candidate_ledger("Role A\nRole B\nBuilt APIs.")
+
+    result = resolve_source_layout(
+        {
+            "work_history": [
+                {"header": "c0", "highlights": ["c2"]},
+                {"header": "c1", "highlights": ["c2"]},
+            ]
+        },
+        ledger,
+    )
+
+    assert result.status == "invalid"
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {"contact": {"email": "c999"}},
+        {"contact": {"email": "c0"}, "summary": "c0"},
+    ],
+)
+def test_v2_layout_rejects_unknown_or_cross_category_duplicate_metadata(
+    layout: dict[str, object],
+) -> None:
+    ledger = build_source_candidate_ledger("Contact line")
+
+    result = resolve_source_layout(layout, ledger)
+
+    assert result.status == "invalid"

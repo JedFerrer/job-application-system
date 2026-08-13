@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.domain.resume.exceptions import ResumeTextTooLongError
+from app.domain.resume.exceptions import ResumeParseError, ResumeTextTooLongError
 from app.domain.resume.schemas import ParsedProfile
 from app.domain.resume.service import ResumeService
 from app.infrastructure import resume_parser
@@ -180,4 +180,60 @@ async def test_background_task_preserves_actionable_failure_message(
     assert db.commit.await_count == 0
     assert store.updates == [
         {"status": "failed", "error": str(error), "message": str(error)}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_background_task_hides_source_diagnostic_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.v1 import resume as resume_api
+
+    class FakeDb:
+        async def __aenter__(self) -> FakeDb:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            pass
+
+        async def commit(self) -> None:
+            pass
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.updates: list[dict[str, object]] = []
+
+        async def update(self, _task_id: str, **values: object) -> None:
+            self.updates.append(values)
+
+    class FailingService:
+        def __init__(self, _repository: object) -> None:
+            pass
+
+        async def upload_and_parse(self, **_kwargs: object) -> None:
+            raise ResumeParseError(
+                "Resume source extraction failed verification: unverifiable:item"
+            )
+
+    store = FakeStore()
+    monkeypatch.setattr(resume_api, "get_redis", lambda: object())
+    monkeypatch.setattr(resume_api, "TaskStore", lambda _redis: store)
+    monkeypatch.setattr(resume_api, "async_session_factory", lambda: FakeDb())
+    monkeypatch.setattr("app.domain.resume.service.ResumeService", FailingService)
+
+    await resume_api._run_resume_bg("task-1", 7, "resume.pdf", b"source")
+
+    safe_message = (
+        "We couldn't verify the résumé text extracted from this file. "
+        "Please try again or use another PDF/DOCX."
+    )
+    assert store.updates == [
+        {
+            "status": "failed",
+            "error": safe_message,
+            "message": safe_message,
+        }
     ]

@@ -3,6 +3,7 @@ import re
 import pytest
 
 from app.domain.resume.prompts import RESUME_EXTRACTION_PROMPT
+from app.infrastructure.resume_parser import _source_contract_retry_prompt
 
 pytestmark = pytest.mark.unit
 
@@ -55,6 +56,17 @@ def test_extraction_prompt_can_be_formatted_with_resume_text() -> None:
 
     assert "Candidate resume text" in rendered
     assert "empty object {}" in rendered
+
+
+def test_retry_contract_covers_all_profile_fields_and_server_role_order() -> None:
+    retry = _source_contract_retry_prompt(RESUME_EXTRACTION_PROMPT)
+
+    assert "Every CandidateProfile field must contain normalized human-readable values" in retry
+    assert "no request-local cN alias may appear anywhere in the profile" in retry
+    for section in ("skills", "education", "certifications", "licenses", "languages", "projects"):
+        assert section in retry
+    assert "role order is derived by the server" in retry
+    assert "Only source_references.work_history" not in retry
 
 
 @pytest.mark.parametrize(

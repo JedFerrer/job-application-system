@@ -5,6 +5,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from app.domain.resume.schemas import (
     ExtractionEvidence,
@@ -12,6 +13,7 @@ from app.domain.resume.schemas import (
     ParsedResumeResult,
     ProfileResponse,
     ResumeResponse,
+    SourceResumeContentPayloadV2,
 )
 from app.domain.resume.service import ResumeService, build_summary_text
 from app.infrastructure import resume_parser
@@ -154,6 +156,592 @@ async def test_parser_preserves_flat_profile_and_returns_verified_evidence(
     assert result.profile.work_history[0].company == "Acme"
     assert result.extraction_evidence.work_history[0].excerpt == "Acme Engineer"
     assert "extraction_evidence" not in result.profile.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_parser_keeps_profile_prose_separate_from_source_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "full_name": "Ada",
+        "work_history": [
+            {
+                "company": "Acme",
+                "title": "Engineer",
+                "highlights": ["Built APIs.", "Automated workflows."],
+            }
+        ],
+        "source_references": {
+            "work_history": [{"order": 0, "header": "c0", "highlights": ["c1", "c2"]}]
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text(
+        "Acme - Engineer\nBuilt APIs.\nAutomated workflows."
+    )
+
+    assert result.profile.work_history[0].highlights == [
+        "Built APIs.",
+        "Automated workflows.",
+    ]
+    assert result.source_layout_status == "verified"
+    assert result.source_content is not None
+
+
+@pytest.mark.asyncio
+async def test_parser_retries_profile_alias_leak_with_same_alias_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = [
+        {
+            "full_name": "Ada",
+            "work_history": [{"company": "Acme", "title": "Engineer", "highlights": ["c1"]}],
+            "source_references": {
+                "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
+            },
+        },
+        {
+            "full_name": "Ada",
+            "work_history": [
+                {"company": "Acme", "title": "Engineer", "highlights": ["Built APIs."]}
+            ],
+            "source_references": {
+                "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
+            },
+        },
+    ]
+    prompts: list[str] = []
+    calls = 0
+
+    async def completion(**kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        messages = kwargs["messages"]
+        assert isinstance(messages, list)
+        prompts.append(str(messages[0]["content"]))
+        payload = responses[calls]
+        calls += 1
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Acme - Engineer\nBuilt APIs.")
+
+    assert calls == 2
+    assert result.profile.work_history[0].highlights == ["Built APIs."]
+    assert result.source_layout_status == "verified"
+    assert "CandidateProfile fields must contain normalized" in prompts[1]
+    assert '"candidate_alias": "c0"' in prompts[0]
+    assert '"candidate_alias": "c0"' in prompts[1]
+    assert "education/certifications/licenses/languages arrays" in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_parser_retries_profile_shaped_education_source_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = [
+        {
+            "full_name": "Ada",
+            "education": [{"degree": "BS Computer Science"}],
+            "source_references": {"education": {"degree": "c0"}},
+        },
+        {
+            "full_name": "Ada",
+            "education": [{"degree": "BS Computer Science"}],
+            "source_references": {"education": ["c0"]},
+        },
+    ]
+    calls = 0
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        payload = responses[calls]
+        calls += 1
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("BS Computer Science")
+
+    assert calls == 2
+    assert result.source_layout_status == "verified"
+    assert result.source_content is not None
+
+
+@pytest.mark.asyncio
+async def test_parser_rejects_alias_leak_after_bounded_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "work_history": [{"highlights": ["c1"]}],
+        "source_references": {
+            "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
+        },
+    }
+    calls = 0
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        calls += 1
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    with pytest.raises(ValueError, match="source aliases"):
+        await resume_parser.parse_resume_text("Acme - Engineer\nBuilt APIs.")
+    assert calls == 2
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda payload: payload.update(full_name="c0"), id="full_name"),
+        pytest.param(lambda payload: payload.update(headline="c0"), id="headline"),
+        pytest.param(lambda payload: payload.update(email="c0"), id="email"),
+        pytest.param(lambda payload: payload.update(phone="c0"), id="phone"),
+        pytest.param(lambda payload: payload["skills"].append("c0"), id="skills"),
+        pytest.param(lambda payload: payload["education"][0].update(degree="c0"), id="education"),
+        pytest.param(lambda payload: payload["certifications"].append("c0"), id="certifications"),
+        pytest.param(lambda payload: payload["languages"][0].update(language="c0"), id="languages"),
+        pytest.param(lambda payload: payload["licenses"][0].update(name="c0"), id="licenses"),
+        pytest.param(lambda payload: payload["links"].update(linkedin="c0"), id="links"),
+        pytest.param(lambda payload: payload["projects"][0].update(name="c0"), id="projects"),
+        pytest.param(
+            lambda payload: payload["projects"][0]["technologies"].append("c0"),
+            id="project-technologies",
+        ),
+        pytest.param(
+            lambda payload: payload["work_history"][0].update(company="c0"),
+            id="work-company",
+        ),
+        pytest.param(
+            lambda payload: payload["work_history"][0]["highlights"].append("c0"),
+            id="work-highlights",
+        ),
+        pytest.param(lambda payload: payload.update(preferred_roles=["c0"]), id="preferred_roles"),
+        pytest.param(lambda payload: payload.update(seniority="c0"), id="seniority"),
+    ],
+)
+async def test_parser_rejects_issued_alias_in_any_profile_field(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: object,
+) -> None:
+    payload = {
+        "full_name": "Ada",
+        "email": "ada@example.com",
+        "headline": "Backend Engineer",
+        "skills": ["Python"],
+        "education": [{"degree": "BSc", "institution": "MIT", "year": "2020"}],
+        "certifications": ["AWS"],
+        "languages": [{"language": "English", "proficiency": "Fluent"}],
+        "licenses": [{"name": "Engineer", "issuer": "Board"}],
+        "links": {"linkedin": "https://linkedin.com/in/ada"},
+        "projects": [{"name": "Matcher", "technologies": ["Python"], "achievements": []}],
+        "work_history": [{"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}],
+        "preferred_roles": ["Backend Engineer"],
+        "seniority": "mid",
+        "source_references": {
+            "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
+        },
+    }
+    assert callable(mutate)
+    mutate(payload)  # type: ignore[operator]
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    calls = 0
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        calls += 1
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    with pytest.raises(ValueError, match="source aliases"):
+        await resume_parser.parse_resume_text("Acme - Engineer\nBuilt APIs")
+    assert calls == 2
+
+
+def test_profile_alias_guard_ignores_non_issued_c_like_text() -> None:
+    assert resume_parser._profile_alias_leak_paths(
+        {"skills": ["c99"], "headline": "c1x"}, {"c0", "c1"}
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"text": "Built APIs"},
+        {"text": "Built APIs", "order": "0"},
+        {"text": "Built APIs", "order": True},
+        {"text": "Built APIs", "order": 0, "extra": "nope"},
+    ],
+)
+def test_profile_source_item_adapter_requires_exact_text_and_strict_order(
+    item: dict[str, object],
+) -> None:
+    payload = {"work_history": [{"highlights": [item]}]}
+
+    normalized = resume_parser._normalize_profile_payload(payload)
+
+    assert normalized["work_history"][0]["highlights"][0] == item  # type: ignore[index]
+
+
+def test_profile_source_item_adapter_accepts_exact_text_and_order() -> None:
+    payload = {"work_history": [{"highlights": [{"text": "Built APIs", "order": 0}]}]}
+
+    normalized = resume_parser._normalize_profile_payload(payload)
+
+    assert normalized["work_history"][0]["highlights"] == ["Built APIs"]  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_parser_does_not_reject_non_issued_c_like_profile_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "work_history": [{"highlights": ["c99"]}],
+        "source_references": {
+            "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Acme - Engineer\nBuilt APIs.")
+
+    assert result.profile.work_history[0].highlights == ["c99"]
+    assert result.source_layout_status == "verified"
+
+
+@pytest.mark.asyncio
+async def test_parser_retries_only_invalid_source_contract_and_accepts_verified_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid = {"full_name": "Ada", "source_content": {"sections": []}}
+    valid = {
+        "full_name": "Ada",
+        "source_content": {"sections": [{"text": "Ada", "order": 0}]},
+    }
+    responses = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(invalid)))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(valid)))]),
+    ]
+    calls: list[str] = []
+
+    async def completion(**kwargs: object) -> tuple[object, str]:
+        messages = kwargs.get("messages")
+        assert isinstance(messages, list)
+        calls.append(str(messages[0]["content"]))
+        return responses.pop(0), "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Ada")
+
+    assert result.source_validation_status == "verified"
+    assert len(calls) == 2
+    assert "RETRY:" in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_parser_does_not_retry_profile_schema_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"skills": [{"not": "a string"}], "source_content": {}}
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    calls = 0
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        calls += 1
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    with pytest.raises(ValueError, match="failed validation"):
+        await resume_parser.parse_resume_text("Ada")
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_parser_accepts_equivalent_document_wrapper_without_relaxing_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "full_name": "Ada",
+        "source_content": {
+            "document": {"sections": [{"text": "Ada", "order": 0}]}
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Ada")
+
+    assert result.source_validation_status == "verified"
+    assert result.source_content is not None
+
+
+@pytest.mark.asyncio
+async def test_parser_stops_after_one_retry_when_source_contract_remains_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"full_name": "Ada", "source_content": {"sections": []}}
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    calls = 0
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        calls += 1
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Ada")
+
+    assert calls == 2
+    assert result.source_validation_status == "verified"
+    assert result.source_content is not None
+    assert result.source_layout_status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_parser_separates_source_items_from_profile_highlight_strings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "full_name": "Ada",
+        "work_history": [
+            {
+                "company": "Acme",
+                "title": "Engineer",
+                "highlights": [{"text": "Built APIs", "order": 0}],
+            }
+        ],
+        "source_content": {
+            "work_history": [
+                {
+                    "order": 0,
+                    "company": {"text": "Acme", "order": 1},
+                    "title": {"text": "Engineer", "order": 2},
+                    "highlights": [{"text": "Built APIs", "order": 3}],
+                }
+            ]
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Acme\nEngineer\nBuilt APIs")
+
+    assert result.profile.work_history[0].highlights == ["Built APIs"]
+    assert result.source_validation_status == "verified"
+    assert result.source_content is not None
+    assert result.source_layout_status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_parser_keeps_observed_profile_like_source_shape_failed_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The observed model shape is not equivalent and must not be coerced."""
+    payload = {
+        "full_name": "Ada",
+        "work_history": [
+            {
+                "company": "Acme",
+                "title": "Engineer",
+                "start": "2020",
+                "end": "2024",
+                "highlights": ["Built APIs"],
+            }
+        ],
+        "source_content": {
+            "contact": {"text": "Ada", "order": 0},
+            "skills": {"text": "Python", "order": 1},
+            "sections": {},
+            "work_history": [
+                {
+                    "company": {"text": "Acme", "order": 2},
+                    "title": {"text": "Engineer", "order": 3},
+                    "start": "2020",
+                    "end": "2024",
+                    "description": {},
+                    "highlights": [{"text": "Built APIs", "order": 4}],
+                }
+            ],
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    calls = 0
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        calls += 1
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text(
+        "Ada\nPython\nAcme\nEngineer\n2020\n2024\nBuilt APIs"
+    )
+
+    assert calls == 2
+    assert result.source_validation_status == "verified"
+    assert result.source_content is not None
+    assert result.source_layout_status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_parser_materializes_verified_v2_source_from_candidate_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "full_name": "Ada",
+        "work_history": [
+            {
+                "company": "Acme",
+                "title": "Engineer",
+                "highlights": ["Built APIs"],
+            }
+        ],
+        "source_references": {
+            "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        return response, "test-model"
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Acme - Engineer\nBuilt APIs")
+
+    assert result.source_validation_status == "verified"
+    assert result.source_layout_status == "verified"
+    assert result.source_content is not None
+    assert result.source_content.schema_version == "source-resume-v2"
+    assert result.source_content.document.layout is not None
+    assert result.source_content.document.layout.work_history[0].highlights
+
+
+@pytest.mark.asyncio
+async def test_parser_retries_invalid_alias_then_materializes_valid_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = [
+        {
+            "full_name": "Ada",
+            "source_references": {
+                "work_history": [{"order": 0, "header": "c999", "highlights": ["c1"]}]
+            },
+        },
+        {
+            "full_name": "Ada",
+            "source_references": {
+                "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
+            },
+        },
+    ]
+    calls = 0
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        payload = responses[calls]
+        calls += 1
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Acme - Engineer\nBuilt APIs")
+
+    assert calls == 2
+    assert result.source_layout_status == "verified"
+    assert isinstance(result.source_content, SourceResumeContentPayloadV2)
+    assert result.source_content.document.layout is not None
+
+
+def test_validation_log_fields_exclude_invalid_resume_values() -> None:
+    secret = "Private Candidate Name"
+    with pytest.raises(ValidationError) as caught:
+        ParsedProfile.model_validate({"full_name": {"secret": secret}})
+
+    fields = resume_parser._validation_log_fields(caught.value)
+    assert secret not in repr(fields)
+    assert set(fields) == {"error_count", "error_types", "error_paths"}
+
+
+@pytest.mark.asyncio
+async def test_profile_validation_log_contains_structure_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "Private Candidate Name"
+    payload = {"full_name": {"secret": secret}}
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    warnings: list[dict[str, object]] = []
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        return response, "test-model"
+
+    def warning(_event: str, **fields: object) -> None:
+        warnings.append(fields)
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    monkeypatch.setattr(resume_parser.logger, "warning", warning)
+    with pytest.raises(ValueError, match="failed validation"):
+        await resume_parser.parse_resume_text("Private Candidate Name")
+
+    validation_warning = next(
+        fields for fields in warnings if fields.get("model") == "test-model"
+    )
+    assert secret not in repr(validation_warning)
+    assert "error_count" in validation_warning
+    assert "error_paths" in validation_warning
 
 
 @pytest.mark.asyncio

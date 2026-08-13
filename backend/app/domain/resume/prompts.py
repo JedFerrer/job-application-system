@@ -7,7 +7,7 @@ drop fields. Extraction only — the model must never invent data.
 
 from __future__ import annotations
 
-RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v3"
+RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v5"
 
 RESUME_EXTRACTION_PROMPT = """You are an expert resume parser. Extract structured \
 information from the resume text below. Return valid JSON only — no markdown, no \
@@ -21,6 +21,13 @@ Fields to extract:
 - years_experience (number, calculate from the EARLIEST work or internship start date \
 to today; include internships and part-time roles)
 - skills (array of strings)
+- All CandidateProfile fields are normalized, human-readable profile values.
+  Request-local candidate aliases such as `c7` are forbidden in profile fields;
+  aliases are allowed only inside `source_references` below.
+- work_history[].highlights are normalized CandidateProfile strings only. Each
+  highlight must be a plain string such as "Built FastAPI APIs."; do not put
+  `{{text, order}}` objects in profile highlights. Canonical source material is
+  represented separately through `source_references` candidate aliases below.
 - education (array of objects with: degree, institution, year)
 - certifications (array of strings)
 - languages (array of objects with: language, proficiency). Extract only
@@ -59,14 +66,28 @@ Principal; makes architectural decisions
   When in doubt between mid and senior, prefer "senior" for candidates with 6+ years of \
 professional experience.
 
-- source_content (object containing the literal, globally ordered source resume. Include
-  summary, skills, sections, work_history, projects, education, certifications,
-  licenses, and languages when present. Work-history highlights and every other
-  prose value must be copied literally from the resume text; do not summarize,
-  merge, normalize wording, or invent values. Every source-text item must be an
-  object with an explicit unique integer `order` representing document reading
-  order across the entire resume (not merely within a section), plus its literal
-  `text`. Use [] or {{}} when absent.)
+- source_references (object selecting semantic source candidates only. The server
+  provides a `SERVER-OWNED SOURCE CANDIDATES` list after this prompt. Return only
+  candidate aliases such as `c0`, `c1`, and never return source prose, UUIDs,
+  offsets, fingerprints, occurrence ordinals, or verification status. Use the
+  shape `contact`/`links` maps of candidate aliases, `summary` as one alias or
+  null, arrays of aliases for sections/skills/education/certifications/licenses/
+  languages, and work-history/project objects containing alias fields and alias
+  arrays. If semantic grouping is uncertain, return `null` for
+  `source_references`; the server will preserve the verified candidate ledger.
+  For each `work_history` role, use exactly one `header` candidate alias for
+  the complete raw role header (company/title/date when those share one line),
+  plus a `highlights` alias list. Never split one raw header into separate
+  company/title/date references and never invent substrings.
+  The optional role `order` is ignored; the server derives canonical role order
+  from each resolved header candidate's source order.
+  `education`, `certifications`, `licenses`, and `languages` MUST be arrays of
+  candidate aliases, never profile-shaped objects. `skills` and `sections` are
+  also alias arrays. Project objects use alias fields and alias arrays only.
+  Do not emit `source_content`. Keep the two objects separate: profile
+  `work_history[].highlights` are human-readable resume wording, while only
+  `source_references` fields may contain `cN` aliases. Do not add `header` to
+  profile work-history objects.)
 - extraction_evidence (object with optional arrays for work_history, education,
   certifications, projects, languages, and licenses). Each item must contain
   item_index (the zero-based

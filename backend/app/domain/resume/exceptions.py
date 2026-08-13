@@ -53,3 +53,12 @@ class TailoredResumeDraftNotFoundError(ResumeError):
     def __init__(self, draft_id: int) -> None:
         self.draft_id = draft_id
         super().__init__(f"Tailored resume draft {draft_id} not found")
+
+
+class ResumeSourceLayoutUnavailableError(ResumeError):
+    """The verified source ledger exists but semantic tailoring layout is unavailable."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Canonical source layout is unavailable; source-based tailoring cannot run."
+        )

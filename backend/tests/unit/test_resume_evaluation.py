@@ -247,7 +247,9 @@ async def test_each_case_uses_only_the_supplied_completion(monkeypatch: pytest.M
         return complete
 
     await evaluate_manifest(factory)
-    assert calls == [case.id for case in load_manifest()]
+    expected = [case.id for case in load_manifest()]
+    assert list(dict.fromkeys(calls)) == expected
+    assert all(calls.count(case_id) <= 2 for case_id in expected)
 
 
 @pytest.mark.asyncio

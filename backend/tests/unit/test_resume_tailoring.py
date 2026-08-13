@@ -9,14 +9,20 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.domain.resume import service as resume_service
+from app.domain.resume.exceptions import ResumeSourceLayoutUnavailableError
 from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
 from app.domain.resume.schemas import (
     ParsedProfile,
     RequirementClassification,
     SourceResumeContentPayload,
+    SourceResumeContentPayloadV2,
     TailoredResume,
 )
 from app.domain.resume.service import ResumeService
+from app.domain.resume.source_content import (
+    build_source_candidate_ledger,
+    resolve_source_layout,
+)
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
     build_source_evidence_catalog,
@@ -151,6 +157,58 @@ def test_prompt_is_sparse_and_source_preserving() -> None:
     assert "include the target ID in every" in TAILOR_RESUME_PROMPT
     assert "Prefer exact" in TAILOR_RESUME_PROMPT
     assert "source wording joined with a semicolon" in TAILOR_RESUME_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_v2_layout_unavailable_never_falls_back_to_profile_prose() -> None:
+    repository = AsyncMock()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=_profile().model_dump()),
+        SimpleNamespace(
+            content={
+                "schema_version": "source-resume-v2",
+                "document": build_source_candidate_ledger("Acme\nEngineer\nBuilt APIs.").model_dump(
+                    mode="json"
+                ),
+                "layout_validation_status": "unavailable",
+                "layout_validation_errors": ["missing_source_references"],
+            }
+        ),
+    )
+    job_repository = AsyncMock()
+    job_repository.get_visible_by_id.return_value = SimpleNamespace(
+        description="Build Python FastAPI services"
+    )
+
+    with pytest.raises(ResumeSourceLayoutUnavailableError):
+        await ResumeService(repository).tailor_for_job(
+            user_id=1,
+            job_id=2,
+            job_repository=job_repository,
+        )
+
+
+@pytest.mark.asyncio
+async def test_v1_source_never_enters_tailoring_or_profile_fallback() -> None:
+    repository = AsyncMock()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=_profile().model_dump()),
+        SimpleNamespace(
+            content=SourceResumeContentPayload.model_validate(
+                {"document": {}}
+            ).model_dump(mode="json")
+        ),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(description="FastAPI")
+
+    with pytest.raises(ResumeSourceLayoutUnavailableError):
+        await ResumeService(repository).tailor_for_job(
+            user_id=1,
+            job_id=2,
+            job_repository=jobs,
+        )
+    jobs.get_visible_by_id.assert_not_awaited()
 
 
 def test_keep_and_identical_rewrite_preserve_source_text() -> None:
@@ -1104,25 +1162,15 @@ async def test_service_uses_canonical_source_for_original_and_fallback(
             )
         ]
     })
-    source_payload = SourceResumeContentPayload.model_validate(
-        {
-            "document": {
-                "work_history": [
-                    {
-                        "source_id": "11111111-1111-1111-1111-111111111111",
-                        "company": {"text": "Acme", "order": 0},
-                        "title": {"text": "Engineer", "order": 1},
-                        "highlights": [
-                            {
-                                "source_id": "22222222-2222-2222-2222-222222222222",
-                                "text": "Built FastAPI APIs",
-                                "order": 2,
-                            }
-                        ],
-                    }
-                ]
-            }
-        }
+    ledger = build_source_candidate_ledger("Acme - Engineer\nBuilt FastAPI APIs")
+    layout_result = resolve_source_layout(
+        {"work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]},
+        ledger,
+    )
+    assert layout_result.status == "verified"
+    source_payload = SourceResumeContentPayloadV2(
+        document=ledger.model_copy(update={"layout": layout_result.layout}),
+        layout_validation_status="verified",
     )
     repository.get_active_tailoring_source.return_value = (
         SimpleNamespace(parsed=profile.model_dump()),
@@ -1161,6 +1209,63 @@ async def test_service_uses_canonical_source_for_original_and_fallback(
     assert result.work_history[0].original_highlights == ["Built FastAPI APIs"]
     assert result.work_history[0].tailored_highlights == ["Built FastAPI APIs"]
     assert "PROFILE-ONLY" not in result.work_history[0].tailored_highlights[0]
+
+
+@pytest.mark.asyncio
+async def test_service_materializes_v2_header_layout_for_tfr3_tailoring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = "Acme - Engineer\nBuilt FastAPI APIs."
+    ledger = build_source_candidate_ledger(raw)
+    layout_result = resolve_source_layout(
+        {"work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]},
+        ledger,
+    )
+    assert layout_result.status == "verified"
+    source_payload = SourceResumeContentPayloadV2(
+        document=ledger.model_copy(update={"layout": layout_result.layout}),
+        layout_validation_status="verified",
+    )
+    repository = AsyncMock()
+    profile = _profile()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=profile.model_dump()),
+        SimpleNamespace(content=source_payload.model_dump(mode="json")),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(description="FastAPI")
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "rewrites": [
+                                {
+                                    "target_alias": "r0:b0",
+                                    "rewritten_text": "Built FastAPI APIs.",
+                                    "evidence_aliases": ["r0:b0"],
+                                }
+                            ]
+                        }
+                    )
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        resume_service,
+        "llm_chat_completion",
+        AsyncMock(return_value=(response, "test-model")),
+    )
+
+    result = await ResumeService(repository).tailor_for_job(
+        user_id=7, job_id=11, job_repository=jobs
+    )
+
+    assert result.work_history[0].company == "Acme - Engineer"
+    assert result.work_history[0].original_highlights == ["Built FastAPI APIs."]
+    assert result.work_history[0].tailored_highlights == ["Built FastAPI APIs."]
 
 
 @pytest.mark.asyncio

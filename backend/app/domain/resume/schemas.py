@@ -30,6 +30,7 @@ from app.domain.resume.provenance import ResumeImportProvenance
 
 PARSED_PROFILE_SCHEMA_VERSION = "parsed-profile-v3"
 SOURCE_RESUME_SCHEMA_VERSION = "source-resume-v1"
+SOURCE_RESUME_SCHEMA_VERSION_V2 = "source-resume-v2"
 
 
 def _normalize_optional_text(value: object) -> object:
@@ -302,9 +303,11 @@ class ParsedResumeResult(NamedTuple):
 
     profile: ParsedProfile
     extraction_evidence: ExtractionEvidence
-    source_content: SourceResumeContentPayload | None = None
+    source_content: SourceResumeContentPayload | SourceResumeContentPayloadV2 | None = None
     source_validation_status: Literal["verified", "invalid"] | None = None
     source_validation_errors: tuple[str, ...] = ()
+    source_layout_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
+    source_layout_errors: tuple[str, ...] = ()
 
 
 class SourceTextItem(BaseModel):
@@ -366,6 +369,81 @@ class SourceResumeDocument(BaseModel):
 class SourceResumeContentPayload(BaseModel):
     schema_version: Literal["source-resume-v1"] = "source-resume-v1"
     document: SourceResumeDocument
+
+
+class SourceResumeCandidate(BaseModel):
+    """Server-owned literal line candidate used by source-resume v2."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: UUID = Field(default_factory=uuid4)
+    text: str = Field(min_length=1)
+    order: int = Field(ge=0)
+    fingerprint: str = Field(min_length=1)
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(ge=0)
+    occurrence_ordinal: int = Field(ge=0)
+
+
+class SourceResumeRoleReferences(BaseModel):
+    """Semantic references for one role; identity is one raw header candidate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: int = Field(ge=0)
+    header: UUID
+    highlights: list[UUID] = Field(default_factory=list)
+
+
+class SourceResumeProjectReferences(BaseModel):
+    """Semantic references for one project; text is resolved from the ledger."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: int = Field(ge=0)
+    name: UUID | None = None
+    description: UUID | None = None
+    technologies: list[UUID] = Field(default_factory=list)
+    achievements: list[UUID] = Field(default_factory=list)
+    url: UUID | None = None
+
+
+class SourceResumeLayoutReferences(BaseModel):
+    """Model-selected semantic layout, containing only candidate references."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contact: dict[str, UUID] = Field(default_factory=dict)
+    links: dict[str, UUID] = Field(default_factory=dict)
+    summary: UUID | None = None
+    skills: list[UUID] = Field(default_factory=list)
+    sections: list[UUID] = Field(default_factory=list)
+    work_history: list[SourceResumeRoleReferences] = Field(default_factory=list)
+    projects: list[SourceResumeProjectReferences] = Field(default_factory=list)
+    education: list[UUID] = Field(default_factory=list)
+    certifications: list[UUID] = Field(default_factory=list)
+    licenses: list[UUID] = Field(default_factory=list)
+    languages: list[UUID] = Field(default_factory=list)
+
+
+class SourceResumeContentDocumentV2(BaseModel):
+    """Verified candidate ledger plus optional semantic source layout."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidates: list[SourceResumeCandidate] = Field(default_factory=list)
+    layout: SourceResumeLayoutReferences | None = None
+
+
+class SourceResumeContentPayloadV2(BaseModel):
+    """Canonical source-resume v2 payload persisted after import."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["source-resume-v2"] = "source-resume-v2"
+    document: SourceResumeContentDocumentV2
+    layout_validation_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
+    layout_validation_errors: list[str] = Field(default_factory=list)
 
 
 class ExtractionWarning(BaseModel):

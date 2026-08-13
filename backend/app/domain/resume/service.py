@@ -23,6 +23,7 @@ from app.domain.resume.exceptions import (
     ProfileNotFoundError,
     ResumeImportDraftNotFoundError,
     ResumeParseError,
+    ResumeSourceLayoutUnavailableError,
     ResumeTextTooLongError,
     TailoredResumeDraftNotFoundError,
     UnsupportedResumeFormatError,
@@ -48,13 +49,14 @@ from app.domain.resume.schemas import (
     ResumeImportDetail,
     ResumeImportListItem,
     ResumeResponse,
-    SourceResumeContentPayload,
+    SourceResumeContentPayloadV2,
     TailoredResume,
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
     TailoredResumeDraftResponse,
     TailoredWorkItem,
 )
+from app.domain.resume.source_content import materialize_source_document
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
     build_source_evidence_catalog,
@@ -363,6 +365,9 @@ class ResumeService:
                 ),
                 validation_status=source_validation_status,
                 validation_errors=source_validation_errors,
+                schema_version=source_content.schema_version
+                if source_content is not None
+                else "source-resume-v2",
             )
         await self._repository.add_profile(
             user_id=user_id,
@@ -668,8 +673,18 @@ class ResumeService:
             source_roles = None
         else:
             profile_row, source_row = source_pair
-            source_payload = SourceResumeContentPayload.model_validate(source_row.content)
-            source_roles = source_payload.document.work_history
+            if source_row.content.get("schema_version") == "source-resume-v2":
+                source_payload_v2 = SourceResumeContentPayloadV2.model_validate(source_row.content)
+                if source_payload_v2.layout_validation_status != "verified" or (
+                    source_payload_v2.document.layout is None
+                ):
+                    raise ResumeSourceLayoutUnavailableError()
+                source_document = materialize_source_document(source_payload_v2.document)
+                source_roles = source_document.work_history if source_document is not None else None
+            else:
+                # v1 source snapshots are obsolete for source-backed tailoring.
+                # Do not fall back to profile prose or the legacy source shape.
+                raise ResumeSourceLayoutUnavailableError()
         if profile_row is None:
             raise ProfileNotFoundError(user_id)
         profile = ParsedProfile.model_validate(profile_row.parsed)
