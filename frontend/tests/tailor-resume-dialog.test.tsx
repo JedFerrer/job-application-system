@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
+import { displaySections, legacyDisplaySections, TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 
 const apiMocks = vi.hoisted(() => ({
   tailorResume: vi.fn(),
@@ -104,6 +104,23 @@ describe("TailorResumeDialog", () => {
 
   const renderedText = () => container.textContent ?? "";
 
+  it("keeps legacy display items separate from canonical provenance", () => {
+    const legacyItems = legacyDisplaySections(tailoredResume).flatMap((section) => section.items);
+    expect(legacyItems.length).toBeGreaterThan(0);
+    expect(legacyItems.every((item) => !item.source_id)).toBe(true);
+    expect(legacyItems.every((item) => item.display_key?.startsWith("legacy-"))).toBe(true);
+
+    const canonical = {
+      ...tailoredResume,
+      canonical_sections: [{
+        section: "skills" as const,
+        items: [{ source_id: "00000000-0000-0000-0000-000000000001", text: "Python", canonical_order: 0 }],
+      }],
+    };
+    expect(displaySections(canonical)).toBe(canonical.canonical_sections);
+    expect(displaySections(canonical)[0]?.items[0]?.source_id).toBe("00000000-0000-0000-0000-000000000001");
+  });
+
   it("waits for the user to start generation and labels the result as a review-required draft", async () => {
     apiMocks.tailorResume.mockImplementation(async () => tailoredResume);
 
@@ -192,7 +209,7 @@ describe("TailorResumeDialog", () => {
       root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
     });
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
-    await vi.waitFor(() => expect(renderedText()).toContain("Matched job requirements"));
+    await vi.waitFor(() => expect(renderedText()).not.toContain("Matched job requirements"));
     expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).not.toContain("Skills");
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"))?.click(); await Promise.resolve(); });
     expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining("kubernetes"));
@@ -238,8 +255,8 @@ describe("TailorResumeDialog", () => {
       root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
     });
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
-    await vi.waitFor(() => expect(renderedText()).toContain("Candidate skills"));
-    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).toContain("Candidate skills");
+    await vi.waitFor(() => expect(renderedText()).toContain("Canonical resume content"));
+    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).toContain("projects");
   });
 
   it("keeps the legacy matched/other fallback when skills is null", async () => {
@@ -249,8 +266,8 @@ describe("TailorResumeDialog", () => {
       root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
     });
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
-    await vi.waitFor(() => expect(renderedText()).toContain("Candidate skills"));
-    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).toContain("Candidate skills");
+    await vi.waitFor(() => expect(renderedText()).toContain("Canonical resume content"));
+    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).toContain("projects");
   });
 
   it("saves the displayed tailored snapshot with its job id", async () => {

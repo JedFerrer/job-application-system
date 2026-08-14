@@ -104,13 +104,22 @@ function dateRange(start: string | null, end: string | null): string {
 }
 
 function resumeSkills(data: TailoredResume): string[] {
-  return data.skills ?? [...data.matched_skills, ...data.other_skills];
+  return data.canonical_sections?.find((section) => section.section === "skills")?.items.map((item) => item.text)
+    ?? data.skills
+    ?? [...data.matched_skills, ...data.other_skills];
 }
 
 function resumeLinks(data: TailoredResume): string[] {
+  const canonical = data.canonical_sections?.find((section) => section.section === "links");
+  if (canonical) return canonical.items.map((item) => item.text);
   return Object.entries(data.links ?? {})
     .filter((entry): entry is [string, string] => Boolean(entry[1]))
     .map(([label, url]) => `${label[0]!.toUpperCase()}${label.slice(1)}: ${url}`);
+}
+
+function canonicalValues(data: TailoredResume, section: string): string[] | null {
+  const match = data.canonical_sections?.find((item) => item.section === section);
+  return match ? match.items.map((item) => item.text) : null;
 }
 
 interface PdfCtx {
@@ -197,12 +206,14 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
     writeLine(ctx, contact, BODY_SIZE, false);
   }
   for (const link of resumeLinks(data)) writeLine(ctx, link, BODY_SIZE, false);
+  for (const contact of canonicalValues(data, "contact") ?? []) writeLine(ctx, contact, BODY_SIZE, false);
   ctx.y += 4;
 
   // Professional Summary
-  if (data.professional_summary) {
+  const canonicalSummary = canonicalValues(data, "summary");
+  if (canonicalSummary?.length || data.professional_summary) {
     writeSectionHeading(ctx, "PROFESSIONAL SUMMARY");
-    writeWrapped(ctx, data.professional_summary, BODY_SIZE, textW);
+    for (const summary of canonicalSummary ?? [data.professional_summary!]) writeWrapped(ctx, summary, BODY_SIZE, textW);
     ctx.y += SECTION_GAP;
   }
 
@@ -223,7 +234,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
       const title = role.title || "Role";
       const company = role.company || "";
       const date = dateRange(role.start, role.end);
-      const header = `${title} | ${company}${date ? ` | ${date}` : ""}`;
+      const header = role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`;
 
       // Calculate room needed: header + at least 2 bullets
       const bullets = role.tailored_highlights;
@@ -262,7 +273,16 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
     ctx.y += SECTION_GAP;
   }
 
-  if (data.projects?.length) {
+  const canonicalSections = Boolean(data.canonical_sections?.length);
+  if (canonicalSections) {
+    for (const section of ["projects", "education", "certifications", "licenses", "languages"] as const) {
+      const values = canonicalValues(data, section);
+      if (!values?.length) continue;
+      writeSectionHeading(ctx, section.toUpperCase());
+      for (const value of values) writeWrapped(ctx, value, BODY_SIZE, textW);
+    }
+  }
+  if (!canonicalSections && data.projects?.length) {
     writeSectionHeading(ctx, "PROJECTS");
     for (const project of data.projects) {
       if (project.name) writeLine(ctx, project.name, BODY_SIZE, true);
@@ -275,7 +295,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
   }
 
   // Education
-  if (data.education.length > 0) {
+  if (!canonicalSections && data.education.length > 0) {
     writeSectionHeading(ctx, "EDUCATION");
     for (const edu of data.education) {
       const entry = [edu.degree, edu.institution, edu.year].filter(Boolean).join(" | ");
@@ -285,18 +305,18 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
   }
 
   // Certifications
-  if (data.certifications.length > 0) {
+  if (!canonicalSections && data.certifications.length > 0) {
     writeSectionHeading(ctx, "CERTIFICATIONS");
     writeWrapped(ctx, data.certifications.join(" | "), BODY_SIZE, textW);
     ctx.y += SECTION_GAP;
   }
 
-  if (data.licenses?.length) {
+  if (!canonicalSections && data.licenses?.length) {
     writeSectionHeading(ctx, "LICENSES & CREDENTIALS");
     for (const item of data.licenses) writeLine(ctx, [item.name, item.issuer].filter(Boolean).join(" | "), BODY_SIZE, false);
     ctx.y += SECTION_GAP;
   }
-  if (data.languages?.length) {
+  if (!canonicalSections && data.languages?.length) {
     writeSectionHeading(ctx, "LANGUAGES");
     for (const item of data.languages) writeLine(ctx, [item.language, item.proficiency].filter(Boolean).join(" | "), BODY_SIZE, false);
   }
@@ -329,6 +349,7 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   // Contact
   const contact = [data.email, data.phone].filter(Boolean).join(" | ");
   if (contact) p(contact, { spaceAfter: 120 });
+  for (const value of canonicalValues(data, "contact") ?? []) p(value);
   for (const link of resumeLinks(data)) p(link);
 
   // Section helper
@@ -337,9 +358,10 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   }
 
   // Professional Summary
-  if (data.professional_summary) {
+  const canonicalSummary = canonicalValues(data, "summary");
+  if (canonicalSummary?.length || data.professional_summary) {
     section("PROFESSIONAL SUMMARY");
-    p(data.professional_summary, { spaceAfter: 100 });
+    for (const value of canonicalSummary ?? [data.professional_summary!]) p(value, { spaceAfter: 100 });
   }
 
   // Technical Skills
@@ -356,7 +378,7 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
       const title = role.title || "Role";
       const company = role.company || "";
       const date = dateRange(role.start, role.end);
-      p(`${title} | ${company}${date ? ` | ${date}` : ""}`, { bold: true, spaceAfter: 40 });
+      p(role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`, { bold: true, spaceAfter: 40 });
       for (const h of role.tailored_highlights) {
         p(`  • ${h}`, { spaceAfter: 20 });
       }
@@ -364,7 +386,16 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
     }
   }
 
-  if (data.projects?.length) {
+  const canonicalSections = Boolean(data.canonical_sections?.length);
+  if (canonicalSections) {
+    for (const sectionName of ["projects", "education", "certifications", "licenses", "languages"] as const) {
+      const values = canonicalValues(data, sectionName);
+      if (!values?.length) continue;
+      section(sectionName.toUpperCase());
+      for (const value of values) p(value);
+    }
+  }
+  if (!canonicalSections && data.projects?.length) {
     section("PROJECTS");
     for (const project of data.projects) {
       if (project.name) p(project.name, { bold: true });
@@ -377,7 +408,7 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   }
 
   // Education
-  if (data.education.length > 0) {
+  if (!canonicalSections && data.education.length > 0) {
     section("EDUCATION");
     for (const edu of data.education) {
       const entry = [edu.degree, edu.institution, edu.year].filter(Boolean).join(" | ");
@@ -387,16 +418,16 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   }
 
   // Certifications
-  if (data.certifications.length > 0) {
+  if (!canonicalSections && data.certifications.length > 0) {
     section("CERTIFICATIONS");
     p(data.certifications.join(" | "), { spaceAfter: 20 });
   }
 
-  if (data.licenses?.length) {
+  if (!canonicalSections && data.licenses?.length) {
     section("LICENSES & CREDENTIALS");
     for (const item of data.licenses) p([item.name, item.issuer].filter(Boolean).join(" | "));
   }
-  if (data.languages?.length) {
+  if (!canonicalSections && data.languages?.length) {
     section("LANGUAGES");
     for (const item of data.languages) p([item.language, item.proficiency].filter(Boolean).join(" | "));
   }

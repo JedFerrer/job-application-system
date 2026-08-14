@@ -538,6 +538,9 @@ class TailoredWorkItem(BaseModel):
     # ``tailored_highlights``.
     tailored_highlight_source_indices: list[int] = Field(default_factory=list)
     source_role_id: UUID | None = None
+    # Canonical combined role header from source-resume-v2.  When present,
+    # render this once rather than inferring company/title/date substrings.
+    source_header: str | None = None
     selection_decisions: list[TailoredBulletDecision] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -557,6 +560,14 @@ class TailoredWorkItem(BaseModel):
             raise ValueError("tailored_highlight_source_indices contains an invalid source index")
         return self
 
+    @model_validator(mode="after")
+    def _validate_role_floor(self) -> TailoredWorkItem:
+        if self.selection_decisions and not any(
+            decision.final_included for decision in self.selection_decisions
+        ):
+            raise ValueError("each non-empty role must retain an included bullet")
+        return self
+
 
 class TailoredBulletDecision(BaseModel):
     """Canonical provenance and selection state for one work bullet."""
@@ -571,6 +582,31 @@ class TailoredBulletDecision(BaseModel):
     final_included: bool
     recommendation_rank: int | None = Field(default=None, ge=0)
     output_rank: int | None = Field(default=None, ge=0)
+
+
+class TailoredCanonicalItem(BaseModel):
+    """One verified, literal non-work source item in a saved snapshot."""
+
+    source_id: UUID
+    text: str = Field(min_length=1)
+    canonical_order: int = Field(ge=0)
+
+
+class TailoredCanonicalSection(BaseModel):
+    """Canonical pass-through content grouped by source section."""
+
+    section: Literal[
+        "contact",
+        "links",
+        "summary",
+        "skills",
+        "projects",
+        "education",
+        "certifications",
+        "licenses",
+        "languages",
+    ]
+    items: list[TailoredCanonicalItem] = Field(default_factory=list)
 
 
 class RequirementClassification(BaseModel):
@@ -612,6 +648,11 @@ class TailoredResume(BaseModel):
     missing_keywords: list[str] = Field(default_factory=list)
     requirement_classifications: list[RequirementClassification] = Field(
         default_factory=list,
+    )
+    # Present on new source-backed snapshots.  Absent on legacy snapshots.
+    canonical_sections: list[TailoredCanonicalSection] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
     )
 
 

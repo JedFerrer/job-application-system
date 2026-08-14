@@ -11,10 +11,57 @@ from app.domain.resume.schemas import (
     ProfessionalCredential,
     ProfileResponse,
     ProfileUpdate,
+    TailoredBulletDecision,
+    TailoredCanonicalItem,
+    TailoredCanonicalSection,
+    TailoredWorkItem,
 )
 from app.domain.resume.service import build_summary_text
 
 pytestmark = pytest.mark.unit
+
+
+def test_tailored_role_rejects_omitting_every_bullet() -> None:
+    with pytest.raises(ValidationError, match="retain an included bullet"):
+        TailoredWorkItem(
+            original_highlights=["Canonical bullet"],
+            tailored_highlights=[],
+            selection_decisions=[
+                TailoredBulletDecision(
+                    source_id="00000000-0000-0000-0000-000000000001",
+                    source_index=0,
+                    canonical_order=0,
+                    original_text="Canonical bullet",
+                    suggested_text="Suggested bullet",
+                    final_text="Suggested bullet",
+                    recommended_included=False,
+                    final_included=False,
+                )
+            ],
+        )
+
+
+def test_canonical_sections_preserve_source_identity_and_text() -> None:
+    section = TailoredCanonicalSection(
+        section="skills",
+        items=[
+            TailoredCanonicalItem(
+                source_id="00000000-0000-0000-0000-000000000001",
+                text="FastAPI",
+                canonical_order=3,
+            )
+        ],
+    )
+    assert section.model_dump(mode="json") == {
+        "section": "skills",
+        "items": [
+            {
+                "source_id": "00000000-0000-0000-0000-000000000001",
+                "text": "FastAPI",
+                "canonical_order": 3,
+            }
+        ],
+    }
 
 
 def test_parsed_profile_accepts_legacy_aliases() -> None:

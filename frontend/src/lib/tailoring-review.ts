@@ -1,6 +1,6 @@
 import type { TailoredResume, TailoredWorkItem } from "./types";
 
-export type ReviewLabel = "Reworded" | "Moved higher" | "Reworded + moved higher";
+export type ReviewLabel = "Reworded" | "Moved higher" | "Reworded + moved higher" | "Comparison unavailable; showing source bullets safely.";
 
 export interface ReviewItem {
   key: string;
@@ -11,11 +11,18 @@ export interface ReviewItem {
   changed: boolean;
   moved: boolean;
   label: ReviewLabel | null;
+  included?: boolean;
+  recommendedIncluded?: boolean;
 }
 
 export interface ReviewState {
   source: TailoredResume;
   rejected: Set<string>;
+  finalIncluded: Set<string>;
+}
+
+function decisionKey(roleIndex: number, sourceIndex: number): string {
+  return `${roleIndex}:${sourceIndex}`;
 }
 
 export function mappingIsValid(role: TailoredWorkItem): boolean {
@@ -58,34 +65,105 @@ export function reviewItems(data: TailoredResume): ReviewItem[][] | null {
 }
 
 export function createReviewState(data: TailoredResume): ReviewState {
-  return { source: data, rejected: new Set<string>() };
+  const finalIncluded = new Set<string>();
+  for (const [roleIndex, role] of data.work_history.entries()) {
+    if (!role.selection_decisions?.length) {
+      for (const sourceIndex of role.tailored_highlight_source_indices ?? []) {
+        finalIncluded.add(decisionKey(roleIndex, sourceIndex));
+      }
+    }
+    for (const decision of role.selection_decisions ?? []) {
+      if (decision.final_included) finalIncluded.add(decisionKey(roleIndex, decision.source_index));
+    }
+  }
+  return { source: data, rejected: new Set<string>(), finalIncluded };
+}
+
+export function decisionItems(data: TailoredResume): ReviewItem[][] {
+  return data.work_history.map((role, roleIndex) => {
+    if (!role.selection_decisions?.length) {
+      const mapped = reviewItems(data)?.[roleIndex];
+      if (mapped) return mapped.map((item) => ({ ...item, included: true, recommendedIncluded: true }));
+      return role.original_highlights.map((text, sourceIndex) => ({
+        key: `${roleIndex}:${sourceIndex}`,
+        outputIndex: sourceIndex,
+        sourceIndex,
+        originalText: text,
+        suggestionText: text,
+        changed: false,
+        moved: false,
+        label: "Comparison unavailable; showing source bullets safely.",
+        included: true,
+        recommendedIncluded: true,
+      }));
+    }
+    const outputIndexBySource = new Map(
+      (role.tailored_highlight_source_indices ?? []).map((sourceIndex, outputIndex) => [sourceIndex, outputIndex]),
+    );
+    return (role.selection_decisions ?? []).map((decision) => {
+      const outputIndex = outputIndexBySource.get(decision.source_index) ?? -1;
+      const changed = decision.original_text !== decision.suggested_text;
+      const moved = outputIndex >= 0 && decision.source_index !== outputIndex;
+      const movedHigher = outputIndex >= 0 && outputIndex < decision.source_index;
+      return {
+        key: decisionKey(roleIndex, decision.source_index),
+        outputIndex,
+        sourceIndex: decision.source_index,
+        originalText: decision.original_text,
+        suggestionText: decision.suggested_text,
+        changed,
+        moved,
+        label: changed ? (movedHigher ? "Reworded + moved higher" : "Reworded") : (movedHigher ? "Moved higher" : null),
+        included: decision.final_included,
+        recommendedIncluded: decision.recommended_included,
+      };
+    });
+  });
 }
 
 export function reviewedResume(state: ReviewState): TailoredResume {
   const work_history = state.source.work_history.map((role, roleIndex) => ({
     ...role,
-    tailored_highlights: role.tailored_highlights.map((suggestion, outputIndex) => {
+    tailored_highlights: role.selection_decisions?.length
+      ? []
+      : role.tailored_highlights.map((suggestion, outputIndex) => {
       const sourceIndex = role.tailored_highlight_source_indices?.[outputIndex];
       const key = `${roleIndex}:${sourceIndex}`;
       return state.rejected.has(key) && sourceIndex != null
         ? role.original_highlights[sourceIndex]!
         : suggestion;
     }),
-    selection_decisions: role.selection_decisions?.map((decision) => {
-      const sourceIndex = role.tailored_highlight_source_indices?.findIndex(
-        (index) => index === decision.source_index,
-      );
-      const suggestion = sourceIndex != null && sourceIndex >= 0
-        ? role.tailored_highlights[sourceIndex]!
-        : decision.suggested_text;
-      return {
-        ...decision,
-        final_text: state.rejected.has(`${roleIndex}:${decision.source_index}`)
-          ? decision.original_text
-          : suggestion,
-      };
-    }),
+    tailored_highlight_source_indices: role.selection_decisions?.length
+      ? []
+      : role.tailored_highlight_source_indices,
+    selection_decisions: role.selection_decisions?.map((decision) => ({
+      ...decision,
+      final_included: state.finalIncluded.has(decisionKey(roleIndex, decision.source_index)),
+      final_text: state.rejected.has(decisionKey(roleIndex, decision.source_index))
+        ? decision.original_text
+        : decision.suggested_text,
+    })),
   }));
+  for (const [roleIndex, role] of state.source.work_history.entries()) {
+    if (!role.selection_decisions?.length) continue;
+    const decisions = work_history[roleIndex]!.selection_decisions!;
+    const included = decisions
+      .filter((decision) => decision.final_included)
+      .sort((a, b) => {
+        if (a.recommended_included !== b.recommended_included) return a.recommended_included ? -1 : 1;
+        return a.recommended_included
+          ? (a.recommendation_rank ?? Number.MAX_SAFE_INTEGER) - (b.recommendation_rank ?? Number.MAX_SAFE_INTEGER)
+          : a.canonical_order - b.canonical_order;
+      });
+    work_history[roleIndex]!.tailored_highlights = included.map((decision) => decision.final_text);
+    work_history[roleIndex]!.tailored_highlight_source_indices = included.map((decision) => decision.source_index);
+    const outputRankBySource = new Map(
+      included.map((decision, outputRank) => [decision.source_index, outputRank]),
+    );
+    decisions.forEach((decision) => {
+      decision.output_rank = outputRankBySource.get(decision.source_index) ?? null;
+    });
+  }
   return { ...state.source, work_history };
 }
 

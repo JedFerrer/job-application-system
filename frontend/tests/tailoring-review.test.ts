@@ -85,4 +85,65 @@ describe("tailoring review", () => {
   it("provides deterministic visual diff segments", () => {
     expect(wordDiff("Built APIs", "Built Python APIs").some((part) => part.added)).toBe(true);
   });
+
+  it("projects final inclusion and deterministic ordering from decision state", () => {
+    const source = resume(["Recommended", "Second"]);
+    source.work_history[0] = {
+      ...source.work_history[0]!,
+      original_highlights: ["Recommended", "Second", "Omitted"],
+      tailored_highlights: ["Recommended", "Second"],
+      tailored_highlight_source_indices: [0, 1],
+      selection_decisions: [
+        { source_id: "00000000-0000-0000-0000-000000000001", source_index: 0, canonical_order: 0, original_text: "Recommended", suggested_text: "Recommended", final_text: "Recommended", recommended_included: true, final_included: true, recommendation_rank: 0, output_rank: 0 },
+        { source_id: "00000000-0000-0000-0000-000000000002", source_index: 1, canonical_order: 1, original_text: "Second", suggested_text: "Second", final_text: "Second", recommended_included: true, final_included: true, recommendation_rank: 1, output_rank: 1 },
+        { source_id: "00000000-0000-0000-0000-000000000003", source_index: 2, canonical_order: 2, original_text: "Omitted", suggested_text: "Omitted", final_text: "Omitted", recommended_included: false, final_included: false },
+      ],
+    };
+    const state = createReviewState(source);
+    state.finalIncluded.delete("0:0");
+    state.finalIncluded.add("0:2");
+    const reviewed = reviewedResume(state);
+    expect(reviewed.work_history[0]!.tailored_highlights).toEqual(["Second", "Omitted"]);
+    expect(reviewed.work_history[0]!.tailored_highlight_source_indices).toEqual([1, 2]);
+    expect(reviewed.work_history[0]!.selection_decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source_index: 0, final_included: false, output_rank: null }),
+      expect.objectContaining({ source_index: 1, final_included: true, output_rank: 0 }),
+      expect.objectContaining({ source_index: 2, final_included: true, output_rank: 1 }),
+    ]));
+
+    state.finalIncluded = new Set(["0:0", "0:1"]);
+    const restored = reviewedResume(state);
+    expect(restored.work_history[0]!.selection_decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source_index: 0, final_included: true, output_rank: 0 }),
+      expect.objectContaining({ source_index: 1, final_included: true, output_rank: 1 }),
+      expect.objectContaining({ source_index: 2, final_included: false, output_rank: null }),
+    ]));
+
+    state.finalIncluded.delete("0:0");
+    const omittedAgain = reviewedResume(state);
+    expect(omittedAgain.work_history[0]!.selection_decisions?.find((item) => item.source_index === 0)).toEqual(
+      expect.objectContaining({ final_included: false, output_rank: null }),
+    );
+  });
+
+  it("restores recommendation inclusion without changing wording overrides", () => {
+    const source = resume(["Suggested", "Other"]);
+    source.work_history[0] = {
+      ...source.work_history[0]!,
+      original_highlights: ["Original", "Other"],
+      tailored_highlights: ["Suggested"],
+      tailored_highlight_source_indices: [0],
+      selection_decisions: [
+        { source_id: "00000000-0000-0000-0000-000000000001", source_index: 0, canonical_order: 0, original_text: "Original", suggested_text: "Suggested", final_text: "Original", recommended_included: true, final_included: true, recommendation_rank: 0, output_rank: 0 },
+        { source_id: "00000000-0000-0000-0000-000000000002", source_index: 1, canonical_order: 1, original_text: "Other", suggested_text: "Other", final_text: "Other", recommended_included: false, final_included: false },
+      ],
+    };
+    const state = createReviewState(source);
+    state.finalIncluded.delete("0:0");
+    state.finalIncluded.add("0:1");
+    state.rejected.add("0:0");
+    const reviewed = reviewedResume(state);
+    expect(reviewed.work_history[0]!.selection_decisions?.[0]?.final_included).toBe(false);
+    expect(reviewed.work_history[0]!.selection_decisions?.[0]?.final_text).toBe("Original");
+  });
 });

@@ -193,7 +193,19 @@ export interface TailoredWorkItem {
   tailored_highlights: string[];
   tailored_highlight_source_indices?: number[];
   source_role_id?: string | null;
+  source_header?: string | null;
   selection_decisions?: TailoredBulletDecision[];
+}
+
+export interface TailoredCanonicalItem {
+  source_id: string;
+  text: string;
+  canonical_order: number;
+}
+
+export interface TailoredCanonicalSection {
+  section: "contact" | "links" | "summary" | "skills" | "projects" | "education" | "certifications" | "licenses" | "languages";
+  items: TailoredCanonicalItem[];
 }
 
 export interface TailoredBulletDecision {
@@ -228,6 +240,7 @@ export interface TailoredResume {
   other_skills: string[];
   missing_keywords: string[];
   requirement_classifications?: RequirementClassification[];
+  canonical_sections?: TailoredCanonicalSection[];
 }
 
 export interface RequirementClassification {

@@ -50,7 +50,10 @@ from app.domain.resume.schemas import (
     ResumeImportListItem,
     ResumeResponse,
     SourceResumeContentPayloadV2,
+    SourceResumeDocument,
     TailoredBulletDecision,
+    TailoredCanonicalItem,
+    TailoredCanonicalSection,
     TailoredResume,
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
@@ -76,6 +79,65 @@ from app.infrastructure.resume_parser import (
 logger = get_logger("resume_service")
 
 ProgressFn = Callable[..., Awaitable[None]]
+
+
+def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
+    """Project verified source-v2 text into an additive snapshot view."""
+    if source_document is None:
+        return []
+
+    def items(values: list[Any]) -> list[TailoredCanonicalItem]:
+        return [
+            TailoredCanonicalItem(
+                source_id=value.source_id,
+                text=value.text,
+                canonical_order=value.order,
+            )
+            for value in sorted(values, key=lambda value: value.order)
+        ]
+
+    sections: list[TailoredCanonicalSection] = []
+    contact = items(list(source_document.contact.values()))
+    links = items(list(source_document.links.values()))
+    if contact:
+        sections.append(TailoredCanonicalSection(section="contact", items=contact))
+    if links:
+        sections.append(TailoredCanonicalSection(section="links", items=links))
+    if source_document.summary:
+        sections.append(
+            TailoredCanonicalSection(
+                section="summary", items=items([source_document.summary])
+            )
+        )
+    for section_name, values in (
+        ("skills", source_document.skills),
+        ("education", source_document.education),
+        ("certifications", source_document.certifications),
+        ("licenses", source_document.licenses),
+        ("languages", source_document.languages),
+    ):
+        section_items = items(values)
+        if section_items:
+            sections.append(
+                TailoredCanonicalSection(section=section_name, items=section_items)
+            )
+    project_values: list[Any] = []
+    for project in source_document.projects:
+        project_values.extend(
+            value
+            for value in (
+                project.name,
+                project.description,
+                *project.technologies,
+                *project.achievements,
+                project.url,
+            )
+            if value is not None
+        )
+    project_items = items(project_values)
+    if project_items:
+        sections.append(TailoredCanonicalSection(section="projects", items=project_items))
+    return sections
 
 
 def build_summary_text(profile: ParsedProfile) -> str:
@@ -108,6 +170,8 @@ def _untailored_fallback(
     requirement_classifications: list[RequirementClassification] | None = None,
     bullet_orders: list[list[str]] | None = None,
     source_roles: list[Any] | None = None,
+    canonical_sections: list[TailoredCanonicalSection] | None = None,
+    source_document: SourceResumeDocument | None = None,
 ) -> TailoredResume:
     """Return the profile as-is when LLM tailoring is unavailable."""
     matched_set = set(report.matched_skills)
@@ -137,20 +201,35 @@ def _untailored_fallback(
         ]
         for role_index, (role, role_order) in enumerate(zip(roles, orders, strict=True))
     ]
+    source_backed = source_document is not None and canonical_sections is not None
+    source_skills = (
+        [item.text for item in source_document.skills]
+        if source_document is not None
+        else list(profile.skills)
+    )
+    source_summary = (
+        source_document.summary.text
+        if source_document is not None and source_document.summary is not None
+        else None
+    )
     resume = TailoredResume(
         job_id=job_id,
-        professional_summary=profile.headline or None,
-        full_name=profile.full_name,
-        email=profile.email,
-        phone=profile.phone,
-        headline=profile.headline,
-        skills=list(profile.skills),
-        links=profile.links.model_copy(deep=True),
-        projects=[item.model_copy(deep=True) for item in profile.projects],
-        languages=[item.model_copy(deep=True) for item in profile.languages],
-        licenses=[item.model_copy(deep=True) for item in profile.licenses],
-        education=list(profile.education),
-        certifications=list(profile.certifications),
+        professional_summary=source_summary if source_backed else (profile.headline or None),
+        full_name=None if source_backed else profile.full_name,
+        email=None if source_backed else profile.email,
+        phone=None if source_backed else profile.phone,
+        headline=None if source_backed else profile.headline,
+        skills=source_skills,
+        links=profile.links.model_copy(deep=True) if not source_backed else {},
+        projects=(
+            [item.model_copy(deep=True) for item in profile.projects]
+            if not source_backed
+            else []
+        ),
+        languages=list(profile.languages) if not source_backed else [],
+        licenses=list(profile.licenses) if not source_backed else [],
+        education=list(profile.education) if not source_backed else [],
+        certifications=list(profile.certifications) if not source_backed else [],
         work_history=[
             TailoredWorkItem(
                 company=w.company.text if source_roles is not None and w.company else w.company,
@@ -168,6 +247,11 @@ def _untailored_fallback(
                 ],
                 tailored_highlight_source_indices=source_indices[index_role],
                 source_role_id=w.source_id if source_roles is not None else None,
+                source_header=(
+                    w.company.text
+                    if source_roles is not None and w.company
+                    else None
+                ),
                 selection_decisions=(
                     _selection_decisions(
                         w,
@@ -187,6 +271,7 @@ def _untailored_fallback(
         other_skills=other_skills,
         missing_keywords=report.missing_skills,
         requirement_classifications=requirement_classifications or [],
+        canonical_sections=canonical_sections or [],
     )
     resume.requirement_classifications = classify_resume_coverage(
         resume.requirement_classifications, resume
@@ -719,6 +804,7 @@ class ResumeService:
         job_repository: JobRepository,
     ) -> TailoredResume:
         """Selectively tailor source bullets for a specific job."""
+        source_document = None
         source_pair = (
             await self._repository.get_active_tailoring_source(user_id)
             if hasattr(self._repository, "get_active_tailoring_source")
@@ -746,6 +832,7 @@ class ResumeService:
                 raise ResumeSourceLayoutUnavailableError()
         if profile_row is None:
             raise ProfileNotFoundError(user_id)
+        canonical_sections = _canonical_sections(source_document)
         profile = ParsedProfile.model_validate(profile_row.parsed)
         job = await job_repository.get_visible_by_id(user_id=user_id, job_id=job_id)
         if job is None:
@@ -773,7 +860,13 @@ class ResumeService:
         if not job.description:
             # Return untailored — nothing to match against.
             return _untailored_fallback(
-                profile, job_id, report, classifications, source_roles=source_roles
+                profile,
+                job_id,
+                report,
+                classifications,
+                source_roles=source_roles,
+                canonical_sections=canonical_sections,
+                source_document=source_document,
             )
 
         selection = (
@@ -789,7 +882,14 @@ class ResumeService:
         )
         if not any(eligible_bullets.values()):
             return _untailored_fallback(
-                profile, job_id, report, classifications, bullet_orders, source_roles
+                profile,
+                job_id,
+                report,
+                classifications,
+                bullet_orders,
+                source_roles,
+                canonical_sections,
+                source_document,
             )
 
         prompt = TAILOR_RESUME_PROMPT.format(
@@ -816,7 +916,14 @@ class ResumeService:
             )
             # Graceful fallback: return untailored profile with skill report.
             return _untailored_fallback(
-                profile, job_id, report, classifications, bullet_orders, source_roles
+                profile,
+                job_id,
+                report,
+                classifications,
+                bullet_orders,
+                source_roles,
+                canonical_sections,
+                source_document,
             )
 
         try:
@@ -852,7 +959,14 @@ class ResumeService:
                 exc_info=True,
             )
             return _untailored_fallback(
-                profile, job_id, report, classifications, bullet_orders, source_roles
+                profile,
+                job_id,
+                report,
+                classifications,
+                bullet_orders,
+                source_roles,
+                canonical_sections,
+                source_document,
             )
 
         matched = list(report.matched_skills)
@@ -901,6 +1015,11 @@ class ResumeService:
                     for source_uuid in bullet_orders[role_index]
                 ],
                 source_role_id=source.source_id if source_roles is not None else None,
+                source_header=(
+                    source.company.text
+                    if source_roles is not None and source.company
+                    else None
+                ),
                 selection_decisions=(
                     _selection_decisions(
                         source,
@@ -933,25 +1052,43 @@ class ResumeService:
             ),
             multi_evidence_selections=sanitized.multi_evidence_selections,
         )
+        source_backed = source_document is not None
+        source_skills = (
+            [item.text for item in source_document.skills]
+            if source_document is not None
+            else list(profile.skills)
+        )
+        source_summary = (
+            source_document.summary.text
+            if source_document is not None and source_document.summary is not None
+            else None
+        )
         resume = TailoredResume(
             job_id=job_id,
-            professional_summary=sanitized.professional_summary,
-            full_name=profile.full_name,
-            email=profile.email,
-            phone=profile.phone,
-            headline=profile.headline,
-            skills=list(profile.skills),
-            links=profile.links.model_copy(deep=True),
-            projects=[item.model_copy(deep=True) for item in profile.projects],
-            languages=[item.model_copy(deep=True) for item in profile.languages],
-            licenses=[item.model_copy(deep=True) for item in profile.licenses],
-            education=list(profile.education),
-            certifications=list(profile.certifications),
+            professional_summary=(
+                source_summary if source_backed else sanitized.professional_summary
+            ),
+            full_name=None if source_backed else profile.full_name,
+            email=None if source_backed else profile.email,
+            phone=None if source_backed else profile.phone,
+            headline=None if source_backed else profile.headline,
+            skills=source_skills,
+            links=profile.links.model_copy(deep=True) if not source_backed else {},
+            projects=(
+                [item.model_copy(deep=True) for item in profile.projects]
+                if not source_backed
+                else []
+            ),
+            languages=list(profile.languages) if not source_backed else [],
+            licenses=list(profile.licenses) if not source_backed else [],
+            education=list(profile.education) if not source_backed else [],
+            certifications=list(profile.certifications) if not source_backed else [],
             work_history=tailored_wh,
             matched_skills=matched,
             other_skills=other,
             missing_keywords=missing,
             requirement_classifications=classifications,
+            canonical_sections=canonical_sections,
         )
         resume.requirement_classifications = classify_resume_coverage(
             resume.requirement_classifications, resume
