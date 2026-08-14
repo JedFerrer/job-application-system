@@ -1082,6 +1082,59 @@ def test_profile_skills_and_projects_never_become_role_evidence() -> None:
     assert result.rejected_patches == 1
 
 
+def test_omitted_same_role_evidence_cannot_authorize_selected_rewrite() -> None:
+    profile = ParsedProfile.model_validate(
+        {
+            "work_history": [
+                {"highlights": ["Built FastAPI APIs.", "Implemented Redis caching."]}
+            ]
+        }
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "target_alias": "r0:b0",
+                    "rewritten_text": "Built FastAPI APIs; implemented Redis caching.",
+                    "evidence_aliases": ["r0:b0", "r0:b1"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [["Built FastAPI APIs."]]
+    assert result.rejected_patches == 1
+    assert result.rejection_reasons == {"omitted_evidence": 1}
+
+
+def test_selected_same_role_evidence_remains_accepted() -> None:
+    profile = ParsedProfile.model_validate(
+        {"work_history": [{"highlights": ["Built FastAPI APIs."]}]}
+    )
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "rewrites": [
+                {
+                    "target_alias": "r0:b0",
+                    "rewritten_text": "Built FastAPI APIs",
+                    "evidence_aliases": ["r0:b0"],
+                }
+            ]
+        },
+        [],
+        {0: {0}},
+        [[0]],
+        build_evidence_catalog(profile),
+    )
+    assert result.tailored_highlights == [["Built FastAPI APIs"]]
+    assert result.rejected_patches == 0
+
+
 def test_source_aliases_use_distinct_durable_ids_for_duplicate_bullets() -> None:
     payload = SourceResumeContentPayload.model_validate(
         {

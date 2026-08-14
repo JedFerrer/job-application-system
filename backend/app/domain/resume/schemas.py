@@ -537,6 +537,8 @@ class TailoredWorkItem(BaseModel):
     # When present, this is a role-local permutation aligned with
     # ``tailored_highlights``.
     tailored_highlight_source_indices: list[int] = Field(default_factory=list)
+    source_role_id: UUID | None = None
+    selection_decisions: list[TailoredBulletDecision] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_source_mapping(self) -> TailoredWorkItem:
@@ -547,13 +549,28 @@ class TailoredWorkItem(BaseModel):
             raise ValueError(
                 "tailored_highlight_source_indices must align with tailored_highlights"
             )
-        if len(mapping) != len(self.original_highlights) or len(set(mapping)) != len(mapping):
+        if len(set(mapping)) != len(mapping):
             raise ValueError(
-                "tailored_highlight_source_indices must map each source bullet once"
+                "tailored_highlight_source_indices must map each selected source bullet once"
             )
-        if set(mapping) != set(range(len(self.original_highlights))):
+        if not set(mapping).issubset(set(range(len(self.original_highlights)))):
             raise ValueError("tailored_highlight_source_indices contains an invalid source index")
         return self
+
+
+class TailoredBulletDecision(BaseModel):
+    """Canonical provenance and selection state for one work bullet."""
+
+    source_id: UUID
+    source_index: int = Field(ge=0)
+    canonical_order: int = Field(ge=0)
+    original_text: str
+    suggested_text: str
+    final_text: str
+    recommended_included: bool
+    final_included: bool
+    recommendation_rank: int | None = Field(default=None, ge=0)
+    output_rank: int | None = Field(default=None, ge=0)
 
 
 class RequirementClassification(BaseModel):

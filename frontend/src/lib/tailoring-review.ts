@@ -21,7 +21,6 @@ export interface ReviewState {
 export function mappingIsValid(role: TailoredWorkItem): boolean {
   const mapping = role.tailored_highlight_source_indices;
   if (mapping == null || mapping.length !== role.tailored_highlights.length) return false;
-  if (mapping.length !== role.original_highlights.length) return false;
   const expected = new Set(role.original_highlights.map((_, index) => index));
   return mapping.every(
     (index) => Number.isInteger(index) && expected.has(index),
@@ -71,6 +70,20 @@ export function reviewedResume(state: ReviewState): TailoredResume {
       return state.rejected.has(key) && sourceIndex != null
         ? role.original_highlights[sourceIndex]!
         : suggestion;
+    }),
+    selection_decisions: role.selection_decisions?.map((decision) => {
+      const sourceIndex = role.tailored_highlight_source_indices?.findIndex(
+        (index) => index === decision.source_index,
+      );
+      const suggestion = sourceIndex != null && sourceIndex >= 0
+        ? role.tailored_highlights[sourceIndex]!
+        : decision.suggested_text;
+      return {
+        ...decision,
+        final_text: state.rejected.has(`${roleIndex}:${decision.source_index}`)
+          ? decision.original_text
+          : suggestion,
+      };
     }),
   }));
   return { ...state.source, work_history };

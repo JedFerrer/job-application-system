@@ -380,6 +380,26 @@ def sanitize_tailoring_output(
 
     roles = source_roles if source_roles is not None else profile.work_history
     catalog = evidence_catalog or build_evidence_catalog(profile)
+    # ``bullet_orders`` is the exact selected source set for this request.
+    # Enforce it here rather than relying on the prompt: same-role evidence
+    # that was omitted from the tailored output is not valid rewrite evidence.
+    selected_source_ids: set[str] = set()
+    selected_source_indices: set[int] = set()
+    for role_order in bullet_orders:
+        for value in role_order:
+            if isinstance(value, int) and not isinstance(value, bool):
+                selected_source_indices.add(value)
+            elif isinstance(value, str):
+                selected_source_ids.add(value)
+    selected_evidence_ids = {
+        ref.source_uuid
+        for ref in catalog.values()
+        if ref.source_uuid is not None
+        and (
+            ref.source_uuid in selected_source_ids
+            or ref.source_index in selected_source_indices
+        )
+    }
     for raw in raw_rewrites:
         if not isinstance(raw, dict):
             reject("malformed_patch")
@@ -451,6 +471,9 @@ def sanitize_tailoring_output(
             reject("invalid_evidence_id")
             continue
         valid_refs = [ref for ref in refs if ref is not None]
+        if any(ref.source_uuid not in selected_evidence_ids for ref in valid_refs):
+            reject("omitted_evidence")
+            continue
         own_id = target_ref.evidence_id
         if own_id not in raw_evidence_ids or any(
             ref.role_uuid != target_ref.role_uuid for ref in valid_refs

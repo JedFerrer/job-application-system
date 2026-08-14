@@ -192,6 +192,21 @@ export interface TailoredWorkItem {
   original_highlights: string[];
   tailored_highlights: string[];
   tailored_highlight_source_indices?: number[];
+  source_role_id?: string | null;
+  selection_decisions?: TailoredBulletDecision[];
+}
+
+export interface TailoredBulletDecision {
+  source_id: string;
+  source_index: number;
+  canonical_order: number;
+  original_text: string;
+  suggested_text: string;
+  final_text: string;
+  recommended_included: boolean;
+  final_included: boolean;
+  recommendation_rank?: number | null;
+  output_rank?: number | null;
 }
 
 export interface TailoredResume {

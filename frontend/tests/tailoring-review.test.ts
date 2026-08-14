@@ -33,6 +33,40 @@ describe("tailoring review", () => {
     expect(mappingIsValid(mixed.work_history[0]!)).toBe(true);
     expect(reviewItems(mixed)?.[0]?.[0]?.label).toBe("Reworded + moved higher");
   });
+  it("projects selected subsets without requiring every source bullet", () => {
+    const subset = resume(["Built APIs"]);
+    subset.work_history[0] = {
+      ...subset.work_history[0]!,
+      original_highlights: ["Built APIs", "Unrelated mobile UI"],
+      tailored_highlights: ["Built APIs"],
+      tailored_highlight_source_indices: [0],
+      selection_decisions: [
+        {
+          source_id: "00000000-0000-0000-0000-000000000001",
+          source_index: 0,
+          canonical_order: 0,
+          original_text: "Built APIs",
+          suggested_text: "Built APIs",
+          final_text: "Built APIs",
+          recommended_included: true,
+          final_included: true,
+        },
+        {
+          source_id: "00000000-0000-0000-0000-000000000002",
+          source_index: 1,
+          canonical_order: 1,
+          original_text: "Unrelated mobile UI",
+          suggested_text: "Unrelated mobile UI",
+          final_text: "Unrelated mobile UI",
+          recommended_included: false,
+          final_included: false,
+        },
+      ],
+    };
+    expect(mappingIsValid(subset.work_history[0]!)).toBe(true);
+    expect(reviewItems(subset)?.[0]).toHaveLength(1);
+    expect(reviewedResume(createReviewState(subset)).work_history[0]!.selection_decisions?.[1]?.final_included).toBe(false);
+  });
   it("rejects invalid mappings without text matching", () => {
     const invalid = resume();
     invalid.work_history[0]!.tailored_highlight_source_indices = [0];

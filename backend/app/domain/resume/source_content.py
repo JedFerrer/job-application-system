@@ -345,6 +345,10 @@ def materialize_source_document(
         sections=[by_id[value] for value in layout.sections],
         work_history=[
             SourceRole(
+                # The verified header candidate is the durable role identity.
+                # It is server-owned, stable across materialization, and keeps
+                # duplicate/similar headers distinct through their UUIDs.
+                source_id=role.header,
                 order=role.order,
                 # A combined raw header is the sole canonical identity source;
                 # it is intentionally reused for legacy company/title slots

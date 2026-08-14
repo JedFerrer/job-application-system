@@ -441,6 +441,15 @@ def test_v2_layout_materializes_two_roles_without_splitting_headers() -> None:
         "Built APIs.",
         "Led releases.",
     ]
+    assert [role.source_id for role in document.work_history] == [
+        ledger.candidates[0].source_id,
+        ledger.candidates[2].source_id,
+    ]
+    repeated = materialize_source_document(ledger.model_copy(update={"layout": result.layout}))
+    assert repeated is not None
+    assert [role.source_id for role in repeated.work_history] == [
+        role.source_id for role in document.work_history
+    ]
 
 
 def test_v2_layout_derives_role_order_from_header_candidates() -> None:

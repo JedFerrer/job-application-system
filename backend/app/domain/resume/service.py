@@ -50,12 +50,14 @@ from app.domain.resume.schemas import (
     ResumeImportListItem,
     ResumeResponse,
     SourceResumeContentPayloadV2,
+    TailoredBulletDecision,
     TailoredResume,
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
     TailoredResumeDraftResponse,
     TailoredWorkItem,
 )
+from app.domain.resume.selection import select_source_bullets
 from app.domain.resume.source_content import materialize_source_document
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
@@ -112,7 +114,12 @@ def _untailored_fallback(
     other_skills = [s for s in profile.skills if normalize_skill(s) not in matched_set]
     roles = source_roles if source_roles is not None else profile.work_history
     orders = bullet_orders or [
-        [f"profile-bullet:{role_index}:{source_index}" for source_index in range(len(w.highlights))]
+        [
+            str(bullet.source_id)
+            if source_roles is not None
+            else f"profile-bullet:{role_index}:{source_index}"
+            for source_index, bullet in enumerate(w.highlights)
+        ]
         for role_index, w in enumerate(roles)
     ]
     source_indices = [
@@ -160,6 +167,19 @@ def _untailored_fallback(
                     for index in source_indices[index_role]
                 ],
                 tailored_highlight_source_indices=source_indices[index_role],
+                source_role_id=w.source_id if source_roles is not None else None,
+                selection_decisions=(
+                    _selection_decisions(
+                        w,
+                        orders[index_role],
+                        [
+                            w.highlights[index].text
+                            for index in source_indices[index_role]
+                        ],
+                    )
+                    if source_roles is not None
+                    else []
+                ),
             )
             for index_role, w in enumerate(roles)
         ],
@@ -175,7 +195,10 @@ def _untailored_fallback(
 
 
 def _bullet_relevance(
-    profile: ParsedProfile, job_description: str, source_roles: list[Any] | None = None
+    profile: ParsedProfile,
+    job_description: str,
+    source_roles: list[Any] | None = None,
+    selected_ids: list[list[str]] | None = None,
 ) -> tuple[list[list[str]], dict[int, set[str]], list[list[dict[str, object]]]]:
     """Return stable per-role ordering and the source bullets eligible for rewriting."""
     jd_skills = set(extract_jd_skills(job_description))
@@ -184,8 +207,16 @@ def _bullet_relevance(
     prompt_roles: list[list[dict[str, object]]] = []
     roles = source_roles if source_roles is not None else profile.work_history
     for role_index, role in enumerate(roles):
+        allowed = set(selected_ids[role_index]) if selected_ids is not None else None
         scored: list[tuple[int, int, list[str]]] = []
         for source_index, bullet in enumerate(role.highlights):
+            source_id = (
+                str(bullet.source_id)
+                if source_roles is not None
+                else f"profile-bullet:{role_index}:{source_index}"
+            )
+            if allowed is not None and source_id not in allowed:
+                continue
             text = bullet.text if source_roles is not None else bullet
             bullet_skills = sorted(jd_skills & set(extract_known_skills(text)))
             scored.append((len(bullet_skills), source_index, bullet_skills))
@@ -220,6 +251,9 @@ def _bullet_relevance(
                 ),
             }
             for source_index in range(len(role.highlights))
+            if allowed is None
+            or source_roles is None
+            or str(role.highlights[source_index].source_id) in allowed
         ]
         prompt_roles.append([
             {
@@ -243,6 +277,31 @@ def _bullet_relevance(
             if score > 0
         ])
     return orders, eligible, prompt_roles
+
+
+def _selection_decisions(
+    role: Any,
+    selected_ids: list[str],
+    selected_text: list[str],
+) -> list[Any]:
+    """Build UUID-traceable recommendation state for one canonical role."""
+    selected_text_by_id = dict(zip(selected_ids, selected_text, strict=True))
+    rank_by_id = {source_id: rank for rank, source_id in enumerate(selected_ids)}
+    return [
+        TailoredBulletDecision(
+            source_id=bullet.source_id,
+            source_index=index,
+            canonical_order=bullet.order,
+            original_text=bullet.text,
+            suggested_text=selected_text_by_id.get(str(bullet.source_id), bullet.text),
+            final_text=selected_text_by_id.get(str(bullet.source_id), bullet.text),
+            recommended_included=str(bullet.source_id) in selected_text_by_id,
+            final_included=str(bullet.source_id) in selected_text_by_id,
+            recommendation_rank=rank_by_id.get(str(bullet.source_id)),
+            output_rank=rank_by_id.get(str(bullet.source_id)),
+        )
+        for index, bullet in enumerate(role.highlights)
+    ]
 
 
 class ResumeService:
@@ -717,8 +776,16 @@ class ResumeService:
                 profile, job_id, report, classifications, source_roles=source_roles
             )
 
+        selection = (
+            select_source_bullets(source_roles, job.description)
+            if source_roles is not None
+            else None
+        )
         bullet_orders, eligible_bullets, prompt_roles = _bullet_relevance(
-            profile, job.description, source_roles
+            profile,
+            job.description,
+            source_roles,
+            selection.selected_ids if selection is not None else None,
         )
         if not any(eligible_bullets.values()):
             return _untailored_fallback(
@@ -833,6 +900,16 @@ class ResumeService:
                     else int(source_uuid.rsplit(":", 1)[-1])
                     for source_uuid in bullet_orders[role_index]
                 ],
+                source_role_id=source.source_id if source_roles is not None else None,
+                selection_decisions=(
+                    _selection_decisions(
+                        source,
+                        bullet_orders[role_index],
+                        sanitized_bullets,
+                    )
+                    if source_roles is not None
+                    else []
+                ),
             )
             for role_index, (source, sanitized_bullets) in enumerate(
                 zip(output_roles, sanitized.tailored_highlights, strict=True)
