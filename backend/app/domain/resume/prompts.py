@@ -7,7 +7,7 @@ drop fields. Extraction only — the model must never invent data.
 
 from __future__ import annotations
 
-RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v5"
+RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v6"
 
 RESUME_EXTRACTION_PROMPT = """You are an expert resume parser. Extract structured \
 information from the resume text below. Return valid JSON only — no markdown, no \
@@ -51,9 +51,10 @@ to today; include internships and part-time roles)
   are present, return []. For each project, use [] (never null) for missing
   technologies or achievements. Nullable scalar project fields may be null.
 - work_history (array of objects with: company, title, start, end, highlights[])
-  For each role, "highlights" MUST be an array of 2-5 bullet points describing \
-key achievements, responsibilities, and impact. Extract these from the resume's \
-role descriptions. If the resume has bullets under each role, include them all.
+  For each role, "highlights" MUST include every verified/listed work bullet or
+  highlight candidate assigned to that role by the source layout, in source order.
+  Preserve role boundaries. Do not merge, summarize, or omit bullets merely to
+  target a particular count. If a role has no assigned work bullets, return [].
 - preferred_roles (array of strings, inferred from titles/objective if present)
 - seniority (one of: "entry", "mid", "senior", "staff", "lead")
   Seniority guidelines — use ALL signals, not just years alone:

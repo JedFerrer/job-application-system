@@ -452,6 +452,36 @@ def test_v2_layout_materializes_two_roles_without_splitting_headers() -> None:
     ]
 
 
+def test_v2_layout_preserves_all_late_role_highlights_without_profile_identity() -> None:
+    bullets = [
+        "Built APIs",
+        "Added caching",
+        "Improved latency",
+        "Automated releases",
+        "Hardened authentication",
+        "Owned observability",
+        "Documented services",
+    ]
+    raw = "Acme Platform - Engineer\n" + "\n".join(bullets)
+    ledger = build_source_candidate_ledger(raw)
+    result = resolve_source_layout(
+        {
+            "work_history": [
+                {"header": "c0", "highlights": [f"c{index}" for index in range(1, 8)]}
+            ]
+        },
+        ledger,
+    )
+
+    assert result.status == "verified"
+    assert result.layout is not None
+    document = materialize_source_document(ledger.model_copy(update={"layout": result.layout}))
+    assert document is not None
+    assert [item.text for item in document.work_history[0].highlights] == bullets
+    assert [item.order for item in document.work_history[0].highlights] == list(range(1, 8))
+    assert verify_source_candidate_ledger(ledger, raw) == ()
+
+
 def test_v2_layout_derives_role_order_from_header_candidates() -> None:
     raw = "Acme - Engineer\nBuilt APIs.\nBeta - Lead\nLed releases."
     ledger = build_source_candidate_ledger(raw)

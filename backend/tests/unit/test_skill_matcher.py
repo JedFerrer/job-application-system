@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.domain.matching.skill_matcher import (
+    build_resume_haystack,
     compute_skill_match,
     extract_known_skills,
     normalize_skill,
@@ -68,6 +69,27 @@ def test_extract_known_skills_from_jd_text() -> None:
     assert "python" in found
     assert "docker" in found
     assert "aws" in found
+
+
+def test_resume_haystack_keeps_late_work_evidence() -> None:
+    profile = _profile()
+    profile["work_history"] = [
+        {
+            "title": "Backend Engineer",
+            "company": "Acme",
+            "highlights": [
+                "First evidence",
+                "Second evidence",
+                "Third evidence",
+                "Fourth evidence",
+                "Fifth evidence",
+                "Sixth evidence",
+                "Late Kubernetes evidence",
+            ],
+        }
+    ]
+
+    assert "Late Kubernetes evidence" in build_resume_haystack(profile)
 
 
 def test_report_to_dict_is_json_safe() -> None:

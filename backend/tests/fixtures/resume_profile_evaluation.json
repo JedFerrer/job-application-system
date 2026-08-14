@@ -49,6 +49,14 @@
       "expected_profile": {"full_name":"Proof Lantern","work_history":[{"company":"Fictional Proof Co","title":"Analyst"}],"education":[{"degree":"BSc Proof","institution":"Fictional Academy"}],"certifications":["Fictional Safety Badge"],"projects":[{"name":"Proof Console"}],"languages":[{"language":"Python","proficiency":null},{"language":"French","proficiency":null}]},
       "expected_verified_evidence": {"work_history":[{"item_index":0,"excerpt":"Fictional Proof Co | Analyst"}],"education":[{"item_index":0,"excerpt":"BSc Proof, Fictional Academy"}],"certifications":[{"item_index":0,"excerpt":"Fictional Safety Badge"}],"projects":[{"item_index":0,"excerpt":"Proof Console"}],"languages":[{"item_index":0,"excerpt":"Python"},{"item_index":1,"excerpt":"French"}]},
       "expected_warning_codes": []
+    },
+    {
+      "id": "complete-long-role",
+      "raw_text": "Long Evidence\nWORK EXPERIENCE\nAcme Platform - Engineer\nBuilt APIs\nAdded caching\nImproved latency\nAutomated releases\nHardened authentication\nOwned observability\nDocumented services\nBeta Systems - Analyst\nPrepared reports",
+      "locked_parser_response": {"full_name":"Long Evidence","work_history":[{"company":"Acme Platform","title":"Engineer","highlights":["Built APIs","Added caching","Improved latency","Automated releases","Hardened authentication","Owned observability","Documented services"]},{"company":"Beta Systems","title":"Analyst","highlights":["Prepared reports"]}]},
+      "expected_profile": {"full_name":"Long Evidence","work_history":[{"company":"Acme Platform","title":"Engineer","highlights":["Built APIs","Added caching","Improved latency","Automated releases","Hardened authentication","Owned observability","Documented services"]},{"company":"Beta Systems","title":"Analyst","highlights":["Prepared reports"]}]},
+      "expected_verified_evidence": {},
+      "expected_warning_codes": []
     }
   ]
 }

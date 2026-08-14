@@ -58,6 +58,19 @@ def test_extraction_prompt_can_be_formatted_with_resume_text() -> None:
     assert "empty object {}" in rendered
 
 
+def test_extraction_prompt_preserves_complete_role_bullet_evidence() -> None:
+    prompt = RESUME_EXTRACTION_PROMPT.format(resume_text="").lower()
+    work_history = prompt.split("- work_history ", 1)[1].split(
+        "- preferred_roles ", 1
+    )[0]
+
+    assert "2-5" not in work_history
+    assert "2â€“5" not in work_history
+    assert "every verified/listed work bullet" in work_history
+    assert "preserve role boundaries" in work_history
+    assert "do not merge, summarize, or omit bullets" in work_history
+
+
 def test_retry_contract_covers_all_profile_fields_and_server_role_order() -> None:
     retry = _source_contract_retry_prompt(RESUME_EXTRACTION_PROMPT)
 

@@ -21,7 +21,7 @@ from app.domain.resume.schemas import (
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "resume_profile_evaluation.json"
 SCHEMA_VERSION = "resume-profile-eval-v1"
-EXPECTED_CASE_COUNT = 6
+EXPECTED_CASE_COUNT = 7
 FIELD_ORDER = (
     "full_name", "email", "phone", "headline", "years_experience",
     "skills", "education", "certifications", "links", "projects",

@@ -229,6 +229,57 @@ async def test_alias_corrupted_profile_fails_before_persistence_or_embedding(
 
 
 @pytest.mark.asyncio
+async def test_parser_keeps_all_verified_late_bullets_without_profile_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bullets = [
+        "Built APIs",
+        "Added caching",
+        "Improved latency",
+        "Automated releases",
+        "Hardened authentication",
+        "Owned observability",
+        "Documented services",
+    ]
+    raw_text = "Acme Platform - Engineer\n" + "\n".join(bullets)
+    payload = {
+        "full_name": "Synthetic Candidate",
+        "work_history": [
+            {"company": "Acme Platform", "title": "Engineer", "highlights": bullets}
+        ],
+        "source_references": {
+            "work_history": [{"header": "c0", "highlights": [f"c{i}" for i in range(1, 8)]}]
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    monkeypatch.setattr(
+        resume_parser,
+        "llm_chat_completion",
+        AsyncMock(return_value=(response, "test-model")),
+    )
+
+    result = await resume_parser.parse_resume_text(raw_text)
+
+    assert isinstance(result, ParsedResumeResult)
+    assert result.profile.work_history[0].highlights == bullets
+    assert result.source_layout_status == "verified"
+    source_content = result.source_content
+    assert isinstance(source_content, SourceResumeContentPayloadV2)
+    assert source_content.document.layout is not None
+    assert len(source_content.document.layout.work_history[0].highlights) == 7
+    assert [candidate.text for candidate in source_content.document.candidates] == [
+        "Acme Platform - Engineer",
+        *bullets,
+    ]
+    profile_dump = result.profile.model_dump()
+    assert "source_id" not in json.dumps(profile_dump)
+    assert "start_offset" not in json.dumps(profile_dump)
+    assert "fingerprint" not in json.dumps(profile_dump)
+
+
+@pytest.mark.asyncio
 async def test_invalid_source_fails_before_persistence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

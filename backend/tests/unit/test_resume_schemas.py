@@ -340,3 +340,19 @@ def test_build_summary_text_includes_signal() -> None:
 
 def test_build_summary_text_empty_profile() -> None:
     assert build_summary_text(ParsedProfile()) == "No profile content"
+
+
+def test_build_summary_text_keeps_late_work_evidence() -> None:
+    profile = ParsedProfile(
+        work_history=[
+            {
+                "title": "Engineer",
+                "company": "Acme",
+                "highlights": [f"Evidence {index}" for index in range(1, 8)],
+            }
+        ]
+    )
+
+    summary = build_summary_text(profile)
+
+    assert "Evidence 7" in summary

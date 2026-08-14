@@ -36,12 +36,13 @@ def _completion(payload: dict[str, object]) -> Callable[..., Awaitable[tuple[obj
     return complete
 
 
-def test_manifest_has_six_cases_and_all_required_contracts() -> None:
+def test_manifest_has_seven_cases_and_all_required_contracts() -> None:
     cases = load_manifest()
     assert len(cases) == EXPECTED_CASE_COUNT
     assert [case.id for case in cases] == [
         "chronological-multiple-roles", "projects-and-links", "education-and-certifications",
         "unusual-headings", "completeness-warnings", "evidence-rejection",
+        "complete-long-role",
     ]
     assert all(isinstance(case.expected_profile, ParsedProfile) for case in cases)
     assert all(isinstance(case.expected_verified_evidence, ExtractionEvidence) for case in cases)
@@ -150,7 +151,7 @@ def test_manifest_rejects_malformed_json_and_missing_required_field(tmp_path: Pa
     root_missing.pop("cases")
     root_path = tmp_path / "missing-root-field.json"
     root_path.write_text(json.dumps(root_missing), encoding="utf-8")
-    with pytest.raises(ValueError, match="exactly 6 cases are required"):
+    with pytest.raises(ValueError, match="exactly 7 cases are required"):
         load_manifest(root_path)
 
 
@@ -272,7 +273,7 @@ async def test_each_case_matches_expected_contract() -> None:
 
 
 def test_evidence_contract_contains_expected_rejections() -> None:
-    case = load_manifest()[-1]
+    case = next(case for case in load_manifest() if case.id == "evidence-rejection")
     assert len(case.expected_verified_evidence.work_history) == 1
     assert len(case.locked_parser_response["extraction_evidence"]["work_history"]) == 4
     assert (
