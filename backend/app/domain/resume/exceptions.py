@@ -55,6 +55,15 @@ class TailoredResumeDraftNotFoundError(ResumeError):
         super().__init__(f"Tailored resume draft {draft_id} not found")
 
 
+class TailoredResumeSnapshotInvalidError(ResumeError):
+    """A submitted fresh source-backed snapshot failed canonical validation."""
+
+    def __init__(self) -> None:
+        # Keep this deliberately non-specific: the response must not reveal
+        # whether a submitted source identifier exists or belongs to anyone.
+        super().__init__("The tailored resume is no longer valid; please regenerate it.")
+
+
 class ResumeSourceLayoutUnavailableError(ResumeError):
     """The verified source ledger exists but semantic tailoring layout is unavailable."""
 

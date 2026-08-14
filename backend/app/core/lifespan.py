@@ -51,6 +51,7 @@ from app.domain.resume.exceptions import (
     ResumeImportDraftNotFoundError,
     ResumeParseError,
     TailoredResumeDraftNotFoundError,
+    TailoredResumeSnapshotInvalidError,
     UnsupportedResumeFormatError,
 )
 from app.infrastructure.redis_client import close_redis, init_redis
@@ -114,6 +115,15 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: TailoredResumeDraftNotFoundError
     ) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": "Draft not found"})
+
+    @app.exception_handler(TailoredResumeSnapshotInvalidError)
+    async def _tailored_resume_snapshot_invalid(
+        request: Request, exc: TailoredResumeSnapshotInvalidError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "The tailored resume is no longer valid; please regenerate it."},
+        )
 
     @app.exception_handler(UnsupportedResumeFormatError)
     async def _unsupported_format(

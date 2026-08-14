@@ -26,6 +26,7 @@ from app.domain.resume.exceptions import (
     ResumeSourceLayoutUnavailableError,
     ResumeTextTooLongError,
     TailoredResumeDraftNotFoundError,
+    TailoredResumeSnapshotInvalidError,
     UnsupportedResumeFormatError,
 )
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
@@ -138,6 +139,151 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
     if project_items:
         sections.append(TailoredCanonicalSection(section="projects", items=project_items))
     return sections
+
+
+def _validate_source_backed_snapshot(
+    resume: TailoredResume,
+    *,
+    source_document: SourceResumeDocument,
+    profile: ParsedProfile,
+    job_description: str | None,
+) -> None:
+    """Validate a reviewed fresh snapshot against the owned canonical source.
+
+    This is intentionally an invariant check, not a recommendation pass: the
+    applicant's final inclusion, wording, and ordering choices are preserved.
+    """
+
+    def invalid() -> None:
+        raise TailoredResumeSnapshotInvalidError()
+
+    if resume.canonical_sections != _canonical_sections(source_document):
+        invalid()
+    expected_summary = source_document.summary.text if source_document.summary else None
+    if resume.professional_summary != expected_summary:
+        invalid()
+    if resume.full_name is not None or resume.email is not None or resume.phone is not None:
+        invalid()
+    if resume.headline is not None or resume.links.model_dump(exclude_none=True):
+        invalid()
+    if resume.skills != [item.text for item in source_document.skills]:
+        invalid()
+    if (
+        resume.projects
+        or resume.languages
+        or resume.licenses
+        or resume.education
+        or resume.certifications
+    ):
+        invalid()
+
+    roles = source_document.work_history
+    if len(resume.work_history) != len(roles):
+        invalid()
+
+    missing_skills = [
+        item.requirement
+        for item in classify_requirements(job_description, profile)
+        if item.status == "missing"
+    ]
+    selection = select_source_bullets(roles, job_description or "")
+    catalog = build_source_evidence_catalog(roles)
+    eligible = {index: set(ids) for index, ids in enumerate(selection.selected_ids)}
+    orders = [list(ids) for ids in selection.selected_ids]
+    relevance = selection.scores
+
+    for role_index, (submitted, source_role) in enumerate(
+        zip(resume.work_history, roles, strict=True)
+    ):
+        if submitted.source_role_id != source_role.source_id:
+            invalid()
+        for field in ("company", "title", "start", "end"):
+            source_item = getattr(source_role, field)
+            expected = source_item.text if source_item is not None else None
+            if getattr(submitted, field) != expected:
+                invalid()
+        if submitted.source_header != (source_role.company.text if source_role.company else None):
+            invalid()
+        source_texts = [item.text for item in source_role.highlights]
+        if submitted.original_highlights != source_texts:
+            invalid()
+        decisions = submitted.selection_decisions
+        if len(decisions) != len(source_role.highlights):
+            invalid()
+
+        selected_ids = set(selection.selected_ids[role_index])
+        suggestion_by_index: dict[int, str] = {}
+        for source_index, decision in enumerate(decisions):
+            source_item = source_role.highlights[source_index]
+            source_id = str(source_item.source_id)
+            expected_rank = (
+                selection.selected_ids[role_index].index(source_id)
+                if source_id in selected_ids
+                else None
+            )
+            if (
+                decision.source_id != source_item.source_id
+                or decision.source_index != source_index
+                or decision.canonical_order != source_item.order
+                or decision.original_text != source_item.text
+                or decision.recommended_included != (source_id in selected_ids)
+                or decision.recommendation_rank != expected_rank
+            ):
+                invalid()
+            if decision.suggested_text != source_item.text:
+                if source_id not in selected_ids:
+                    invalid()
+                sanitized = sanitize_tailoring_output(
+                    profile,
+                    {
+                        "rewrites": [
+                            {
+                                "target_alias": f"r{role_index}:b{source_index}",
+                                "evidence_aliases": [f"r{role_index}:b{source_index}"],
+                                "rewritten_text": decision.suggested_text,
+                            }
+                        ]
+                    },
+                    missing_skills,
+                    eligible,
+                    orders,
+                    catalog,
+                    relevance,
+                    roles,
+                    orders,
+                )
+                expected_suggestion = sanitized.tailored_highlights[role_index][
+                    orders[role_index].index(source_id)
+                ]
+                if expected_suggestion != decision.suggested_text:
+                    invalid()
+            if decision.final_text not in {decision.original_text, decision.suggested_text}:
+                invalid()
+            suggestion_by_index[source_index] = decision.final_text
+
+        included_indices = [
+            index for index, decision in enumerate(decisions) if decision.final_included
+        ]
+        included_indices.sort(
+            key=lambda index: (
+                not decisions[index].recommended_included,
+                decisions[index].recommendation_rank
+                if decisions[index].recommended_included
+                else decisions[index].canonical_order,
+            )
+        )
+        if submitted.tailored_highlight_source_indices != included_indices:
+            invalid()
+        if submitted.tailored_highlights != [
+            suggestion_by_index[index] for index in included_indices
+        ]:
+            invalid()
+        output_ranks = {
+            index: rank for rank, index in enumerate(included_indices)
+        }
+        for index, decision in enumerate(decisions):
+            if decision.output_rank != output_ranks.get(index):
+                invalid()
 
 
 def build_summary_text(profile: ParsedProfile) -> str:
@@ -700,15 +846,36 @@ class ResumeService:
         payload: TailoredResumeDraftCreate,
         job_repository: JobRepository,
     ) -> TailoredResumeDraftResponse:
-        profile = await self._repository.get_active_profile(user_id)
-        if profile is None:
-            raise ProfileNotFoundError(user_id)
-
         job = await job_repository.get_visible_by_id(
             user_id=user_id, job_id=payload.job_id
         )
         if job is None:
             raise JobNotFoundError(payload.job_id)
+
+        try:
+            source_pair = await self._repository.get_active_tailoring_source(user_id)
+            if not isinstance(source_pair, tuple) or len(source_pair) != 2:
+                raise ValueError
+            profile, source_row = source_pair
+            source_payload = SourceResumeContentPayloadV2.model_validate(source_row.content)
+            if (
+                source_row.validation_status != "verified"
+                or source_payload.layout_validation_status != "verified"
+                or source_payload.document.layout is None
+            ):
+                raise ValueError
+            source_document = materialize_source_document(source_payload.document)
+            if source_document is None:
+                raise ValueError
+            profile_model = ParsedProfile.model_validate(profile.parsed)
+            _validate_source_backed_snapshot(
+                payload.content,
+                source_document=source_document,
+                profile=profile_model,
+                job_description=getattr(job, "description", None),
+            )
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise TailoredResumeSnapshotInvalidError() from exc
 
         profile_model = ParsedProfile.model_validate(profile.parsed)
         classifications = classify_requirements(
@@ -722,8 +889,8 @@ class ResumeService:
             }
         )
         content = authoritative_content.model_dump(mode="json")
-        # Keep legacy client-submitted snapshots unchanged when they do not
-        # provide the additive Phase 3 field. Newly generated responses with
+        # Preserve the current source-backed snapshot shape when there are no
+        # recognized job requirements; newly generated responses with
         # classifications retain that field in their immutable snapshot.
         if (
             not classifications
