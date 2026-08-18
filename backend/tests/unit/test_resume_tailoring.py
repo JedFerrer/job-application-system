@@ -1322,6 +1322,63 @@ async def test_service_materializes_v2_header_layout_for_tfr3_tailoring(
 
 
 @pytest.mark.asyncio
+async def test_full_resume_snapshot_keeps_nonrecommended_source_bullets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bullets = [f"Built FastAPI service {index}." for index in range(11)]
+    bullets.append("Coordinated schedules.")
+    raw = "Acme - Engineer\n" + "\n".join(bullets)
+    ledger = build_source_candidate_ledger(raw)
+    layout_result = resolve_source_layout(
+        {
+            "work_history": [
+                {
+                    "order": 0,
+                    "header": "c0",
+                    "highlights": [f"c{index}" for index in range(1, 13)],
+                }
+            ]
+        },
+        ledger,
+    )
+    assert layout_result.status == "verified"
+    source_payload = SourceResumeContentPayloadV2(
+        document=ledger.model_copy(update={"layout": layout_result.layout}),
+        layout_validation_status="verified",
+    )
+    repository = AsyncMock()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=_profile().model_dump()),
+        SimpleNamespace(content=source_payload.model_dump(mode="json")),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(description="FastAPI")
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"rewrites": []}'))]
+    )
+    llm_mock = AsyncMock(return_value=(response, "test-model"))
+    monkeypatch.setattr(resume_service, "llm_chat_completion", llm_mock)
+
+    result = await ResumeService(repository).tailor_for_job(
+        user_id=7, job_id=11, job_repository=jobs
+    )
+
+    role = result.work_history[0]
+    assert result.tailoring_snapshot_version == "full-resume-v1"
+    assert role.tailored_highlights == bullets
+    assert role.tailored_highlight_source_indices == list(range(len(bullets)))
+    assert len(role.selection_decisions) == len(bullets)
+    nonrecommended = role.selection_decisions[-1]
+    assert nonrecommended.recommended_included is False
+    assert nonrecommended.final_included is True
+    assert nonrecommended.suggested_text == nonrecommended.original_text
+    assert all(
+        decision.recommended_included or decision.suggested_text == decision.original_text
+        for decision in role.selection_decisions
+    )
+
+
+@pytest.mark.asyncio
 async def test_service_reorders_within_role_and_preserves_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

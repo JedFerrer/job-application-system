@@ -149,7 +149,9 @@ def _fallback_resume(
         missing_skills=missing,
         recall=len(matched) / len(classifications) if classifications else 0.0,
     )
-    resume = _untailored_fallback(profile, 1, report, classifications, orders, source_roles)
+    resume = _untailored_fallback(
+        profile, 1, report, classifications, orders, source_roles=source_roles
+    )
     if skills is not None:
         resume.skills = skills
     return resume

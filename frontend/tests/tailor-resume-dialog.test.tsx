@@ -457,4 +457,62 @@ describe("TailorResumeDialog", () => {
     expect(container.querySelector('button[aria-label*="Use suggestion"]')).toBeNull();
     expect(renderedText()).not.toContain("Use all suggestions");
   });
+
+  it("keeps every new source bullet included and separates recommendation from wording", async () => {
+    const fullResume = {
+      ...tailoredResume,
+      tailoring_snapshot_version: "full-resume-v1" as const,
+      work_history: [{
+        ...tailoredResume.work_history[0],
+        original_highlights: ["Recommended source", "Unrelated source"],
+        tailored_highlights: ["Recommended suggestion", "Unrelated source"],
+        tailored_highlight_source_indices: [0, 1],
+        selection_decisions: [
+          {
+            source_id: "00000000-0000-0000-0000-000000000001",
+            source_index: 0,
+            canonical_order: 0,
+            original_text: "Recommended source",
+            suggested_text: "Recommended suggestion",
+            final_text: "Recommended suggestion",
+            recommended_included: true,
+            final_included: true,
+            recommendation_rank: 0,
+            output_rank: 0,
+          },
+          {
+            source_id: "00000000-0000-0000-0000-000000000002",
+            source_index: 1,
+            canonical_order: 1,
+            original_text: "Unrelated source",
+            suggested_text: "Unrelated source",
+            final_text: "Unrelated source",
+            recommended_included: false,
+            final_included: true,
+            recommendation_rank: null,
+            output_rank: 1,
+          },
+        ],
+      }],
+    };
+    apiMocks.tailorResume.mockResolvedValue(fullResume);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(renderedText()).toContain("Recommended for this job"));
+    expect(renderedText()).toContain("Unrelated source");
+    expect(renderedText()).toContain("Restore AI wording");
+    expect(renderedText()).toContain("Include all experience");
+    expect(renderedText()).not.toContain("Restore recommended selection");
+
+    const unrelated = container.querySelector('[data-testid="review-item-0:1"]');
+    await act(async () => unrelated?.querySelector('button[aria-label="Omit bullet"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(renderedText()).toContain("Not shown");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Include all experience"))?.click());
+    expect(renderedText()).not.toContain("Not shown");
+  });
 });

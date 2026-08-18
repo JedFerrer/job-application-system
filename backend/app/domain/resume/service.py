@@ -61,7 +61,10 @@ from app.domain.resume.schemas import (
     TailoredResumeDraftResponse,
     TailoredWorkItem,
 )
-from app.domain.resume.selection import select_source_bullets
+from app.domain.resume.selection import (
+    select_legacy_source_bullets,
+    select_source_bullets,
+)
 from app.domain.resume.source_content import materialize_source_document
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
@@ -78,6 +81,7 @@ from app.infrastructure.resume_parser import (
 )
 
 logger = get_logger("resume_service")
+FULL_RESUME_SNAPSHOT_VERSION = "full-resume-v1"
 
 ProgressFn = Callable[..., Awaitable[None]]
 
@@ -141,6 +145,21 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
     return sections
 
 
+def _source_output_orders(
+    source_roles: list[Any], recommended_ids: list[list[str]]
+) -> list[list[str]]:
+    """Return recommended-first output order while retaining every source bullet."""
+    output: list[list[str]] = []
+    for role, recommended in zip(source_roles, recommended_ids, strict=True):
+        recommended_set = set(recommended)
+        all_ids = [str(bullet.source_id) for bullet in role.highlights]
+        output.append(
+            recommended
+            + [source_id for source_id in all_ids if source_id not in recommended_set]
+        )
+    return output
+
+
 def _validate_source_backed_snapshot(
     resume: TailoredResume,
     *,
@@ -187,9 +206,20 @@ def _validate_source_backed_snapshot(
         if item.status == "missing"
     ]
     selection = select_source_bullets(roles, job_description or "")
+    legacy = resume.tailoring_snapshot_version is None
+    if resume.tailoring_snapshot_version not in {None, FULL_RESUME_SNAPSHOT_VERSION}:
+        invalid()
+    if legacy:
+        recommended_ids = select_legacy_source_bullets(roles, job_description or "")
+        rewrite_ids = recommended_ids
+        output_orders = recommended_ids
+    else:
+        recommended_ids = selection.recommended_ids
+        rewrite_ids = selection.rewrite_candidate_ids
+        output_orders = _source_output_orders(roles, recommended_ids)
     catalog = build_source_evidence_catalog(roles)
-    eligible = {index: set(ids) for index, ids in enumerate(selection.selected_ids)}
-    orders = [list(ids) for ids in selection.selected_ids]
+    eligible = {index: set(ids) for index, ids in enumerate(rewrite_ids)}
+    orders = [list(ids) for ids in rewrite_ids]
     relevance = selection.scores
 
     for role_index, (submitted, source_role) in enumerate(
@@ -211,14 +241,14 @@ def _validate_source_backed_snapshot(
         if len(decisions) != len(source_role.highlights):
             invalid()
 
-        selected_ids = set(selection.selected_ids[role_index])
+        recommended_for_role = set(recommended_ids[role_index])
         suggestion_by_index: dict[int, str] = {}
         for source_index, decision in enumerate(decisions):
             source_item = source_role.highlights[source_index]
             source_id = str(source_item.source_id)
             expected_rank = (
-                selection.selected_ids[role_index].index(source_id)
-                if source_id in selected_ids
+                recommended_ids[role_index].index(source_id)
+                if source_id in recommended_for_role
                 else None
             )
             if (
@@ -226,12 +256,12 @@ def _validate_source_backed_snapshot(
                 or decision.source_index != source_index
                 or decision.canonical_order != source_item.order
                 or decision.original_text != source_item.text
-                or decision.recommended_included != (source_id in selected_ids)
+                or decision.recommended_included != (source_id in recommended_for_role)
                 or decision.recommendation_rank != expected_rank
             ):
                 invalid()
             if decision.suggested_text != source_item.text:
-                if source_id not in selected_ids:
+                if source_id not in set(rewrite_ids[role_index]):
                     invalid()
                 sanitized = sanitize_tailoring_output(
                     profile,
@@ -250,10 +280,10 @@ def _validate_source_backed_snapshot(
                     catalog,
                     relevance,
                     roles,
-                    orders,
+                    output_orders,
                 )
                 expected_suggestion = sanitized.tailored_highlights[role_index][
-                    orders[role_index].index(source_id)
+                    output_orders[role_index].index(source_id)
                 ]
                 if expected_suggestion != decision.suggested_text:
                     invalid()
@@ -315,6 +345,7 @@ def _untailored_fallback(
     report: SkillMatchReport,
     requirement_classifications: list[RequirementClassification] | None = None,
     bullet_orders: list[list[str]] | None = None,
+    recommended_orders: list[list[str]] | None = None,
     source_roles: list[Any] | None = None,
     canonical_sections: list[TailoredCanonicalSection] | None = None,
     source_document: SourceResumeDocument | None = None,
@@ -332,6 +363,10 @@ def _untailored_fallback(
         ]
         for role_index, w in enumerate(roles)
     ]
+    recommendations = recommended_orders
+    if recommendations is None and source_roles is not None:
+        recommendations = select_source_bullets(source_roles, "").recommended_ids
+    recommendations = recommendations or [[] for _ in roles]
     source_indices = [
         [
             next(
@@ -401,6 +436,7 @@ def _untailored_fallback(
                 selection_decisions=(
                     _selection_decisions(
                         w,
+                        recommendations[index_role],
                         orders[index_role],
                         [
                             w.highlights[index].text
@@ -417,6 +453,7 @@ def _untailored_fallback(
         other_skills=other_skills,
         missing_keywords=report.missing_skills,
         requirement_classifications=requirement_classifications or [],
+        tailoring_snapshot_version=(FULL_RESUME_SNAPSHOT_VERSION if source_backed else None),
         canonical_sections=canonical_sections or [],
     )
     resume.requirement_classifications = classify_resume_coverage(
@@ -512,24 +549,28 @@ def _bullet_relevance(
 
 def _selection_decisions(
     role: Any,
-    selected_ids: list[str],
-    selected_text: list[str],
+    recommended_ids: list[str],
+    output_ids: list[str],
+    output_text: list[str],
 ) -> list[Any]:
     """Build UUID-traceable recommendation state for one canonical role."""
-    selected_text_by_id = dict(zip(selected_ids, selected_text, strict=True))
-    rank_by_id = {source_id: rank for rank, source_id in enumerate(selected_ids)}
+    output_text_by_id = dict(zip(output_ids, output_text, strict=True))
+    recommendation_rank = {
+        source_id: rank for rank, source_id in enumerate(recommended_ids)
+    }
+    output_rank = {source_id: rank for rank, source_id in enumerate(output_ids)}
     return [
         TailoredBulletDecision(
             source_id=bullet.source_id,
             source_index=index,
             canonical_order=bullet.order,
             original_text=bullet.text,
-            suggested_text=selected_text_by_id.get(str(bullet.source_id), bullet.text),
-            final_text=selected_text_by_id.get(str(bullet.source_id), bullet.text),
-            recommended_included=str(bullet.source_id) in selected_text_by_id,
-            final_included=str(bullet.source_id) in selected_text_by_id,
-            recommendation_rank=rank_by_id.get(str(bullet.source_id)),
-            output_rank=rank_by_id.get(str(bullet.source_id)),
+            suggested_text=output_text_by_id.get(str(bullet.source_id), bullet.text),
+            final_text=output_text_by_id.get(str(bullet.source_id), bullet.text),
+            recommended_included=str(bullet.source_id) in recommendation_rank,
+            final_included=True,
+            recommendation_rank=recommendation_rank.get(str(bullet.source_id)),
+            output_rank=output_rank.get(str(bullet.source_id)),
         )
         for index, bullet in enumerate(role.highlights)
     ]
@@ -898,6 +939,8 @@ class ResumeService:
             not in payload.content.model_fields_set
         ):
             content.pop("requirement_classifications", None)
+        if payload.content.tailoring_snapshot_version is None:
+            content.pop("tailoring_snapshot_version", None)
 
         draft = await self._repository.create_tailored_draft(
             user_id=user_id,
@@ -1041,19 +1084,29 @@ class ResumeService:
             if source_roles is not None
             else None
         )
+        recommended_orders = (
+            selection.recommended_ids if selection is not None else None
+        )
+        output_orders = (
+            _source_output_orders(source_roles, recommended_orders)
+            if source_roles is not None and recommended_orders is not None
+            else None
+        )
         bullet_orders, eligible_bullets, prompt_roles = _bullet_relevance(
             profile,
             job.description,
             source_roles,
-            selection.selected_ids if selection is not None else None,
+            selection.rewrite_candidate_ids if selection is not None else None,
         )
+        fallback_orders = output_orders or bullet_orders
         if not any(eligible_bullets.values()):
             return _untailored_fallback(
                 profile,
                 job_id,
                 report,
                 classifications,
-                bullet_orders,
+                fallback_orders,
+                recommended_orders,
                 source_roles,
                 canonical_sections,
                 source_document,
@@ -1087,7 +1140,8 @@ class ResumeService:
                 job_id,
                 report,
                 classifications,
-                bullet_orders,
+                fallback_orders,
+                recommended_orders,
                 source_roles,
                 canonical_sections,
                 source_document,
@@ -1117,6 +1171,7 @@ class ResumeService:
                 ),
                 evidence_relevance,
                 source_roles,
+                output_orders=output_orders,
             )
         except Exception:
             logger.warning(
@@ -1130,7 +1185,8 @@ class ResumeService:
                 job_id,
                 report,
                 classifications,
-                bullet_orders,
+                fallback_orders,
+                recommended_orders,
                 source_roles,
                 canonical_sections,
                 source_document,
@@ -1142,6 +1198,12 @@ class ResumeService:
         missing = list(report.missing_skills)
         output_roles: list[Any] = (
             source_roles if source_roles is not None else profile.work_history
+        )
+        rendered_orders = output_orders or bullet_orders
+        recommendation_orders = (
+            recommended_orders
+            if recommended_orders is not None
+            else [[] for _ in output_roles]
         )
         tailored_wh = [
             TailoredWorkItem(
@@ -1179,7 +1241,7 @@ class ResumeService:
                     )
                     if source_roles is not None
                     else int(source_uuid.rsplit(":", 1)[-1])
-                    for source_uuid in bullet_orders[role_index]
+                    for source_uuid in rendered_orders[role_index]
                 ],
                 source_role_id=source.source_id if source_roles is not None else None,
                 source_header=(
@@ -1190,7 +1252,8 @@ class ResumeService:
                 selection_decisions=(
                     _selection_decisions(
                         source,
-                        bullet_orders[role_index],
+                        recommendation_orders[role_index],
+                        rendered_orders[role_index],
                         sanitized_bullets,
                     )
                     if source_roles is not None
@@ -1255,6 +1318,9 @@ class ResumeService:
             other_skills=other,
             missing_keywords=missing,
             requirement_classifications=classifications,
+            tailoring_snapshot_version=(
+                FULL_RESUME_SNAPSHOT_VERSION if source_backed else None
+            ),
             canonical_sections=canonical_sections,
         )
         resume.requirement_classifications = classify_resume_coverage(

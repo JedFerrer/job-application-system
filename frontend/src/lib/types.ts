@@ -240,6 +240,7 @@ export interface TailoredResume {
   other_skills: string[];
   missing_keywords: string[];
   requirement_classifications?: RequirementClassification[];
+  tailoring_snapshot_version?: "full-resume-v1" | null;
   canonical_sections?: TailoredCanonicalSection[];
 }
 

@@ -649,6 +649,11 @@ class TailoredResume(BaseModel):
     requirement_classifications: list[RequirementClassification] = Field(
         default_factory=list,
     )
+    # New generated snapshots distinguish full-resume semantics from legacy
+    # sparse snapshots.  ``None`` is intentionally preserved for history.
+    tailoring_snapshot_version: Literal["full-resume-v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     # Present on new source-backed snapshots.  Absent on legacy snapshots.
     canonical_sections: list[TailoredCanonicalSection] = Field(
         default_factory=list,

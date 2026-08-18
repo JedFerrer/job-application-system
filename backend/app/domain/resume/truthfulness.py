@@ -358,6 +358,7 @@ def sanitize_tailoring_output(
     evidence_relevance: dict[Any, int] | None = None,
     source_roles: list[Any] | None = None,
     source_order_ids: list[list[str]] | None = None,
+    output_orders: list[list[str]] | None = None,
 ) -> SanitizedTailoring:
     """Apply sparse, source-indexed rewrites while preserving source structure."""
     if not isinstance(payload, dict):
@@ -379,6 +380,7 @@ def sanitize_tailoring_output(
         reasons[reason] += 1
 
     roles = source_roles if source_roles is not None else profile.work_history
+    rendered_orders = output_orders or bullet_orders
     catalog = evidence_catalog or build_evidence_catalog(profile)
     # ``bullet_orders`` is the exact selected source set for this request.
     # Enforce it here rather than relying on the prompt: same-role evidence
@@ -530,8 +532,11 @@ def sanitize_tailoring_output(
             if source_roles is not None
             else list(source_role.highlights)
         )
-        ordered = bullet_orders[role_index]
-        ordered_ids = source_order_ids[role_index] if source_order_ids is not None else ordered
+        ordered_ids = (
+            source_order_ids[role_index]
+            if source_order_ids is not None
+            else rendered_orders[role_index]
+        )
         sanitized_roles.append(
             [
                 rewrites.get(

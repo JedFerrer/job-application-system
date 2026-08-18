@@ -243,6 +243,41 @@ async def test_create_fresh_draft_validates_against_owned_source(
 
     saved = repository.create_tailored_draft.await_args.kwargs["content"]
     assert saved["work_history"][0]["selection_decisions"][0]["final_text"] == "Built Python APIs"
+    assert "tailoring_snapshot_version" not in saved
+
+
+@pytest.mark.asyncio
+async def test_legacy_sparse_source_backed_snapshot_resaves_without_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_document()
+    content = _source_backed_content(source)
+    content.work_history[0].selection_decisions[1].final_included = False
+    content.work_history[0].selection_decisions[1].output_rank = None
+    content.work_history[0].tailored_highlights = ["Built Python APIs"]
+    content.work_history[0].tailored_highlight_source_indices = [0]
+    repository = AsyncMock()
+    _configure_active_source(repository)
+    repository.create_tailored_draft.return_value = _draft()
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description="Python backend engineer"
+    )
+    monkeypatch.setattr(resume_service_module, "materialize_source_document", lambda _: source)
+
+    await ResumeService(repository).create_tailored_draft(
+        user_id=7,
+        payload=TailoredResumeDraftCreate(job_id=11, content=content),
+        job_repository=jobs,
+    )
+
+    saved = repository.create_tailored_draft.await_args.kwargs["content"]
+    saved_role = saved["work_history"][0]
+    assert saved_role["tailored_highlights"] == ["Built Python APIs"]
+    assert saved_role["tailored_highlight_source_indices"] == [0]
+    assert saved_role["selection_decisions"][1]["final_included"] is False
+    assert saved_role["selection_decisions"][1]["output_rank"] is None
+    assert "tailoring_snapshot_version" not in saved
 
 
 @pytest.mark.parametrize(
