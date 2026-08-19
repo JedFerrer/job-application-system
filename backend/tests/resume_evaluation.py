@@ -18,6 +18,7 @@ from app.domain.resume.schemas import (
     ParsedProfile,
     ParsedResumeResult,
 )
+from app.domain.resume.source_content import build_source_candidate_ledger
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "resume_profile_evaluation.json"
 SCHEMA_VERSION = "resume-profile-eval-v1"
@@ -170,6 +171,11 @@ def load_manifest(path: Path = FIXTURE_PATH) -> tuple[EvaluationCase, ...]:
         if not isinstance(raw_text, str) or not raw_text:
             raise _error(case_id, "raw_text must be non-empty text")
         response = _mapping(data["locked_parser_response"], "locked_parser_response", case_id)
+        if "source_references" not in response:
+            ledger = build_source_candidate_ledger(raw_text)
+            response["source_references"] = {
+                "sections": [f"c{candidate.order}" for candidate in ledger.candidates]
+            }
         profile_payload = dict(response)
         profile_payload.pop("extraction_evidence", None)
         try:

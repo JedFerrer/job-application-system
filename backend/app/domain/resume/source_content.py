@@ -1,9 +1,11 @@
+# ruff: noqa: E501
 """Canonical source-resume extraction and raw-text verification."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -12,17 +14,34 @@ from uuid import UUID, uuid4
 
 from app.domain.resume.schemas import (
     SOURCE_RESUME_SCHEMA_VERSION,
+    SourceNamedSection,
     SourceProject,
+    SourceResumeArtifact,
     SourceResumeCandidate,
     SourceResumeContentDocumentV2,
+    SourceResumeContentDocumentV3,
     SourceResumeContentPayload,
     SourceResumeDocument,
     SourceResumeLayoutReferences,
+    SourceResumeLayoutReferencesV3,
+    SourceResumeNamedSectionReferences,
+    SourceResumeRoleReferencesV3,
     SourceRole,
     SourceTextItem,
 )
 
 SOURCE_VALIDATION_VERSION = "source-verifier-v1"
+
+
+def source_revision_sha256(payload: object) -> str:
+    """Return a stable revision for a verified canonical source payload."""
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 _LIST_MARKER_RE = re.compile(r"(?:[•*]|[-–—]|\d+[.)])[ \t]+$")
 
 
@@ -47,6 +66,21 @@ class SourceLayoutResult:
     layout: SourceResumeLayoutReferences | None
     status: Literal["verified", "invalid", "unavailable"]
     errors: tuple[str, ...] = ()
+
+
+_SEPARATOR_RE = re.compile(r"^[\s\W_]{3,}$")
+
+
+def classify_source_artifacts(
+    ledger: SourceResumeContentDocumentV2,
+) -> list[SourceResumeArtifact]:
+    """Classify only unambiguous mechanical separators as non-display artifacts."""
+    return [
+        SourceResumeArtifact(source_id=candidate.source_id, reason="mechanical_separator")
+        for candidate in ledger.candidates
+        if _SEPARATOR_RE.fullmatch(candidate.text)
+        and not any(character.isalnum() for character in candidate.text)
+    ]
 
 
 def normalize_source_text(value: str) -> str:
@@ -322,6 +356,144 @@ def resolve_source_layout(
         return SourceLayoutResult(None, "invalid", ("invalid_source_references",))
 
 
+def resolve_source_layout_v3(
+    raw_layout: object,
+    ledger: SourceResumeContentDocumentV2,
+    artifacts: list[SourceResumeArtifact] | None = None,
+) -> SourceLayoutResult:
+    """Resolve the v3 layout and require total accounting of source candidates."""
+    if not isinstance(raw_layout, dict):
+        return SourceLayoutResult(None, "invalid", ("layout_object_expected",))
+    allowed = {
+        "contact", "links", "summary", "skills", "sections", "work_history",
+        "projects", "education", "certifications", "licenses", "languages",
+        "named_sections",
+    }
+    if set(raw_layout) - allowed:
+        return SourceLayoutResult(None, "invalid", ("unknown_layout_field",))
+    base = {
+        key: value
+        for key, value in raw_layout.items()
+        if key in {
+            "contact", "links", "summary", "skills", "sections", "work_history",
+            "projects", "education", "certifications", "licenses", "languages",
+        }
+    }
+    # Resolve the existing well-known sections first, then extend the resolved
+    # role and named-section references with v3-only fields.
+    base_roles = raw_layout.get("work_history", [])
+    if isinstance(base_roles, list):
+        base["work_history"] = [
+            {key: value for key, value in role.items() if key in {"order", "header", "highlights"}}
+            for role in base_roles
+            if isinstance(role, dict)
+        ]
+    resolved = resolve_source_layout(base, ledger)
+    if resolved.layout is None or resolved.status != "verified":
+        return resolved
+    aliases = {f"c{candidate.order}": candidate.source_id for candidate in ledger.candidates}
+    orders = {candidate.source_id: candidate.order for candidate in ledger.candidates}
+    try:
+        roles: list[SourceResumeRoleReferencesV3] = []
+        for role in base_roles if isinstance(base_roles, list) else []:
+            assert isinstance(role, dict)
+            header = role.get("header")
+            if not isinstance(header, str):
+                raise ValueError("role_header_expected")
+            header_id = aliases[header]
+            context = [aliases[item] for item in role.get("context", [])]
+            responsibility = role.get("responsibilities_heading")
+            if responsibility is not None and not isinstance(responsibility, str):
+                raise ValueError("responsibilities_heading_expected")
+            roles.append(
+                SourceResumeRoleReferencesV3(
+                    order=orders[header_id],
+                    header=header_id,
+                    highlights=[aliases[item] for item in role.get("highlights", [])],
+                    context=context,
+                    responsibilities_heading=(aliases[responsibility] if responsibility else None),
+                )
+            )
+        named: list[SourceResumeNamedSectionReferences] = []
+        for section in raw_layout.get("named_sections", []):
+            if not isinstance(section, dict):
+                raise ValueError("named_section_object_expected")
+            heading = section.get("heading")
+            item_ids = [aliases[item] for item in section.get("items", [])]
+            named.append(
+                SourceResumeNamedSectionReferences(
+                    order=(orders[aliases[heading]] if heading else min((orders[item] for item in item_ids), default=0)),
+                    heading=(aliases[heading] if heading else None),
+                    items=item_ids,
+                )
+            )
+        resolved_data = resolved.layout.model_dump()
+        resolved_data["work_history"] = roles
+        resolved_data["named_sections"] = named
+        layout = SourceResumeLayoutReferencesV3.model_validate(resolved_data)
+        ownership: dict[UUID, list[str]] = {}
+
+        def own(candidate_id: UUID, descriptor: str) -> None:
+            ownership.setdefault(candidate_id, []).append(descriptor)
+
+        # A physical contact/link line may legitimately provide several
+        # metadata fields. It remains one canonical metadata owner, while any
+        # use outside that category is still rejected below.
+        for candidate_id in set(layout.contact.values()):
+            own(candidate_id, "contact")
+        for candidate_id in set(layout.links.values()):
+            own(candidate_id, "links")
+        if layout.summary is not None:
+            own(layout.summary, "summary")
+        for index, candidate_id in enumerate(layout.skills):
+            own(candidate_id, f"skills[{index}]")
+        for index, candidate_id in enumerate(layout.sections):
+            own(candidate_id, f"sections[{index}]")
+        for index, candidate_id in enumerate(layout.education):
+            own(candidate_id, f"education[{index}]")
+        for index, candidate_id in enumerate(layout.certifications):
+            own(candidate_id, f"certifications[{index}]")
+        for index, candidate_id in enumerate(layout.licenses):
+            own(candidate_id, f"licenses[{index}]")
+        for index, candidate_id in enumerate(layout.languages):
+            own(candidate_id, f"languages[{index}]")
+        for role_index, role in enumerate(layout.work_history):
+            own(role.header, f"work_history[{role_index}].header")
+            for context_index, candidate_id in enumerate(role.context):
+                own(candidate_id, f"work_history[{role_index}].context[{context_index}]")
+            if role.responsibilities_heading is not None:
+                own(role.responsibilities_heading, f"work_history[{role_index}].responsibilities_heading")
+            for highlight_index, candidate_id in enumerate(role.highlights):
+                own(candidate_id, f"work_history[{role_index}].highlights[{highlight_index}]")
+        for project_index, project in enumerate(layout.projects):
+            for field_name in ("name", "description", "url"):
+                candidate_id = getattr(project, field_name)
+                if candidate_id is not None:
+                    own(candidate_id, f"projects[{project_index}].{field_name}")
+            for technology_index, candidate_id in enumerate(project.technologies):
+                own(candidate_id, f"projects[{project_index}].technologies[{technology_index}]")
+            for achievement_index, candidate_id in enumerate(project.achievements):
+                own(candidate_id, f"projects[{project_index}].achievements[{achievement_index}]")
+        for section_index, section in enumerate(layout.named_sections):
+            if section.heading is not None:
+                own(section.heading, f"named_sections[{section_index}].heading")
+            for item_index, candidate_id in enumerate(section.items):
+                own(candidate_id, f"named_sections[{section_index}].items[{item_index}]")
+        for artifact_index, artifact in enumerate(artifacts or []):
+            own(artifact.source_id, f"artifact[{artifact_index}]:{artifact.reason}")
+
+        candidate_ids = {candidate.source_id for candidate in ledger.candidates}
+        if set(ownership) != candidate_ids:
+            return SourceLayoutResult(None, "invalid", ("incomplete_source_accounting",))
+        if any(len(owners) != 1 for owners in ownership.values()):
+            return SourceLayoutResult(
+                None, "invalid", ("duplicate_source_candidate_ownership",)
+            )
+        return SourceLayoutResult(layout, "verified")
+    except (KeyError, TypeError, ValueError):
+        return SourceLayoutResult(None, "invalid", ("invalid_source_references",))
+
+
 def materialize_source_document(
     ledger: SourceResumeContentDocumentV2,
 ) -> SourceResumeDocument | None:
@@ -374,6 +546,69 @@ def materialize_source_document(
         certifications=[by_id[value] for value in layout.certifications],
         licenses=[by_id[value] for value in layout.licenses],
         languages=[by_id[value] for value in layout.languages],
+    )
+
+
+def materialize_source_document_v3(
+    ledger: SourceResumeContentDocumentV3,
+) -> SourceResumeDocument | None:
+    """Materialize v3 content while retaining role context and source order."""
+    if ledger.layout is None:
+        return None
+    by_id = {
+        candidate.source_id: SourceTextItem.model_validate(candidate.model_dump())
+        for candidate in ledger.candidates
+    }
+    layout = ledger.layout
+
+    def item(candidate_id: UUID | None) -> SourceTextItem | None:
+        return by_id.get(candidate_id) if candidate_id is not None else None
+
+    roles = [
+        SourceRole(
+            source_id=role.header,
+            order=role.order,
+            company=item(role.header),
+            title=item(role.header),
+            context_items=[by_id[value] for value in role.context],
+            responsibilities_heading=item(role.responsibilities_heading),
+            highlights=[by_id[value] for value in role.highlights],
+        )
+        for role in sorted(layout.work_history, key=lambda value: value.order)
+    ]
+    section_order = [str(candidate.source_id) for candidate in ledger.candidates]
+    return SourceResumeDocument(
+        contact={key: by_id[value] for key, value in layout.contact.items()},
+        links={key: by_id[value] for key, value in layout.links.items()},
+        summary=item(layout.summary),
+        skills=[by_id[value] for value in layout.skills],
+        sections=[by_id[value] for value in layout.sections],
+        work_history=roles,
+        projects=[
+            SourceProject(
+                order=project.order,
+                name=item(project.name),
+                description=item(project.description),
+                url=item(project.url),
+                technologies=[by_id[value] for value in project.technologies],
+                achievements=[by_id[value] for value in project.achievements],
+            )
+            for project in layout.projects
+        ],
+        education=[by_id[value] for value in layout.education],
+        certifications=[by_id[value] for value in layout.certifications],
+        licenses=[by_id[value] for value in layout.licenses],
+        languages=[by_id[value] for value in layout.languages],
+        section_order=section_order,
+        named_sections=[
+            SourceNamedSection(
+                source_id=section.heading or uuid4(),
+                order=section.order,
+                heading=item(section.heading),
+                items=[by_id[value] for value in section.items],
+            )
+            for section in layout.named_sections
+        ],
     )
 
 

@@ -194,6 +194,8 @@ export interface TailoredWorkItem {
   tailored_highlight_source_indices?: number[];
   source_role_id?: string | null;
   source_header?: string | null;
+  role_context?: string[];
+  responsibilities_heading?: string | null;
   selection_decisions?: TailoredBulletDecision[];
 }
 
@@ -204,8 +206,10 @@ export interface TailoredCanonicalItem {
 }
 
 export interface TailoredCanonicalSection {
-  section: "contact" | "links" | "summary" | "skills" | "projects" | "education" | "certifications" | "licenses" | "languages";
+  section: "contact" | "links" | "summary" | "skills" | "projects" | "education" | "certifications" | "licenses" | "languages" | "named";
   items: TailoredCanonicalItem[];
+  heading?: string | null;
+  canonical_order?: number;
 }
 
 export interface TailoredBulletDecision {
@@ -240,8 +244,13 @@ export interface TailoredResume {
   other_skills: string[];
   missing_keywords: string[];
   requirement_classifications?: RequirementClassification[];
-  tailoring_snapshot_version?: "full-resume-v1" | null;
+  tailoring_snapshot_version?: "full-resume-v1" | "lossless-complete-v2" | null;
   canonical_sections?: TailoredCanonicalSection[];
+  source_resume_id?: number | null;
+  source_resume_content_id?: number | null;
+  source_schema_version?: "source-resume-v3" | null;
+  source_revision_sha256?: string | null;
+  source_section_order?: string[];
 }
 
 export interface RequirementClassification {

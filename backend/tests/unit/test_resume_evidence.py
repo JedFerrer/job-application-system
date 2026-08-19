@@ -13,7 +13,7 @@ from app.domain.resume.schemas import (
     ParsedResumeResult,
     ProfileResponse,
     ResumeResponse,
-    SourceResumeContentPayloadV2,
+    SourceResumeContentPayloadV3,
 )
 from app.domain.resume.service import ResumeService, build_summary_text
 from app.infrastructure import resume_parser
@@ -139,6 +139,7 @@ async def test_parser_preserves_flat_profile_and_returns_verified_evidence(
 ) -> None:
     payload = {
         "work_history": [{"company": "Acme", "title": "Engineer"}],
+        "source_references": {"summary": "c0"},
         "extraction_evidence": {
             "work_history": [{"item_index": 0, "excerpt": "Acme Engineer"}]
         },
@@ -364,7 +365,7 @@ async def test_parser_rejects_issued_alias_in_any_profile_field(
         },
     }
     assert callable(mutate)
-    mutate(payload)  # type: ignore[operator]
+    mutate(payload)
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
     )
@@ -403,7 +404,7 @@ def test_profile_source_item_adapter_requires_exact_text_and_strict_order(
 
     normalized = resume_parser._normalize_profile_payload(payload)
 
-    assert normalized["work_history"][0]["highlights"][0] == item  # type: ignore[index]
+    assert normalized["work_history"][0]["highlights"][0] == item
 
 
 def test_profile_source_item_adapter_accepts_exact_text_and_order() -> None:
@@ -411,7 +412,7 @@ def test_profile_source_item_adapter_accepts_exact_text_and_order() -> None:
 
     normalized = resume_parser._normalize_profile_payload(payload)
 
-    assert normalized["work_history"][0]["highlights"] == ["Built APIs"]  # type: ignore[index]
+    assert normalized["work_history"][0]["highlights"] == ["Built APIs"]
 
 
 @pytest.mark.asyncio
@@ -442,10 +443,10 @@ async def test_parser_does_not_reject_non_issued_c_like_profile_text(
 async def test_parser_retries_only_invalid_source_contract_and_accepts_verified_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    invalid = {"full_name": "Ada", "source_content": {"sections": []}}
+    invalid = {"full_name": "Ada", "source_references": {}}
     valid = {
         "full_name": "Ada",
-        "source_content": {"sections": [{"text": "Ada", "order": 0}]},
+        "source_references": {"summary": "c0"},
     }
     responses = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(invalid)))]),
@@ -494,6 +495,7 @@ async def test_parser_accepts_equivalent_document_wrapper_without_relaxing_verif
 ) -> None:
     payload = {
         "full_name": "Ada",
+        "source_references": {"summary": "c0"},
         "source_content": {
             "document": {"sections": [{"text": "Ada", "order": 0}]}
         },
@@ -516,7 +518,7 @@ async def test_parser_accepts_equivalent_document_wrapper_without_relaxing_verif
 async def test_parser_stops_after_one_retry_when_source_contract_remains_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = {"full_name": "Ada", "source_content": {"sections": []}}
+    payload = {"full_name": "Ada", "source_references": {}}
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
     )
@@ -528,12 +530,10 @@ async def test_parser_stops_after_one_retry_when_source_contract_remains_invalid
         return response, "test-model"
 
     monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
-    result = await resume_parser.parse_resume_text("Ada")
+    with pytest.raises(ValueError, match="source layout"):
+        await resume_parser.parse_resume_text("Ada")
 
     assert calls == 2
-    assert result.source_validation_status == "verified"
-    assert result.source_content is not None
-    assert result.source_layout_status == "unavailable"
 
 
 @pytest.mark.asyncio
@@ -549,6 +549,10 @@ async def test_parser_separates_source_items_from_profile_highlight_strings(
                 "highlights": [{"text": "Built APIs", "order": 0}],
             }
         ],
+        "source_references": {
+            "sections": ["c1"],
+            "work_history": [{"header": "c0", "highlights": ["c2"]}],
+        },
         "source_content": {
             "work_history": [
                 {
@@ -571,9 +575,7 @@ async def test_parser_separates_source_items_from_profile_highlight_strings(
     result = await resume_parser.parse_resume_text("Acme\nEngineer\nBuilt APIs")
 
     assert result.profile.work_history[0].highlights == ["Built APIs"]
-    assert result.source_validation_status == "verified"
-    assert result.source_content is not None
-    assert result.source_layout_status == "unavailable"
+    assert result.source_layout_status == "verified"
 
 
 @pytest.mark.asyncio
@@ -619,18 +621,16 @@ async def test_parser_keeps_observed_profile_like_source_shape_failed_closed(
         return response, "test-model"
 
     monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
-    result = await resume_parser.parse_resume_text(
-        "Ada\nPython\nAcme\nEngineer\n2020\n2024\nBuilt APIs"
-    )
+    with pytest.raises(ValueError, match="source layout"):
+        await resume_parser.parse_resume_text(
+            "Ada\nPython\nAcme\nEngineer\n2020\n2024\nBuilt APIs"
+        )
 
     assert calls == 2
-    assert result.source_validation_status == "verified"
-    assert result.source_content is not None
-    assert result.source_layout_status == "unavailable"
 
 
 @pytest.mark.asyncio
-async def test_parser_materializes_verified_v2_source_from_candidate_references(
+async def test_parser_materializes_verified_v3_source_from_candidate_references(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = {
@@ -659,7 +659,7 @@ async def test_parser_materializes_verified_v2_source_from_candidate_references(
     assert result.source_validation_status == "verified"
     assert result.source_layout_status == "verified"
     assert result.source_content is not None
-    assert result.source_content.schema_version == "source-resume-v2"
+    assert result.source_content.schema_version == "source-resume-v3"
     assert result.source_content.document.layout is not None
     assert result.source_content.document.layout.work_history[0].highlights
 
@@ -700,7 +700,8 @@ async def test_parser_retries_invalid_alias_then_materializes_valid_layout(
 
     assert calls == 2
     assert result.source_layout_status == "verified"
-    assert isinstance(result.source_content, SourceResumeContentPayloadV2)
+    assert isinstance(result.source_content, SourceResumeContentPayloadV3)
+    assert result.source_content.schema_version == "source-resume-v3"
     assert result.source_content.document.layout is not None
 
 
@@ -750,6 +751,7 @@ async def test_malformed_evidence_does_not_fail_profile_parsing(
 ) -> None:
     payload = {
         "full_name": "Ada",
+        "source_references": {"summary": "c0"},
         "extraction_evidence": {"work_history": "malformed"},
     }
     response = SimpleNamespace(

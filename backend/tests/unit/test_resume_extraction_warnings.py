@@ -176,8 +176,8 @@ async def test_service_carries_warnings_without_changing_import_result(
     )
 
     assert result.extraction_warnings == [warning]
-    assert result.matching_profile_changed is True
-    assert result.is_active is True
+    assert result.matching_profile_changed is False
+    assert result.is_active is False
 
 
 @pytest.mark.asyncio
@@ -241,4 +241,4 @@ async def test_service_ignores_malformed_social_url_without_failing_import(
     )
 
     assert result.extraction_warnings == []
-    assert result.is_active is True
+    assert result.is_active is False

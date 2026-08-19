@@ -61,6 +61,8 @@ def test_canonical_sections_preserve_source_identity_and_text() -> None:
                 "canonical_order": 3,
             }
         ],
+        "heading": None,
+        "canonical_order": 0,
     }
 
 

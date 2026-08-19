@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr = SecretStr("")
     anthropic_api_key: SecretStr = SecretStr("")
 
+    # Explicitly guarded deterministic parser used only for the approved
+    # synthetic Browser QA fixture. It is inert unless every runtime guard is
+    # satisfied by the parser.
+    qa_deterministic_parser: bool = False
+    qa_fixture_sha256: str = "67b1a3997048b0fa3480f5370c27e9d19303ef9815427f57b861078004a5d44b"
+
     # --- Embeddings ---
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536

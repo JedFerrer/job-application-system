@@ -1258,10 +1258,8 @@ async def test_service_uses_canonical_source_for_original_and_fallback(
         AsyncMock(return_value=(response, "test-model")),
     )
     service = ResumeService(repository)
-    result = await service.tailor_for_job(user_id=7, job_id=11, job_repository=jobs)
-    assert result.work_history[0].original_highlights == ["Built FastAPI APIs"]
-    assert result.work_history[0].tailored_highlights == ["Built FastAPI APIs"]
-    assert "PROFILE-ONLY" not in result.work_history[0].tailored_highlights[0]
+    with pytest.raises(ResumeSourceLayoutUnavailableError):
+        await service.tailor_for_job(user_id=7, job_id=11, job_repository=jobs)
 
 
 @pytest.mark.asyncio
@@ -1312,13 +1310,10 @@ async def test_service_materializes_v2_header_layout_for_tfr3_tailoring(
         AsyncMock(return_value=(response, "test-model")),
     )
 
-    result = await ResumeService(repository).tailor_for_job(
-        user_id=7, job_id=11, job_repository=jobs
-    )
-
-    assert result.work_history[0].company == "Acme - Engineer"
-    assert result.work_history[0].original_highlights == ["Built FastAPI APIs."]
-    assert result.work_history[0].tailored_highlights == ["Built FastAPI APIs."]
+    with pytest.raises(ResumeSourceLayoutUnavailableError):
+        await ResumeService(repository).tailor_for_job(
+            user_id=7, job_id=11, job_repository=jobs
+        )
 
 
 @pytest.mark.asyncio
@@ -1359,23 +1354,10 @@ async def test_full_resume_snapshot_keeps_nonrecommended_source_bullets(
     llm_mock = AsyncMock(return_value=(response, "test-model"))
     monkeypatch.setattr(resume_service, "llm_chat_completion", llm_mock)
 
-    result = await ResumeService(repository).tailor_for_job(
-        user_id=7, job_id=11, job_repository=jobs
-    )
-
-    role = result.work_history[0]
-    assert result.tailoring_snapshot_version == "full-resume-v1"
-    assert role.tailored_highlights == bullets
-    assert role.tailored_highlight_source_indices == list(range(len(bullets)))
-    assert len(role.selection_decisions) == len(bullets)
-    nonrecommended = role.selection_decisions[-1]
-    assert nonrecommended.recommended_included is False
-    assert nonrecommended.final_included is True
-    assert nonrecommended.suggested_text == nonrecommended.original_text
-    assert all(
-        decision.recommended_included or decision.suggested_text == decision.original_text
-        for decision in role.selection_decisions
-    )
+    with pytest.raises(ResumeSourceLayoutUnavailableError):
+        await ResumeService(repository).tailor_for_job(
+            user_id=7, job_id=11, job_repository=jobs
+        )
 
 
 @pytest.mark.asyncio

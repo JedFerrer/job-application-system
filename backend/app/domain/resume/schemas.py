@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Resume domain schemas.
 
 ``ParsedProfile`` is the structured contract the LLM must return when parsing
@@ -31,6 +32,7 @@ from app.domain.resume.provenance import ResumeImportProvenance
 PARSED_PROFILE_SCHEMA_VERSION = "parsed-profile-v3"
 SOURCE_RESUME_SCHEMA_VERSION = "source-resume-v1"
 SOURCE_RESUME_SCHEMA_VERSION_V2 = "source-resume-v2"
+SOURCE_RESUME_SCHEMA_VERSION_V3 = "source-resume-v3"
 
 
 def _normalize_optional_text(value: object) -> object:
@@ -303,7 +305,7 @@ class ParsedResumeResult(NamedTuple):
 
     profile: ParsedProfile
     extraction_evidence: ExtractionEvidence
-    source_content: SourceResumeContentPayload | SourceResumeContentPayloadV2 | None = None
+    source_content: SourceResumeContentPayload | SourceResumeContentPayloadV2 | SourceResumeContentPayloadV3 | None = None
     source_validation_status: Literal["verified", "invalid"] | None = None
     source_validation_errors: tuple[str, ...] = ()
     source_layout_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
@@ -333,6 +335,8 @@ class SourceRole(BaseModel):
     start: SourceTextItem | None = None
     end: SourceTextItem | None = None
     description: SourceTextItem | None = None
+    context_items: list[SourceTextItem] = Field(default_factory=list)
+    responsibilities_heading: SourceTextItem | None = None
     highlights: list[SourceTextItem] = Field(default_factory=list)
 
 
@@ -346,6 +350,13 @@ class SourceProject(BaseModel):
     technologies: list[SourceTextItem] = Field(default_factory=list)
     achievements: list[SourceTextItem] = Field(default_factory=list)
     url: SourceTextItem | None = None
+
+
+class SourceNamedSection(BaseModel):
+    source_id: UUID = Field(default_factory=uuid4)
+    order: int = Field(ge=0)
+    heading: SourceTextItem | None = None
+    items: list[SourceTextItem] = Field(default_factory=list)
 
 
 class SourceResumeDocument(BaseModel):
@@ -364,6 +375,8 @@ class SourceResumeDocument(BaseModel):
     certifications: list[SourceTextItem] = Field(default_factory=list)
     licenses: list[SourceTextItem] = Field(default_factory=list)
     languages: list[SourceTextItem] = Field(default_factory=list)
+    section_order: list[str] = Field(default_factory=list)
+    named_sections: list[SourceNamedSection] = Field(default_factory=list)
 
 
 class SourceResumeContentPayload(BaseModel):
@@ -393,6 +406,23 @@ class SourceResumeRoleReferences(BaseModel):
     order: int = Field(ge=0)
     header: UUID
     highlights: list[UUID] = Field(default_factory=list)
+
+
+class SourceResumeRoleReferencesV3(SourceResumeRoleReferences):
+    """Lossless role references, including non-bullet source context."""
+
+    context: list[UUID] = Field(default_factory=list)
+    responsibilities_heading: UUID | None = None
+
+
+class SourceResumeNamedSectionReferences(BaseModel):
+    """A literal source heading plus its literal source items."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: int = Field(ge=0)
+    heading: UUID | None = None
+    items: list[UUID] = Field(default_factory=list)
 
 
 class SourceResumeProjectReferences(BaseModel):
@@ -426,6 +456,13 @@ class SourceResumeLayoutReferences(BaseModel):
     languages: list[UUID] = Field(default_factory=list)
 
 
+class SourceResumeLayoutReferencesV3(SourceResumeLayoutReferences):
+    """V3 layout with complete role context and named sections."""
+
+    work_history: list[SourceResumeRoleReferencesV3] = Field(default_factory=list)  # type: ignore[assignment]
+    named_sections: list[SourceResumeNamedSectionReferences] = Field(default_factory=list)
+
+
 class SourceResumeContentDocumentV2(BaseModel):
     """Verified candidate ledger plus optional semantic source layout."""
 
@@ -442,6 +479,38 @@ class SourceResumeContentPayloadV2(BaseModel):
 
     schema_version: Literal["source-resume-v2"] = "source-resume-v2"
     document: SourceResumeContentDocumentV2
+    layout_validation_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
+    layout_validation_errors: list[str] = Field(default_factory=list)
+
+
+class SourceResumeArtifact(BaseModel):
+    """Server-proven extraction artifact that is not applicant resume content."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: UUID
+    reason: Literal[
+        "mechanical_separator",
+        "page_number",
+        "repeated_page_header",
+        "repeated_page_footer",
+    ]
+    evidence: list[UUID] = Field(default_factory=list)
+
+
+class SourceResumeContentDocumentV3(BaseModel):
+    """Server-owned ledger plus a fully accounted semantic layout."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidates: list[SourceResumeCandidate] = Field(default_factory=list)
+    layout: SourceResumeLayoutReferencesV3 | None = None
+    artifacts: list[SourceResumeArtifact] = Field(default_factory=list)
+
+
+class SourceResumeContentPayloadV3(BaseModel):
+    schema_version: Literal["source-resume-v3"] = "source-resume-v3"
+    document: SourceResumeContentDocumentV3
     layout_validation_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
     layout_validation_errors: list[str] = Field(default_factory=list)
 
@@ -541,6 +610,8 @@ class TailoredWorkItem(BaseModel):
     # Canonical combined role header from source-resume-v2.  When present,
     # render this once rather than inferring company/title/date substrings.
     source_header: str | None = None
+    role_context: list[str] = Field(default_factory=list)
+    responsibilities_heading: str | None = None
     selection_decisions: list[TailoredBulletDecision] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -605,8 +676,11 @@ class TailoredCanonicalSection(BaseModel):
         "certifications",
         "licenses",
         "languages",
+        "named",
     ]
     items: list[TailoredCanonicalItem] = Field(default_factory=list)
+    heading: str | None = None
+    canonical_order: int = Field(default=0, ge=0)
 
 
 class RequirementClassification(BaseModel):
@@ -651,13 +725,24 @@ class TailoredResume(BaseModel):
     )
     # New generated snapshots distinguish full-resume semantics from legacy
     # sparse snapshots.  ``None`` is intentionally preserved for history.
-    tailoring_snapshot_version: Literal["full-resume-v1"] | None = Field(
+    tailoring_snapshot_version: Literal["full-resume-v1", "lossless-complete-v2"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
     # Present on new source-backed snapshots.  Absent on legacy snapshots.
     canonical_sections: list[TailoredCanonicalSection] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
+    )
+    source_resume_id: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_resume_content_id: int | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    source_schema_version: Literal["source-resume-v3"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    source_revision_sha256: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_section_order: list[str] = Field(
+        default_factory=list, exclude_if=lambda value: not value
     )
 
 

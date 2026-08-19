@@ -111,10 +111,11 @@ class TailoredResumeDraft(Base):
     job_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("jobs.id", ondelete="SET NULL"), index=True
     )
-    source_profile_id: Mapped[int | None] = mapped_column(
-        Integer,
-        ForeignKey("candidate_profiles.id", ondelete="SET NULL"),
-        index=True,
+    source_profile_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("candidate_profiles.id", ondelete="CASCADE"), index=True
+    )
+    source_resume_content_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("source_resume_contents.id", ondelete="CASCADE"), index=True
     )
     job_title: Mapped[str] = mapped_column(String(255))
     job_company: Mapped[str | None] = mapped_column(String(255))

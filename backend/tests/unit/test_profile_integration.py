@@ -510,6 +510,10 @@ class TestProfileIntegration:
             )
             db.add_all([automatic_job, manual_job])
             await db.flush()
+            old_source = await db.scalar(
+                select(SourceResumeContent).where(SourceResumeContent.resume_id == old.resume_id)
+            )
+            assert old_source is not None
             cover_letter = CoverLetter(
                 user_id=user.id,
                 job_id=automatic_job.id,
@@ -552,6 +556,7 @@ class TestProfileIntegration:
                         user_id=user.id,
                         job_id=automatic_job.id,
                         source_profile_id=old.id,
+                        source_resume_content_id=old_source.id,
                         job_title="Automatic match",
                         job_company="Acme",
                         content={"full_name": "Saved snapshot"},
@@ -614,17 +619,14 @@ class TestProfileIntegration:
             assert old_profile is None
             old_resume = await db.get(Resume, old.resume_id)
             assert old_resume is None
-            snapshot = (
-                await db.execute(
-                    text(
-                        "SELECT source_profile_id, content FROM tailored_resume_drafts "
-                        "WHERE user_id = :user_id"
-                    ),
-                    {"user_id": user.id},
-                )
-            ).one()
-            assert snapshot[0] is None
-            assert snapshot[1] == {"full_name": "Saved snapshot"}
+            snapshot = await db.execute(
+                text(
+                    "SELECT source_profile_id, content FROM tailored_resume_drafts "
+                    "WHERE user_id = :user_id"
+                ),
+                {"user_id": user.id},
+            )
+            assert snapshot.one_or_none() is None
             assert (
                 await db.execute(
                     text(

@@ -11,9 +11,12 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.domain.resume.repository import ResumeRepository
-from app.domain.resume.schemas import TailoredResume
+from app.domain.resume.source_content import (
+    build_source_candidate_ledger,
+    resolve_source_layout_v3,
+)
 from app.models.job import Job
-from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
+from app.models.resume import CandidateProfile, Resume, SourceResumeContent, TailoredResumeDraft
 from app.models.user import User
 
 pytestmark = pytest.mark.integration
@@ -71,20 +74,68 @@ async def _seed_user(db: AsyncSession, user_id: int) -> None:
     await db.flush()
 
 
+async def _seed_current_provenance(
+    db: AsyncSession, *, user_id: int, suffix: str
+) -> tuple[CandidateProfile, SourceResumeContent]:
+    """Create the smallest persisted source/profile graph valid for TFR-9 drafts."""
+    resume = Resume(
+        user_id=user_id,
+        filename=f"source-{suffix}.pdf",
+        raw_text="Source summary",
+        is_active=True,
+    )
+    db.add(resume)
+    await db.flush()
+    ledger = build_source_candidate_ledger("Source summary")
+    layout = resolve_source_layout_v3({"summary": "c0"}, ledger)
+    assert layout.status == "verified"
+    assert layout.layout is not None
+    source = SourceResumeContent(
+        resume_id=resume.id,
+        schema_version="source-resume-v3",
+        content={
+            "schema_version": "source-resume-v3",
+            "document": {
+                "candidates": [item.model_dump(mode="json") for item in ledger.candidates],
+                "layout": layout.layout.model_dump(mode="json"),
+                "artifacts": [],
+            },
+            "layout_validation_status": "verified",
+            "layout_validation_errors": [],
+        },
+        validation_status="verified",
+        validation_errors=[],
+    )
+    profile = CandidateProfile(
+        user_id=user_id,
+        resume_id=resume.id,
+        parsed={"full_name": "Ada Lovelace", "skills": ["python"]},
+        summary_text="Backend Engineer",
+        embedding=[0.0] * 1536,
+    )
+    db.add_all([source, profile])
+    await db.flush()
+    return profile, source
+
+
 @pytest.mark.asyncio
-async def test_snapshot_survives_unavailable_links_and_list_is_owned_and_ordered(
+async def test_source_backed_snapshot_is_owned_and_ordered(
     session_factory,
 ) -> None:  # noqa: ANN001
     timestamp = datetime(2026, 7, 15, tzinfo=UTC)
     async with session_factory() as db:
         await _seed_user(db, 1)
         await _seed_user(db, 2)
+        profile_1a, source_1a = await _seed_current_provenance(db, user_id=1, suffix="1a")
+        profile_1b, source_1b = await _seed_current_provenance(db, user_id=1, suffix="1b")
+        profile_2, source_2 = await _seed_current_provenance(db, user_id=2, suffix="2")
         db.add_all(
             [
                 TailoredResumeDraft(
                     user_id=1,
                     job_id=None,
-                    source_profile_id=None,
+                    source_profile_id=profile_1a.id,
+                    source_resume_content_id=source_1a.id,
                     job_title="Lower ID snapshot",
                     job_company="Acme",
                     content=_content(101),
@@ -94,7 +145,8 @@ async def test_snapshot_survives_unavailable_links_and_list_is_owned_and_ordered
                 TailoredResumeDraft(
                     user_id=1,
                     job_id=None,
-                    source_profile_id=None,
+                    source_profile_id=profile_1b.id,
+                    source_resume_content_id=source_1b.id,
                     job_title="Higher ID snapshot",
                     job_company="Beta",
                     content=_content(102),
@@ -104,7 +156,8 @@ async def test_snapshot_survives_unavailable_links_and_list_is_owned_and_ordered
                 TailoredResumeDraft(
                     user_id=2,
                     job_id=None,
-                    source_profile_id=None,
+                    source_profile_id=profile_2.id,
+                    source_resume_content_id=source_2.id,
                     job_title="Other user's snapshot",
                     job_company="Private",
                     content=_content(103),
@@ -128,84 +181,95 @@ async def test_snapshot_survives_unavailable_links_and_list_is_owned_and_ordered
         snapshot = await repository.get_tailored_draft(user_id=1, draft_id=listed[0].id)
         assert snapshot is not None
         assert snapshot.job_id is None
-        assert snapshot.source_profile_id is None
+        assert snapshot.source_profile_id == profile_1b.id
+        assert snapshot.source_resume_content_id == source_1b.id
         assert snapshot.job_title == "Higher ID snapshot"
         assert snapshot.job_company == "Beta"
         assert snapshot.content == _content(102)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_survives_real_linked_record_deletes(
+async def test_source_or_profile_deletion_cascades_only_its_tied_draft(
     session_factory,
 ) -> None:  # noqa: ANN001
     async with session_factory() as db:
         await _seed_user(db, 1)
-        resume = Resume(
-            user_id=1,
-            filename="source.pdf",
-            raw_text="source resume",
-            is_active=True,
-        )
-        db.add(resume)
-        await db.flush()
-
-        profile = CandidateProfile(
-            user_id=1,
-            resume_id=resume.id,
-            parsed={"full_name": "Ada Lovelace", "skills": ["python"]},
-            summary_text="Backend Engineer",
-            embedding=[0.0] * 1536,
-        )
-        job = Job(
-            fingerprint="phase10-fk-test",
+        profile_a, source_a = await _seed_current_provenance(db, user_id=1, suffix="cascade-a")
+        profile_b, source_b = await _seed_current_provenance(db, user_id=1, suffix="cascade-b")
+        job_a = Job(
+            fingerprint="tfr9-cascade-a",
             title="Backend Engineer",
             company="Acme",
             source="test",
-            source_url="https://example.com/phase10-fk-test",
+            source_url="https://example.com/tfr9-cascade-a",
             raw_response={},
             description="Backend role",
         )
-        db.add_all([profile, job])
-        await db.flush()
-
-        content_snapshot = _content(job.id)
-        draft = TailoredResumeDraft(
-            user_id=1,
-            job_id=job.id,
-            source_profile_id=profile.id,
-            job_title=job.title,
-            job_company=job.company,
-            content=content_snapshot,
+        job_b = Job(
+            fingerprint="tfr9-cascade-b",
+            title="Platform Engineer",
+            company="Beta",
+            source="test",
+            source_url="https://example.com/tfr9-cascade-b",
+            raw_response={},
+            description="Platform role",
         )
-        db.add(draft)
+        db.add_all([job_a, job_b])
         await db.flush()
-        draft_id = draft.id
-        assert draft.job_id == job.id
-        assert draft.source_profile_id == profile.id
 
-        await db.delete(job)
-        await db.delete(profile)
+        draft_a = TailoredResumeDraft(
+            user_id=1,
+            job_id=job_a.id,
+            source_profile_id=profile_a.id,
+            source_resume_content_id=source_a.id,
+            job_title=job_a.title,
+            job_company=job_a.company,
+            content=_content(job_a.id),
+        )
+        draft_b = TailoredResumeDraft(
+            user_id=1,
+            job_id=job_b.id,
+            source_profile_id=profile_b.id,
+            source_resume_content_id=source_b.id,
+            job_title=job_b.title,
+            job_company=job_b.company,
+            content=_content(job_b.id),
+        )
+        db.add_all([draft_a, draft_b])
+        await db.flush()
+        draft_a_id, draft_b_id = draft_a.id, draft_b.id
+
+        await db.delete(source_a)
         await db.flush()
         await db.commit()
 
     async with session_factory() as db:
-        draft = await db.scalar(
-            select(TailoredResumeDraft).where(TailoredResumeDraft.id == draft_id)
-        )
-        assert draft is not None
-
-        assert draft.job_id is None
-        assert draft.source_profile_id is None
-        assert draft.job_title == "Backend Engineer"
-        assert draft.job_company == "Acme"
-        assert draft.content == content_snapshot
-        legacy_content = TailoredResume.model_validate(draft.content)
-        assert legacy_content.requirement_classifications == []
         assert (
-            legacy_content.model_dump(
-                mode="json", exclude={"requirement_classifications"}
+            await db.scalar(
+                select(TailoredResumeDraft).where(TailoredResumeDraft.id == draft_a_id)
             )
-            == content_snapshot
+            is None
+        )
+        assert (
+            await db.scalar(
+                select(TailoredResumeDraft).where(TailoredResumeDraft.id == draft_b_id)
+            )
+            is not None
+        )
+        profile_b_id = profile_b.id
+        profile_b = await db.scalar(
+            select(CandidateProfile).where(CandidateProfile.id == profile_b_id)
+        )
+        assert profile_b is not None
+        await db.delete(profile_b)
+        await db.commit()
+
+    async with session_factory() as db:
+        assert (
+            await db.scalar(
+                select(TailoredResumeDraft).where(TailoredResumeDraft.id == draft_b_id)
+            )
+            is None
         )
 
 
@@ -215,8 +279,9 @@ async def test_upsert_replaces_same_user_job_and_keeps_id(
 ) -> None:  # noqa: ANN001
     async with session_factory() as db:
         await _seed_user(db, 1)
+        profile, source = await _seed_current_provenance(db, user_id=1, suffix="upsert")
         job = Job(
-            fingerprint="phase7-upsert-test",
+            fingerprint="tfr9-upsert-01",
             title="Backend Engineer",
             company="Acme",
             source="test",
@@ -231,7 +296,8 @@ async def test_upsert_replaces_same_user_job_and_keeps_id(
         first = await repository.create_tailored_draft(
             user_id=1,
             job_id=job.id,
-            source_profile_id=None,
+            source_profile_id=profile.id,
+            source_resume_content_id=source.id,
             job_title=job.title,
             job_company=job.company,
             content=_content(job.id) | {"professional_summary": "First"},
@@ -239,7 +305,8 @@ async def test_upsert_replaces_same_user_job_and_keeps_id(
         second = await repository.create_tailored_draft(
             user_id=1,
             job_id=job.id,
-            source_profile_id=None,
+            source_profile_id=profile.id,
+            source_resume_content_id=source.id,
             job_title=job.title,
             job_company=job.company,
             content=_content(job.id) | {"professional_summary": "Replacement"},
@@ -247,7 +314,8 @@ async def test_upsert_replaces_same_user_job_and_keeps_id(
         await db.commit()
 
         assert second.id == first.id
-        assert second.source_profile_id is None
+        assert second.source_profile_id == profile.id
+        assert second.source_resume_content_id == source.id
         assert second.content["professional_summary"] == "Replacement"
         rows = (
             await db.execute(
@@ -267,9 +335,11 @@ async def test_upsert_is_independent_by_user_and_job(
     async with session_factory() as db:
         await _seed_user(db, 1)
         await _seed_user(db, 2)
+        profile_1, source_1 = await _seed_current_provenance(db, user_id=1, suffix="scope-1")
+        profile_2, source_2 = await _seed_current_provenance(db, user_id=2, suffix="scope-2")
         jobs = [
             Job(
-                fingerprint=f"phase7-scope-test-{index}",
+                fingerprint=f"tfr9-scope-{index}",
                 title=f"Role {index}",
                 company="Acme",
                 source="test",
@@ -285,11 +355,13 @@ async def test_upsert_is_independent_by_user_and_job(
 
         rows = []
         for user_id, job in ((1, jobs[0]), (2, jobs[0]), (1, jobs[1])):
+            profile, source = (profile_1, source_1) if user_id == 1 else (profile_2, source_2)
             rows.append(
                 await repository.create_tailored_draft(
                     user_id=user_id,
                     job_id=job.id,
-                    source_profile_id=None,
+                    source_profile_id=profile.id,
+                    source_resume_content_id=source.id,
                     job_title=job.title,
                     job_company=job.company,
                     content=_content(job.id),

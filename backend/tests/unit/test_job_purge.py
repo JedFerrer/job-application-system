@@ -25,7 +25,7 @@ from app.models.cover_letter import CoverLetter
 from app.models.interview_prep import InterviewPrep
 from app.models.job import Job
 from app.models.job_source_link import JobSourceLink
-from app.models.resume import TailoredResumeDraft
+from app.models.resume import CandidateProfile, Resume, SourceResumeContent, TailoredResumeDraft
 from app.models.user import User
 from app.models.user_job import UserJob
 from app.models.user_job_import import UserJobImport
@@ -144,10 +144,41 @@ async def test_purge_preserves_every_kind_of_user_content(engine: AsyncEngine) -
         )
         db.add(CoverLetter(user_id=1, job_id=14, content="Letter", model="test"))
         db.add(InterviewPrep(user_id=1, job_id=15, questions=[], focus_areas=[]))
+        resume = Resume(
+            user_id=1,
+            filename="purge-source.pdf",
+            raw_text="Source summary",
+            is_active=True,
+        )
+        db.add(resume)
+        await db.flush()
+        source = SourceResumeContent(
+            resume_id=resume.id,
+            schema_version="source-resume-v3",
+            content={
+                "schema_version": "source-resume-v3",
+                "document": {"candidates": [], "layout": None, "artifacts": []},
+                "layout_validation_status": "verified",
+                "layout_validation_errors": [],
+            },
+            validation_status="verified",
+            validation_errors=[],
+        )
+        profile = CandidateProfile(
+            user_id=1,
+            resume_id=resume.id,
+            parsed={"full_name": "Purge User", "skills": []},
+            summary_text="Purge User",
+            embedding=[0.0] * 1536,
+        )
+        db.add_all([source, profile])
+        await db.flush()
         db.add(
             TailoredResumeDraft(
                 user_id=1,
                 job_id=16,
+                source_profile_id=profile.id,
+                source_resume_content_id=source.id,
                 job_title="Purge Job 16",
                 content={"summary": "tailored"},
             )

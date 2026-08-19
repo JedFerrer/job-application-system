@@ -6,11 +6,14 @@ from uuid import UUID
 
 import pytest
 
+from app.domain.resume.schemas import SourceResumeArtifact
 from app.domain.resume.source_content import (
     SOURCE_VALIDATION_VERSION,
     build_source_candidate_ledger,
+    classify_source_artifacts,
     materialize_source_document,
     resolve_source_layout,
+    resolve_source_layout_v3,
     source_fingerprint,
     verify_source_candidate_ledger,
     verify_source_document,
@@ -45,6 +48,98 @@ def test_exact_literal_and_raw_offsets_are_verified() -> None:
     assert raw[item.start_offset : item.end_offset] == item.text
     assert item.fingerprint == source_fingerprint(item.text)
     assert SOURCE_VALIDATION_VERSION == "source-verifier-v1"
+
+
+def test_v3_requires_total_candidate_accounting_and_keeps_meaningful_prose() -> None:
+    ledger = build_source_candidate_ledger("Built APIs\nAwards: Top Engineer")
+    incomplete = resolve_source_layout_v3({"sections": ["c0"]}, ledger)
+    assert incomplete.status == "invalid"
+    assert "incomplete_source_accounting" in incomplete.errors
+    artifacts = classify_source_artifacts(ledger)
+    assert artifacts == []
+
+
+def test_v3_mechanical_separator_can_be_explicitly_accounted() -> None:
+    ledger = build_source_candidate_ledger("Built APIs\n---")
+    artifacts = classify_source_artifacts(ledger)
+    assert len(artifacts) == 1
+    result = resolve_source_layout_v3(
+        {"sections": ["c0"]}, ledger, artifacts=artifacts
+    )
+    assert result.status == "verified"
+
+
+def _v3_layout() -> dict[str, object]:
+    return {
+        "sections": ["c6"],
+        "work_history": [{
+            "header": "c0",
+            "context": ["c1"],
+            "responsibilities_heading": "c2",
+            "highlights": ["c3"],
+        }],
+        "named_sections": [{"heading": "c4", "items": ["c5"]}],
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate, artifacts, error",
+    [
+        (
+            lambda layout: layout["work_history"][0].update({"highlights": ["c1", "c3"]}),
+            [],
+            "duplicate_source_candidate_ownership",
+        ),
+        (
+            lambda layout: layout["named_sections"][0].update({"items": ["c1", "c5"]}),
+            [],
+            "duplicate_source_candidate_ownership",
+        ),
+        (
+            lambda layout: layout["named_sections"][0].update({"items": ["c3", "c5"]}),
+            [],
+            "duplicate_source_candidate_ownership",
+        ),
+        (
+            lambda layout: layout["named_sections"].append({"heading": "c4", "items": []}),
+            [],
+            "duplicate_source_candidate_ownership",
+        ),
+        (
+            lambda layout: layout.update({"contact": {"location": "c6"}}),
+            [],
+            "invalid_source_references",
+        ),
+    ],
+)
+def test_v3_rejects_duplicate_canonical_candidate_ownership(
+    mutate: object, artifacts: list[SourceResumeArtifact], error: str
+) -> None:
+    ledger = build_source_candidate_ledger(
+        "Role\nContext\nResponsibilities:\nBullet\nAwards\nAward item\nOther"
+    )
+    layout = _v3_layout()
+    assert callable(mutate)
+    mutate(layout)
+
+    result = resolve_source_layout_v3(layout, ledger, artifacts=artifacts)
+
+    assert result.status == "invalid"
+    assert result.errors == (error,)
+
+
+def test_v3_rejects_candidate_owned_by_content_and_artifact() -> None:
+    ledger = build_source_candidate_ledger(
+        "Role\nContext\nResponsibilities:\nBullet\nAwards\nAward item\nOther"
+    )
+    artifact = SourceResumeArtifact(
+        source_id=ledger.candidates[3].source_id, reason="mechanical_separator"
+    )
+
+    result = resolve_source_layout_v3(_v3_layout(), ledger, artifacts=[artifact])
+
+    assert result.status == "invalid"
+    assert result.errors == ("duplicate_source_candidate_ownership",)
 
 
 def test_parser_metadata_is_replaced_by_server_verified_metadata() -> None:

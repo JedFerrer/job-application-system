@@ -233,6 +233,11 @@ export const resumeApi = {
       body: JSON.stringify(snapshot),
     });
   },
+  validateExport: (content: TailoredResume) =>
+    apiRequest<TailoredResume>("/resume/export-validation", {
+      method: "POST",
+      body: JSON.stringify(content),
+    }),
   createDraft: (payload: TailoredResumeDraftCreate) =>
     apiRequest<TailoredResumeDraft>("/resume/drafts", {
       method: "POST",

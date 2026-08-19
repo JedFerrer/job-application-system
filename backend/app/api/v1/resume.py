@@ -15,6 +15,7 @@ from app.domain.resume.exceptions import (
     ResumeParseError,
     ResumeSourceLayoutUnavailableError,
     ResumeTextTooLongError,
+    TailoredResumeSnapshotInvalidError,
     UnsupportedResumeFormatError,
 )
 from app.domain.resume.repository import ResumeRepository
@@ -268,6 +269,21 @@ async def preview_resume_coverage(
         resume=payload,
         job_repository=job_repo,
     )
+
+
+@router.post("/export-validation", response_model=TailoredResume)
+async def validate_resume_export(
+    payload: TailoredResume,
+    current_user: CurrentUser,
+    service: ResumeServiceDep,
+    job_repo: JobRepositoryDep,
+) -> TailoredResume:
+    try:
+        return await service.validate_resume_export(
+            user_id=current_user.id, resume=payload, job_repository=job_repo
+        )
+    except TailoredResumeSnapshotInvalidError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/drafts", response_model=list[TailoredResumeDraftListItem])

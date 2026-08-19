@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Resume domain service: orchestrates parse -> embed -> persist.
 
 Pure-ish business logic; no FastAPI/HTTP concerns. Raises domain exceptions.
@@ -50,7 +51,7 @@ from app.domain.resume.schemas import (
     ResumeImportDetail,
     ResumeImportListItem,
     ResumeResponse,
-    SourceResumeContentPayloadV2,
+    SourceResumeContentPayloadV3,
     SourceResumeDocument,
     TailoredBulletDecision,
     TailoredCanonicalItem,
@@ -65,7 +66,10 @@ from app.domain.resume.selection import (
     select_legacy_source_bullets,
     select_source_bullets,
 )
-from app.domain.resume.source_content import materialize_source_document
+from app.domain.resume.source_content import (
+    materialize_source_document_v3,
+    source_revision_sha256,
+)
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
     build_source_evidence_catalog,
@@ -87,7 +91,7 @@ ProgressFn = Callable[..., Awaitable[None]]
 
 
 def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
-    """Project verified source-v2 text into an additive snapshot view."""
+    """Project verified source text into an ordered snapshot view."""
     if source_document is None:
         return []
 
@@ -105,13 +109,13 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
     contact = items(list(source_document.contact.values()))
     links = items(list(source_document.links.values()))
     if contact:
-        sections.append(TailoredCanonicalSection(section="contact", items=contact))
+        sections.append(TailoredCanonicalSection(section="contact", items=contact, canonical_order=min(i.canonical_order for i in contact)))
     if links:
-        sections.append(TailoredCanonicalSection(section="links", items=links))
+        sections.append(TailoredCanonicalSection(section="links", items=links, canonical_order=min(i.canonical_order for i in links)))
     if source_document.summary:
         sections.append(
             TailoredCanonicalSection(
-                section="summary", items=items([source_document.summary])
+                section="summary", items=items([source_document.summary]), canonical_order=source_document.summary.order
             )
         )
     for section_name, values in (
@@ -124,7 +128,7 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
         section_items = items(values)
         if section_items:
             sections.append(
-                TailoredCanonicalSection(section=section_name, items=section_items)
+                TailoredCanonicalSection(section=section_name, items=section_items, canonical_order=min(i.canonical_order for i in section_items))
             )
     project_values: list[Any] = []
     for project in source_document.projects:
@@ -141,8 +145,12 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
         )
     project_items = items(project_values)
     if project_items:
-        sections.append(TailoredCanonicalSection(section="projects", items=project_items))
-    return sections
+        sections.append(TailoredCanonicalSection(section="projects", items=project_items, canonical_order=min(i.canonical_order for i in project_items)))
+    for named in getattr(source_document, "named_sections", []):
+        section_items = items(named.items)
+        if section_items:
+            sections.append(TailoredCanonicalSection(section="named", heading=named.heading.text if named.heading else None, items=section_items, canonical_order=named.order))
+    return sorted(sections, key=lambda section: section.canonical_order)
 
 
 def _source_output_orders(
@@ -207,7 +215,7 @@ def _validate_source_backed_snapshot(
     ]
     selection = select_source_bullets(roles, job_description or "")
     legacy = resume.tailoring_snapshot_version is None
-    if resume.tailoring_snapshot_version not in {None, FULL_RESUME_SNAPSHOT_VERSION}:
+    if resume.tailoring_snapshot_version not in {None, FULL_RESUME_SNAPSHOT_VERSION, "lossless-complete-v2"}:
         invalid()
     if legacy:
         recommended_ids = select_legacy_source_bullets(roles, job_description or "")
@@ -233,6 +241,15 @@ def _validate_source_backed_snapshot(
             if getattr(submitted, field) != expected:
                 invalid()
         if submitted.source_header != (source_role.company.text if source_role.company else None):
+            invalid()
+        if submitted.role_context != [item.text for item in source_role.context_items]:
+            invalid()
+        expected_responsibilities_heading = (
+            source_role.responsibilities_heading.text
+            if source_role.responsibilities_heading is not None
+            else None
+        )
+        if submitted.responsibilities_heading != expected_responsibilities_heading:
             invalid()
         source_texts = [item.text for item in source_role.highlights]
         if submitted.original_highlights != source_texts:
@@ -349,6 +366,9 @@ def _untailored_fallback(
     source_roles: list[Any] | None = None,
     canonical_sections: list[TailoredCanonicalSection] | None = None,
     source_document: SourceResumeDocument | None = None,
+    source_resume_id: int | None = None,
+    source_resume_content_id: int | None = None,
+    source_revision: str | None = None,
 ) -> TailoredResume:
     """Return the profile as-is when LLM tailoring is unavailable."""
     matched_set = set(report.matched_skills)
@@ -433,6 +453,16 @@ def _untailored_fallback(
                     if source_roles is not None and w.company
                     else None
                 ),
+                role_context=(
+                    [item.text for item in w.context_items]
+                    if source_roles is not None
+                    else []
+                ),
+                responsibilities_heading=(
+                    w.responsibilities_heading.text
+                    if source_roles is not None and w.responsibilities_heading
+                    else None
+                ),
                 selection_decisions=(
                     _selection_decisions(
                         w,
@@ -453,8 +483,12 @@ def _untailored_fallback(
         other_skills=other_skills,
         missing_keywords=report.missing_skills,
         requirement_classifications=requirement_classifications or [],
-        tailoring_snapshot_version=(FULL_RESUME_SNAPSHOT_VERSION if source_backed else None),
+        tailoring_snapshot_version=("lossless-complete-v2" if source_backed else None),
         canonical_sections=canonical_sections or [],
+        source_resume_id=source_resume_id if source_backed else None,
+        source_resume_content_id=source_resume_content_id if source_backed else None,
+        source_schema_version="source-resume-v3" if source_backed else None,
+        source_revision_sha256=source_revision if source_backed else None,
     )
     resume.requirement_classifications = classify_resume_coverage(
         resume.requirement_classifications, resume
@@ -671,7 +705,11 @@ class ResumeService:
             assert previous_profile is not None
             embedding = previous_profile.embedding
 
-        source_ready = source_validation_status in {"verified", "legacy-test-seam"}
+        # Only a server-verified source-resume-v3 can become active. Legacy
+        # focused test seams may persist a draft, but never bypass this gate.
+        source_ready = source_validation_status == "verified" and isinstance(
+            source_content, SourceResumeContentPayloadV3
+        )
         lifecycle_status = (
             ResumeLifecycleStatus.ACTIVE
             if is_first_import and source_ready
@@ -898,14 +936,16 @@ class ResumeService:
             if not isinstance(source_pair, tuple) or len(source_pair) != 2:
                 raise ValueError
             profile, source_row = source_pair
-            source_payload = SourceResumeContentPayloadV2.model_validate(source_row.content)
+            if source_row.content.get("schema_version") != "source-resume-v3":
+                raise ValueError
+            source_payload = SourceResumeContentPayloadV3.model_validate(source_row.content)
             if (
                 source_row.validation_status != "verified"
                 or source_payload.layout_validation_status != "verified"
                 or source_payload.document.layout is None
             ):
                 raise ValueError
-            source_document = materialize_source_document(source_payload.document)
+            source_document = materialize_source_document_v3(source_payload.document)
             if source_document is None:
                 raise ValueError
             profile_model = ParsedProfile.model_validate(profile.parsed)
@@ -915,6 +955,14 @@ class ResumeService:
                 profile=profile_model,
                 job_description=getattr(job, "description", None),
             )
+            if (
+                payload.content.tailoring_snapshot_version != "lossless-complete-v2"
+                or payload.content.source_resume_id != source_row.resume_id
+                or payload.content.source_resume_content_id != source_row.id
+                or payload.content.source_schema_version != "source-resume-v3"
+                or payload.content.source_revision_sha256 != source_revision_sha256(source_row.content)
+            ):
+                raise ValueError
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             raise TailoredResumeSnapshotInvalidError() from exc
 
@@ -946,6 +994,7 @@ class ResumeService:
             user_id=user_id,
             job_id=payload.job_id,
             source_profile_id=profile.id,
+            source_resume_content_id=source_row.id,
             job_title=job.title,
             job_company=job.company,
             content=content,
@@ -978,6 +1027,47 @@ class ResumeService:
                 )
             }
         )
+
+    async def validate_resume_export(
+        self,
+        *,
+        user_id: int,
+        resume: TailoredResume,
+        job_repository: JobRepository,
+    ) -> TailoredResume:
+        """Validate that a reviewed snapshot is still losslessly source-backed."""
+        source_pair = await self._repository.get_active_tailoring_source(user_id)
+        if not isinstance(source_pair, tuple) or len(source_pair) != 2:
+            raise TailoredResumeSnapshotInvalidError()
+        profile_row, source_row = source_pair
+        try:
+            payload = SourceResumeContentPayloadV3.model_validate(source_row.content)
+            if source_row.validation_status != "verified" or payload.layout_validation_status != "verified":
+                raise ValueError
+            source_document = materialize_source_document_v3(payload.document)
+            if source_document is None:
+                raise ValueError
+            profile = ParsedProfile.model_validate(profile_row.parsed)
+            job = await job_repository.get_visible_by_id(user_id=user_id, job_id=resume.job_id)
+            if job is None:
+                raise ValueError
+            _validate_source_backed_snapshot(
+                resume,
+                source_document=source_document,
+                profile=profile,
+                job_description=job.description,
+            )
+            if (
+                resume.tailoring_snapshot_version != "lossless-complete-v2"
+                or resume.source_resume_id != source_row.resume_id
+                or resume.source_resume_content_id != source_row.id
+                or resume.source_schema_version != "source-resume-v3"
+                or resume.source_revision_sha256 != source_revision_sha256(source_row.content)
+            ):
+                raise ValueError
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise TailoredResumeSnapshotInvalidError() from exc
+        return resume
 
     async def list_tailored_drafts(
         self, *, user_id: int
@@ -1028,18 +1118,16 @@ class ResumeService:
             source_roles = None
         else:
             profile_row, source_row = source_pair
-            if source_row.content.get("schema_version") == "source-resume-v2":
-                source_payload_v2 = SourceResumeContentPayloadV2.model_validate(source_row.content)
-                if source_payload_v2.layout_validation_status != "verified" or (
-                    source_payload_v2.document.layout is None
-                ):
-                    raise ResumeSourceLayoutUnavailableError()
-                source_document = materialize_source_document(source_payload_v2.document)
-                source_roles = source_document.work_history if source_document is not None else None
-            else:
-                # v1 source snapshots are obsolete for source-backed tailoring.
-                # Do not fall back to profile prose or the legacy source shape.
+            if source_row.content.get("schema_version") != "source-resume-v3":
                 raise ResumeSourceLayoutUnavailableError()
+            source_payload_v3 = SourceResumeContentPayloadV3.model_validate(source_row.content)
+            if source_payload_v3.layout_validation_status != "verified" or source_payload_v3.document.layout is None:
+                raise ResumeSourceLayoutUnavailableError()
+            source_document = materialize_source_document_v3(source_payload_v3.document)
+            source_roles = source_document.work_history if source_document is not None else None
+        source_resume_id = source_row.resume_id if source_row is not None else None
+        source_resume_content_id = source_row.id if source_row is not None else None
+        source_revision = source_revision_sha256(source_row.content) if source_row is not None else None
         if profile_row is None:
             raise ProfileNotFoundError(user_id)
         canonical_sections = _canonical_sections(source_document)
@@ -1077,6 +1165,9 @@ class ResumeService:
                 source_roles=source_roles,
                 canonical_sections=canonical_sections,
                 source_document=source_document,
+                source_resume_id=source_resume_id,
+                source_resume_content_id=source_resume_content_id,
+                source_revision=source_revision,
             )
 
         selection = (
@@ -1110,6 +1201,9 @@ class ResumeService:
                 source_roles,
                 canonical_sections,
                 source_document,
+                source_resume_id=source_resume_id,
+                source_resume_content_id=source_resume_content_id,
+                source_revision=source_revision,
             )
 
         prompt = TAILOR_RESUME_PROMPT.format(
@@ -1145,6 +1239,9 @@ class ResumeService:
                 source_roles,
                 canonical_sections,
                 source_document,
+                source_resume_id=source_resume_id,
+                source_resume_content_id=source_resume_content_id,
+                source_revision=source_revision,
             )
 
         try:
@@ -1190,6 +1287,9 @@ class ResumeService:
                 source_roles,
                 canonical_sections,
                 source_document,
+                source_resume_id=source_resume_id,
+                source_resume_content_id=source_resume_content_id,
+                source_revision=source_revision,
             )
 
         matched = list(report.matched_skills)
@@ -1247,6 +1347,16 @@ class ResumeService:
                 source_header=(
                     source.company.text
                     if source_roles is not None and source.company
+                    else None
+                ),
+                role_context=(
+                    [item.text for item in source.context_items]
+                    if source_roles is not None
+                    else []
+                ),
+                responsibilities_heading=(
+                    source.responsibilities_heading.text
+                    if source_roles is not None and source.responsibilities_heading
                     else None
                 ),
                 selection_decisions=(
@@ -1318,10 +1428,13 @@ class ResumeService:
             other_skills=other,
             missing_keywords=missing,
             requirement_classifications=classifications,
-            tailoring_snapshot_version=(
-                FULL_RESUME_SNAPSHOT_VERSION if source_backed else None
-            ),
+            tailoring_snapshot_version=("lossless-complete-v2" if source_backed else None),
             canonical_sections=canonical_sections,
+            source_resume_id=(source_row.resume_id if source_backed and source_row is not None else None),
+            source_resume_content_id=(source_row.id if source_backed and source_row is not None else None),
+            source_schema_version=("source-resume-v3" if source_backed else None),
+            source_revision_sha256=(source_revision_sha256(source_row.content) if source_backed and source_row is not None else None),
+            source_section_order=(list(source_document.section_order) if source_backed and source_document is not None else []),
         )
         resume.requirement_classifications = classify_resume_coverage(
             resume.requirement_classifications, resume

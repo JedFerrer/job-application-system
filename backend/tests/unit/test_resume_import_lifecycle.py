@@ -17,12 +17,13 @@ from app.domain.resume.schemas import (
     ParsedResumeResult,
     ResumeResponse,
     SourceResumeContentPayloadV2,
+    SourceResumeContentPayloadV3,
 )
 from app.domain.resume.service import ResumeService, build_summary_text
 from app.domain.resume.source_content import (
     build_source_candidate_ledger,
     resolve_source_layout,
-    verify_source_document,
+    resolve_source_layout_v3,
 )
 from app.infrastructure import resume_parser
 
@@ -68,15 +69,18 @@ async def _run_upload(
     profile = ParsedProfile(headline="Backend engineer", skills=["Python"])
 
     async def parse(_: str) -> ParsedResumeResult:
-        source = verify_source_document(
-            {"sections": [{"text": "text", "order": 0}]}, "text"
+        ledger = build_source_candidate_ledger("text")
+        layout = resolve_source_layout_v3({"sections": ["c0"]}, ledger)
+        assert layout.layout is not None
+        source = SourceResumeContentPayloadV3(
+            document={"candidates": ledger.candidates, "layout": layout.layout},
+            layout_validation_status="verified",
         )
         return ParsedResumeResult(
             profile=profile,
             extraction_evidence=ExtractionEvidence(),
-            source_content=source.payload,
-            source_validation_status=source.status,
-            source_validation_errors=source.errors,
+            source_content=source,
+            source_validation_status="verified",
         )
 
     monkeypatch.setattr(
@@ -108,7 +112,7 @@ async def test_first_import_becomes_active(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_v2_ledger_import_persists_when_layout_is_unavailable(
+async def test_v2_ledger_import_remains_matching_only_and_inactive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = LifecycleRepository(None)
@@ -136,7 +140,8 @@ async def test_v2_ledger_import_persists_when_layout_is_unavailable(
         user_id=7, filename="resume.pdf", content=b"test"
     )
 
-    assert result.is_active is True
+    assert result.is_active is False
+    assert result.lifecycle_status == "draft"
     assert repository.added_source is not None
     assert repository.added_source["schema_version"] == "source-resume-v2"
     content = repository.added_source["content"]
@@ -266,7 +271,7 @@ async def test_parser_keeps_all_verified_late_bullets_without_profile_identity(
     assert result.profile.work_history[0].highlights == bullets
     assert result.source_layout_status == "verified"
     source_content = result.source_content
-    assert isinstance(source_content, SourceResumeContentPayloadV2)
+    assert isinstance(source_content, SourceResumeContentPayloadV3)
     assert source_content.document.layout is not None
     assert len(source_content.document.layout.work_history[0].highlights) == 7
     assert [candidate.text for candidate in source_content.document.candidates] == [

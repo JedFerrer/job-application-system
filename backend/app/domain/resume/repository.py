@@ -444,6 +444,7 @@ class ResumeRepository:
         user_id: int,
         job_id: int,
         source_profile_id: int | None,
+        source_resume_content_id: int | None = None,
         job_title: str,
         job_company: str | None,
         content: dict[str, object],
@@ -454,6 +455,7 @@ class ResumeRepository:
                 user_id=user_id,
                 job_id=job_id,
                 source_profile_id=source_profile_id,
+                source_resume_content_id=source_resume_content_id,
                 job_title=job_title,
                 job_company=job_company,
                 content=content,
@@ -462,6 +464,7 @@ class ResumeRepository:
                 constraint="uq_tailored_resume_drafts_user_job",
                 set_={
                     "source_profile_id": source_profile_id,
+                    "source_resume_content_id": source_resume_content_id,
                     "job_title": job_title,
                     "job_company": job_company,
                     "content": content,

@@ -20,27 +20,35 @@ function dateLabel(start: string | null, end: string | null): string {
   const fmt = (value: string | null) => { if (!value) return ""; const match = value.match(/^(\d{4})-(\d{2})/); return match ? `${match[1]}-${match[2]}` : value; };
   const from = fmt(start); const to = end ? fmt(end) : "Present"; return from || end ? `${from} – ${to}` : "";
 }
-
-function formatTailoredText(data: TailoredResume): string {
+function formatResumeText(data: TailoredResume): string {
   const lines: string[] = [];
-  const canonical = new Map((data.canonical_sections ?? []).map((section) => [section.section, section.items.map((item) => item.text)]));
-  const push = (heading: string, values: string[]) => { if (values.length) lines.push(heading, ...values, ""); };
-  push("CONTACT", canonical.get("contact") ?? [data.full_name, data.email, data.phone].filter((value): value is string => Boolean(value)));
-  push("LINKS", canonical.get("links") ?? Object.values(data.links ?? {}).filter((value): value is string => Boolean(value)));
-  push("PROFESSIONAL SUMMARY", canonical.get("summary") ?? (data.professional_summary ? [data.professional_summary] : []));
-  push("TECHNICAL SKILLS", canonical.get("skills") ?? (data.skills ?? [...data.matched_skills, ...data.other_skills]));
-  if (data.work_history.length) { lines.push("PROFESSIONAL EXPERIENCE", ""); for (const role of data.work_history) { lines.push(role.source_header || [role.title, role.company, dateLabel(role.start, role.end)].filter(Boolean).join(" | ") || "Role"); lines.push(...role.tailored_highlights.map((highlight) => `  • ${highlight}`), ""); } }
-  const legacySections = {
-    projects: data.projects?.flatMap((project) => [project.name, project.description, ...project.technologies, ...project.achievements, project.url].filter((value): value is string => Boolean(value))) ?? [],
-    education: data.education.map((item) => [item.degree, item.institution, item.year].filter(Boolean).join(" | ")),
-    certifications: data.certifications,
-    licenses: data.licenses?.map((item) => [item.name, item.issuer].filter(Boolean).join(" | ")) ?? [],
-    languages: data.languages?.map((item) => [item.language, item.proficiency].filter(Boolean).join(" | ")) ?? [],
-  };
-  for (const section of ["projects", "education", "certifications", "licenses", "languages"] as const) push(section.toUpperCase(), canonical.get(section) ?? legacySections[section]);
+  const sections = data.canonical_sections ?? [];
+  const push = (heading: string, items: string[]) => { if (items.length) lines.push(heading, ...items, ""); };
+  for (const section of [...sections].sort((a, b) => (a.canonical_order ?? 0) - (b.canonical_order ?? 0))) {
+    push((section.heading || section.section).toUpperCase(), section.items.map((item) => item.text));
+  }
+  if (!sections.length) {
+    push("CONTACT", [data.full_name, data.email, data.phone].filter((item): item is string => Boolean(item)));
+    push("LINKS", Object.values(data.links ?? {}).filter((item): item is string => Boolean(item)));
+    push("PROFESSIONAL SUMMARY", data.professional_summary ? [data.professional_summary] : []);
+    push("TECHNICAL SKILLS", data.skills ?? [...data.matched_skills, ...data.other_skills]);
+    push("PROJECTS", data.projects?.flatMap((project) => [project.name, project.description, ...project.technologies, ...project.achievements, project.url].filter((item): item is string => Boolean(item))) ?? []);
+    push("EDUCATION", data.education.map((item) => [item.degree, item.institution, item.year].filter(Boolean).join(" | ")));
+    push("CERTIFICATIONS", data.certifications);
+    push("LICENSES", data.licenses?.map((item) => [item.name, item.issuer].filter(Boolean).join(" | ")) ?? []);
+    push("LANGUAGES", data.languages?.map((item) => [item.language, item.proficiency].filter(Boolean).join(" | ")) ?? []);
+  }
+  if (data.work_history.length) {
+    lines.push("PROFESSIONAL EXPERIENCE", "");
+    for (const role of data.work_history) {
+      lines.push(role.source_header || [role.title, role.company, dateLabel(role.start, role.end)].filter(Boolean).join(" | ") || "Role");
+      lines.push(...(role.role_context ?? []));
+      if (role.responsibilities_heading) lines.push(role.responsibilities_heading);
+      lines.push(...role.tailored_highlights.map((item) => `  • ${item}`), "");
+    }
+  }
   return lines.join("\n").trim();
 }
-
 function DiffText({ original, suggestion, mode }: { original: string; suggestion: string; mode: "original" | "suggested" }) { return <>{wordDiff(original, suggestion).map((part, index) => mode === "original" ? (part.removed ? <del key={index}>{part.text}</del> : !part.added ? <span key={index}>{part.text}</span> : null) : (part.added ? <mark key={index}>{part.text}</mark> : !part.removed ? <span key={index}>{part.text}</span> : null))}</>; }
 function CoverageGroup({ title, items, titleClassName }: { title: string; items: RequirementClassification[]; titleClassName?: string }) { return items.length ? <div><p className={`mb-1 text-xs font-medium ${titleClassName ?? "text-muted-foreground"}`}>{title}</p><div className="flex flex-wrap gap-1.5">{items.map((item) => <Badge key={item.requirement} variant="outline">{item.requirement}</Badge>)}</div></div> : null; }
 
@@ -56,7 +64,6 @@ function ReviewBullet({ item, included, rejected, readOnly, canOmit, onInclude, 
     {wordingControl ? <><p className="text-xs text-muted-foreground"><b>Original:</b> <DiffText original={item.originalText} suggestion={item.suggestionText} mode="original" /></p><p className="text-sm"><b>Suggestion:</b> <DiffText original={item.originalText} suggestion={item.suggestionText} mode="suggested" /></p></> : <p className="text-sm text-muted-foreground">• {rejected ? item.originalText : item.suggestionText}</p>}
   </div>;
 }
-
 export function legacyDisplaySections(data: TailoredResume): DisplaySection[] {
   const section = (name: TailoredCanonicalSection["section"], values: string[]) => ({
     section: name,
@@ -85,6 +92,7 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   const generateMutation = useMutation({ mutationFn: () => { if (jobId == null) throw new Error("No job selected"); return resumeApi.tailorResume(jobId); }, onSuccess: setDraftData, onError: () => toast.error("Could not generate tailored resume.") });
   const saveMutation = useMutation({ mutationFn: (content: TailoredResume) => resumeApi.createDraft({ job_id: jobId!, content }), onSuccess: (saved) => { toast.success("Tailored resume saved"); void queryClient.invalidateQueries({ queryKey: ["resume-drafts"] }); void queryClient.removeQueries({ queryKey: ["resume-draft", saved.id] }); }, onError: () => toast.error("Could not save tailored resume draft.") });
   const coverageMutation = useMutation({ mutationFn: (content: TailoredResume) => resumeApi.previewCoverage(content), onSuccess: (content) => setCoverageAnalysis(content.requirement_classifications ?? null), onError: () => setCoverageAnalysis(null) });
+  const exportValidationMutation = useMutation({ mutationFn: (content: TailoredResume) => resumeApi.validateExport(content) });
   const generatedData = readOnly ? initialData : draftData;
   const items = useMemo(() => generatedData ? reviewItems(generatedData) : null, [generatedData]);
   const allItems = useMemo(() => generatedData ? decisionItems(generatedData) : null, [generatedData]);
@@ -100,7 +108,10 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   const restoreWording = () => setReviewState((current) => { if (!current) return current; const next = { ...current, rejected: new Set<string>() }; refreshCoverage(reviewedResume(next)); return next; });
   const includeAll = () => setReviewState((current) => { if (!current) return current; const finalIncluded = new Set<string>(); current.source.work_history.forEach((role, roleIndex) => (role.selection_decisions ?? []).forEach((decision) => finalIncluded.add(`${roleIndex}:${decision.source_index}`))); const next = { ...current, finalIncluded }; refreshCoverage(reviewedResume(next)); return next; });
   const generate = () => { if (readOnly || jobId == null) return; const dirty = reviewState?.source.work_history.some((role, roleIndex) => (role.selection_decisions ?? []).some((decision) => reviewState.finalIncluded.has(`${roleIndex}:${decision.source_index}`) !== decision.final_included || reviewState.rejected.has(`${roleIndex}:${decision.source_index}`))) ?? false; if (dirty && !window.confirm("Regenerate and discard your unsaved review choices?")) return; generateMutation.reset(); generateMutation.mutate(); };
-  const copy = () => { if (data) navigator.clipboard.writeText(formatTailoredText(data)).then(() => toast.success("Copied to clipboard"), () => toast.error("Copy failed")); };
+  const ensureExportable = async (): Promise<TailoredResume | null> => { if (!data) return null; if (data.tailoring_snapshot_version !== "lossless-complete-v2") return data; try { return await exportValidationMutation.mutateAsync(data); } catch { toast.error("This resume must be re-generated after the source resume changes."); return null; } };
+  const copy = async () => { const validated = await ensureExportable(); if (validated) navigator.clipboard.writeText(formatResumeText(validated)).then(() => toast.success("Copied to clipboard"), () => toast.error("Copy failed")); };
+  const exportPdf = async () => { const validated = await ensureExportable(); if (validated) downloadResumePdf(validated, stem); };
+  const exportDocx = async () => { const validated = await ensureExportable(); if (validated) await downloadResumeDocx(validated, stem); };
   const save = () => { if (data && !readOnly) saveMutation.mutate(data); };
   const stem = data?.full_name ? `${data.full_name.replace(/\s+/g, "_")}_Resume` : "Tailored_Resume";
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="!flex w-[calc(100%-1rem)] max-h-[90vh] max-w-3xl flex-col overflow-hidden p-4 sm:p-6"><DialogHeader className="shrink-0"><DialogTitle>{readOnly ? "Saved tailored resume" : "Tailor resume"}</DialogTitle><DialogDescription>{readOnly ? "Saved AI-generated draft. Review every claim before use." : jobTitle ? `Review a tailored draft for "${jobTitle}". Generation is not saved until you choose Save resume.` : "Review a tailored draft for this job. Generation is not saved until you choose Save resume."}</DialogDescription></DialogHeader>
@@ -112,7 +123,7 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
       {!canonical.length && !data.skills?.length && data.matched_skills.length > 0 && <div><h4>Matched job requirements</h4><div className="flex flex-wrap gap-1.5">{data.matched_skills.map((skill) => <Badge key={skill}>{skill}</Badge>)}</div></div>}
       <div><h3 className="mb-2 flex items-center gap-2 text-sm font-semibold"><Briefcase className="h-4 w-4 text-blue-500" />Review work experience</h3><p className="mb-3 text-xs text-muted-foreground">Omitted bullets remain available to restore; each non-empty role keeps at least one bullet.</p>{data.work_history.map((role, roleIndex) => { const roleItems = allItems?.[roleIndex] ?? []; const included = roleItems.filter((item) => reviewState?.finalIncluded.has(item.key) ?? item.included); const omitted = roleItems.filter((item) => !(reviewState?.finalIncluded.has(item.key) ?? item.included)); const render = (item: ReviewItem) => <ReviewBullet key={item.key} item={item} included={reviewState?.finalIncluded.has(item.key) ?? item.included ?? false} rejected={reviewState?.rejected.has(item.key) ?? false} readOnly={readOnly} canOmit={(reviewState?.finalIncluded.has(item.key) ?? item.included ?? false) ? included.length > 1 : true} onInclude={() => toggleIncluded(roleIndex, item.sourceIndex)} onWording={() => toggleOriginal(item.key)} />; return <div key={roleIndex} className="mb-4 rounded-md border p-4"><p className="mb-2 text-sm font-medium">{role.source_header || [role.title, role.company].filter(Boolean).join(" | ") || "Role"}</p>{role.source_header ? null : <p className="mb-2 text-xs text-muted-foreground">{dateLabel(role.start, role.end)}</p>}{!roleItems.length && <p className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">Comparison unavailable; showing source bullets safely.</p>}{included.map(render)}{omitted.length ? <details className="mt-2 rounded border p-2"><summary className="cursor-pointer text-xs font-medium">Not shown on this resume</summary><div className="mt-2 space-y-2">{omitted.map(render)}</div></details> : null}</div>; })}</div>
       {!readOnly && reviewState ? <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={restoreWording}><RotateCcw className="h-4 w-4" />Restore AI wording</Button><Button size="sm" variant="outline" onClick={includeAll}><RotateCcw className="h-4 w-4" />Include all experience</Button></div> : null}
-      <div className="border-t pt-2"><p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Canonical resume content</p>{canonical.map((section) => <div key={section.section} className="mb-3"><h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{section.section}</h4>{section.items.map((item) => <p key={item.source_id ?? item.display_key} className="text-sm">{item.text}</p>)}</div>)}</div>
-    </div><div className="mt-0 flex shrink-0 flex-wrap gap-2 border-t bg-background/95 pt-4" data-testid="tailor-resume-actions"><Button size="sm" onClick={copy}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={() => data && downloadResumePdf(data, stem)}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={() => data && void downloadResumeDocx(data, stem)}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button size="sm" onClick={save} disabled={saveMutation.isPending}><Save className="h-4 w-4" />Save resume</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate draft</Button></>}</div></div>}
+      <div className="border-t pt-2"><p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Canonical resume content</p>{canonical.map((section, sectionIndex) => <div key={`${section.section}-${sectionIndex}-${section.items[0]?.source_id ?? section.items[0]?.display_key ?? "empty"}`} className="mb-3"><h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{section.section}</h4>{section.items.map((item, itemIndex) => <p key={`${item.source_id ?? item.display_key}-${itemIndex}`} className="text-sm">{item.text}</p>)}</div>)}</div>
+    </div><div className="mt-0 flex shrink-0 flex-wrap gap-2 border-t bg-background/95 pt-4" data-testid="tailor-resume-actions"><Button size="sm" onClick={() => void copy()} disabled={exportValidationMutation.isPending}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={() => void exportPdf()} disabled={exportValidationMutation.isPending}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={() => void exportDocx()} disabled={exportValidationMutation.isPending}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button size="sm" onClick={save} disabled={saveMutation.isPending}><Save className="h-4 w-4" />Save resume</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate draft</Button></>}</div></div>}
   </DialogContent></Dialog>;
 }

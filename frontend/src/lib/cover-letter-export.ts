@@ -6,7 +6,7 @@
 
 import { Document, Packer, Paragraph, TextRun } from "docx";
 import jsPDF from "jspdf";
-import type { TailoredResume } from "./types";
+import type { TailoredCanonicalSection, TailoredResume } from "./types";
 
 function buildFilename(stem: string, ext: string): string {
   const safe = stem.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_");
@@ -120,6 +120,66 @@ function resumeLinks(data: TailoredResume): string[] {
 function canonicalValues(data: TailoredResume, section: string): string[] | null {
   const match = data.canonical_sections?.find((item) => item.section === section);
   return match ? match.items.map((item) => item.text) : null;
+}
+
+export interface ResumeRenderSection {
+  section: TailoredCanonicalSection["section"] | null;
+  heading: string;
+  items: string[];
+  order: number;
+}
+
+/** One ordered, empty-heading-free model shared by all resume exports. */
+export function buildResumeRenderModel(data: TailoredResume): ResumeRenderSection[] {
+  const canonical = (data.canonical_sections ?? [])
+    .filter((section) => section.items.length > 0)
+    .map((section) => ({
+      section: section.section,
+      heading: (section.heading || section.section).toUpperCase(),
+      items: section.items.map((item) => item.text),
+      order: section.canonical_order ?? 0,
+    }));
+  if (canonical.length) return canonical.sort((a, b) => a.order - b.order);
+  const fallback: ResumeRenderSection[] = [];
+  const add = (section: TailoredCanonicalSection["section"], heading: string, items: string[]) => {
+    const values = items.filter(Boolean);
+    if (values.length) fallback.push({ section, heading, items: values, order: fallback.length });
+  };
+  add("contact", "CONTACT", [data.full_name ?? "", data.email ?? "", data.phone ?? ""]);
+  add("links", "LINKS", resumeLinks(data));
+  add("summary", "PROFESSIONAL SUMMARY", data.professional_summary ? [data.professional_summary] : []);
+  add("skills", "TECHNICAL SKILLS", resumeSkills(data));
+  add("projects", "PROJECTS", data.projects?.flatMap((project) => [project.name, project.description, ...project.technologies, ...project.achievements, project.url].filter((item): item is string => Boolean(item))) ?? []);
+  add("education", "EDUCATION", data.education.map((item) => [item.degree, item.institution, item.year].filter(Boolean).join(" | ")));
+  add("certifications", "CERTIFICATIONS", data.certifications);
+  add("licenses", "LICENSES", data.licenses?.map((item) => [item.name, item.issuer].filter(Boolean).join(" | ")) ?? []);
+  add("languages", "LANGUAGES", data.languages?.map((item) => [item.language, item.proficiency].filter(Boolean).join(" | ")) ?? []);
+  return fallback;
+}
+
+const DEDICATED_RESUME_SECTION_TYPES = new Set<TailoredCanonicalSection["section"]>([
+  "contact", "links", "summary", "skills",
+]);
+
+function remainingCanonicalSections(data: TailoredResume): ResumeRenderSection[] {
+  return buildResumeRenderModel(data).filter(
+    (section) => section.section === null || !DEDICATED_RESUME_SECTION_TYPES.has(section.section),
+  );
+}
+
+export function formatResumeText(data: TailoredResume): string {
+  const lines: string[] = [];
+  for (const section of buildResumeRenderModel(data)) lines.push(section.heading, ...section.items, "");
+  if (data.work_history.length) {
+    lines.push("PROFESSIONAL EXPERIENCE", "");
+    for (const role of data.work_history) {
+      lines.push(role.source_header || [role.title, role.company, dateRange(role.start, role.end)].filter(Boolean).join(" | ") || "Role");
+      lines.push(...(role.role_context ?? []));
+      if (role.responsibilities_heading) lines.push(role.responsibilities_heading);
+      lines.push(...role.tailored_highlights.map((item) => `  • ${item}`), "");
+    }
+  }
+  return lines.join("\n").trim();
 }
 
 interface PdfCtx {
@@ -258,6 +318,8 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
       // Write job header
       ensureSpace(ctx, LINE_H + 2);
       writeLine(ctx, header, BODY_SIZE, true);
+      for (const context of role.role_context ?? []) writeWrapped(ctx, context, BODY_SIZE, textW);
+      if (role.responsibilities_heading) writeLine(ctx, role.responsibilities_heading, BODY_SIZE, true);
 
       // Write bullets
       for (let b = 0; b < bullets.length; b++) {
@@ -275,11 +337,9 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
 
   const canonicalSections = Boolean(data.canonical_sections?.length);
   if (canonicalSections) {
-    for (const section of ["projects", "education", "certifications", "licenses", "languages"] as const) {
-      const values = canonicalValues(data, section);
-      if (!values?.length) continue;
-      writeSectionHeading(ctx, section.toUpperCase());
-      for (const value of values) writeWrapped(ctx, value, BODY_SIZE, textW);
+    for (const section of remainingCanonicalSections(data)) {
+      writeSectionHeading(ctx, section.heading);
+      for (const value of section.items) writeWrapped(ctx, value, BODY_SIZE, textW);
     }
   }
   if (!canonicalSections && data.projects?.length) {
@@ -379,6 +439,8 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
       const company = role.company || "";
       const date = dateRange(role.start, role.end);
       p(role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`, { bold: true, spaceAfter: 40 });
+      for (const context of role.role_context ?? []) p(context, { spaceAfter: 20 });
+      if (role.responsibilities_heading) p(role.responsibilities_heading, { bold: true, spaceAfter: 20 });
       for (const h of role.tailored_highlights) {
         p(`  • ${h}`, { spaceAfter: 20 });
       }
@@ -388,11 +450,9 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
 
   const canonicalSections = Boolean(data.canonical_sections?.length);
   if (canonicalSections) {
-    for (const sectionName of ["projects", "education", "certifications", "licenses", "languages"] as const) {
-      const values = canonicalValues(data, sectionName);
-      if (!values?.length) continue;
-      section(sectionName.toUpperCase());
-      for (const value of values) p(value);
+    for (const rendered of remainingCanonicalSections(data)) {
+      section(rendered.heading);
+      for (const value of rendered.items) p(value);
     }
   }
   if (!canonicalSections && data.projects?.length) {
