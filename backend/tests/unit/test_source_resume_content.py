@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+from typing import cast
 from uuid import UUID
 
 import pytest
 
-from app.domain.resume.schemas import SourceResumeArtifact
+from app.domain.resume.schemas import (
+    SourceResumeArtifact,
+    SourceResumeContentDocumentV3,
+    SourceResumeLayoutReferencesV3,
+)
 from app.domain.resume.source_content import (
     SOURCE_VALIDATION_VERSION,
+    InvalidReferenceDiagnostic,
     build_source_candidate_ledger,
     classify_source_artifacts,
+    has_usable_tailoring_semantics,
     materialize_source_document,
+    materialize_source_document_v3,
     resolve_source_layout,
     resolve_source_layout_v3,
     source_fingerprint,
@@ -50,13 +58,134 @@ def test_exact_literal_and_raw_offsets_are_verified() -> None:
     assert SOURCE_VALIDATION_VERSION == "source-verifier-v1"
 
 
-def test_v3_requires_total_candidate_accounting_and_keeps_meaningful_prose() -> None:
-    ledger = build_source_candidate_ledger("Built APIs\nAwards: Top Engineer")
-    incomplete = resolve_source_layout_v3({"sections": ["c0"]}, ledger)
-    assert incomplete.status == "invalid"
-    assert "incomplete_source_accounting" in incomplete.errors
+def test_v3_server_owns_one_unclassified_candidate_without_source_content() -> None:
+    private_candidate = "Private source candidate"
+    ledger = build_source_candidate_ledger(f"Built APIs\n{private_candidate}")
+    result = resolve_source_layout_v3({"sections": ["c0"]}, ledger)
+    assert result.status == "verified"
+    assert result.layout is not None
+    layout = cast(SourceResumeLayoutReferencesV3, result.layout)
+    assert layout.unclassified == [ledger.candidates[1].source_id]
+    assert private_candidate not in repr(layout.unclassified)
     artifacts = classify_source_artifacts(ledger)
     assert artifacts == []
+
+
+def test_v3_server_owns_all_unclassified_candidates_in_source_order() -> None:
+    ledger = build_source_candidate_ledger("First\nSecond\nThird\nFourth")
+
+    result = resolve_source_layout_v3({"sections": ["c1"]}, ledger)
+
+    assert result.status == "verified"
+    assert result.layout is not None
+    layout = cast(SourceResumeLayoutReferencesV3, result.layout)
+    assert layout.unclassified == [
+        ledger.candidates[0].source_id,
+        ledger.candidates[2].source_id,
+        ledger.candidates[3].source_id,
+    ]
+
+
+def test_v3_rejects_a_malformed_role_without_an_uncaught_assertion() -> None:
+    ledger = build_source_candidate_ledger("Acme - Engineer\nBuilt APIs")
+
+    result = resolve_source_layout_v3({"work_history": ["not-a-role"]}, ledger)
+
+    assert result.status == "invalid"
+    assert result.invalid_reference_diagnostics == (
+        InvalidReferenceDiagnostic(
+            reason="role_object_expected", path="work_history[0]", alias=None
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("layout", "reason", "path"),
+    [
+        (
+            {"work_history": [{"header": "c0", "highlights": ["c1"], "unexpected": "ignored"}]},
+            "unknown_role_field",
+            "work_history[0]",
+        ),
+        (
+            {"named_sections": [{"heading": "c0", "items": ["c1"], "unexpected": "ignored"}]},
+            "unknown_named_section_field",
+            "named_sections[0]",
+        ),
+    ],
+)
+def test_v3_rejects_unknown_nested_fields_without_leaking_values(
+    layout: dict[str, object], reason: str, path: str
+) -> None:
+    ledger = build_source_candidate_ledger("Role\nBuilt APIs\nAwards\nAward item")
+
+    result = resolve_source_layout_v3(layout, ledger)
+
+    assert result.status == "invalid"
+    assert result.errors == ("invalid_source_references",)
+    assert result.invalid_reference_diagnostics == (
+        InvalidReferenceDiagnostic(reason, path, None),
+    )
+    assert "ignored" not in repr(result.invalid_reference_diagnostics)
+
+
+def test_v3_accepts_minimal_optional_nested_objects() -> None:
+    ledger = build_source_candidate_ledger("Role\nBuilt APIs\nAwards\nAward item")
+
+    result = resolve_source_layout_v3(
+        {
+            "work_history": [{"header": "c0", "highlights": ["c1"]}],
+            "named_sections": [{"heading": "c2", "items": ["c3"]}],
+        },
+        ledger,
+    )
+
+    assert result.status == "verified"
+    assert result.layout is not None
+    assert len(result.layout.work_history) == 1
+    assert len(result.layout.named_sections) == 1
+
+
+def test_v3_long_partial_annotation_is_lossless_and_semantically_viable() -> None:
+    raw = "Acme - Engineer\nBuilt FastAPI APIs\n" + "\n".join(
+        f"Unclassified source line {index}" for index in range(160)
+    )
+    ledger = build_source_candidate_ledger(raw)
+
+    result = resolve_source_layout_v3(
+        {"work_history": [{"header": "c0", "highlights": ["c1"]}]}, ledger
+    )
+
+    assert result.status == "verified"
+    assert result.layout is not None
+    layout = cast(SourceResumeLayoutReferencesV3, result.layout)
+    assert has_usable_tailoring_semantics(layout)
+    assert len(layout.unclassified) == 160
+    assert layout.unclassified[0] == ledger.candidates[2].source_id
+    assert layout.unclassified[-1] == ledger.candidates[-1].source_id
+
+
+def test_v3_materializes_unclassified_without_assigning_role_membership() -> None:
+    ledger = build_source_candidate_ledger(
+        "Acme - Engineer\nRole context\nUnclassified source line\nBuilt APIs"
+    )
+    result = resolve_source_layout_v3(
+        {
+            "work_history": [
+                {"header": "c0", "context": ["c1"], "highlights": ["c3"]}
+            ]
+        },
+        ledger,
+    )
+
+    assert result.layout is not None
+    document = materialize_source_document_v3(
+        SourceResumeContentDocumentV3(candidates=ledger.candidates, layout=result.layout)
+    )
+    assert document is not None
+    assert [item.text for item in document.unclassified] == ["Unclassified source line"]
+    assert [item.text for item in document.work_history[0].context_items] == ["Role context"]
+    assert [item.text for item in document.work_history[0].highlights] == ["Built APIs"]
 
 
 def test_v3_mechanical_separator_can_be_explicitly_accounted() -> None:
@@ -67,6 +196,7 @@ def test_v3_mechanical_separator_can_be_explicitly_accounted() -> None:
         {"sections": ["c0"]}, ledger, artifacts=artifacts
     )
     assert result.status == "verified"
+    assert result.missing_candidate_orders == ()
 
 
 def _v3_layout() -> dict[str, object]:
@@ -140,6 +270,81 @@ def test_v3_rejects_candidate_owned_by_content_and_artifact() -> None:
 
     assert result.status == "invalid"
     assert result.errors == ("duplicate_source_candidate_ownership",)
+    assert result.missing_candidate_orders == ()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason", "path", "alias"),
+    [
+        (
+            lambda layout: layout["work_history"][0].update({"header": "c99"}),
+            "unknown_candidate_alias", "work_history[0].header", "c99",
+        ),
+        (
+            lambda layout: layout["work_history"][0].update({"context": "c1"}),
+            "reference_list_expected", "work_history[0].context", None,
+        ),
+        (
+            lambda layout: layout["work_history"][0].update({"context": ["c99"]}),
+            "unknown_candidate_alias", "work_history[0].context[0]", "c99",
+        ),
+        (
+            lambda layout: layout["work_history"][0].update({"responsibilities_heading": 3}),
+            "responsibilities_heading_expected",
+            "work_history[0].responsibilities_heading",
+            None,
+        ),
+        (
+            lambda layout: layout["named_sections"][0].update({"items": ["c99"]}),
+            "unknown_candidate_alias", "named_sections[0].items[0]", "c99",
+        ),
+    ],
+)
+def test_v3_invalid_reference_diagnostics_are_structural_and_safe(
+    mutate: object, reason: str, path: str, alias: str | None
+) -> None:
+    ledger = build_source_candidate_ledger(
+        "Role\nContext\nResponsibilities:\nBullet\nAwards\nAward item\nOther"
+    )
+    layout = _v3_layout()
+    assert callable(mutate)
+    mutate(layout)
+
+    result = resolve_source_layout_v3(layout, ledger)
+
+    assert result.errors == ("invalid_source_references",)
+    assert result.invalid_reference_diagnostics == (
+        InvalidReferenceDiagnostic(reason, path, alias),
+    )
+    assert "Role" not in repr(result.invalid_reference_diagnostics)
+
+
+def test_v3_invalid_reference_diagnostics_cover_order_duplicate_and_schema_privacy() -> None:
+    ordered_ledger = build_source_candidate_ledger("First\nSecond")
+    ordered = resolve_source_layout_v3(
+        {"sections": ["c1", "c0"]}, ordered_ledger
+    )
+    duplicate = resolve_source_layout_v3(
+        {"contact": {"email": "c0"}, "summary": "c0"},
+        build_source_candidate_ledger("Private contact"),
+    )
+    private_value = "Private invalid project order"
+    schema = resolve_source_layout_v3(
+        {"sections": ["c0"], "projects": [{"order": private_value}]},
+        build_source_candidate_ledger("First"),
+    )
+
+    assert ordered.status == "verified"
+    assert ordered.layout is not None
+    assert ordered.layout.sections == [
+        ordered_ledger.candidates[0].source_id,
+        ordered_ledger.candidates[1].source_id,
+    ]
+    assert duplicate.invalid_reference_diagnostics[0].reason == "metadata_content_overlap"
+    assert schema.invalid_reference_diagnostics[0] == InvalidReferenceDiagnostic(
+        "schema_validation_failed", "projects[0].order"
+    )
+    assert private_value not in repr(schema.invalid_reference_diagnostics)
 
 
 def test_parser_metadata_is_replaced_by_server_verified_metadata() -> None:

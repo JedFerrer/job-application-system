@@ -119,6 +119,27 @@ describe("lossless resume exports", () => {
     const sections = buildResumeRenderModel(resume);
     expect(sections.find((section) => section.section === "summary")?.heading).toBe("SUMMARY");
     expect(sections.find((section) => section.section === "skills")?.heading).toBe("SKILLS");
-    expect(sections.every((section) => Boolean(section.heading.trim()))).toBe(true);
+    expect(sections.every((section) => Boolean(section.heading?.trim()))).toBe(true);
+  });
+
+  it("emits unclassified passthrough content once without a synthetic heading", async () => {
+    const marker = "PASSTHROUGH_MARKER: literal source text";
+    const passthrough: TailoredResume = {
+      ...resume,
+      canonical_sections: [
+        ...resume.canonical_sections!,
+        canonical("unclassified", "", marker, 6),
+      ],
+    };
+
+    downloadResumePdf(passthrough, "lossless-resume");
+    await downloadResumeDocx(passthrough, "lossless-resume");
+
+    for (const output of [capture.pdfText, capture.docxText]) {
+      expect(count(output, marker)).toBe(1);
+      expect(output).not.toContain("UNCLASSIFIED");
+      expect(output).not.toContain("OTHER");
+    }
+    expect(buildResumeRenderModel(passthrough).find((section) => section.section === "unclassified")?.heading).toBeNull();
   });
 });

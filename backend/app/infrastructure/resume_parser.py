@@ -36,6 +36,7 @@ from app.domain.resume.schemas import (
 from app.domain.resume.source_content import (
     build_source_candidate_ledger,
     classify_source_artifacts,
+    has_usable_tailoring_semantics,
     resolve_source_layout_v3,
     verify_source_candidate_ledger,
 )
@@ -44,7 +45,7 @@ from app.infrastructure.llm_utils import strip_code_fences
 
 logger = get_logger("resume_parser")
 
-RESUME_PARSER_CONFIG_ID = "resume-parser-v6"
+RESUME_PARSER_CONFIG_ID = "resume-parser-v7"
 EVIDENCE_VERIFIER_VERSION = "evidence-verifier-v3"
 NATIVE_EXTRACTION_VERSION = "native-extraction-v1"
 
@@ -85,8 +86,16 @@ def _profile_alias_leak_paths(
     return tuple(paths)
 
 
-def _source_contract_retry_prompt(base_prompt: str) -> str:
-    return base_prompt + (
+def _source_contract_retry_prompt(
+    base_prompt: str,
+    *,
+    zero_semantic: bool = False,
+    error_codes: tuple[str, ...] = (),
+    invalid_reasons: tuple[str, ...] = (),
+    invalid_paths: tuple[str, ...] = (),
+    invalid_aliases: tuple[str | None, ...] = (),
+) -> str:
+    prompt = base_prompt + (
         "\n\nRETRY: The previous output mixed the two contracts. Return a separate "
         "normalized CandidateProfile and semantic source_references object. "
         "Every CandidateProfile field must contain normalized human-readable "
@@ -100,6 +109,25 @@ def _source_contract_retry_prompt(base_prompt: str) -> str:
         "the model-provided order is ignored. Do not return source prose, UUIDs, "
         "offsets, fingerprints, or verification metadata."
     )
+    if zero_semantic:
+        return prompt + (
+            " The prior semantic annotation contained no usable work evidence. "
+            "Return at least one work_history object with one issued header alias "
+            "and one issued highlight alias when the resume supports it. Partial "
+            "annotation is allowed: do not invent aliases or classify every source "
+            "candidate, because the server preserves unclassified content."
+        )
+    if error_codes:
+        safe_feedback = [f"codes={','.join(error_codes)}"]
+        if invalid_reasons:
+            safe_feedback.append(f"reasons={','.join(invalid_reasons)}")
+        if invalid_paths:
+            safe_feedback.append(f"paths={','.join(invalid_paths)}")
+        aliases = [alias for alias in invalid_aliases if alias is not None]
+        if aliases:
+            safe_feedback.append(f"aliases={','.join(aliases)}")
+        return prompt + " Correct these structural source-reference errors only: " + "; ".join(safe_feedback) + "."
+    return prompt
 
 
 def _normalize_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -310,10 +338,9 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
         "Never return candidate text in source_references. CandidateProfile fields "
         "must contain normalized, human-readable values; cN aliases are forbidden "
         "outside source_references. Do not add `header` to CandidateProfile "
-        "work-history objects. In source_references, include every candidate "
-        "exactly once across the well-known fields, role `context`, optional "
-        "`responsibilities_heading`, and `named_sections` (`heading` plus "
-        "`items`). Do not omit meaningful text."
+        "work-history objects. source_references is a semantic subset only: do not "
+        "invent aliases and do not classify candidates merely for accounting; the "
+        "server preserves valid unclassified source content."
     )
     prompt = base_prompt
     for attempt in range(_MAX_SOURCE_CONTRACT_ATTEMPTS):
@@ -372,6 +399,23 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
 
         artifacts = classify_source_artifacts(ledger)
         layout_result = resolve_source_layout_v3(raw_layout, ledger, artifacts)
+        if (
+            layout_result.status == "verified"
+            and not has_usable_tailoring_semantics(layout_result.layout)
+        ):
+            logger.warning(
+                "resume_source_layout_zero_semantic_annotation",
+                model=model,
+                attempt=attempt + 1,
+                error_codes=("zero_usable_semantic_annotation",),
+                error_count=1,
+            )
+            if attempt + 1 >= _MAX_SOURCE_CONTRACT_ATTEMPTS:
+                raise ValueError(
+                    "Resume source layout has zero usable semantic annotation"
+                )
+            prompt = _source_contract_retry_prompt(base_prompt, zero_semantic=True)
+            continue
         source_content = SourceResumeContentPayloadV3(
             document={
                 "candidates": ledger.candidates,
@@ -392,19 +436,59 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                 source_layout_errors=layout_result.errors,
             )
         error_codes = layout_result.errors or ("missing_source_references",)
+        accounting_diagnostics: dict[str, object] = {}
+        if "incomplete_source_accounting" in error_codes:
+            missing_orders = layout_result.missing_candidate_orders
+            accounting_diagnostics = {
+                "missing_candidate_count": len(missing_orders),
+                "missing_candidate_orders": missing_orders,
+                "missing_candidate_aliases": tuple(f"c{order}" for order in missing_orders),
+            }
+        invalid_reference_diagnostics: dict[str, object] = {}
+        if "invalid_source_references" in error_codes:
+            diagnostics = layout_result.invalid_reference_diagnostics
+            invalid_reference_diagnostics = {
+                "invalid_reference_count": len(diagnostics),
+                "invalid_reference_reasons": tuple(
+                    diagnostic.reason for diagnostic in diagnostics
+                ),
+                "invalid_reference_paths": tuple(
+                    diagnostic.path for diagnostic in diagnostics
+                ),
+                "invalid_reference_aliases": tuple(
+                    diagnostic.alias for diagnostic in diagnostics
+                ),
+            }
         logger.warning(
             "resume_source_layout_validation_failed",
             model=model,
             attempt=attempt + 1,
             error_codes=error_codes,
             error_count=len(error_codes),
+            **accounting_diagnostics,
+            **invalid_reference_diagnostics,
         )
         if attempt + 1 >= _MAX_SOURCE_CONTRACT_ATTEMPTS:
             raise ValueError(
                 "Resume source layout could not account for all source candidates: "
                 + ", ".join(error_codes)
             )
-        prompt = _source_contract_retry_prompt(base_prompt)
+        prompt = _source_contract_retry_prompt(
+            base_prompt,
+            error_codes=error_codes,
+            invalid_reasons=tuple(
+                diagnostic.reason
+                for diagnostic in layout_result.invalid_reference_diagnostics
+            ),
+            invalid_paths=tuple(
+                diagnostic.path
+                for diagnostic in layout_result.invalid_reference_diagnostics
+            ),
+            invalid_aliases=tuple(
+                diagnostic.alias
+                for diagnostic in layout_result.invalid_reference_diagnostics
+            ),
+        )
     raise AssertionError("unreachable")
 
 

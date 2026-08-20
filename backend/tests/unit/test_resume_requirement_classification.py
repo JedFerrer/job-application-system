@@ -8,7 +8,7 @@ from app.domain.resume.requirement_classification import (
     classify_requirements,
     classify_resume_coverage,
 )
-from app.domain.resume.schemas import ParsedProfile, TailoredResume
+from app.domain.resume.schemas import ParsedProfile, RequirementClassification, TailoredResume
 
 pytestmark = pytest.mark.unit
 
@@ -177,3 +177,32 @@ def test_resume_coverage_aliases_and_explicit_empty_skills_are_safe() -> None:
     assert by_requirement["aws"].resume_coverage_status == "not_represented"
     assert by_requirement["kubernetes"].status == "missing"
     assert by_requirement["kubernetes"].resume_coverage_status == "not_applicable"
+
+
+def test_unclassified_canonical_passthrough_does_not_become_resume_evidence() -> None:
+    resume = TailoredResume.model_validate(
+        {
+            "job_id": 1,
+            "skills": [],
+            "canonical_sections": [
+                {
+                    "section": "unclassified",
+                    "canonical_order": 3,
+                    "items": [
+                        {
+                            "source_id": "00000000-0000-0000-0000-000000000001",
+                            "text": "Kubernetes-only passthrough source line",
+                            "canonical_order": 3,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    result = classify_resume_coverage(
+        [RequirementClassification(requirement="kubernetes", status="verified")], resume
+    )
+
+    assert result[0].resume_coverage_status == "not_represented"
+    assert result[0].resume_evidence_categories == []

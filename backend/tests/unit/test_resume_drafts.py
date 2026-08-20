@@ -536,6 +536,35 @@ def test_fresh_source_backed_snapshot_rejects_invented_heading_when_absent() -> 
         )
 
 
+def test_fresh_source_backed_snapshot_preserves_unclassified_passthrough_exactly() -> None:
+    source = _source_document()
+    source.unclassified = [SourceTextItem(text="Verbatim passthrough line", order=7)]
+    content = _source_backed_content(source)
+
+    unclassified = [
+        section for section in content.canonical_sections if section.section == "unclassified"
+    ]
+    assert len(unclassified) == 1
+    assert unclassified[0].heading is None
+    assert [item.text for item in unclassified[0].items] == ["Verbatim passthrough line"]
+
+    _validate_source_backed_snapshot(
+        content,
+        source_document=source,
+        profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+        job_description="Python backend engineer",
+    )
+
+    unclassified[0].items[0].text = "forged"
+    with pytest.raises(TailoredResumeSnapshotInvalidError):
+        _validate_source_backed_snapshot(
+            content,
+            source_document=source,
+            profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+            job_description="Python backend engineer",
+        )
+
+
 def _draft() -> SimpleNamespace:
     now = datetime.now(UTC)
     return SimpleNamespace(

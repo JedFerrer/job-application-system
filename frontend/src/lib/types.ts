@@ -206,7 +206,7 @@ export interface TailoredCanonicalItem {
 }
 
 export interface TailoredCanonicalSection {
-  section: "contact" | "links" | "summary" | "skills" | "projects" | "education" | "certifications" | "licenses" | "languages" | "named";
+  section: "contact" | "links" | "summary" | "skills" | "projects" | "education" | "certifications" | "licenses" | "languages" | "named" | "unclassified";
   items: TailoredCanonicalItem[];
   heading?: string | null;
   canonical_order?: number;

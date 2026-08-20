@@ -215,6 +215,31 @@ describe("TailorResumeDialog", () => {
     expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining("kubernetes"));
   });
 
+  it("shows and copies unclassified passthrough content without a synthetic heading", async () => {
+    const marker = "PASSTHROUGH_MARKER: literal source text";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    apiMocks.tailorResume.mockResolvedValue({
+      ...tailoredResume,
+      canonical_sections: [{
+        section: "unclassified" as const,
+        canonical_order: 9,
+        items: [{ source_id: "00000000-0000-0000-0000-000000000001", text: marker, canonical_order: 9 }],
+      }],
+    });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(renderedText()).toContain(marker));
+    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).not.toContain("unclassified");
+
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"))?.click(); await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining(marker));
+    expect(writeText.mock.calls[0]?.[0]).not.toContain("UNCLASSIFIED");
+  });
+
   it("separates candidate fit from resume coverage and refreshes after review", async () => {
     const analyzed = {
       ...tailoredResume,

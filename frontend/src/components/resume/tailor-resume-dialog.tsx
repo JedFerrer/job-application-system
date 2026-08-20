@@ -23,8 +23,9 @@ function dateLabel(start: string | null, end: string | null): string {
 function formatResumeText(data: TailoredResume): string {
   const lines: string[] = [];
   const sections = data.canonical_sections ?? [];
-  const push = (heading: string, items: string[]) => { if (items.length) lines.push(heading, ...items, ""); };
-  for (const section of [...sections].sort((a, b) => (a.canonical_order ?? 0) - (b.canonical_order ?? 0))) {
+  const push = (heading: string | null, items: string[]) => { if (items.length) lines.push(...(heading ? [heading] : []), ...items, ""); };
+  const ordered = [...sections].sort((a, b) => (a.canonical_order ?? 0) - (b.canonical_order ?? 0));
+  for (const section of ordered.filter((section) => section.section !== "unclassified")) {
     push((section.heading || section.section).toUpperCase(), section.items.map((item) => item.text));
   }
   if (!sections.length) {
@@ -46,6 +47,9 @@ function formatResumeText(data: TailoredResume): string {
       if (role.responsibilities_heading) lines.push(role.responsibilities_heading);
       lines.push(...role.tailored_highlights.map((item) => `  • ${item}`), "");
     }
+  }
+  for (const section of ordered.filter((section) => section.section === "unclassified")) {
+    push(null, section.items.map((item) => item.text));
   }
   return lines.join("\n").trim();
 }
@@ -123,7 +127,7 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
       {!canonical.length && !data.skills?.length && data.matched_skills.length > 0 && <div><h4>Matched job requirements</h4><div className="flex flex-wrap gap-1.5">{data.matched_skills.map((skill) => <Badge key={skill}>{skill}</Badge>)}</div></div>}
       <div><h3 className="mb-2 flex items-center gap-2 text-sm font-semibold"><Briefcase className="h-4 w-4 text-blue-500" />Review work experience</h3><p className="mb-3 text-xs text-muted-foreground">Omitted bullets remain available to restore; each non-empty role keeps at least one bullet.</p>{data.work_history.map((role, roleIndex) => { const roleItems = allItems?.[roleIndex] ?? []; const included = roleItems.filter((item) => reviewState?.finalIncluded.has(item.key) ?? item.included); const omitted = roleItems.filter((item) => !(reviewState?.finalIncluded.has(item.key) ?? item.included)); const render = (item: ReviewItem) => <ReviewBullet key={item.key} item={item} included={reviewState?.finalIncluded.has(item.key) ?? item.included ?? false} rejected={reviewState?.rejected.has(item.key) ?? false} readOnly={readOnly} canOmit={(reviewState?.finalIncluded.has(item.key) ?? item.included ?? false) ? included.length > 1 : true} onInclude={() => toggleIncluded(roleIndex, item.sourceIndex)} onWording={() => toggleOriginal(item.key)} />; return <div key={roleIndex} className="mb-4 rounded-md border p-4"><p className="mb-2 text-sm font-medium">{role.source_header || [role.title, role.company].filter(Boolean).join(" | ") || "Role"}</p>{role.source_header ? null : <p className="mb-2 text-xs text-muted-foreground">{dateLabel(role.start, role.end)}</p>}{!roleItems.length && <p className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">Comparison unavailable; showing source bullets safely.</p>}{included.map(render)}{omitted.length ? <details className="mt-2 rounded border p-2"><summary className="cursor-pointer text-xs font-medium">Not shown on this resume</summary><div className="mt-2 space-y-2">{omitted.map(render)}</div></details> : null}</div>; })}</div>
       {!readOnly && reviewState ? <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={restoreWording}><RotateCcw className="h-4 w-4" />Restore AI wording</Button><Button size="sm" variant="outline" onClick={includeAll}><RotateCcw className="h-4 w-4" />Include all experience</Button></div> : null}
-      <div className="border-t pt-2"><p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Canonical resume content</p>{canonical.map((section, sectionIndex) => <div key={`${section.section}-${sectionIndex}-${section.items[0]?.source_id ?? section.items[0]?.display_key ?? "empty"}`} className="mb-3"><h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{section.section}</h4>{section.items.map((item, itemIndex) => <p key={`${item.source_id ?? item.display_key}-${itemIndex}`} className="text-sm">{item.text}</p>)}</div>)}</div>
+      <div className="border-t pt-2"><p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Canonical resume content</p>{canonical.map((section, sectionIndex) => <div key={`${section.section}-${sectionIndex}-${section.items[0]?.source_id ?? section.items[0]?.display_key ?? "empty"}`} className="mb-3">{section.section === "unclassified" ? null : <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{section.section}</h4>}{section.items.map((item, itemIndex) => <p key={`${item.source_id ?? item.display_key}-${itemIndex}`} className="text-sm">{item.text}</p>)}</div>)}</div>
     </div><div className="mt-0 flex shrink-0 flex-wrap gap-2 border-t bg-background/95 pt-4" data-testid="tailor-resume-actions"><Button size="sm" onClick={() => void copy()} disabled={exportValidationMutation.isPending}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={() => void exportPdf()} disabled={exportValidationMutation.isPending}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={() => void exportDocx()} disabled={exportValidationMutation.isPending}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button size="sm" onClick={save} disabled={saveMutation.isPending}><Save className="h-4 w-4" />Save resume</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate draft</Button></>}</div></div>}
   </DialogContent></Dialog>;
 }

@@ -82,6 +82,18 @@ describe("tailoring review", () => {
     state.rejected.clear();
     expect(reviewedResume(state).work_history[0]!.tailored_highlights).toEqual(["Built Python APIs", "Built Python APIs"]);
   });
+  it("preserves immutable unclassified canonical passthrough blocks during review", () => {
+    const source = resume();
+    source.canonical_sections = [{
+      section: "unclassified",
+      canonical_order: 4,
+      items: [{ source_id: "00000000-0000-0000-0000-000000000001", text: "Literal passthrough", canonical_order: 4 }],
+    }];
+
+    const reviewed = reviewedResume(createReviewState(source));
+
+    expect(reviewed.canonical_sections).toEqual(source.canonical_sections);
+  });
   it("provides deterministic visual diff segments", () => {
     expect(wordDiff("Built APIs", "Built Python APIs").some((part) => part.added)).toBe(true);
   });

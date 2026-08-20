@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from app.domain.resume.schemas import (
     SOURCE_RESUME_SCHEMA_VERSION,
     SourceNamedSection,
@@ -66,6 +68,69 @@ class SourceLayoutResult:
     layout: SourceResumeLayoutReferences | None
     status: Literal["verified", "invalid", "unavailable"]
     errors: tuple[str, ...] = ()
+    # Source order is a safe, request-local diagnostic identifier. Keep source
+    # text, UUIDs, offsets, and fingerprints out of validation results.
+    missing_candidate_orders: tuple[int, ...] = ()
+    invalid_reference_diagnostics: tuple[InvalidReferenceDiagnostic, ...] = ()
+
+
+@dataclass(frozen=True)
+class InvalidReferenceDiagnostic:
+    """One privacy-safe structural source-reference validation failure."""
+
+    reason: str
+    path: str
+    alias: str | None = None
+
+
+class _InvalidSourceReferenceError(ValueError):
+    """Internal fail-fast error carrying only controlled diagnostic data."""
+
+    def __init__(self, reason: str, path: str, alias: str | None = None) -> None:
+        super().__init__(reason)
+        self.diagnostic = InvalidReferenceDiagnostic(reason, path, alias)
+
+
+def _invalid_reference_result(
+    *diagnostics: InvalidReferenceDiagnostic,
+) -> SourceLayoutResult:
+    return SourceLayoutResult(
+        None,
+        "invalid",
+        ("invalid_source_references",),
+        invalid_reference_diagnostics=diagnostics,
+    )
+
+
+_SAFE_REFERENCE_PATH_PARTS = {
+    "contact", "links", "summary", "skills", "sections", "work_history",
+    "projects", "education", "certifications", "licenses", "languages",
+    "named_sections", "order", "header", "highlights", "context",
+    "responsibilities_heading", "name", "description", "url", "technologies",
+    "achievements", "heading", "items",
+}
+
+
+def _schema_validation_diagnostics(exc: ValidationError) -> tuple[InvalidReferenceDiagnostic, ...]:
+    """Extract only fixed schema paths; never retain Pydantic's rejected input."""
+    diagnostics: list[InvalidReferenceDiagnostic] = []
+    for error in exc.errors():
+        path = "source_references"
+        parts: list[str] = []
+        for part in error.get("loc", ()):
+            if isinstance(part, int):
+                if parts:
+                    parts[-1] += f"[{part}]"
+                continue
+            if isinstance(part, str) and part in _SAFE_REFERENCE_PATH_PARTS:
+                parts.append(part)
+                continue
+            parts = []
+            break
+        if parts:
+            path = ".".join(parts)
+        diagnostics.append(InvalidReferenceDiagnostic("schema_validation_failed", path))
+    return tuple(diagnostics) or (InvalidReferenceDiagnostic("schema_validation_failed", "source_references"),)
 
 
 _SEPARATOR_RE = re.compile(r"^[\s\W_]{3,}$")
@@ -201,22 +266,35 @@ def verify_source_candidate_ledger(
     return tuple(dict.fromkeys(errors))
 
 
-def _resolve_candidate_alias(value: object, aliases: dict[str, UUID]) -> UUID | None:
+def _resolve_candidate_alias(
+    value: object,
+    aliases: dict[str, UUID],
+    *,
+    path: str,
+) -> UUID | None:
     if value is None:
         return None
     if not isinstance(value, str) or value not in aliases:
-        raise ValueError("unknown_candidate_alias")
+        alias = value if isinstance(value, str) and re.fullmatch(r"c\d+", value) else None
+        raise _InvalidSourceReferenceError("unknown_candidate_alias", path, alias)
     return aliases[value]
 
 
-def _resolve_alias_list(value: object, aliases: dict[str, UUID]) -> list[UUID]:
+def _resolve_alias_list(
+    value: object,
+    aliases: dict[str, UUID],
+    *,
+    path: str,
+) -> list[UUID]:
     if not isinstance(value, list):
-        raise ValueError("reference_list_expected")
+        raise _InvalidSourceReferenceError("reference_list_expected", path)
     resolved: list[UUID] = []
-    for item in value:
-        candidate_id = _resolve_candidate_alias(item, aliases)
+    for index, item in enumerate(value):
+        candidate_id = _resolve_candidate_alias(item, aliases, path=f"{path}[{index}]")
         if candidate_id is None:
-            raise ValueError("null_candidate_reference")
+            raise _InvalidSourceReferenceError(
+                "null_candidate_reference", f"{path}[{index}]"
+            )
         resolved.append(candidate_id)
     return resolved
 
@@ -224,6 +302,9 @@ def _resolve_alias_list(value: object, aliases: dict[str, UUID]) -> list[UUID]:
 def resolve_source_layout(
     raw_layout: object,
     ledger: SourceResumeContentDocumentV2,
+    *,
+    normalize_order: bool = False,
+    allow_empty: bool = False,
 ) -> SourceLayoutResult:
     """Resolve model aliases to server UUIDs and reject unsafe layouts."""
     if raw_layout is None:
@@ -233,17 +314,26 @@ def resolve_source_layout(
     aliases = {f"c{candidate.order}": candidate.source_id for candidate in ledger.candidates}
     candidate_orders = {candidate.source_id: candidate.order for candidate in ledger.candidates}
 
-    def require_increasing(values: list[UUID]) -> None:
+    def require_increasing(values: list[UUID], path: str) -> None:
         orders = [candidate_orders[value] for value in values]
         if orders != sorted(orders):
-            raise ValueError("reference_order_invalid")
+            for index in range(1, len(orders)):
+                if orders[index] < orders[index - 1]:
+                    raise _InvalidSourceReferenceError(
+                        "reference_order_invalid",
+                        f"{path}[{index}]",
+                        f"c{orders[index]}",
+                    )
+            raise _InvalidSourceReferenceError("reference_order_invalid", path)
 
-    def resolve_map(value: object) -> dict[str, UUID]:
+    def resolve_map(value: object, path: str) -> dict[str, UUID]:
         if not isinstance(value, dict):
-            raise ValueError("layout_map_expected")
+            raise _InvalidSourceReferenceError("layout_map_expected", path)
         resolved: dict[str, UUID] = {}
         for key, raw_value in value.items():
-            candidate_id = _resolve_candidate_alias(raw_value, aliases)
+            # Map keys are model-provided and could contain personal data. Keep
+            # diagnostics at the stable map level rather than exposing a key.
+            candidate_id = _resolve_candidate_alias(raw_value, aliases, path=path)
             if candidate_id is not None:
                 resolved[key] = candidate_id
         return resolved
@@ -254,44 +344,53 @@ def resolve_source_layout(
             "projects", "education", "certifications", "licenses", "languages",
         }
         if set(raw_layout) - allowed:
-            raise ValueError("unknown_layout_field")
+            raise _InvalidSourceReferenceError("unknown_layout_field", "source_references")
         resolved: dict[str, object] = {
-            "contact": resolve_map(raw_layout.get("contact", {})),
-            "links": resolve_map(raw_layout.get("links", {})),
-            "summary": _resolve_candidate_alias(raw_layout.get("summary"), aliases),
-            "skills": _resolve_alias_list(raw_layout.get("skills", []), aliases),
-            "sections": _resolve_alias_list(raw_layout.get("sections", []), aliases),
-            "education": _resolve_alias_list(raw_layout.get("education", []), aliases),
-            "certifications": _resolve_alias_list(raw_layout.get("certifications", []), aliases),
-            "licenses": _resolve_alias_list(raw_layout.get("licenses", []), aliases),
-            "languages": _resolve_alias_list(raw_layout.get("languages", []), aliases),
+            "contact": resolve_map(raw_layout.get("contact", {}), "contact"),
+            "links": resolve_map(raw_layout.get("links", {}), "links"),
+            "summary": _resolve_candidate_alias(
+                raw_layout.get("summary"), aliases, path="summary"
+            ),
+            "skills": _resolve_alias_list(raw_layout.get("skills", []), aliases, path="skills"),
+            "sections": _resolve_alias_list(raw_layout.get("sections", []), aliases, path="sections"),
+            "education": _resolve_alias_list(raw_layout.get("education", []), aliases, path="education"),
+            "certifications": _resolve_alias_list(raw_layout.get("certifications", []), aliases, path="certifications"),
+            "licenses": _resolve_alias_list(raw_layout.get("licenses", []), aliases, path="licenses"),
+            "languages": _resolve_alias_list(raw_layout.get("languages", []), aliases, path="languages"),
         }
         roles = raw_layout.get("work_history", [])
         projects = raw_layout.get("projects", [])
         if not isinstance(roles, list) or not isinstance(projects, list):
-            raise ValueError("layout_collection_expected")
+            path = "work_history" if not isinstance(roles, list) else "projects"
+            raise _InvalidSourceReferenceError("layout_collection_expected", path)
         resolved_roles: list[dict[str, object]] = []
-        for _index, role in enumerate(roles):
+        for index, role in enumerate(roles):
             if not isinstance(role, dict):
-                raise ValueError("role_object_expected")
+                raise _InvalidSourceReferenceError("role_object_expected", f"work_history[{index}]")
             if set(role) - {"order", "header", "highlights"}:
-                raise ValueError("unknown_role_field")
-            header = _resolve_candidate_alias(role.get("header"), aliases)
+                raise _InvalidSourceReferenceError("unknown_role_field", f"work_history[{index}]")
+            header = _resolve_candidate_alias(
+                role.get("header"), aliases, path=f"work_history[{index}].header"
+            )
             if header is None:
-                raise ValueError("role_header_required")
+                raise _InvalidSourceReferenceError(
+                    "role_header_required", f"work_history[{index}].header"
+                )
             resolved_roles.append({
                 # The model's numeric order is deliberately ignored. Canonical
                 # role order is owned by the server-side header candidate.
                 "order": candidate_orders[header],
                 "header": header,
-                "highlights": _resolve_alias_list(role.get("highlights", []), aliases),
+                "highlights": _resolve_alias_list(
+                    role.get("highlights", []), aliases, path=f"work_history[{index}].highlights"
+                ),
             })
         resolved_roles.sort(key=lambda role: cast(int, role["order"]))
         resolved["work_history"] = resolved_roles
         resolved_projects: list[dict[str, object]] = []
         for index, project in enumerate(projects):
             if not isinstance(project, dict):
-                raise ValueError("project_object_expected")
+                raise _InvalidSourceReferenceError("project_object_expected", f"projects[{index}]")
             if set(project) - {
                 "order",
                 "name",
@@ -300,29 +399,67 @@ def resolve_source_layout(
                 "technologies",
                 "achievements",
             }:
-                raise ValueError("unknown_project_field")
+                raise _InvalidSourceReferenceError("unknown_project_field", f"projects[{index}]")
             resolved_projects.append({
                 **{
-                    key: _resolve_candidate_alias(project.get(key), aliases)
+                    key: _resolve_candidate_alias(
+                        project.get(key), aliases, path=f"projects[{index}].{key}"
+                    )
                     for key in ("name", "description", "url")
                 },
                 "order": project.get("order", index),
-                "technologies": _resolve_alias_list(project.get("technologies", []), aliases),
-                "achievements": _resolve_alias_list(project.get("achievements", []), aliases),
+                "technologies": _resolve_alias_list(
+                    project.get("technologies", []), aliases,
+                    path=f"projects[{index}].technologies",
+                ),
+                "achievements": _resolve_alias_list(
+                    project.get("achievements", []), aliases,
+                    path=f"projects[{index}].achievements",
+                ),
             })
         resolved["projects"] = resolved_projects
         layout = SourceResumeLayoutReferences.model_validate(resolved)
-        require_increasing(layout.skills)
-        require_increasing(layout.sections)
-        require_increasing(layout.education)
-        require_increasing(layout.certifications)
-        require_increasing(layout.licenses)
-        require_increasing(layout.languages)
-        for role in layout.work_history:
-            require_increasing(role.highlights)
-        for project in layout.projects:
-            require_increasing(project.technologies)
-            require_increasing(project.achievements)
+        if normalize_order:
+            order_key = candidate_orders.__getitem__
+            layout = layout.model_copy(
+                update={
+                    "skills": sorted(layout.skills, key=order_key),
+                    "sections": sorted(layout.sections, key=order_key),
+                    "education": sorted(layout.education, key=order_key),
+                    "certifications": sorted(layout.certifications, key=order_key),
+                    "licenses": sorted(layout.licenses, key=order_key),
+                    "languages": sorted(layout.languages, key=order_key),
+                    "work_history": [
+                        role.model_copy(
+                            update={
+                                "highlights": sorted(role.highlights, key=order_key),
+                            }
+                        )
+                        for role in layout.work_history
+                    ],
+                    "projects": [
+                        project.model_copy(
+                            update={
+                                "technologies": sorted(project.technologies, key=order_key),
+                                "achievements": sorted(project.achievements, key=order_key),
+                            }
+                        )
+                        for project in layout.projects
+                    ],
+                }
+            )
+        else:
+            require_increasing(layout.skills, "skills")
+            require_increasing(layout.sections, "sections")
+            require_increasing(layout.education, "education")
+            require_increasing(layout.certifications, "certifications")
+            require_increasing(layout.licenses, "licenses")
+            require_increasing(layout.languages, "languages")
+            for index, role in enumerate(layout.work_history):
+                require_increasing(role.highlights, f"work_history[{index}].highlights")
+            for index, project in enumerate(layout.projects):
+                require_increasing(project.technologies, f"projects[{index}].technologies")
+                require_increasing(project.achievements, f"projects[{index}].achievements")
         # Contact and link maps are semantic metadata: one physical line can
         # legitimately provide multiple fields (for example, email and phone)
         # and therefore may be referenced more than once. All prose/content
@@ -345,15 +482,21 @@ def resolve_source_layout(
                 if item is not None
             )
             exclusive_referenced.extend(project.technologies + project.achievements)
-        if not metadata_referenced and not exclusive_referenced:
-            raise ValueError("empty_source_references")
+        if not metadata_referenced and not exclusive_referenced and not allow_empty:
+            raise _InvalidSourceReferenceError("empty_source_references", "source_references")
         if len(exclusive_referenced) != len(set(exclusive_referenced)):
-            raise ValueError("duplicate_candidate_reference")
+            raise _InvalidSourceReferenceError(
+                "duplicate_exclusive_reference", "source_references"
+            )
         if set(metadata_referenced) & set(exclusive_referenced):
-            raise ValueError("duplicate_candidate_reference")
+            raise _InvalidSourceReferenceError("metadata_content_overlap", "source_references")
         return SourceLayoutResult(layout, "verified")
+    except _InvalidSourceReferenceError as exc:
+        return _invalid_reference_result(exc.diagnostic)
+    except ValidationError as exc:
+        return _invalid_reference_result(*_schema_validation_diagnostics(exc))
     except (TypeError, ValueError):
-        return SourceLayoutResult(None, "invalid", ("invalid_source_references",))
+        return _invalid_reference_result(InvalidReferenceDiagnostic("schema_validation_failed", "source_references"))
 
 
 def resolve_source_layout_v3(
@@ -361,7 +504,9 @@ def resolve_source_layout_v3(
     ledger: SourceResumeContentDocumentV2,
     artifacts: list[SourceResumeArtifact] | None = None,
 ) -> SourceLayoutResult:
-    """Resolve the v3 layout and require total accounting of source candidates."""
+    """Resolve model annotations and complete the ledger server-side."""
+    if raw_layout is None:
+        raw_layout = {}
     if not isinstance(raw_layout, dict):
         return SourceLayoutResult(None, "invalid", ("layout_object_expected",))
     allowed = {
@@ -380,56 +525,154 @@ def resolve_source_layout_v3(
         }
     }
     # Resolve the existing well-known sections first, then extend the resolved
-    # role and named-section references with v3-only fields.
+    # role and named-section references with v3-only fields. An empty object is
+    # a valid partial annotation; semantic viability is checked by the parser.
     base_roles = raw_layout.get("work_history", [])
     if isinstance(base_roles, list):
+        allowed_role_fields = {
+            "order", "header", "highlights", "context", "responsibilities_heading"
+        }
+        for role_index, role in enumerate(base_roles):
+            if isinstance(role, dict) and set(role) - allowed_role_fields:
+                return _invalid_reference_result(
+                    InvalidReferenceDiagnostic(
+                        "unknown_role_field", f"work_history[{role_index}]"
+                    )
+                )
         base["work_history"] = [
             {key: value for key, value in role.items() if key in {"order", "header", "highlights"}}
             for role in base_roles
             if isinstance(role, dict)
         ]
-    resolved = resolve_source_layout(base, ledger)
-    if resolved.layout is None or resolved.status != "verified":
-        return resolved
+    if base:
+        resolved = resolve_source_layout(
+            base, ledger, normalize_order=True, allow_empty=True
+        )
+        if resolved.layout is None or resolved.status != "verified":
+            return resolved
+        resolved_data = resolved.layout.model_dump()
+    else:
+        resolved_data = SourceResumeLayoutReferences().model_dump()
     aliases = {f"c{candidate.order}": candidate.source_id for candidate in ledger.candidates}
     orders = {candidate.source_id: candidate.order for candidate in ledger.candidates}
     try:
         roles: list[SourceResumeRoleReferencesV3] = []
-        for role in base_roles if isinstance(base_roles, list) else []:
-            assert isinstance(role, dict)
+        for role_index, role in enumerate(base_roles if isinstance(base_roles, list) else []):
+            if not isinstance(role, dict):
+                raise _InvalidSourceReferenceError(
+                    "role_object_expected", f"work_history[{role_index}]"
+                )
             header = role.get("header")
             if not isinstance(header, str):
-                raise ValueError("role_header_expected")
-            header_id = aliases[header]
-            context = [aliases[item] for item in role.get("context", [])]
+                raise _InvalidSourceReferenceError(
+                    "role_header_expected", f"work_history[{role_index}].header"
+                )
+            role_index = len(roles)
+            try:
+                header_id = aliases[header]
+            except KeyError:
+                alias = header if re.fullmatch(r"c\d+", header) else None
+                raise _InvalidSourceReferenceError(
+                    "unknown_candidate_alias", f"work_history[{role_index}].header", alias
+                ) from None
+            context_value = role.get("context", [])
+            if isinstance(context_value, str) or context_value is None:
+                raise _InvalidSourceReferenceError(
+                    "reference_list_expected", f"work_history[{role_index}].context"
+                )
+            context: list[UUID] = []
+            for context_index, item in enumerate(context_value):
+                if not isinstance(item, str) or item not in aliases:
+                    alias = item if isinstance(item, str) and re.fullmatch(r"c\d+", item) else None
+                    raise _InvalidSourceReferenceError(
+                        "unknown_candidate_alias",
+                        f"work_history[{role_index}].context[{context_index}]",
+                        alias,
+                    )
+                context.append(aliases[item])
             responsibility = role.get("responsibilities_heading")
             if responsibility is not None and not isinstance(responsibility, str):
-                raise ValueError("responsibilities_heading_expected")
+                raise _InvalidSourceReferenceError(
+                    "responsibilities_heading_expected",
+                    f"work_history[{role_index}].responsibilities_heading",
+                )
+            if responsibility and responsibility not in aliases:
+                alias = responsibility if re.fullmatch(r"c\d+", responsibility) else None
+                raise _InvalidSourceReferenceError(
+                    "unknown_candidate_alias",
+                    f"work_history[{role_index}].responsibilities_heading",
+                    alias,
+                )
             roles.append(
                 SourceResumeRoleReferencesV3(
                     order=orders[header_id],
                     header=header_id,
-                    highlights=[aliases[item] for item in role.get("highlights", [])],
-                    context=context,
+                    highlights=sorted(
+                        [aliases[item] for item in role.get("highlights", [])],
+                        key=orders.__getitem__,
+                    ),
+                    context=sorted(context, key=orders.__getitem__),
                     responsibilities_heading=(aliases[responsibility] if responsibility else None),
                 )
             )
         named: list[SourceResumeNamedSectionReferences] = []
-        for section in raw_layout.get("named_sections", []):
+        named_sections = raw_layout.get("named_sections", [])
+        if isinstance(named_sections, str) or named_sections is None:
+            raise _InvalidSourceReferenceError("reference_list_expected", "named_sections")
+        for section_index, section in enumerate(named_sections):
             if not isinstance(section, dict):
-                raise ValueError("named_section_object_expected")
+                raise _InvalidSourceReferenceError(
+                    "named_section_object_expected", f"named_sections[{section_index}]"
+                )
+            if set(section) - {"order", "heading", "items"}:
+                raise _InvalidSourceReferenceError(
+                    "unknown_named_section_field", f"named_sections[{section_index}]"
+                )
             heading = section.get("heading")
-            item_ids = [aliases[item] for item in section.get("items", [])]
+            if heading is not None and (not isinstance(heading, str) or heading not in aliases):
+                alias = heading if isinstance(heading, str) and re.fullmatch(r"c\d+", heading) else None
+                raise _InvalidSourceReferenceError(
+                    "unknown_candidate_alias", f"named_sections[{section_index}].heading", alias
+                )
+            items = section.get("items", [])
+            if isinstance(items, str) or items is None:
+                raise _InvalidSourceReferenceError(
+                    "reference_list_expected", f"named_sections[{section_index}].items"
+                )
+            item_ids: list[UUID] = []
+            for item_index, item in enumerate(items):
+                if not isinstance(item, str) or item not in aliases:
+                    alias = item if isinstance(item, str) and re.fullmatch(r"c\d+", item) else None
+                    raise _InvalidSourceReferenceError(
+                        "unknown_candidate_alias",
+                        f"named_sections[{section_index}].items[{item_index}]",
+                        alias,
+                    )
+                item_ids.append(aliases[item])
             named.append(
                 SourceResumeNamedSectionReferences(
                     order=(orders[aliases[heading]] if heading else min((orders[item] for item in item_ids), default=0)),
                     heading=(aliases[heading] if heading else None),
-                    items=item_ids,
+                    items=sorted(item_ids, key=orders.__getitem__),
                 )
             )
-        resolved_data = resolved.layout.model_dump()
         resolved_data["work_history"] = roles
-        resolved_data["named_sections"] = named
+        resolved_data["named_sections"] = sorted(named, key=lambda section: section.order)
+        resolved_projects: list[dict[str, object]] = []
+        for project in resolved_data["projects"]:
+            assert isinstance(project, dict)
+            referenced = [
+                value
+                for value in (
+                    project.get("name"), project.get("description"), project.get("url"),
+                    *cast(list[UUID], project.get("technologies", [])),
+                    *cast(list[UUID], project.get("achievements", [])),
+                )
+                if isinstance(value, UUID)
+            ]
+            project["order"] = min((orders[value] for value in referenced), default=len(orders))
+            resolved_projects.append(project)
+        resolved_data["projects"] = sorted(resolved_projects, key=lambda project: cast(int, project["order"]))
         layout = SourceResumeLayoutReferencesV3.model_validate(resolved_data)
         ownership: dict[UUID, list[str]] = {}
 
@@ -479,19 +722,55 @@ def resolve_source_layout_v3(
                 own(section.heading, f"named_sections[{section_index}].heading")
             for item_index, candidate_id in enumerate(section.items):
                 own(candidate_id, f"named_sections[{section_index}].items[{item_index}]")
+
+        # The model may only contribute semantic ownership. Everything else
+        # remains losslessly server-owned unless a deterministic artifact rule
+        # applies.
+        semantic_ids = set(ownership)
+        artifact_ids = {artifact.source_id for artifact in artifacts or []}
+        if semantic_ids & artifact_ids:
+            return SourceLayoutResult(
+                None, "invalid", ("duplicate_source_candidate_ownership",)
+            )
+        if any(len(owners) != 1 for owners in ownership.values()):
+            return SourceLayoutResult(
+                None, "invalid", ("duplicate_source_candidate_ownership",)
+            )
+        unclassified = [
+            candidate.source_id
+            for candidate in sorted(ledger.candidates, key=lambda candidate: candidate.order)
+            if candidate.source_id not in semantic_ids and candidate.source_id not in artifact_ids
+        ]
+        layout = layout.model_copy(update={"unclassified": unclassified})
+        for candidate_id in layout.unclassified:
+            own(candidate_id, "unclassified")
         for artifact_index, artifact in enumerate(artifacts or []):
             own(artifact.source_id, f"artifact[{artifact_index}]:{artifact.reason}")
 
         candidate_ids = {candidate.source_id for candidate in ledger.candidates}
         if set(ownership) != candidate_ids:
-            return SourceLayoutResult(None, "invalid", ("incomplete_source_accounting",))
+            missing_candidate_orders = tuple(
+                candidate.order
+                for candidate in sorted(ledger.candidates, key=lambda candidate: candidate.order)
+                if candidate.source_id not in ownership
+            )
+            return SourceLayoutResult(
+                None,
+                "invalid",
+                ("incomplete_source_accounting",),
+                missing_candidate_orders=missing_candidate_orders,
+            )
         if any(len(owners) != 1 for owners in ownership.values()):
             return SourceLayoutResult(
                 None, "invalid", ("duplicate_source_candidate_ownership",)
             )
         return SourceLayoutResult(layout, "verified")
+    except _InvalidSourceReferenceError as exc:
+        return _invalid_reference_result(exc.diagnostic)
+    except ValidationError as exc:
+        return _invalid_reference_result(*_schema_validation_diagnostics(exc))
     except (KeyError, TypeError, ValueError):
-        return SourceLayoutResult(None, "invalid", ("invalid_source_references",))
+        return _invalid_reference_result(InvalidReferenceDiagnostic("schema_validation_failed", "source_references"))
 
 
 def materialize_source_document(
@@ -609,7 +888,15 @@ def materialize_source_document_v3(
             )
             for section in layout.named_sections
         ],
+        unclassified=[by_id[value] for value in layout.unclassified],
     )
+
+
+def has_usable_tailoring_semantics(
+    layout: SourceResumeLayoutReferences | None,
+) -> bool:
+    """Return whether semantic annotations can drive source-backed tailoring."""
+    return bool(layout and any(role.highlights for role in layout.work_history))
 
 
 def _mapped_view(raw: str, *, compact_soft_wrap: bool) -> _MappedView:

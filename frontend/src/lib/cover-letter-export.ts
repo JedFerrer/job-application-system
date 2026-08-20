@@ -124,7 +124,7 @@ function canonicalValues(data: TailoredResume, section: string): string[] | null
 
 export interface ResumeRenderSection {
   section: TailoredCanonicalSection["section"] | null;
-  heading: string;
+  heading: string | null;
   items: string[];
   order: number;
 }
@@ -135,7 +135,7 @@ export function buildResumeRenderModel(data: TailoredResume): ResumeRenderSectio
     .filter((section) => section.items.length > 0)
     .map((section) => ({
       section: section.section,
-      heading: (section.heading || section.section).toUpperCase(),
+      heading: section.section === "unclassified" ? null : (section.heading || section.section).toUpperCase(),
       items: section.items.map((item) => item.text),
       order: section.canonical_order ?? 0,
     }));
@@ -169,7 +169,10 @@ function remainingCanonicalSections(data: TailoredResume): ResumeRenderSection[]
 
 export function formatResumeText(data: TailoredResume): string {
   const lines: string[] = [];
-  for (const section of buildResumeRenderModel(data)) lines.push(section.heading, ...section.items, "");
+  for (const section of buildResumeRenderModel(data)) {
+    if (section.heading) lines.push(section.heading);
+    lines.push(...section.items, "");
+  }
   if (data.work_history.length) {
     lines.push("PROFESSIONAL EXPERIENCE", "");
     for (const role of data.work_history) {
@@ -338,7 +341,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
   const canonicalSections = Boolean(data.canonical_sections?.length);
   if (canonicalSections) {
     for (const section of remainingCanonicalSections(data)) {
-      writeSectionHeading(ctx, section.heading);
+      if (section.heading) writeSectionHeading(ctx, section.heading);
       for (const value of section.items) writeWrapped(ctx, value, BODY_SIZE, textW);
     }
   }
@@ -451,7 +454,7 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   const canonicalSections = Boolean(data.canonical_sections?.length);
   if (canonicalSections) {
     for (const rendered of remainingCanonicalSections(data)) {
-      section(rendered.heading);
+      if (rendered.heading) section(rendered.heading);
       for (const value of rendered.items) p(value);
     }
   }

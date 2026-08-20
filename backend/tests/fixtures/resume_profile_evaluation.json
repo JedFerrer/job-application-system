@@ -5,7 +5,8 @@
     {
       "id": "chronological-multiple-roles",
       "raw_text": "Nova Byte\nBackend Engineer\nLANGUAGES\nSpanish - Professional working proficiency\nEnglish\nPROFESSIONAL REGISTRATIONS\nRegistered Engineer — Fictional State Board\nWORK EXPERIENCE\n2022-2024 Platform Engineer at Fictional Orbit Labs\nBuilt APIs\n2020-2022 Software Engineer at Fictional Signal Works\nMaintained services\nEDUCATION\nBSc Computing, Fictional Technical Institute, 2020",
-      "locked_parser_response": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"nova.byte@fictional.invalid","phone":"+1 555 0100","years_experience":4,"skills":["Python","APIs"],"languages":[{"language":" Spanish ","proficiency":"Professional working proficiency"},{"language":"English"}],"licenses":[{"name":" Registered Engineer ","issuer":" Fictional State Board "}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":2020}],"extraction_evidence":{"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}],"licenses":[{"item_index":0,"excerpt":"Registered Engineer — Fictional State Board"}]}},
+      "locked_parser_response": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"nova.byte@fictional.invalid","phone":"+1 555 0100","years_experience":4,"skills":["Python","APIs"],"languages":[{"language":" Spanish ","proficiency":"Professional working proficiency"},{"language":"English"}],"licenses":[{"name":" Registered Engineer ","issuer":" Fictional State Board "}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":2020}],"source_references":{"work_history":[{"header":"c8","highlights":["c9"]},{"header":"c10","highlights":["c11"]}]},"extraction_evidence":{"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}],"licenses":[{"item_index":0,"excerpt":"Registered Engineer — Fictional State Board"}]}},
+      "expected_source_status": "viable",
       "expected_profile": {"full_name":"Nova Byte","headline":"Backend Engineer","email":"NOVA.BYTE@FICTIONAL.INVALID","phone":"+1 555 0100","years_experience":4.0,"skills":["python","APIs"],"languages":[{"language":"Spanish","proficiency":"Professional working proficiency"},{"language":"English","proficiency":null}],"licenses":[{"name":"Registered Engineer","issuer":"Fictional State Board"}],"work_history":[{"company":"Fictional Orbit Labs","title":"Platform Engineer","start":"2022","end":"2024","highlights":["Built APIs"]},{"company":"Fictional Signal Works","title":"Software Engineer","start":"2020","end":"2022","highlights":["Maintained services"]}],"education":[{"degree":"BSc Computing","institution":"Fictional Technical Institute","year":"2020"}]},
       "expected_verified_evidence": {"languages":[{"item_index":0,"excerpt":"Spanish - Professional working proficiency"},{"item_index":1,"excerpt":"English"}],"licenses":[{"item_index":0,"excerpt":"Registered Engineer — Fictional State Board"}]},
       "expected_warning_codes": []
@@ -14,6 +15,7 @@
       "id": "projects-and-links",
       "raw_text": "Orbit Maker\nPROJECTS\nSignal Garden - Monitoring dashboard\nhttps://www.fictional.dev/orbit/\nhttps://github.com/fictional-orbit\nhttps://linkedin.com/in/fictional-orbit",
       "locked_parser_response": {"full_name":"Orbit Maker","preferred_roles":["Platform Engineer"],"seniority":"senior","projects":[{"name":"Signal Garden","description":"Monitoring dashboard","technologies":["Python","SQL"],"achievements":["Reduced alert noise"],"url":"https://www.fictional.dev/orbit/?view=full#top"}],"links":{"linkedin":"https://linkedin.com/in/fictional-orbit","github":"https://github.com/fictional-orbit","portfolio":"https://fictional.dev/orbit"},"extraction_evidence":{"projects":[{"item_index":0,"excerpt":"Signal Garden - Monitoring dashboard"}]}},
+      "expected_source_status": "zero_semantic",
       "expected_profile": {"full_name":"Orbit Maker","preferred_roles":["platform engineer"],"seniority":"SENIOR","projects":[{"name":"Signal Garden","description":"Monitoring dashboard","technologies":["Python","SQL"],"achievements":["Reduced alert noise"],"url":"https://fictional.dev/orbit/?view=full"}],"links":{"linkedin":"https://linkedin.com/in/fictional-orbit","github":"https://github.com/fictional-orbit","portfolio":"https://fictional.dev/orbit"}},
       "expected_verified_evidence": {"projects":[{"item_index":0,"excerpt":"Signal Garden - Monitoring dashboard"}]},
       "expected_warning_codes": []
@@ -22,6 +24,7 @@
       "id": "education-and-certifications",
       "raw_text": "Study Lantern\nEDUCATION\nMSc Systems, Fictional State College, 2023\nCERTIFICATIONS\nFictional Cloud Associate",
       "locked_parser_response": {"full_name":"Study Lantern","education":[{"degree":"MSc Systems","institution":"Fictional State College","year":2023}],"certifications":["Fictional Cloud Associate"],"extraction_evidence":{"education":[{"item_index":0,"excerpt":"MSc Systems, Fictional State College, 2023"}],"certifications":[{"item_index":0,"excerpt":"Fictional Cloud Associate"}]}},
+      "expected_source_status": "zero_semantic",
       "expected_profile": {"full_name":"Study Lantern","education":[{"degree":"MSc Systems","institution":"Fictional State College","year":"2023"}],"certifications":["Fictional Cloud Associate"]},
       "expected_verified_evidence": {"education":[{"item_index":0,"excerpt":"MSc Systems, Fictional State College, 2023"}],"certifications":[{"item_index":0,"excerpt":"Fictional Cloud Associate"}]},
       "expected_warning_codes": []
@@ -30,6 +33,7 @@
       "id": "unusual-headings",
       "raw_text": "Headingless Star\nCAREER HIGHLIGHTS\nBuilt useful tools\nWHAT I LIKE\nEnglish language support and systems thinking",
       "locked_parser_response": {"full_name":"Headingless Star","headline":"Systems thinker","work_history":[],"projects":[]},
+      "expected_source_status": "zero_semantic",
       "expected_profile": {"full_name":"Headingless Star","headline":"Systems thinker","work_history":[],"projects":[]},
       "expected_verified_evidence": {},
       "expected_warning_codes": []
@@ -38,6 +42,7 @@
       "id": "completeness-warnings",
       "raw_text": "Missing Contact\ncontact@fictional.invalid\nEXPERIENCE\nA substantive role description\nEDUCATION\nA substantive degree description\nCERTIFICATIONS\nA substantive certificate description\nLANGUAGES\nSpanish and English\nLICENSES\nRegistered Engineer",
       "locked_parser_response": {"full_name":"Missing Contact"},
+      "expected_source_status": "zero_semantic",
       "expected_profile": {"full_name":"Missing Contact"},
       "expected_verified_evidence": {},
       "expected_warning_codes": ["source_email_not_parsed","missing_work_history","missing_education","missing_certifications","missing_languages","missing_licenses"]
@@ -46,6 +51,7 @@
       "id": "evidence-rejection",
       "raw_text": "Proof Lantern\nWORK EXPERIENCE\nFictional Proof Co | Analyst\nEDUCATION\nBSc Proof, Fictional Academy\nCERTIFICATIONS\nFictional Safety Badge\nPROJECTS\nProof Console\nLANGUAGES\nPython\nPYTHON\nFrench",
       "locked_parser_response": {"full_name":"Proof Lantern","work_history":[{"company":"Fictional Proof Co","title":"Analyst"}],"education":[{"degree":"BSc Proof","institution":"Fictional Academy"}],"certifications":["Fictional Safety Badge"],"projects":[{"name":"Proof Console"}],"languages":[{"language":"Python"},{"language":"PYTHON","proficiency":"Fluent"},{"language":"French"}],"extraction_evidence":{"work_history":[{"item_index":0,"excerpt":"Fictional Proof Co | Analyst"},{"item_index":0,"excerpt":"Fictional Safety Badge"},{"item_index":-1,"excerpt":"bad"},{"item_index":9,"excerpt":"bad"}],"education":[{"item_index":0,"excerpt":"BSc Proof, Fictional Academy"}],"certifications":[{"item_index":0,"excerpt":"Fictional Safety Badge"}],"projects":[{"item_index":0,"excerpt":"not in source"},{"item_index":0,"excerpt":"Proof Console"}],"languages":[{"item_index":0,"excerpt":"Python"},{"item_index":0,"excerpt":"PYTHON"},{"item_index":1,"excerpt":"French"},{"item_index":9,"excerpt":"bad"}],"skills":[{"item_index":0,"excerpt":"unsupported"}]}},
+      "expected_source_status": "zero_semantic",
       "expected_profile": {"full_name":"Proof Lantern","work_history":[{"company":"Fictional Proof Co","title":"Analyst"}],"education":[{"degree":"BSc Proof","institution":"Fictional Academy"}],"certifications":["Fictional Safety Badge"],"projects":[{"name":"Proof Console"}],"languages":[{"language":"Python","proficiency":null},{"language":"French","proficiency":null}]},
       "expected_verified_evidence": {"work_history":[{"item_index":0,"excerpt":"Fictional Proof Co | Analyst"}],"education":[{"item_index":0,"excerpt":"BSc Proof, Fictional Academy"}],"certifications":[{"item_index":0,"excerpt":"Fictional Safety Badge"}],"projects":[{"item_index":0,"excerpt":"Proof Console"}],"languages":[{"item_index":0,"excerpt":"Python"},{"item_index":1,"excerpt":"French"}]},
       "expected_warning_codes": []
@@ -53,7 +59,8 @@
     {
       "id": "complete-long-role",
       "raw_text": "Long Evidence\nWORK EXPERIENCE\nAcme Platform - Engineer\nBuilt APIs\nAdded caching\nImproved latency\nAutomated releases\nHardened authentication\nOwned observability\nDocumented services\nBeta Systems - Analyst\nPrepared reports",
-      "locked_parser_response": {"full_name":"Long Evidence","work_history":[{"company":"Acme Platform","title":"Engineer","highlights":["Built APIs","Added caching","Improved latency","Automated releases","Hardened authentication","Owned observability","Documented services"]},{"company":"Beta Systems","title":"Analyst","highlights":["Prepared reports"]}]},
+      "locked_parser_response": {"full_name":"Long Evidence","work_history":[{"company":"Acme Platform","title":"Engineer","highlights":["Built APIs","Added caching","Improved latency","Automated releases","Hardened authentication","Owned observability","Documented services"]},{"company":"Beta Systems","title":"Analyst","highlights":["Prepared reports"]}],"source_references":{"work_history":[{"header":"c2","highlights":["c3","c4","c5","c6","c7","c8","c9"]},{"header":"c10","highlights":["c11"]}]}},
+      "expected_source_status": "viable",
       "expected_profile": {"full_name":"Long Evidence","work_history":[{"company":"Acme Platform","title":"Engineer","highlights":["Built APIs","Added caching","Improved latency","Automated releases","Hardened authentication","Owned observability","Documented services"]},{"company":"Beta Systems","title":"Analyst","highlights":["Prepared reports"]}]},
       "expected_verified_evidence": {},
       "expected_warning_codes": []

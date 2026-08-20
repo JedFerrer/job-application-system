@@ -138,8 +138,8 @@ async def test_parser_preserves_flat_profile_and_returns_verified_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = {
-        "work_history": [{"company": "Acme", "title": "Engineer"}],
-        "source_references": {"summary": "c0"},
+        "work_history": [{"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}],
+        "source_references": {"work_history": [{"header": "c0", "highlights": ["c1"]}]},
         "extraction_evidence": {
             "work_history": [{"item_index": 0, "excerpt": "Acme Engineer"}]
         },
@@ -152,7 +152,7 @@ async def test_parser_preserves_flat_profile_and_returns_verified_evidence(
         return response, "test-model"
 
     monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
-    result = await resume_parser.parse_resume_text("Acme Engineer")
+    result = await resume_parser.parse_resume_text("Acme Engineer\nBuilt APIs")
 
     assert result.profile.work_history[0].company == "Acme"
     assert result.extraction_evidence.work_history[0].excerpt == "Acme Engineer"
@@ -255,12 +255,18 @@ async def test_parser_retries_profile_shaped_education_source_reference(
         {
             "full_name": "Ada",
             "education": [{"degree": "BS Computer Science"}],
-            "source_references": {"education": {"degree": "c0"}},
+            "source_references": {
+                "education": {"degree": "c0"},
+                "work_history": [{"header": "c1", "highlights": ["c2"]}],
+            },
         },
         {
             "full_name": "Ada",
             "education": [{"degree": "BS Computer Science"}],
-            "source_references": {"education": ["c0"]},
+            "source_references": {
+                "education": ["c0"],
+                "work_history": [{"header": "c1", "highlights": ["c2"]}],
+            },
         },
     ]
     calls = 0
@@ -277,7 +283,9 @@ async def test_parser_retries_profile_shaped_education_source_reference(
         )
 
     monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
-    result = await resume_parser.parse_resume_text("BS Computer Science")
+    result = await resume_parser.parse_resume_text(
+        "BS Computer Science\nAcme - Engineer\nBuilt APIs"
+    )
 
     assert calls == 2
     assert result.source_layout_status == "verified"
@@ -446,7 +454,7 @@ async def test_parser_retries_only_invalid_source_contract_and_accepts_verified_
     invalid = {"full_name": "Ada", "source_references": {}}
     valid = {
         "full_name": "Ada",
-        "source_references": {"summary": "c0"},
+        "source_references": {"work_history": [{"header": "c0", "highlights": ["c1"]}]},
     }
     responses = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(invalid)))]),
@@ -461,7 +469,7 @@ async def test_parser_retries_only_invalid_source_contract_and_accepts_verified_
         return responses.pop(0), "test-model"
 
     monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
-    result = await resume_parser.parse_resume_text("Ada")
+    result = await resume_parser.parse_resume_text("Acme - Engineer\nBuilt APIs")
 
     assert result.source_validation_status == "verified"
     assert len(calls) == 2
@@ -495,9 +503,9 @@ async def test_parser_accepts_equivalent_document_wrapper_without_relaxing_verif
 ) -> None:
     payload = {
         "full_name": "Ada",
-        "source_references": {"summary": "c0"},
+        "source_references": {"work_history": [{"header": "c0", "highlights": ["c1"]}]},
         "source_content": {
-            "document": {"sections": [{"text": "Ada", "order": 0}]}
+                "document": {"sections": [{"text": "Ada", "order": 0}]}
         },
     }
     response = SimpleNamespace(
@@ -508,7 +516,7 @@ async def test_parser_accepts_equivalent_document_wrapper_without_relaxing_verif
         return response, "test-model"
 
     monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
-    result = await resume_parser.parse_resume_text("Ada")
+    result = await resume_parser.parse_resume_text("Ada\nBuilt APIs")
 
     assert result.source_validation_status == "verified"
     assert result.source_content is not None
@@ -534,6 +542,118 @@ async def test_parser_stops_after_one_retry_when_source_contract_remains_invalid
         await resume_parser.parse_resume_text("Ada")
 
     assert calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("references", [{}, None, pytest.param("missing", id="missing")])
+async def test_parser_retries_zero_semantic_annotation_once_then_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    references: object,
+) -> None:
+    payload: dict[str, object] = {"full_name": "Ada"}
+    if references != "missing":
+        payload["source_references"] = references
+    prompts: list[str] = []
+
+    async def completion(**kwargs: object) -> tuple[object, str]:
+        messages = kwargs["messages"]
+        assert isinstance(messages, list)
+        prompts.append(str(messages[0]["content"]))
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    with pytest.raises(ValueError, match="zero usable semantic"):
+        await resume_parser.parse_resume_text("Acme - Engineer\nBuilt APIs")
+
+    assert len(prompts) == 2
+    assert "at least one work_history object" in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_parser_logs_sanitized_zero_semantic_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_candidate = "Private source candidate"
+    payload = {
+        "full_name": "Ada",
+        "source_references": {"sections": ["c0"]},
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    warnings: list[tuple[str, dict[str, object]]] = []
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        return response, "test-model"
+
+    def warning(event: str, **fields: object) -> None:
+        warnings.append((event, fields))
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    monkeypatch.setattr(resume_parser.logger, "warning", warning)
+    with pytest.raises(ValueError, match="zero usable semantic"):
+        await resume_parser.parse_resume_text(f"Ada\n{private_candidate}\nOther")
+
+    layout_warnings = [
+        fields
+        for event, fields in warnings
+            if event == "resume_source_layout_zero_semantic_annotation"
+    ]
+    assert len(layout_warnings) == 2
+    for attempt, fields in enumerate(layout_warnings, start=1):
+        assert fields == {
+            "model": "test-model",
+            "attempt": attempt,
+            "error_codes": ("zero_usable_semantic_annotation",),
+            "error_count": 1,
+        }
+        assert private_candidate not in repr(fields)
+
+
+@pytest.mark.asyncio
+async def test_parser_logs_sanitized_invalid_reference_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "full_name": "Ada",
+        "source_references": {"work_history": [{"header": "c99", "highlights": ["c1"]}]},
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    warnings: list[tuple[str, dict[str, object]]] = []
+
+    async def completion(**_kwargs: object) -> tuple[object, str]:
+        return response, "test-model"
+
+    def warning(event: str, **fields: object) -> None:
+        warnings.append((event, fields))
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    monkeypatch.setattr(resume_parser.logger, "warning", warning)
+    with pytest.raises(ValueError, match="source layout"):
+        await resume_parser.parse_resume_text("Role\nBullet")
+
+    layout_warnings = [
+        fields for event, fields in warnings if event == "resume_source_layout_validation_failed"
+    ]
+    assert len(layout_warnings) == 2
+    for attempt, fields in enumerate(layout_warnings, start=1):
+        assert fields == {
+            "model": "test-model",
+            "attempt": attempt,
+            "error_codes": ("invalid_source_references",),
+            "error_count": 1,
+            "invalid_reference_count": 1,
+            "invalid_reference_reasons": ("unknown_candidate_alias",),
+            "invalid_reference_paths": ("work_history[0].header",),
+            "invalid_reference_aliases": ("c99",),
+        }
 
 
 @pytest.mark.asyncio
@@ -751,7 +871,7 @@ async def test_malformed_evidence_does_not_fail_profile_parsing(
 ) -> None:
     payload = {
         "full_name": "Ada",
-        "source_references": {"summary": "c0"},
+        "source_references": {"work_history": [{"header": "c0", "highlights": ["c1"]}]},
         "extraction_evidence": {"work_history": "malformed"},
     }
     response = SimpleNamespace(
@@ -762,7 +882,7 @@ async def test_malformed_evidence_does_not_fail_profile_parsing(
         return response, "test-model"
 
     monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
-    result = await resume_parser.parse_resume_text("Ada")
+    result = await resume_parser.parse_resume_text("Ada\nBuilt APIs")
 
     assert result.profile.full_name == "Ada"
     assert result.extraction_evidence == ExtractionEvidence()

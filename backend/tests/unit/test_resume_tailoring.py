@@ -16,12 +16,14 @@ from app.domain.resume.schemas import (
     RequirementClassification,
     SourceResumeContentPayload,
     SourceResumeContentPayloadV2,
+    SourceResumeContentPayloadV3,
     TailoredResume,
 )
 from app.domain.resume.service import ResumeService
 from app.domain.resume.source_content import (
     build_source_candidate_ledger,
     resolve_source_layout,
+    resolve_source_layout_v3,
 )
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
@@ -185,6 +187,29 @@ async def test_v2_layout_unavailable_never_falls_back_to_profile_prose() -> None
             user_id=1,
             job_id=2,
             job_repository=job_repository,
+        )
+
+
+@pytest.mark.asyncio
+async def test_zero_semantic_v3_source_never_falls_back_to_profile_prose() -> None:
+    ledger = build_source_candidate_ledger("Contact only")
+    layout = resolve_source_layout_v3({"sections": ["c0"]}, ledger)
+    assert layout.layout is not None
+    payload = SourceResumeContentPayloadV3(
+        document={"candidates": ledger.candidates, "layout": layout.layout},
+        layout_validation_status="verified",
+    )
+    repository = AsyncMock()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=_profile().model_dump()),
+        SimpleNamespace(content=payload.model_dump(mode="json"), resume_id=1, id=2),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(description="FastAPI")
+
+    with pytest.raises(ResumeSourceLayoutUnavailableError):
+        await ResumeService(repository).tailor_for_job(
+            user_id=1, job_id=2, job_repository=jobs
         )
 
 

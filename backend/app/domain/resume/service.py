@@ -150,6 +150,30 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
         section_items = items(named.items)
         if section_items:
             sections.append(TailoredCanonicalSection(section="named", heading=named.heading.text if named.heading else None, items=section_items, canonical_order=named.order))
+    run: list[Any] = []
+    previous_order: int | None = None
+    for value in sorted(getattr(source_document, "unclassified", []), key=lambda value: value.order):
+        if run and previous_order is not None and value.order != previous_order + 1:
+            run_items = items(run)
+            sections.append(
+                TailoredCanonicalSection(
+                    section="unclassified",
+                    items=run_items,
+                    canonical_order=run_items[0].canonical_order,
+                )
+            )
+            run = []
+        run.append(value)
+        previous_order = value.order
+    if run:
+        run_items = items(run)
+        sections.append(
+            TailoredCanonicalSection(
+                section="unclassified",
+                items=run_items,
+                canonical_order=run_items[0].canonical_order,
+            )
+        )
     return sorted(sections, key=lambda section: section.canonical_order)
 
 
@@ -1125,6 +1149,8 @@ class ResumeService:
                 raise ResumeSourceLayoutUnavailableError()
             source_document = materialize_source_document_v3(source_payload_v3.document)
             source_roles = source_document.work_history if source_document is not None else None
+            if source_roles is None or not any(role.highlights for role in source_roles):
+                raise ResumeSourceLayoutUnavailableError()
         source_resume_id = source_row.resume_id if source_row is not None else None
         source_resume_content_id = source_row.id if source_row is not None else None
         source_revision = source_revision_sha256(source_row.content) if source_row is not None else None

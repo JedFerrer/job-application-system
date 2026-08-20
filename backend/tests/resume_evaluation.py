@@ -18,7 +18,6 @@ from app.domain.resume.schemas import (
     ParsedProfile,
     ParsedResumeResult,
 )
-from app.domain.resume.source_content import build_source_candidate_ledger
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "resume_profile_evaluation.json"
 SCHEMA_VERSION = "resume-profile-eval-v1"
@@ -74,6 +73,7 @@ class EvaluationCase:
     expected_profile: ParsedProfile
     expected_verified_evidence: ExtractionEvidence
     expected_warning_codes: tuple[str, ...]
+    expected_source_status: str
 
 
 def _error(case: str, message: str) -> ValueError:
@@ -159,7 +159,7 @@ def load_manifest(path: Path = FIXTURE_PATH) -> tuple[EvaluationCase, ...]:
         data = _mapping(raw_case, case_name, str(path))
         required = {"id", "raw_text", "locked_parser_response", "expected_profile",
                     "expected_verified_evidence", "expected_warning_codes"}
-        if set(data) < required:
+        if not required <= set(data):
             raise _error(case_name, "missing required fields")
         case_id = data["id"]
         if not isinstance(case_id, str) or not case_id:
@@ -171,11 +171,16 @@ def load_manifest(path: Path = FIXTURE_PATH) -> tuple[EvaluationCase, ...]:
         if not isinstance(raw_text, str) or not raw_text:
             raise _error(case_id, "raw_text must be non-empty text")
         response = _mapping(data["locked_parser_response"], "locked_parser_response", case_id)
-        if "source_references" not in response:
-            ledger = build_source_candidate_ledger(raw_text)
-            response["source_references"] = {
-                "sections": [f"c{candidate.order}" for candidate in ledger.candidates]
-            }
+        source_status = data.get("expected_source_status")
+        if source_status not in {"viable", "zero_semantic"}:
+            raise _error(
+                case_id,
+                "expected_source_status must be 'viable' or 'zero_semantic'",
+            )
+        if source_status == "viable" and "source_references" not in response:
+            raise _error(case_id, "viable source status requires source_references")
+        if source_status == "zero_semantic" and "source_references" in response:
+            raise _error(case_id, "zero_semantic source status must omit source_references")
         profile_payload = dict(response)
         profile_payload.pop("extraction_evidence", None)
         try:
@@ -208,6 +213,7 @@ def load_manifest(path: Path = FIXTURE_PATH) -> tuple[EvaluationCase, ...]:
             expected_profile=expected_profile,
             expected_verified_evidence=expected_evidence,
             expected_warning_codes=tuple(warning_values),
+            expected_source_status=source_status,
         ))
     return tuple(cases)
 
@@ -373,18 +379,35 @@ def _totals(metrics: list[dict[str, Any]]) -> dict[str, Any]:
 async def evaluate_case(case: EvaluationCase, completion: Completion) -> dict[str, Any]:
     # The caller supplies the parser seam; this explicit argument prevents any
     # accidental provider access while keeping the production parser unchanged.
-    result = await parse_resume_text_with_completion(case.raw_text, completion, case)
-    if not isinstance(result, ParsedResumeResult):
-        raise AssertionError(f"{case.id}: parser did not return ParsedResumeResult")
+    if case.expected_source_status == "zero_semantic":
+        try:
+            await parse_resume_text_with_completion(case.raw_text, completion, case)
+        except AssertionError as exc:
+            if "zero usable semantic annotation" not in str(exc):
+                raise
+            profile, extraction_evidence = _locked_profile_contract(case)
+            source_status = "zero_semantic_rejected"
+        else:
+            raise AssertionError(
+                f"{case.id}: expected zero semantic annotation to fail safely"
+            )
+    else:
+        result = await parse_resume_text_with_completion(case.raw_text, completion, case)
+        if not isinstance(result, ParsedResumeResult):
+            raise AssertionError(f"{case.id}: parser did not return ParsedResumeResult")
+        profile = result.profile
+        extraction_evidence = result.extraction_evidence
+        source_status = "viable"
     warnings = tuple(
         warning.code
-        for warning in find_completeness_warnings(case.raw_text, result.profile)
+        for warning in find_completeness_warnings(case.raw_text, profile)
     )
-    profile_metrics = _profile_metrics(case.expected_profile, result.profile)
+    profile_metrics = _profile_metrics(case.expected_profile, profile)
     warning_metric = _warning_metric(case.expected_warning_codes, warnings)
-    evidence_metric = _evidence_metric(case.expected_verified_evidence, result.extraction_evidence)
+    evidence_metric = _evidence_metric(case.expected_verified_evidence, extraction_evidence)
     return {
         "case_id": case.id,
+        "source_status": source_status,
         "profile_metrics": profile_metrics,
         "warning_metrics": warning_metric,
         "evidence_metrics": evidence_metric,
@@ -392,6 +415,27 @@ async def evaluate_case(case: EvaluationCase, completion: Completion) -> dict[st
         "expected_warning_codes": sorted(case.expected_warning_codes),
         "actual_warning_codes": sorted(warnings),
     }
+
+
+def _locked_profile_contract(
+    case: EvaluationCase,
+) -> tuple[ParsedProfile, ExtractionEvidence]:
+    """Score profile extraction after an expected source-viability rejection.
+
+    The production parser has already proved the source contract is rejected;
+    this keeps the legacy profile/evidence evaluation useful without turning a
+    zero-semantic fixture into a successful parse.
+    """
+    import app.infrastructure.resume_parser as parser
+
+    payload = dict(case.locked_parser_response)
+    payload.pop("source_references", None)
+    candidate_evidence = payload.pop("extraction_evidence", None)
+    profile = ParsedProfile.model_validate(parser._normalize_profile_payload(payload))
+    evidence = parser._verify_extraction_evidence(
+        candidate_evidence, case.raw_text, profile
+    )
+    return profile, evidence
 
 
 async def parse_resume_text_with_completion(

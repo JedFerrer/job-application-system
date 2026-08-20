@@ -7,7 +7,7 @@ drop fields. Extraction only — the model must never invent data.
 
 from __future__ import annotations
 
-RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v6"
+RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v7"
 
 RESUME_EXTRACTION_PROMPT = """You are an expert resume parser. Extract structured \
 information from the resume text below. Return valid JSON only — no markdown, no \
@@ -74,8 +74,11 @@ professional experience.
   shape `contact`/`links` maps of candidate aliases, `summary` as one alias or
   null, arrays of aliases for sections/skills/education/certifications/licenses/
   languages, and work-history/project objects containing alias fields and alias
-  arrays. If semantic grouping is uncertain, return `null` for
-  `source_references`; the server will preserve the verified candidate ledger.
+  arrays. The server preserves every verified candidate that you do not
+  semantically reference. If semantic grouping is uncertain, return a partial
+  semantic subset rather than assigning candidates speculatively. A supported
+  tailoring resume needs at least one work-history header plus one source
+  highlight alias; otherwise return `null` for `source_references`.
   For each `work_history` role, use exactly one `header` candidate alias for
   the complete raw role header (company/title/date when those share one line),
   plus a `highlights` alias list. Never split one raw header into separate

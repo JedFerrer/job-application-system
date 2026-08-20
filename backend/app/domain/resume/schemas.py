@@ -377,6 +377,9 @@ class SourceResumeDocument(BaseModel):
     languages: list[SourceTextItem] = Field(default_factory=list)
     section_order: list[str] = Field(default_factory=list)
     named_sections: list[SourceNamedSection] = Field(default_factory=list)
+    # Server-owned literal source content that has not received a semantic
+    # classification. It is preserved without becoming tailoring evidence.
+    unclassified: list[SourceTextItem] = Field(default_factory=list)
 
 
 class SourceResumeContentPayload(BaseModel):
@@ -461,6 +464,9 @@ class SourceResumeLayoutReferencesV3(SourceResumeLayoutReferences):
 
     work_history: list[SourceResumeRoleReferencesV3] = Field(default_factory=list)  # type: ignore[assignment]
     named_sections: list[SourceResumeNamedSectionReferences] = Field(default_factory=list)
+    # This field is populated only by the deterministic resolver after model
+    # references have passed semantic validation.
+    unclassified: list[UUID] = Field(default_factory=list)
 
 
 class SourceResumeContentDocumentV2(BaseModel):
@@ -677,6 +683,7 @@ class TailoredCanonicalSection(BaseModel):
         "licenses",
         "languages",
         "named",
+        "unclassified",
     ]
     items: list[TailoredCanonicalItem] = Field(default_factory=list)
     heading: str | None = None
