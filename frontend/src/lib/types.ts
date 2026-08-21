@@ -248,7 +248,7 @@ export interface TailoredResume {
   canonical_sections?: TailoredCanonicalSection[];
   source_resume_id?: number | null;
   source_resume_content_id?: number | null;
-  source_schema_version?: "source-resume-v3" | null;
+  source_schema_version?: "source-resume-v3" | "source-resume-v4" | null;
   source_revision_sha256?: string | null;
   source_section_order?: string[];
 }

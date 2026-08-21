@@ -117,9 +117,67 @@ function resumeLinks(data: TailoredResume): string[] {
     .map(([label, url]) => `${label[0]!.toUpperCase()}${label.slice(1)}: ${url}`);
 }
 
-function canonicalValues(data: TailoredResume, section: string): string[] | null {
-  const match = data.canonical_sections?.find((item) => item.section === section);
-  return match ? match.items.map((item) => item.text) : null;
+function joinSourceLines(values: string[]): string {
+  return values.reduce((joined, value) => {
+    if (!joined) return value.trim();
+    const next = value.trim();
+    return joined.endsWith("-") ? `${joined}${next}` : `${joined} ${next}`;
+  }, "");
+}
+
+function canonicalSection(data: TailoredResume, section: TailoredCanonicalSection["section"]): TailoredCanonicalSection | null {
+  return data.canonical_sections?.find((item) => item.section === section) ?? null;
+}
+
+function hasCanonicalSections(data: TailoredResume): boolean {
+  return Boolean(data.canonical_sections?.length);
+}
+
+function canonicalValues(data: TailoredResume, section: TailoredCanonicalSection["section"]): string[] | null {
+  const match = canonicalSection(data, section);
+  if (!match) return null;
+  const values = match.items.map((item) => item.text);
+  return section === "summary" ? [joinSourceLines(values)] : values;
+}
+
+function canonicalHeaderItems(data: TailoredResume): string[] | null {
+  if (!hasCanonicalSections(data)) return null;
+  const sections = data.canonical_sections!;
+  const seen = new Set<string>();
+  return sections
+    .filter((section) => section.section === "contact" || section.section === "links")
+    .flatMap((section) => section.items)
+    .sort((a, b) => a.canonical_order - b.canonical_order)
+    .filter((item) => {
+      if (seen.has(item.source_id)) return false;
+      seen.add(item.source_id);
+      return true;
+    })
+    .map((item) => item.text);
+}
+
+export function buildResumeHeaderItems(data: TailoredResume): string[] {
+  const canonical = canonicalHeaderItems(data);
+  if (canonical) return canonical;
+  return [data.full_name, data.headline, data.email, data.phone, ...resumeLinks(data)]
+    .filter((item): item is string => Boolean(item));
+}
+
+export function resumeSectionHeading(section: TailoredCanonicalSection["section"], heading?: string | null): string {
+  if (heading) return heading;
+  return {
+    contact: "CONTACT",
+    links: "LINKS",
+    summary: "PROFESSIONAL SUMMARY",
+    skills: "TECHNICAL SKILLS",
+    projects: "PROJECTS",
+    education: "EDUCATION",
+    certifications: "CERTIFICATIONS",
+    licenses: "LICENSES",
+    languages: "LANGUAGES",
+    named: "ADDITIONAL INFORMATION",
+    unclassified: "",
+  }[section];
 }
 
 export interface ResumeRenderSection {
@@ -135,8 +193,10 @@ export function buildResumeRenderModel(data: TailoredResume): ResumeRenderSectio
     .filter((section) => section.section !== "unclassified" && section.items.length > 0)
     .map((section) => ({
       section: section.section,
-      heading: section.section === "unclassified" ? null : (section.heading || section.section).toUpperCase(),
-      items: section.items.map((item) => item.text),
+      heading: section.section === "unclassified" ? null : resumeSectionHeading(section.section, section.heading),
+      items: section.section === "summary"
+        ? [joinSourceLines(section.items.map((item) => item.text))]
+        : section.items.map((item) => item.text),
       order: section.canonical_order ?? 0,
     }));
   if (canonical.length) return canonical.sort((a, b) => a.order - b.order);
@@ -145,7 +205,7 @@ export function buildResumeRenderModel(data: TailoredResume): ResumeRenderSectio
     const values = items.filter(Boolean);
     if (values.length) fallback.push({ section, heading, items: values, order: fallback.length });
   };
-  add("contact", "CONTACT", [data.full_name ?? "", data.email ?? "", data.phone ?? ""]);
+  add("contact", "CONTACT", [data.full_name ?? "", data.headline ?? "", data.email ?? "", data.phone ?? ""]);
   add("links", "LINKS", resumeLinks(data));
   add("summary", "PROFESSIONAL SUMMARY", data.professional_summary ? [data.professional_summary] : []);
   add("skills", "TECHNICAL SKILLS", resumeSkills(data));
@@ -169,7 +229,10 @@ function remainingCanonicalSections(data: TailoredResume): ResumeRenderSection[]
 
 export function formatResumeText(data: TailoredResume): string {
   const lines: string[] = [];
+  const canonical = hasCanonicalSections(data);
+  if (canonical) lines.push(...buildResumeHeaderItems(data), "");
   for (const section of buildResumeRenderModel(data)) {
+    if (canonical && (section.section === "contact" || section.section === "links")) continue;
     if (section.heading) lines.push(section.heading);
     lines.push(...section.items, "");
   }
@@ -254,28 +317,21 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
   const ctx: PdfCtx = { pdf, y: MARGIN, pageH: PAGE_H };
   const textW = PAGE_W - MARGIN * 2;
 
-  // Header — keep together
+  // Header — keep together and preserve canonical source order.
   ensureSpace(ctx, 30);
-  if (data.full_name) {
-    writeLine(ctx, data.full_name.toUpperCase(), NAME_SIZE, true);
+  const headerItems = buildResumeHeaderItems(data);
+  const normalizedName = data.full_name?.trim().toLocaleLowerCase();
+  for (const [index, value] of headerItems.entries()) {
+    const isName = Boolean(normalizedName && value.trim().toLocaleLowerCase() === normalizedName);
+    writeLine(ctx, value, isName ? NAME_SIZE : BODY_SIZE, isName);
+    if (index === 0 && isName) ctx.y += 1;
   }
-  if (data.headline) {
-    ctx.y += 1;
-    writeLine(ctx, data.headline, BODY_SIZE, false);
-  }
-  const contact = [data.email, data.phone].filter(Boolean).join(" | ");
-  if (contact) {
-    ctx.y += 1;
-    writeLine(ctx, contact, BODY_SIZE, false);
-  }
-  for (const link of resumeLinks(data)) writeLine(ctx, link, BODY_SIZE, false);
-  for (const contact of canonicalValues(data, "contact") ?? []) writeLine(ctx, contact, BODY_SIZE, false);
   ctx.y += 4;
 
   // Professional Summary
   const canonicalSummary = canonicalValues(data, "summary");
   if (canonicalSummary?.length || data.professional_summary) {
-    writeSectionHeading(ctx, "PROFESSIONAL SUMMARY");
+    writeSectionHeading(ctx, canonicalSection(data, "summary")?.heading || "PROFESSIONAL SUMMARY");
     for (const summary of canonicalSummary ?? [data.professional_summary!]) writeWrapped(ctx, summary, BODY_SIZE, textW);
     ctx.y += SECTION_GAP;
   }
@@ -283,7 +339,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
   // Technical Skills (categorized)
   const allSkills = resumeSkills(data);
   if (allSkills.length > 0) {
-    writeSectionHeading(ctx, "TECHNICAL SKILLS");
+    writeSectionHeading(ctx, canonicalSection(data, "skills")?.heading || "TECHNICAL SKILLS");
     writeWrapped(ctx, allSkills.join(", "), BODY_SIZE, textW);
     ctx.y += SECTION_GAP;
   }
@@ -405,15 +461,13 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
     );
   }
 
-  // Name
-  if (data.full_name) p(data.full_name.toUpperCase(), { bold: true, size: SZ_NAME, spaceAfter: 40 });
-  // Headline
-  if (data.headline) p(data.headline, { spaceAfter: 20 });
-  // Contact
-  const contact = [data.email, data.phone].filter(Boolean).join(" | ");
-  if (contact) p(contact, { spaceAfter: 120 });
-  for (const value of canonicalValues(data, "contact") ?? []) p(value);
-  for (const link of resumeLinks(data)) p(link);
+  // Header — preserve canonical source order and avoid normalized duplicates.
+  const headerItems = buildResumeHeaderItems(data);
+  const normalizedName = data.full_name?.trim().toLocaleLowerCase();
+  for (const [index, value] of headerItems.entries()) {
+    const isName = Boolean(normalizedName && value.trim().toLocaleLowerCase() === normalizedName);
+    p(value, isName ? { bold: true, size: SZ_NAME, spaceAfter: 40 } : { spaceAfter: index === headerItems.length - 1 ? 120 : 0 });
+  }
 
   // Section helper
   function section(title: string) {
@@ -423,14 +477,14 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   // Professional Summary
   const canonicalSummary = canonicalValues(data, "summary");
   if (canonicalSummary?.length || data.professional_summary) {
-    section("PROFESSIONAL SUMMARY");
+    section(canonicalSection(data, "summary")?.heading || "PROFESSIONAL SUMMARY");
     for (const value of canonicalSummary ?? [data.professional_summary!]) p(value, { spaceAfter: 100 });
   }
 
   // Technical Skills
   const allSkills = resumeSkills(data);
   if (allSkills.length > 0) {
-    section("TECHNICAL SKILLS");
+    section(canonicalSection(data, "skills")?.heading || "TECHNICAL SKILLS");
     p(allSkills.join(", "), { spaceAfter: 100 });
   }
 
