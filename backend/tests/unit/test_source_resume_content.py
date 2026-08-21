@@ -10,6 +10,7 @@ import pytest
 from app.domain.resume.schemas import (
     SourceResumeArtifact,
     SourceResumeContentDocumentV3,
+    SourceResumeContentDocumentV4,
     SourceResumeLayoutReferencesV3,
 )
 from app.domain.resume.source_content import (
@@ -20,8 +21,10 @@ from app.domain.resume.source_content import (
     has_usable_tailoring_semantics,
     materialize_source_document,
     materialize_source_document_v3,
+    materialize_source_document_v4,
     resolve_source_layout,
     resolve_source_layout_v3,
+    resolve_source_layout_v4,
     source_fingerprint,
     verify_source_candidate_ledger,
     verify_source_document,
@@ -56,6 +59,94 @@ def test_exact_literal_and_raw_offsets_are_verified() -> None:
     assert raw[item.start_offset : item.end_offset] == item.text
     assert item.fingerprint == source_fingerprint(item.text)
     assert SOURCE_VALIDATION_VERSION == "source-verifier-v1"
+
+
+def test_ledger_groups_wrapped_summary_into_one_logical_candidate() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL SUMMARY\n"
+        "Full-stack engineer with backend focus and\n"
+        "automation pipeline experience.\n"
+        "TECHNICAL STACK\n"
+        "• Python, FastAPI\n"
+    )
+
+    assert [candidate.text for candidate in ledger.candidates] == [
+        "PROFESSIONAL SUMMARY",
+        "Full-stack engineer with backend focus and",
+        "automation pipeline experience.",
+        "TECHNICAL STACK",
+        "Python, FastAPI",
+    ]
+    assert verify_source_candidate_ledger(
+        ledger,
+        "PROFESSIONAL SUMMARY\nFull-stack engineer with backend focus and\n"
+        "automation pipeline experience.\nTECHNICAL STACK\n• Python, FastAPI\n",
+    ) == ()
+
+
+def test_ledger_groups_wrapped_bullet_into_one_logical_candidate() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Built an API with FastAPI,\n"
+        "  PostgreSQL, and Redis.\n"
+        "• Added caching and monitoring.\n"
+    )
+
+    assert [candidate.text for candidate in ledger.candidates] == [
+        "PROFESSIONAL EXPERIENCE",
+        "Built an API with FastAPI, PostgreSQL, and Redis.",
+        "Added caching and monitoring.",
+    ]
+
+
+def test_v4_preserves_summary_block_and_core_headings() -> None:
+    raw = (
+        "PROFESSIONAL SUMMARY\nFirst summary line\nSummary continuation\n"
+        "TECHNICAL STACK\n• Python\n"
+        "PROFESSIONAL EXPERIENCE\nAcme - Engineer\n• Built APIs"
+    )
+    ledger = build_source_candidate_ledger(raw)
+    result = resolve_source_layout_v4(
+        {
+            "summary": "c1",
+            "summary_lines": ["c2"],
+            "section_headings": {
+                "summary": "c0",
+                "skills": "c3",
+                "work_history": "c5",
+            },
+            "skills": ["c4"],
+            "work_history": [{"header": "c6", "highlights": ["c7"]}],
+        },
+        ledger,
+    )
+    assert result.status == "verified"
+    assert result.layout is not None
+    document = materialize_source_document_v4(
+        SourceResumeContentDocumentV4(candidates=ledger.candidates, layout=result.layout)
+    )
+    assert document is not None
+    assert [item.text for item in document.summary_lines] == ["Summary continuation"]
+    assert document.section_headings["skills"].text == "TECHNICAL STACK"
+
+
+def test_v4_accepts_and_materializes_projects_heading() -> None:
+    raw = "PROJECTS\nAPI Portal\nDescription"
+    ledger = build_source_candidate_ledger(raw)
+    result = resolve_source_layout_v4(
+        {
+            "section_headings": {"projects": "c0"},
+            "projects": [{"name": "c1", "description": "c2"}],
+        },
+        ledger,
+    )
+    assert result.status == "verified"
+    assert result.layout is not None
+    document = materialize_source_document_v4(
+        SourceResumeContentDocumentV4(candidates=ledger.candidates, layout=result.layout)
+    )
+    assert document is not None
+    assert document.section_headings["projects"].text == "PROJECTS"
 
 
 def test_v3_server_owns_one_unclassified_candidate_without_source_content() -> None:
@@ -143,7 +234,8 @@ def test_v3_accepts_minimal_optional_nested_objects() -> None:
     assert result.status == "verified"
     assert result.layout is not None
     assert len(result.layout.work_history) == 1
-    assert len(result.layout.named_sections) == 1
+    layout = cast(SourceResumeLayoutReferencesV3, result.layout)
+    assert len(layout.named_sections) == 1
 
 
 def test_v3_long_partial_annotation_is_lossless_and_semantically_viable() -> None:

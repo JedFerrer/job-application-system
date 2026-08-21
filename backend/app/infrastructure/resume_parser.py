@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import unicodedata
 from collections.abc import Iterator
 from typing import Any, Literal, NamedTuple, overload
@@ -31,13 +32,14 @@ from app.domain.resume.schemas import (
     ParsedProfile,
     ParsedResumeResult,
     SourceResumeContentDocumentV2,
-    SourceResumeContentPayloadV3,
+    SourceResumeContentPayloadV4,
 )
 from app.domain.resume.source_content import (
+    SourceLayoutResult,
     build_source_candidate_ledger,
     classify_source_artifacts,
     has_usable_tailoring_semantics,
-    resolve_source_layout_v3,
+    resolve_source_layout_v4,
     verify_source_candidate_ledger,
 )
 from app.infrastructure.llm_client import llm_chat_completion
@@ -101,8 +103,11 @@ def _source_contract_retry_prompt(
         "Every CandidateProfile field must contain normalized human-readable "
         "values; no request-local cN alias may appear anywhere in the profile. "
         "The separate source_references object must use only exact aliases from "
-        "the server-issued candidate list: contact/links maps, summary scalar, "
-        "skills/sections/education/certifications/licenses/languages arrays, "
+        "the server-issued candidate list: contact/links maps, a summary scalar "
+        "plus ordered summary_lines, section_headings (use only summary, skills, "
+        "work_history, education, certifications, projects, licenses, languages, "
+        "or named:<index>), skills/sections/education/"
+        "certifications/licenses/languages arrays, "
         "work_history entries with header plus highlights arrays, and project "
         "name/description/url scalars plus technologies/achievements arrays. "
         "Work-history role order is derived by the server from each header and "
@@ -128,6 +133,181 @@ def _source_contract_retry_prompt(
             safe_feedback.append(f"aliases={','.join(aliases)}")
         return prompt + " Correct these structural source-reference errors only: " + "; ".join(safe_feedback) + "."
     return prompt
+
+
+def _required_header_layout_errors(
+    profile: ParsedProfile,
+    layout: object,
+    ledger: SourceResumeContentDocumentV2,
+) -> tuple[str, ...]:
+    """Fail closed when parsed identity data was not retained in source metadata."""
+    contact_ids = set(getattr(layout, "contact", {}).values())
+    link_ids = set(getattr(layout, "links", {}).values())
+    by_id = {candidate.source_id: candidate.text for candidate in ledger.candidates}
+    by_order = {candidate.order: candidate for candidate in ledger.candidates}
+    assigned_metadata = contact_ids | link_ids
+    contact = "\n".join(by_id[value].casefold() for value in contact_ids if value in by_id)
+    links = "\n".join(by_id[value].casefold() for value in link_ids if value in by_id)
+    errors: list[str] = []
+    source_values = {candidate.text.casefold() for candidate in ledger.candidates}
+    if profile.full_name:
+        normalized_name = profile.full_name.casefold()
+        if normalized_name not in source_values or normalized_name not in contact:
+            errors.append("missing_source_contact_name")
+    if profile.email and profile.email.casefold() not in contact:
+        errors.append("missing_source_contact_email")
+    if profile.phone:
+        digits = re.sub(r"\D", "", profile.phone)
+        if digits and digits not in re.sub(r"\D", "", contact):
+            errors.append("missing_source_contact_phone")
+    for value in profile.links.model_dump().values():
+        if not value:
+            continue
+        token = re.sub(r"^https?://", "", value.casefold()).rstrip("/")
+        if token and token not in links:
+            errors.append("missing_source_professional_link")
+            break
+
+    # Every non-heading line before the first core section heading is header
+    # material (name, address, email, phone, or links). This catches address
+    # lines that have no normalized profile field of their own.
+    heading_names = {
+        "professional summary", "summary", "technical stack", "technical skills",
+        "professional experience", "work experience", "experience", "education",
+        "certifications", "projects", "languages", "licenses",
+        "awards and achievements", "awards & achievements",
+    }
+    first_heading = next(
+        (candidate.order for candidate in ledger.candidates if candidate.text.casefold().strip() in heading_names),
+        None,
+    )
+    if first_heading is not None:
+        missing_header = [
+            candidate for order, candidate in by_order.items()
+            if order < first_heading
+            and candidate.text.casefold().strip() not in heading_names
+            and candidate.source_id not in assigned_metadata
+        ]
+        if missing_header:
+            errors.append("missing_source_header_candidates")
+
+    # Discover headings from the server-owned ledger, rather than trusting the
+    # model to include heading references. Every detected core heading must be
+    # retained separately, and every candidate in its body must be classified
+    # under that section.
+    heading_by_name: dict[str, int] = {}
+    heading_ids = getattr(layout, "section_headings", {})
+    heading_key_by_name = {
+        "professional summary": "summary", "summary": "summary",
+        "technical stack": "skills", "technical skills": "skills",
+        "professional experience": "work_history", "work experience": "work_history",
+        "experience": "work_history", "education": "education",
+        "certifications": "certifications", "projects": "projects",
+        "languages": "languages", "licenses": "licenses",
+        "awards and achievements": "named:",
+        "awards & achievements": "named:",
+    }
+    for candidate in ledger.candidates:
+        heading = candidate.text.casefold().strip()
+        if heading in heading_names:
+            heading_by_name.setdefault(heading, candidate.order)
+            heading_key = heading_key_by_name[heading]
+            if heading_key == "named:":
+                heading_key = next(
+                    (
+                        key
+                        for key, value in heading_ids.items()
+                        if key.startswith("named:") and value == candidate.source_id
+                    ),
+                    "named:-1",
+                )
+                heading_key_by_name[heading] = heading_key
+            if heading_key == "named:-1" or heading_ids.get(heading_key) != candidate.source_id:
+                errors.append("missing_source_section_heading")
+    summary_order = next(
+        (heading_by_name[name] for name in ("professional summary", "summary") if name in heading_by_name),
+        None,
+    )
+    skills_order = next(
+        (heading_by_name[name] for name in ("technical stack", "technical skills") if name in heading_by_name),
+        None,
+    )
+    summary_ids = {
+        value
+        for value in [getattr(layout, "summary", None), *getattr(layout, "summary_lines", [])]
+        if value is not None
+    }
+    if summary_order is not None and skills_order is not None and summary_order < skills_order:
+        if getattr(layout, "summary", None) is None:
+            errors.append("missing_source_summary")
+        missing_summary = [
+            candidate
+            for order, candidate in by_order.items()
+            if summary_order < order < skills_order and candidate.source_id not in summary_ids
+        ]
+        if missing_summary:
+            errors.append("incomplete_source_summary")
+
+    section_ids: dict[str, set[object]] = {
+        "summary": {
+            value
+            for value in [getattr(layout, "summary", None), *getattr(layout, "summary_lines", [])]
+            if value is not None
+        },
+        "skills": set(getattr(layout, "skills", [])),
+        "education": set(getattr(layout, "education", [])),
+        "certifications": set(getattr(layout, "certifications", [])),
+        "languages": set(getattr(layout, "languages", [])),
+        "licenses": set(getattr(layout, "licenses", [])),
+        "projects": {
+            value
+            for project in getattr(layout, "projects", [])
+            for value in (
+                project.name,
+                project.description,
+                *project.technologies,
+                *project.achievements,
+                project.url,
+            )
+            if value is not None
+        },
+    }
+    work_ids: set[object] = set()
+    for role in getattr(layout, "work_history", []):
+        work_ids.update(
+            value
+            for value in (
+                getattr(role, "header", None),
+                *getattr(role, "context", []),
+                *getattr(role, "highlights", []),
+                getattr(role, "responsibilities_heading", None),
+            )
+            if value is not None
+        )
+    section_ids["work_history"] = work_ids
+    named_sections = getattr(layout, "named_sections", [])
+    for index, named_section in enumerate(named_sections):
+        section_ids[f"named:{index}"] = {
+            value
+            for value in [named_section.heading, *named_section.items]
+            if value is not None
+        }
+    recognized_orders = sorted(heading_by_name.values())
+    for heading_name, heading_order in heading_by_name.items():
+        section_key = heading_key_by_name[heading_name]
+        next_heading_order = next(
+            (order for order in recognized_orders if order > heading_order),
+            len(ledger.candidates),
+        )
+        missing_body = [
+            candidate
+            for order, candidate in by_order.items()
+            if heading_order < order < next_heading_order
+            and candidate.source_id not in section_ids.get(section_key, set())
+        ]
+        if missing_body:
+            errors.append("unclassified_core_section_content")
+    return tuple(errors)
 
 
 def _normalize_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -335,6 +515,11 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
         "company/title/date fields from a combined line. Every non-null reference "
         "value must be exactly a listed cN alias; omit absent contact/link keys, "
         "use null only for nullable scalar fields, and use [] for empty arrays. "
+        "For every wrapped professional-summary line, use the first line as summary "
+        "and every continuation in source order as summary_lines. Put literal section "
+        "heading aliases in section_headings (summary, skills, work_history, education, "
+        "certifications, projects, licenses, languages, or a named:<index> key "
+        "corresponding to named_sections[index]), never in the body arrays. "
         "Never return candidate text in source_references. CandidateProfile fields "
         "must contain normalized, human-readable values; cN aliases are forbidden "
         "outside source_references. Do not add `header` to CandidateProfile "
@@ -398,7 +583,11 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
             raise ValueError(f"Resume data failed validation: {exc}") from exc
 
         artifacts = classify_source_artifacts(ledger)
-        layout_result = resolve_source_layout_v3(raw_layout, ledger, artifacts)
+        layout_result = resolve_source_layout_v4(raw_layout, ledger, artifacts)
+        if layout_result.status == "verified" and layout_result.layout is not None:
+            header_errors = _required_header_layout_errors(profile, layout_result.layout, ledger)
+            if header_errors:
+                layout_result = SourceLayoutResult(None, "invalid", header_errors)
         if (
             layout_result.status == "verified"
             and not has_usable_tailoring_semantics(layout_result.layout)
@@ -416,7 +605,7 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                 )
             prompt = _source_contract_retry_prompt(base_prompt, zero_semantic=True)
             continue
-        source_content = SourceResumeContentPayloadV3(
+        source_content = SourceResumeContentPayloadV4(
             document={
                 "candidates": ledger.candidates,
                 "layout": layout_result.layout,
@@ -530,7 +719,7 @@ def _qa_fixture_payload(
         "education": [{"degree": aliases["c38"], "institution": "University of Washington", "year": "2012-09 to 2016-06"}],
         "certifications": [aliases["c40"]],
         "languages": [{"language": "English", "proficiency": "native"}, {"language": "Spanish", "proficiency": "conversational"}],
-        "source_references": {"contact": {"name": "c0", "headline": "c1", "location": "c2", "email": "c3"}, "links": {"profiles": "c4"}, "summary": "c6", "skills": ["c8", "c9", "c10", "c11", "c12"], "sections": ["c5", "c7", "c13", "c37", "c39", "c41"], "education": ["c38"], "certifications": ["c40"], "languages": ["c42"], "work_history": [{"order": 0, "header": "c14", "context": ["c15"], "responsibilities_heading": "c16", "highlights": [f"c{i}" for i in range(17, 22)]}, {"order": 1, "header": "c22", "context": ["c23"], "responsibilities_heading": "c24", "highlights": [f"c{i}" for i in range(25, 29)]}, {"order": 2, "header": "c29", "context": [], "responsibilities_heading": "c30", "highlights": ["c31", "c32"]}], "named_sections": [{"order": 33, "heading": "c33", "items": ["c34", "c35", "c36"]}, {"order": 43, "heading": "c43", "items": ["c44", "c45"]}, {"order": 46, "heading": "c46", "items": ["c47"]}]},
+        "source_references": {"contact": {"name": "c0", "headline": "c1", "location": "c2", "email": "c3"}, "links": {"profiles": "c4"}, "summary": "c6", "skills": ["c8", "c9", "c10", "c11", "c12"], "section_headings": {"summary": "c5", "skills": "c7", "work_history": "c13", "education": "c37", "certifications": "c39", "languages": "c41", "named:0": "c33", "named:1": "c43", "named:2": "c46"}, "education": ["c38"], "certifications": ["c40"], "languages": ["c42"], "work_history": [{"order": 0, "header": "c14", "context": ["c15"], "responsibilities_heading": "c16", "highlights": [f"c{i}" for i in range(17, 22)]}, {"order": 1, "header": "c22", "context": ["c23"], "responsibilities_heading": "c24", "highlights": [f"c{i}" for i in range(25, 29)]}, {"order": 2, "header": "c29", "context": [], "responsibilities_heading": "c30", "highlights": ["c31", "c32"]}], "named_sections": [{"order": 33, "heading": "c33", "items": ["c34", "c35", "c36"]}, {"order": 43, "heading": "c43", "items": ["c44", "c45"]}, {"order": 46, "heading": "c46", "items": ["c47"]}]},
     }
 
     raise AssertionError("unreachable")

@@ -11,13 +11,15 @@ import pytest
 
 from app.domain.resume.exceptions import ResumeParseError
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
+from app.domain.resume.prompts import RESUME_EXTRACTION_PROMPT
 from app.domain.resume.schemas import (
     ExtractionEvidence,
     ParsedProfile,
     ParsedResumeResult,
     ResumeResponse,
     SourceResumeContentPayloadV2,
-    SourceResumeContentPayloadV3,
+    SourceResumeContentPayloadV4,
+    SourceResumeLayoutReferencesV4,
 )
 from app.domain.resume.service import ResumeService, build_summary_text
 from app.domain.resume.source_content import (
@@ -26,6 +28,10 @@ from app.domain.resume.source_content import (
     resolve_source_layout_v3,
 )
 from app.infrastructure import resume_parser
+from app.infrastructure.resume_parser import (
+    _required_header_layout_errors,
+    _source_contract_retry_prompt,
+)
 
 
 class LifecycleRepository:
@@ -72,8 +78,13 @@ async def _run_upload(
         ledger = build_source_candidate_ledger("text")
         layout = resolve_source_layout_v3({"sections": ["c0"]}, ledger)
         assert layout.layout is not None
-        source = SourceResumeContentPayloadV3(
-            document={"candidates": ledger.candidates, "layout": layout.layout},
+        source = SourceResumeContentPayloadV4(
+            document={
+                "candidates": ledger.candidates,
+                "layout": SourceResumeLayoutReferencesV4.model_validate(
+                    layout.layout.model_dump()
+                ),
+            },
             layout_validation_status="verified",
         )
         return ParsedResumeResult(
@@ -248,7 +259,6 @@ async def test_parser_keeps_all_verified_late_bullets_without_profile_identity(
     ]
     raw_text = "Acme Platform - Engineer\n" + "\n".join(bullets)
     payload = {
-        "full_name": "Synthetic Candidate",
         "work_history": [
             {"company": "Acme Platform", "title": "Engineer", "highlights": bullets}
         ],
@@ -271,7 +281,7 @@ async def test_parser_keeps_all_verified_late_bullets_without_profile_identity(
     assert result.profile.work_history[0].highlights == bullets
     assert result.source_layout_status == "verified"
     source_content = result.source_content
-    assert isinstance(source_content, SourceResumeContentPayloadV3)
+    assert isinstance(source_content, SourceResumeContentPayloadV4)
     assert source_content.document.layout is not None
     assert len(source_content.document.layout.work_history[0].highlights) == 7
     assert [candidate.text for candidate in source_content.document.candidates] == [
@@ -282,6 +292,75 @@ async def test_parser_keeps_all_verified_late_bullets_without_profile_identity(
     assert "source_id" not in json.dumps(profile_dump)
     assert "start_offset" not in json.dumps(profile_dump)
     assert "fingerprint" not in json.dumps(profile_dump)
+
+
+@pytest.mark.asyncio
+async def test_parser_verifies_complete_source_backed_resume_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skills = ["Python", "FastAPI", "Django", "Ruby on Rails", "React", "AWS", "Docker"]
+    raw_text = (
+        "JEDIDIAH L. FERRER\nBarangay 32, Purok 2 San Roque,\nLegazpi City\n"
+        "ferrer@example.com\ngithub.com/JedFerrer\nhttps://example.dev/\n+639273536036\n"
+        "PROFESSIONAL SUMMARY\nBackend engineer with API focus and\nautomation experience.\n"
+        "TECHNICAL STACK\n"
+        + "\n".join(f"• {skill}" for skill in skills)
+        + "\nPROFESSIONAL EXPERIENCE\nAcme - Engineer\n• Built APIs\n"
+        "EDUCATION\nBachelor of Science\nAWARDS AND ACHIEVEMENTS\nTop Engineer"
+    )
+    payload = {
+        "full_name": "JEDIDIAH L. FERRER",
+        "email": "ferrer@example.com",
+        "phone": "+639273536036",
+        "links": {
+            "github": "https://github.com/JedFerrer",
+            "website": "https://example.dev/",
+        },
+        "skills": skills,
+        "work_history": [{"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}],
+        "source_references": {
+            "contact": {
+                "name": "c0", "address": "c1", "address_2": "c2",
+                "email": "c3", "phone": "c6",
+            },
+            "links": {"github": "c4", "website": "c5"},
+            "summary": "c8",
+            "summary_lines": ["c9"],
+            "section_headings": {
+                "summary": "c7", "skills": "c10", "work_history": "c18",
+                "education": "c21", "named:0": "c23",
+            },
+            "skills": [f"c{i}" for i in range(11, 18)],
+            "work_history": [{"header": "c19", "highlights": ["c20"]}],
+            "education": ["c22"],
+            "named_sections": [{"items": ["c24"]}],
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    monkeypatch.setattr(
+        resume_parser,
+        "llm_chat_completion",
+        AsyncMock(return_value=(response, "test-model")),
+    )
+
+    result = await resume_parser.parse_resume_text(raw_text)
+
+    assert result.source_layout_status == "verified"
+    assert isinstance(result.source_content, SourceResumeContentPayloadV4)
+    assert result.source_content.document.layout is not None
+    candidates = {
+        candidate.source_id: candidate.text
+        for candidate in result.source_content.document.candidates
+    }
+    assert [candidates[item] for item in result.source_content.document.layout.skills] == skills
+    assert [candidates[item] for item in result.source_content.document.layout.summary_lines] == [
+        "automation experience."
+    ]
+    named_heading = result.source_content.document.layout.named_sections[0].heading
+    assert named_heading is not None
+    assert candidates[named_heading] == "AWARDS AND ACHIEVEMENTS"
 
 
 @pytest.mark.asyncio
@@ -365,3 +444,86 @@ async def test_concurrent_first_imports_create_only_one_active_resume(
     assert sum(
         result.lifecycle_status == ResumeLifecycleStatus.DRAFT for result in results
     ) == 1
+
+
+def test_source_layout_rejects_unclassified_header_metadata() -> None:
+    raw = (
+        "JEDIDIAH L. FERRER\nBarangay 32, Purok 2\nLegazpi City\n"
+        "ferrer@example.com\ngithub.com/JedFerrer\n+639273536036\n"
+        "PROFESSIONAL SUMMARY\nBackend engineer"
+    )
+    ledger = build_source_candidate_ledger(raw)
+    layout = resolve_source_layout_v3(
+        {"contact": {"email": "c3", "phone": "c5"}, "summary": "c7"},
+        ledger,
+    )
+    assert layout.layout is not None
+    profile = ParsedProfile.model_validate(
+        {
+            "full_name": "JEDIDIAH L. FERRER",
+            "email": "ferrer@example.com",
+            "phone": "+639273536036",
+            "links": {"github": "https://github.com/JedFerrer"},
+        }
+    )
+    errors = resume_parser._required_header_layout_errors(profile, layout.layout, ledger)
+    assert "missing_source_header_candidates" in errors
+    assert "missing_source_professional_link" in errors
+
+
+def test_source_layout_rejects_summary_body_not_referenced_without_heading_refs() -> None:
+    raw = (
+        "PROFESSIONAL SUMMARY\n"
+        "Backend engineer with API experience and\n"
+        "automation pipeline expertise.\n"
+        "TECHNICAL STACK\n"
+        "• Python, FastAPI"
+    )
+    ledger = build_source_candidate_ledger(raw)
+    layout = resolve_source_layout_v3({"skills": ["c4"]}, ledger)
+    assert layout.layout is not None
+    profile = ParsedProfile.model_validate({})
+    errors = _required_header_layout_errors(profile, layout.layout, ledger)
+    assert "incomplete_source_summary" in errors
+
+
+def test_source_layout_rejects_missing_core_heading_and_skill_ownership() -> None:
+    raw = (
+        "TECHNICAL STACK\n"
+        "• Python\n"
+        "• FastAPI\n"
+        "PROFESSIONAL EXPERIENCE\n"
+        "Acme - Engineer\n"
+        "• Built APIs"
+    )
+    ledger = build_source_candidate_ledger(raw)
+    layout = resolve_source_layout_v3({"skills": ["c1"]}, ledger)
+    assert layout.layout is not None
+    errors = _required_header_layout_errors(
+        ParsedProfile.model_validate({}), layout.layout, ledger
+    )
+    assert "missing_source_section_heading" in errors
+    assert "unclassified_core_section_content" in errors
+
+
+def test_source_layout_audits_project_references_without_crashing() -> None:
+    ledger = build_source_candidate_ledger("PROJECTS\nAPI Portal\nDescription")
+    layout = resolve_source_layout_v3(
+        {"projects": [{"name": "c1", "description": "c2"}]}, ledger
+    )
+    assert layout.layout is not None
+    errors = _required_header_layout_errors(
+        ParsedProfile.model_validate({}), layout.layout, ledger
+    )
+    assert "missing_source_section_heading" in errors
+
+
+def test_source_contract_prompts_enumerate_all_supported_heading_keys() -> None:
+    supported = (
+        "summary", "skills", "work_history", "education", "certifications",
+        "projects", "licenses", "languages", "named:<index>",
+    )
+    retry_prompt = _source_contract_retry_prompt("base")
+    for key in supported:
+        assert key in RESUME_EXTRACTION_PROMPT
+        assert key in retry_prompt

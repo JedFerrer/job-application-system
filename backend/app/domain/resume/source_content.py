@@ -22,10 +22,12 @@ from app.domain.resume.schemas import (
     SourceResumeCandidate,
     SourceResumeContentDocumentV2,
     SourceResumeContentDocumentV3,
+    SourceResumeContentDocumentV4,
     SourceResumeContentPayload,
     SourceResumeDocument,
     SourceResumeLayoutReferences,
     SourceResumeLayoutReferencesV3,
+    SourceResumeLayoutReferencesV4,
     SourceResumeNamedSectionReferences,
     SourceResumeRoleReferencesV3,
     SourceRole,
@@ -196,17 +198,66 @@ def _candidate_span(raw_text: str, start: int, end: int) -> tuple[int, int, str]
     marker = re.match(r"(?:[•*]|[-–—]|\d+[.)])[ \t]+", raw_text[content_start:content_end])
     if marker is not None:
         content_start += marker.end()
-    text = normalize_source_text(raw_text[content_start:content_end])
+    text = re.sub(r"\s*\n\s*", " ", normalize_source_text(raw_text[content_start:content_end]))
     if not text:
         return None
     return content_start, content_end, text
 
 
+_SOURCE_HEADINGS = {
+    "professional summary", "summary", "technical stack", "technical skills",
+    "professional experience", "work experience", "experience", "education",
+    "certifications", "awards and achievements", "awards & achievements",
+    "projects", "languages", "licenses",
+}
+
+
+def _is_list_marker(raw_text: str, start: int, end: int) -> bool:
+    line = raw_text[start:end].lstrip(" \t")
+    return re.match(r"(?:[•*]|[-–—]|\d+[.)])[ \t]+", line) is not None
+
+
+def _logical_source_spans(raw_text: str) -> list[tuple[int, int]]:
+    """Group visual wraps into logical source statements without crossing headings."""
+    physical = _raw_line_spans(raw_text)
+    grouped: list[tuple[int, int]] = []
+    index = 0
+    while index < len(physical):
+        start, end = physical[index]
+        text = normalize_source_text(raw_text[start:end]).casefold().strip()
+        is_heading = text in _SOURCE_HEADINGS
+        is_bullet = _is_list_marker(raw_text, start, end)
+        if is_heading:
+            grouped.append((start, end))
+            index += 1
+            continue
+        if is_bullet:
+            last_end = end
+            index += 1
+            while index < len(physical):
+                next_start, next_end = physical[index]
+                next_text = normalize_source_text(raw_text[next_start:next_end]).casefold().strip()
+                if next_text in _SOURCE_HEADINGS or _is_list_marker(raw_text, next_start, next_end):
+                    break
+                previous_text = normalize_source_text(raw_text[start:last_end]).casefold().rstrip()
+                unindented = raw_text[next_start:next_end] == raw_text[next_start:next_end].lstrip(" \t")
+                likely_wrap = previous_text.endswith((",", ";", ":")) or previous_text.endswith((" and", " or", " with", " to"))
+                if unindented and not likely_wrap:
+                    break
+                last_end = next_end
+                index += 1
+            grouped.append((start, last_end))
+            continue
+        grouped.append((start, end))
+        index += 1
+    return grouped
+
+
 def build_source_candidate_ledger(raw_text: str) -> SourceResumeContentDocumentV2:
-    """Create server-owned candidates from raw physical lines deterministically."""
+    """Create server-owned candidates from logical source statements deterministically."""
     candidates: list[SourceResumeCandidate] = []
     occurrences: dict[str, int] = {}
-    for line_start, line_end in _raw_line_spans(raw_text):
+    for line_start, line_end in _logical_source_spans(raw_text):
         candidate = _candidate_span(raw_text, line_start, line_end)
         if candidate is None:
             continue
@@ -251,7 +302,12 @@ def verify_source_candidate_ledger(
             errors.append("candidate_overlap_or_order")
             continue
         raw_slice = raw_text[candidate.start_offset : candidate.end_offset]
-        if normalize_source_text(raw_slice) != normalize_source_text(candidate.text):
+        raw_normalized = normalize_source_text(raw_slice)
+        candidate_normalized = normalize_source_text(candidate.text)
+        if "\n" in raw_slice or "\r" in raw_slice:
+            raw_normalized = re.sub(r"\s*\n\s*", " ", raw_normalized)
+            candidate_normalized = re.sub(r"\s*\n\s*", " ", candidate_normalized)
+        if raw_normalized != candidate_normalized:
             errors.append("candidate_text_mismatch")
             continue
         if candidate.fingerprint != source_fingerprint(candidate.text):
@@ -890,6 +946,118 @@ def materialize_source_document_v3(
         ],
         unclassified=[by_id[value] for value in layout.unclassified],
     )
+
+
+def resolve_source_layout_v4(
+    raw_layout: object,
+    ledger: SourceResumeContentDocumentV2,
+    artifacts: list[SourceResumeArtifact] | None = None,
+) -> SourceLayoutResult:
+    """Resolve v4 additions through the proven v3 ownership verifier.
+
+    Wrapped summary lines and dedicated headings remain separately addressable in
+    the persisted layout, but are temporarily treated as ordinary sections while
+    the v3 verifier proves every candidate has exactly one owner.
+    """
+    if not isinstance(raw_layout, dict):
+        return SourceLayoutResult(None, "invalid", ("layout_object_expected",))
+    allowed = {
+        "contact", "links", "summary", "summary_lines", "section_headings",
+        "skills", "sections", "work_history", "projects", "education",
+        "certifications", "licenses", "languages", "named_sections",
+    }
+    if set(raw_layout) - allowed:
+        return SourceLayoutResult(None, "invalid", ("unknown_layout_field",))
+    summary_lines = raw_layout.get("summary_lines", [])
+    headings = raw_layout.get("section_headings", {})
+    if not isinstance(summary_lines, list) or not isinstance(headings, dict):
+        return SourceLayoutResult(None, "invalid", ("invalid_source_references",))
+    allowed_heading_keys = {
+        "summary", "skills", "work_history", "education", "certifications",
+        "projects", "licenses", "languages",
+    }
+    if any(
+        not isinstance(key, str)
+        or (
+            key not in allowed_heading_keys
+            and not re.fullmatch(r"named:\d+", key)
+        )
+        for key in headings
+    ):
+        return SourceLayoutResult(None, "invalid", ("unknown_section_heading",))
+    transformed = dict(raw_layout)
+    transformed.pop("summary_lines", None)
+    transformed.pop("section_headings", None)
+    named_sections = transformed.get("named_sections", [])
+    if not isinstance(named_sections, list):
+        return SourceLayoutResult(None, "invalid", ("invalid_source_references",))
+    named_sections = [dict(section) if isinstance(section, dict) else section for section in named_sections]
+    for key, alias in headings.items():
+        if not key.startswith("named:"):
+            continue
+        index = int(key.split(":", 1)[1])
+        if index >= len(named_sections) or not isinstance(named_sections[index], dict):
+            return SourceLayoutResult(None, "invalid", ("invalid_source_references",))
+        existing = named_sections[index].get("heading")
+        if existing is not None and existing != alias:
+            return SourceLayoutResult(None, "invalid", ("duplicate_source_candidate_ownership",))
+        named_sections[index]["heading"] = alias
+    transformed["named_sections"] = named_sections
+    transformed["sections"] = [
+        *summary_lines,
+        *[alias for key, alias in headings.items() if not key.startswith("named:")],
+        *list(raw_layout.get("sections", [])),
+    ]
+    result = resolve_source_layout_v3(transformed, ledger, artifacts)
+    if result.status != "verified" or result.layout is None:
+        return result
+    layout = result.layout
+    aliases = {f"c{candidate.order}": candidate.source_id for candidate in ledger.candidates}
+    orders = {candidate.source_id: candidate.order for candidate in ledger.candidates}
+    try:
+        resolved_summary_lines = sorted(
+            (aliases[value] for value in summary_lines), key=orders.__getitem__
+        )
+        resolved_headings = {key: aliases[value] for key, value in headings.items()}
+        if layout.summary is not None and any(
+            orders[value] < orders[layout.summary] for value in resolved_summary_lines
+        ):
+            return SourceLayoutResult(None, "invalid", ("summary_order_invalid",))
+    except (KeyError, TypeError):
+        return SourceLayoutResult(None, "invalid", ("invalid_source_references",))
+    excluded = set(resolved_summary_lines) | set(resolved_headings.values())
+    resolved = SourceResumeLayoutReferencesV4.model_validate({
+        **layout.model_dump(),
+        "summary": layout.summary,
+        "summary_lines": resolved_summary_lines,
+        "section_headings": resolved_headings,
+        "sections": [value for value in layout.sections if value not in excluded],
+    })
+    return SourceLayoutResult(resolved, "verified")
+
+
+def materialize_source_document_v4(
+    ledger: SourceResumeContentDocumentV4,
+) -> SourceResumeDocument | None:
+    """Materialize v4 while retaining wrapped summary and source headings."""
+    if ledger.layout is None:
+        return None
+    base = materialize_source_document_v3(
+        SourceResumeContentDocumentV3(
+            candidates=ledger.candidates,
+            layout=SourceResumeLayoutReferencesV3.model_validate(
+                ledger.layout.model_dump(exclude={"summary_lines", "section_headings"})
+            ),
+            artifacts=ledger.artifacts,
+        )
+    )
+    if base is None:
+        return None
+    by_id = {candidate.source_id: SourceTextItem.model_validate(candidate.model_dump()) for candidate in ledger.candidates}
+    return base.model_copy(update={
+        "summary_lines": [by_id[value] for value in ledger.layout.summary_lines],
+        "section_headings": {key: by_id[value] for key, value in ledger.layout.section_headings.items()},
+    })
 
 
 def has_usable_tailoring_semantics(

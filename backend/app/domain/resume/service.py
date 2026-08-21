@@ -51,7 +51,7 @@ from app.domain.resume.schemas import (
     ResumeImportDetail,
     ResumeImportListItem,
     ResumeResponse,
-    SourceResumeContentPayloadV3,
+    SourceResumeContentPayloadV4,
     SourceResumeDocument,
     TailoredBulletDecision,
     TailoredCanonicalItem,
@@ -67,7 +67,7 @@ from app.domain.resume.selection import (
     select_source_bullets,
 )
 from app.domain.resume.source_content import (
-    materialize_source_document_v3,
+    materialize_source_document_v4,
     source_revision_sha256,
 )
 from app.domain.resume.truthfulness import (
@@ -88,6 +88,17 @@ logger = get_logger("resume_service")
 FULL_RESUME_SNAPSHOT_VERSION = "full-resume-v1"
 
 ProgressFn = Callable[..., Awaitable[None]]
+
+
+def _join_wrapped_source(items: list[Any]) -> str | None:
+    """Join PDF soft-wrap candidates without changing their source provenance."""
+    values = [str(item.text).strip() for item in items if item is not None and item.text.strip()]
+    if not values:
+        return None
+    joined = values[0]
+    for value in values[1:]:
+        joined += value if joined.endswith("-") else f" {value}"
+    return joined
 
 
 def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
@@ -112,10 +123,14 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
         sections.append(TailoredCanonicalSection(section="contact", items=contact, canonical_order=min(i.canonical_order for i in contact)))
     if links:
         sections.append(TailoredCanonicalSection(section="links", items=links, canonical_order=min(i.canonical_order for i in links)))
-    if source_document.summary:
+    summary_values = [value for value in [source_document.summary, *source_document.summary_lines] if value is not None]
+    if summary_values:
         sections.append(
             TailoredCanonicalSection(
-                section="summary", items=items([source_document.summary]), canonical_order=source_document.summary.order
+                section="summary",
+                heading=(source_document.section_headings.get("summary").text if source_document.section_headings.get("summary") else None),
+                items=items(summary_values),
+                canonical_order=summary_values[0].order,
             )
         )
     for section_name, values in (
@@ -128,7 +143,12 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
         section_items = items(values)
         if section_items:
             sections.append(
-                TailoredCanonicalSection(section=section_name, items=section_items, canonical_order=min(i.canonical_order for i in section_items))
+                TailoredCanonicalSection(
+                    section=section_name,
+                    heading=(source_document.section_headings.get(section_name).text if source_document.section_headings.get(section_name) else None),
+                    items=section_items,
+                    canonical_order=min(i.canonical_order for i in section_items),
+                )
             )
     project_values: list[Any] = []
     for project in source_document.projects:
@@ -145,7 +165,15 @@ def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
         )
     project_items = items(project_values)
     if project_items:
-        sections.append(TailoredCanonicalSection(section="projects", items=project_items, canonical_order=min(i.canonical_order for i in project_items)))
+        projects_heading = source_document.section_headings.get("projects")
+        sections.append(
+            TailoredCanonicalSection(
+                section="projects",
+                heading=projects_heading.text if projects_heading else None,
+                items=project_items,
+                canonical_order=min(i.canonical_order for i in project_items),
+            )
+        )
     for named in getattr(source_document, "named_sections", []):
         section_items = items(named.items)
         if section_items:
@@ -433,8 +461,8 @@ def _untailored_fallback(
         else list(profile.skills)
     )
     source_summary = (
-        source_document.summary.text
-        if source_document is not None and source_document.summary is not None
+        _join_wrapped_source([source_document.summary, *source_document.summary_lines])
+        if source_document is not None
         else None
     )
     resume = TailoredResume(
@@ -511,7 +539,7 @@ def _untailored_fallback(
         canonical_sections=canonical_sections or [],
         source_resume_id=source_resume_id if source_backed else None,
         source_resume_content_id=source_resume_content_id if source_backed else None,
-        source_schema_version="source-resume-v3" if source_backed else None,
+        source_schema_version="source-resume-v4" if source_backed else None,
         source_revision_sha256=source_revision if source_backed else None,
     )
     resume.requirement_classifications = classify_resume_coverage(
@@ -729,10 +757,11 @@ class ResumeService:
             assert previous_profile is not None
             embedding = previous_profile.embedding
 
-        # Only a server-verified source-resume-v3 can become active. Legacy
-        # focused test seams may persist a draft, but never bypass this gate.
+        # Only a server-verified source-resume-v4 can become active. Existing
+        # v3 snapshots must be re-imported instead of entering a half-supported
+        # active state.
         source_ready = source_validation_status == "verified" and isinstance(
-            source_content, SourceResumeContentPayloadV3
+            source_content, SourceResumeContentPayloadV4
         )
         lifecycle_status = (
             ResumeLifecycleStatus.ACTIVE
@@ -960,16 +989,16 @@ class ResumeService:
             if not isinstance(source_pair, tuple) or len(source_pair) != 2:
                 raise ValueError
             profile, source_row = source_pair
-            if source_row.content.get("schema_version") != "source-resume-v3":
+            if source_row.content.get("schema_version") != "source-resume-v4":
                 raise ValueError
-            source_payload = SourceResumeContentPayloadV3.model_validate(source_row.content)
+            source_payload = SourceResumeContentPayloadV4.model_validate(source_row.content)
             if (
                 source_row.validation_status != "verified"
                 or source_payload.layout_validation_status != "verified"
                 or source_payload.document.layout is None
             ):
                 raise ValueError
-            source_document = materialize_source_document_v3(source_payload.document)
+            source_document = materialize_source_document_v4(source_payload.document)
             if source_document is None:
                 raise ValueError
             profile_model = ParsedProfile.model_validate(profile.parsed)
@@ -983,7 +1012,7 @@ class ResumeService:
                 payload.content.tailoring_snapshot_version != "lossless-complete-v2"
                 or payload.content.source_resume_id != source_row.resume_id
                 or payload.content.source_resume_content_id != source_row.id
-                or payload.content.source_schema_version != "source-resume-v3"
+                or payload.content.source_schema_version != "source-resume-v4"
                 or payload.content.source_revision_sha256 != source_revision_sha256(source_row.content)
             ):
                 raise ValueError
@@ -1065,10 +1094,10 @@ class ResumeService:
             raise TailoredResumeSnapshotInvalidError()
         profile_row, source_row = source_pair
         try:
-            payload = SourceResumeContentPayloadV3.model_validate(source_row.content)
+            payload = SourceResumeContentPayloadV4.model_validate(source_row.content)
             if source_row.validation_status != "verified" or payload.layout_validation_status != "verified":
                 raise ValueError
-            source_document = materialize_source_document_v3(payload.document)
+            source_document = materialize_source_document_v4(payload.document)
             if source_document is None:
                 raise ValueError
             profile = ParsedProfile.model_validate(profile_row.parsed)
@@ -1085,7 +1114,7 @@ class ResumeService:
                 resume.tailoring_snapshot_version != "lossless-complete-v2"
                 or resume.source_resume_id != source_row.resume_id
                 or resume.source_resume_content_id != source_row.id
-                or resume.source_schema_version != "source-resume-v3"
+                or resume.source_schema_version != "source-resume-v4"
                 or resume.source_revision_sha256 != source_revision_sha256(source_row.content)
             ):
                 raise ValueError
@@ -1142,12 +1171,12 @@ class ResumeService:
             source_roles = None
         else:
             profile_row, source_row = source_pair
-            if source_row.content.get("schema_version") != "source-resume-v3":
+            if source_row.content.get("schema_version") != "source-resume-v4":
                 raise ResumeSourceLayoutUnavailableError()
-            source_payload_v3 = SourceResumeContentPayloadV3.model_validate(source_row.content)
-            if source_payload_v3.layout_validation_status != "verified" or source_payload_v3.document.layout is None:
+            source_payload_v4 = SourceResumeContentPayloadV4.model_validate(source_row.content)
+            if source_payload_v4.layout_validation_status != "verified" or source_payload_v4.document.layout is None:
                 raise ResumeSourceLayoutUnavailableError()
-            source_document = materialize_source_document_v3(source_payload_v3.document)
+            source_document = materialize_source_document_v4(source_payload_v4.document)
             source_roles = source_document.work_history if source_document is not None else None
             if source_roles is None or not any(role.highlights for role in source_roles):
                 raise ResumeSourceLayoutUnavailableError()
@@ -1425,8 +1454,8 @@ class ResumeService:
             else list(profile.skills)
         )
         source_summary = (
-            source_document.summary.text
-            if source_document is not None and source_document.summary is not None
+            _join_wrapped_source([source_document.summary, *source_document.summary_lines])
+            if source_document is not None
             else None
         )
         resume = TailoredResume(
@@ -1458,7 +1487,7 @@ class ResumeService:
             canonical_sections=canonical_sections,
             source_resume_id=(source_row.resume_id if source_backed and source_row is not None else None),
             source_resume_content_id=(source_row.id if source_backed and source_row is not None else None),
-            source_schema_version=("source-resume-v3" if source_backed else None),
+            source_schema_version=("source-resume-v4" if source_backed else None),
             source_revision_sha256=(source_revision_sha256(source_row.content) if source_backed and source_row is not None else None),
             source_section_order=(list(source_document.section_order) if source_backed and source_document is not None else []),
         )

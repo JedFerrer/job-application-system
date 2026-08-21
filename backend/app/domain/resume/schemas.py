@@ -33,6 +33,7 @@ PARSED_PROFILE_SCHEMA_VERSION = "parsed-profile-v3"
 SOURCE_RESUME_SCHEMA_VERSION = "source-resume-v1"
 SOURCE_RESUME_SCHEMA_VERSION_V2 = "source-resume-v2"
 SOURCE_RESUME_SCHEMA_VERSION_V3 = "source-resume-v3"
+SOURCE_RESUME_SCHEMA_VERSION_V4 = "source-resume-v4"
 
 
 def _normalize_optional_text(value: object) -> object:
@@ -305,7 +306,7 @@ class ParsedResumeResult(NamedTuple):
 
     profile: ParsedProfile
     extraction_evidence: ExtractionEvidence
-    source_content: SourceResumeContentPayload | SourceResumeContentPayloadV2 | SourceResumeContentPayloadV3 | None = None
+    source_content: SourceResumeContentPayload | SourceResumeContentPayloadV2 | SourceResumeContentPayloadV3 | SourceResumeContentPayloadV4 | None = None
     source_validation_status: Literal["verified", "invalid"] | None = None
     source_validation_errors: tuple[str, ...] = ()
     source_layout_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
@@ -367,6 +368,8 @@ class SourceResumeDocument(BaseModel):
     contact: dict[str, SourceTextItem] = Field(default_factory=dict)
     links: dict[str, SourceTextItem] = Field(default_factory=dict)
     summary: SourceTextItem | None = None
+    summary_lines: list[SourceTextItem] = Field(default_factory=list)
+    section_headings: dict[str, SourceTextItem] = Field(default_factory=dict)
     skills: list[SourceTextItem] = Field(default_factory=list)
     sections: list[SourceTextItem] = Field(default_factory=list)
     work_history: list[SourceRole] = Field(default_factory=list)
@@ -469,6 +472,13 @@ class SourceResumeLayoutReferencesV3(SourceResumeLayoutReferences):
     unclassified: list[UUID] = Field(default_factory=list)
 
 
+class SourceResumeLayoutReferencesV4(SourceResumeLayoutReferencesV3):
+    """V4 keeps wrapped summary lines and dedicated source headings losslessly."""
+
+    summary_lines: list[UUID] = Field(default_factory=list)
+    section_headings: dict[str, UUID] = Field(default_factory=dict)
+
+
 class SourceResumeContentDocumentV2(BaseModel):
     """Verified candidate ledger plus optional semantic source layout."""
 
@@ -514,9 +524,26 @@ class SourceResumeContentDocumentV3(BaseModel):
     artifacts: list[SourceResumeArtifact] = Field(default_factory=list)
 
 
+class SourceResumeContentDocumentV4(BaseModel):
+    """V4 ledger with explicit wrapped-summary and heading references."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidates: list[SourceResumeCandidate] = Field(default_factory=list)
+    layout: SourceResumeLayoutReferencesV4 | None = None
+    artifacts: list[SourceResumeArtifact] = Field(default_factory=list)
+
+
 class SourceResumeContentPayloadV3(BaseModel):
     schema_version: Literal["source-resume-v3"] = "source-resume-v3"
     document: SourceResumeContentDocumentV3
+    layout_validation_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
+    layout_validation_errors: list[str] = Field(default_factory=list)
+
+
+class SourceResumeContentPayloadV4(BaseModel):
+    schema_version: Literal["source-resume-v4"] = "source-resume-v4"
+    document: SourceResumeContentDocumentV4
     layout_validation_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
     layout_validation_errors: list[str] = Field(default_factory=list)
 
@@ -744,7 +771,7 @@ class TailoredResume(BaseModel):
     source_resume_content_id: int | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-    source_schema_version: Literal["source-resume-v3"] | None = Field(
+    source_schema_version: Literal["source-resume-v3", "source-resume-v4"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
     source_revision_sha256: str | None = Field(default=None, exclude_if=lambda value: value is None)

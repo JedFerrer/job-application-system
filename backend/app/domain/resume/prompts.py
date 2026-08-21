@@ -71,8 +71,13 @@ professional experience.
   provides a `SERVER-OWNED SOURCE CANDIDATES` list after this prompt. Return only
   candidate aliases such as `c0`, `c1`, and never return source prose, UUIDs,
   offsets, fingerprints, occurrence ordinals, or verification status. Use the
-  shape `contact`/`links` maps of candidate aliases, `summary` as one alias or
-  null, arrays of aliases for sections/skills/education/certifications/licenses/
+  shape `contact`/`links` maps of candidate aliases, `summary` as the first
+  summary-line alias or null plus ordered `summary_lines` continuation aliases,
+  and `section_headings` (use exactly the supported keys `summary`, `skills`,
+  `work_history`, `education`, `certifications`, `projects`, `licenses`, and
+  `languages`; use `named:<index>` (for example `named:0`) for the
+  corresponding `named_sections` entry),
+  arrays of aliases for sections/skills/education/certifications/licenses/
   languages, and work-history/project objects containing alias fields and alias
   arrays. The server preserves every verified candidate that you do not
   semantically reference. If semantic grouping is uncertain, return a partial
