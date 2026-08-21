@@ -13,12 +13,16 @@ const apiMocks = vi.hoisted(() => ({
   upload: vi.fn(),
 }));
 const exportMocks = vi.hoisted(() => ({
+  buildResumeHeaderItems: vi.fn(() => [] as string[]),
   downloadResumePdf: vi.fn(),
   downloadResumeDocx: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({ resumeApi: apiMocks }));
-vi.mock("@/lib/cover-letter-export", () => exportMocks);
+vi.mock("@/lib/cover-letter-export", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/cover-letter-export")>()),
+  ...exportMocks,
+}));
 vi.mock("@/context/resume-task-context", () => ({
   useResumeTask: () => ({ setTask: vi.fn(), isRunning: false, progressMsg: null }),
 }));

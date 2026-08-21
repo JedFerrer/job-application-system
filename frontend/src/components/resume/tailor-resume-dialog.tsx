@@ -5,7 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Briefcase, Copy, FileDown, FileText, Loader2, RefreshCw, RotateCcw, Save, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { resumeApi } from "@/lib/api";
-import { downloadResumeDocx, downloadResumePdf } from "@/lib/cover-letter-export";
+import { buildResumeHeaderItems, buildResumeRenderModel, downloadResumeDocx, downloadResumePdf, formatResumeText, resumeSectionHeading } from "@/lib/cover-letter-export";
 import type { RequirementClassification, TailoredCanonicalSection, TailoredResume } from "@/lib/types";
 import { createReviewState, decisionItems, reviewItems, reviewedResume, sourceOnlyResume, wordDiff, type ReviewItem, type ReviewState } from "@/lib/tailoring-review";
 import { Badge } from "@/components/ui/badge";
@@ -19,36 +19,6 @@ type DisplaySection = { section: TailoredCanonicalSection["section"]; items: Dis
 function dateLabel(start: string | null, end: string | null): string {
   const fmt = (value: string | null) => { if (!value) return ""; const match = value.match(/^(\d{4})-(\d{2})/); return match ? `${match[1]}-${match[2]}` : value; };
   const from = fmt(start); const to = end ? fmt(end) : "Present"; return from || end ? `${from} – ${to}` : "";
-}
-function formatResumeText(data: TailoredResume): string {
-  const lines: string[] = [];
-  const sections = data.canonical_sections ?? [];
-  const push = (heading: string | null, items: string[]) => { if (items.length) lines.push(...(heading ? [heading] : []), ...items, ""); };
-  const ordered = [...sections].sort((a, b) => (a.canonical_order ?? 0) - (b.canonical_order ?? 0));
-  for (const section of ordered.filter((section) => section.section !== "unclassified")) {
-    push((section.heading || section.section).toUpperCase(), section.items.map((item) => item.text));
-  }
-  if (!sections.length) {
-    push("CONTACT", [data.full_name, data.email, data.phone].filter((item): item is string => Boolean(item)));
-    push("LINKS", Object.values(data.links ?? {}).filter((item): item is string => Boolean(item)));
-    push("PROFESSIONAL SUMMARY", data.professional_summary ? [data.professional_summary] : []);
-    push("TECHNICAL SKILLS", data.skills ?? [...data.matched_skills, ...data.other_skills]);
-    push("PROJECTS", data.projects?.flatMap((project) => [project.name, project.description, ...project.technologies, ...project.achievements, project.url].filter((item): item is string => Boolean(item))) ?? []);
-    push("EDUCATION", data.education.map((item) => [item.degree, item.institution, item.year].filter(Boolean).join(" | ")));
-    push("CERTIFICATIONS", data.certifications);
-    push("LICENSES", data.licenses?.map((item) => [item.name, item.issuer].filter(Boolean).join(" | ")) ?? []);
-    push("LANGUAGES", data.languages?.map((item) => [item.language, item.proficiency].filter(Boolean).join(" | ")) ?? []);
-  }
-  if (data.work_history.length) {
-    lines.push("PROFESSIONAL EXPERIENCE", "");
-    for (const role of data.work_history) {
-      lines.push(role.source_header || [role.title, role.company, dateLabel(role.start, role.end)].filter(Boolean).join(" | ") || "Role");
-      lines.push(...(role.role_context ?? []));
-      if (role.responsibilities_heading) lines.push(role.responsibilities_heading);
-      lines.push(...role.tailored_highlights.map((item) => `  • ${item}`), "");
-    }
-  }
-  return lines.join("\n").trim();
 }
 function DiffText({ original, suggestion, mode }: { original: string; suggestion: string; mode: "original" | "suggested" }) { return <>{wordDiff(original, suggestion).map((part, index) => mode === "original" ? (part.removed ? <del key={index}>{part.text}</del> : !part.added ? <span key={index}>{part.text}</span> : null) : (part.added ? <mark key={index}>{part.text}</mark> : !part.removed ? <span key={index}>{part.text}</span> : null))}</>; }
 function CoverageGroup({ title, items, titleClassName }: { title: string; items: RequirementClassification[]; titleClassName?: string }) { return items.length ? <div><p className={`mb-1 text-xs font-medium ${titleClassName ?? "text-muted-foreground"}`}>{title}</p><div className="flex flex-wrap gap-1.5">{items.map((item) => <Badge key={item.requirement} variant="outline">{item.requirement}</Badge>)}</div></div> : null; }
@@ -102,8 +72,14 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   useEffect(() => setCoverageAnalysis(generatedData?.requirement_classifications ?? null), [generatedData]);
   const data = generatedData ? (!readOnly && !items ? sourceOnlyResume(generatedData) : reviewState ? reviewedResume(reviewState) : generatedData) : null;
   const canonical: DisplaySection[] = data ? displaySections(data) : [];
+  const hasCanonical = Boolean(data?.canonical_sections?.length);
+  const headerPreview = data ? buildResumeHeaderItems(data) : [];
   const candidateSkills = data?.skills ?? [];
-  const canonicalSummary = canonical.find((section) => section.section === "summary")?.items.map((item) => item.text) ?? (data?.professional_summary ? [data.professional_summary] : []);
+  const skillsSection = canonical.find((section) => section.section === "skills");
+  const skillsHeading = hasCanonical ? resumeSectionHeading("skills", skillsSection?.heading) : "Candidate skills";
+  const renderedSections = data ? buildResumeRenderModel(data) : [];
+  const summarySection = renderedSections.find((section) => section.section === "summary");
+  const canonicalSummary = summarySection?.items ?? [];
   const additionalSections = canonical.filter((section) => !["contact", "links", "summary", "skills", "unclassified"].includes(section.section));
   const unclassifiedSections = canonical.filter((section) => section.section === "unclassified");
   const refreshCoverage = (next: TailoredResume) => coverageMutation.mutate(next);
@@ -123,12 +99,13 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
       {generateMutation.isPending && <p role="status"><Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin" />Regenerating a new unsaved draft. Your current review remains available.</p>}
       {!generateMutation.isPending && generateMutation.isError && <p role="alert">Could not regenerate this draft. Your current reviewed resume is unchanged.</p>}
       {coverageAnalysis?.length ? <div className="rounded-md border bg-muted/20 p-3" data-testid="fit-coverage-analysis"><h3 className="mb-2 text-sm font-semibold">Candidate Fit and Resume Coverage</h3><CoverageGroup title="Verified and shown on this resume" items={coverageAnalysis.filter((item) => item.status === "verified" && item.resume_coverage_status === "covered")} /><CoverageGroup title="Verified, not shown on this resume" items={coverageAnalysis.filter((item) => item.status === "verified" && item.resume_coverage_status === "not_represented")} /><CoverageGroup title="Missing requirements" titleClassName="text-amber-800 dark:text-amber-200" items={coverageAnalysis.filter((item) => item.status === "missing")} /></div> : null}
-      {candidateSkills.length ? <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Candidate skills</h4><div className="flex flex-wrap gap-1.5">{candidateSkills.map((skill) => <Badge key={skill}>{skill}</Badge>)}</div></div> : null}
+      {headerPreview.length ? <div className="rounded-md border p-3" data-testid="canonical-header-preview"><h3 className="mb-2 text-sm font-semibold">Resume header</h3>{headerPreview.map((item, index) => <p key={`${item}-${index}`} className={index === 0 ? "text-sm font-semibold" : "text-sm"}>{item}</p>)}</div> : null}
+      {candidateSkills.length ? <div><h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{skillsHeading}</h4><div className="flex flex-wrap gap-1.5">{candidateSkills.map((skill) => <Badge key={skill}>{skill}</Badge>)}</div></div> : null}
       {!canonical.length && !data.skills?.length && data.matched_skills.length > 0 && <div><h4>Matched job requirements</h4><div className="flex flex-wrap gap-1.5">{data.matched_skills.map((skill) => <Badge key={skill}>{skill}</Badge>)}</div></div>}
-      {canonicalSummary.length ? <div className="rounded-md border p-3"><h3 className="mb-2 text-sm font-semibold">Professional summary</h3>{canonicalSummary.map((item, index) => <p key={index} className="text-sm">{item}</p>)}</div> : null}
+      {canonicalSummary.length ? <div className="rounded-md border p-3" data-testid="canonical-summary"><h3 className="mb-2 text-sm font-semibold">{hasCanonical ? summarySection?.heading ?? "PROFESSIONAL SUMMARY" : "Professional summary"}</h3>{canonicalSummary.map((item, index) => <p key={index} className="text-sm">{item}</p>)}</div> : null}
       <div><h3 className="mb-2 flex items-center gap-2 text-sm font-semibold"><Briefcase className="h-4 w-4 text-blue-500" />Review work experience</h3><p className="mb-3 text-xs text-muted-foreground">Omitted bullets remain available to restore; each non-empty role keeps at least one bullet.</p>{data.work_history.map((role, roleIndex) => { const roleItems = allItems?.[roleIndex] ?? []; const included = roleItems.filter((item) => reviewState?.finalIncluded.has(item.key) ?? item.included); const omitted = roleItems.filter((item) => !(reviewState?.finalIncluded.has(item.key) ?? item.included)); const render = (item: ReviewItem) => <ReviewBullet key={item.key} item={item} included={reviewState?.finalIncluded.has(item.key) ?? item.included ?? false} rejected={reviewState?.rejected.has(item.key) ?? false} readOnly={readOnly} canOmit={(reviewState?.finalIncluded.has(item.key) ?? item.included ?? false) ? included.length > 1 : true} onInclude={() => toggleIncluded(roleIndex, item.sourceIndex)} onWording={() => toggleOriginal(item.key)} />; return <div key={roleIndex} className="mb-4 rounded-md border p-4"><p className="mb-2 text-sm font-medium">{role.source_header || [role.title, role.company].filter(Boolean).join(" | ") || "Role"}</p>{role.source_header ? null : <p className="mb-2 text-xs text-muted-foreground">{dateLabel(role.start, role.end)}</p>}{!roleItems.length && <p className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">Comparison unavailable; showing source bullets safely.</p>}{included.map(render)}{omitted.length ? <details className="mt-2 rounded border p-2"><summary className="cursor-pointer text-xs font-medium">Not shown on this resume</summary><div className="mt-2 space-y-2">{omitted.map(render)}</div></details> : null}</div>; })}</div>
       {!readOnly && reviewState ? <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={restoreWording}><RotateCcw className="h-4 w-4" />Restore AI wording</Button><Button size="sm" variant="outline" onClick={includeAll}><RotateCcw className="h-4 w-4" />Include all experience</Button></div> : null}
-      {additionalSections.length ? <div className="border-t pt-2"><p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Additional resume sections</p>{additionalSections.map((section, sectionIndex) => <div key={`${section.section}-${sectionIndex}-${section.items[0]?.source_id ?? section.items[0]?.display_key ?? "empty"}`} className="mb-3"><h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{section.section === "named" ? section.heading || "Additional information" : section.section}</h4>{section.items.map((item, itemIndex) => <p key={`${item.source_id ?? item.display_key}-${itemIndex}`} className="text-sm">{item.text}</p>)}</div>)}</div> : null}
+      {additionalSections.length ? <div className="border-t pt-2"><p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Additional resume sections</p>{additionalSections.map((section, sectionIndex) => <div key={`${section.section}-${sectionIndex}-${section.items[0]?.source_id ?? section.items[0]?.display_key ?? "empty"}`} className="mb-3"><h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{hasCanonical ? resumeSectionHeading(section.section, section.heading) : section.section === "named" ? section.heading || "Additional information" : section.section}</h4>{section.items.map((item, itemIndex) => <p key={`${item.source_id ?? item.display_key}-${itemIndex}`} className="text-sm">{item.text}</p>)}</div>)}</div> : null}
       {unclassifiedSections.length ? <details className="rounded-md border p-3"><summary className="cursor-pointer text-sm font-medium">Unclassified source text ({unclassifiedSections.reduce((count, section) => count + section.items.length, 0)} items)</summary><p className="mt-2 text-xs text-muted-foreground">This source text is retained for diagnostics and excluded from your tailored resume, Copy, PDF, and DOCX exports.</p><div className="mt-2 space-y-1">{unclassifiedSections.flatMap((section) => section.items).map((item, index) => <p key={`${item.source_id ?? item.display_key}-${index}`} className="text-sm">{item.text}</p>)}</div></details> : null}
     </div><div className="mt-0 flex shrink-0 flex-wrap gap-2 border-t bg-background/95 pt-4" data-testid="tailor-resume-actions"><Button size="sm" onClick={() => void copy()} disabled={exportValidationMutation.isPending}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={() => void exportPdf()} disabled={exportValidationMutation.isPending}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={() => void exportDocx()} disabled={exportValidationMutation.isPending}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button size="sm" onClick={save} disabled={saveMutation.isPending}><Save className="h-4 w-4" />Save resume</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate draft</Button></>}</div></div>}
   </DialogContent></Dialog>;

@@ -10,6 +10,15 @@ const apiMocks = vi.hoisted(() => ({
   createDraft: vi.fn(),
 }));
 const exportMocks = vi.hoisted(() => ({
+  buildResumeHeaderItems: vi.fn((data: { canonical_sections?: Array<{ section: string; items: Array<{ source_id: string; text: string; canonical_order: number }> }> }) => {
+    const seen = new Set<string>();
+    return (data.canonical_sections ?? [])
+      .filter((section) => section.section === "contact" || section.section === "links")
+      .flatMap((section) => section.items)
+      .sort((a, b) => a.canonical_order - b.canonical_order)
+      .filter((item) => !seen.has(item.source_id) && seen.add(item.source_id))
+      .map((item) => item.text);
+  }),
   downloadResumePdf: vi.fn(),
   downloadResumeDocx: vi.fn(),
 }));
@@ -18,7 +27,8 @@ vi.mock("@/lib/api", () => ({
   resumeApi: apiMocks,
 }));
 
-vi.mock("@/lib/cover-letter-export", () => ({
+vi.mock("@/lib/cover-letter-export", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/cover-letter-export")>()),
   ...exportMocks,
 }));
 
@@ -249,7 +259,22 @@ describe("TailorResumeDialog", () => {
     apiMocks.tailorResume.mockResolvedValue({
       ...tailoredResume,
       canonical_sections: [
-        { section: "skills" as const, canonical_order: 0, items: [{ source_id: "skills-1", text: longSkillSource, canonical_order: 0 }] },
+        { section: "contact" as const, canonical_order: 0, items: [
+          { source_id: "name", text: "Ada Lovelace", canonical_order: 0 },
+          { source_id: "address", text: "12 Analytical Engine Lane", canonical_order: 1 },
+          { source_id: "email", text: "ada@example.com", canonical_order: 3 },
+        ] },
+        { section: "links" as const, canonical_order: 2, items: [
+          { source_id: "github", text: "github.com/ada", canonical_order: 2 },
+        ] },
+        { section: "summary" as const, heading: "PROFESSIONAL SUMMARY", canonical_order: 4, items: [
+          { source_id: "summary-1", text: "Backend engineer with API design and", canonical_order: 4 },
+          { source_id: "summary-2", text: "automation experience.", canonical_order: 5 },
+        ] },
+        { section: "projects" as const, heading: "SELECTED PROJECTS", canonical_order: 6, items: [
+          { source_id: "project-1", text: "Analytical Engine", canonical_order: 6 },
+        ] },
+        { section: "skills" as const, heading: "TECHNICAL STACK", canonical_order: 0, items: [{ source_id: "skills-1", text: longSkillSource, canonical_order: 0 }] },
         { section: "named" as const, heading: "Awards & Achievements", canonical_order: 1, items: [{ source_id: "named-1", text: "Engineering Excellence", canonical_order: 1 }] },
       ],
     });
@@ -260,6 +285,15 @@ describe("TailorResumeDialog", () => {
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
 
     await vi.waitFor(() => expect(renderedText()).toContain("Awards & Achievements"));
+    expect(renderedText()).toContain("Resume header");
+    expect(renderedText()).toContain("12 Analytical Engine Lane");
+    expect(renderedText()).toContain("github.com/ada");
+    expect(renderedText()).toContain("Backend engineer with API design and");
+    expect(renderedText()).toContain("automation experience.");
+    expect(container.querySelectorAll('[data-testid="canonical-summary"] p')).toHaveLength(1);
+    expect(renderedText()).toContain("PROFESSIONAL SUMMARY");
+    expect(renderedText()).toContain("SELECTED PROJECTS");
+    expect(renderedText()).toContain("TECHNICAL STACK");
     expect(renderedText()).toContain("Engineering Excellence");
     expect(Array.from(container.querySelectorAll("div.inline-flex")).map((badge) => badge.textContent)).not.toContain(longSkillSource);
   });
