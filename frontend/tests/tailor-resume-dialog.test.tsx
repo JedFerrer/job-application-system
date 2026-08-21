@@ -162,7 +162,7 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).toContain("Analytical Engine");
     expect(renderedText()).toContain("Registered Engineer");
     expect(renderedText()).toContain("Spanish");
-    expect(renderedText()).toContain("https://linkedin.com/in/ada");
+    expect(renderedText()).not.toContain("https://linkedin.com/in/ada");
     expect(renderedText()).toContain("Copy all");
     expect(renderedText()).toContain("PDF");
     expect(renderedText()).toContain("DOCX");
@@ -215,7 +215,7 @@ describe("TailorResumeDialog", () => {
     expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining("kubernetes"));
   });
 
-  it("shows and copies unclassified passthrough content without a synthetic heading", async () => {
+  it("keeps unclassified source text collapsed and excludes it from copy", async () => {
     const marker = "PASSTHROUGH_MARKER: literal source text";
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -232,12 +232,36 @@ describe("TailorResumeDialog", () => {
       root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
     });
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
-    await vi.waitFor(() => expect(renderedText()).toContain(marker));
-    expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).not.toContain("unclassified");
+    await vi.waitFor(() => expect(renderedText()).toContain("Unclassified source text (1 items)"));
+    const diagnostics = Array.from(container.querySelectorAll("details")).find((detail) => detail.textContent?.includes("Unclassified source text"));
+    expect(diagnostics).toBeDefined();
+    expect(diagnostics?.open).toBe(false);
+    await act(async () => { (diagnostics?.querySelector("summary") as HTMLElement | null)?.click(); });
+    expect(renderedText()).toContain(marker);
 
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"))?.click(); await Promise.resolve(); });
-    expect(writeText).toHaveBeenCalledWith(expect.stringContaining(marker));
-    expect(writeText.mock.calls[0]?.[0]).not.toContain("UNCLASSIFIED");
+    expect(writeText).toHaveBeenCalled();
+    expect(writeText.mock.calls[0]?.[0]).not.toContain(marker);
+  });
+
+  it("renders named sections with their source heading and keeps long source skills out of badges", async () => {
+    const longSkillSource = "Long source skill prose that should stay out of badge presentation.";
+    apiMocks.tailorResume.mockResolvedValue({
+      ...tailoredResume,
+      canonical_sections: [
+        { section: "skills" as const, canonical_order: 0, items: [{ source_id: "skills-1", text: longSkillSource, canonical_order: 0 }] },
+        { section: "named" as const, heading: "Awards & Achievements", canonical_order: 1, items: [{ source_id: "named-1", text: "Engineering Excellence", canonical_order: 1 }] },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+
+    await vi.waitFor(() => expect(renderedText()).toContain("Awards & Achievements"));
+    expect(renderedText()).toContain("Engineering Excellence");
+    expect(Array.from(container.querySelectorAll("div.inline-flex")).map((badge) => badge.textContent)).not.toContain(longSkillSource);
   });
 
   it("separates candidate fit from resume coverage and refreshes after review", async () => {
@@ -280,7 +304,7 @@ describe("TailorResumeDialog", () => {
       root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
     });
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
-    await vi.waitFor(() => expect(renderedText()).toContain("Canonical resume content"));
+    await vi.waitFor(() => expect(renderedText()).toContain("Additional resume sections"));
     expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).toContain("projects");
   });
 
@@ -291,7 +315,7 @@ describe("TailorResumeDialog", () => {
       root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
     });
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
-    await vi.waitFor(() => expect(renderedText()).toContain("Canonical resume content"));
+    await vi.waitFor(() => expect(renderedText()).toContain("Additional resume sections"));
     expect(Array.from(container.querySelectorAll("h4")).map((heading) => heading.textContent)).toContain("projects");
   });
 

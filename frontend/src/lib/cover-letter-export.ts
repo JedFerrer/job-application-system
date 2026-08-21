@@ -132,7 +132,7 @@ export interface ResumeRenderSection {
 /** One ordered, empty-heading-free model shared by all resume exports. */
 export function buildResumeRenderModel(data: TailoredResume): ResumeRenderSection[] {
   const canonical = (data.canonical_sections ?? [])
-    .filter((section) => section.items.length > 0)
+    .filter((section) => section.section !== "unclassified" && section.items.length > 0)
     .map((section) => ({
       section: section.section,
       heading: section.section === "unclassified" ? null : (section.heading || section.section).toUpperCase(),

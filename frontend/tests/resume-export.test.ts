@@ -122,7 +122,7 @@ describe("lossless resume exports", () => {
     expect(sections.every((section) => Boolean(section.heading?.trim()))).toBe(true);
   });
 
-  it("emits unclassified passthrough content once without a synthetic heading", async () => {
+  it("excludes unclassified passthrough content from exports", async () => {
     const marker = "PASSTHROUGH_MARKER: literal source text";
     const passthrough: TailoredResume = {
       ...resume,
@@ -136,10 +136,10 @@ describe("lossless resume exports", () => {
     await downloadResumeDocx(passthrough, "lossless-resume");
 
     for (const output of [capture.pdfText, capture.docxText]) {
-      expect(count(output, marker)).toBe(1);
+      expect(count(output, marker)).toBe(0);
       expect(output).not.toContain("UNCLASSIFIED");
       expect(output).not.toContain("OTHER");
     }
-    expect(buildResumeRenderModel(passthrough).find((section) => section.section === "unclassified")?.heading).toBeNull();
+    expect(buildResumeRenderModel(passthrough).find((section) => section.section === "unclassified")).toBeUndefined();
   });
 });
