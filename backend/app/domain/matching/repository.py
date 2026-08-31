@@ -40,11 +40,17 @@ class MatchingRepository:
             UserJobMatch.user_id == user_id,
             UserJobMatch.origin == "manual",
         )
+        archived_subq = select(UserJob.job_id).where(
+            UserJob.user_id == user_id,
+            UserJob.status == "archived",
+        )
         stmt = (
             select(Job.id, (1 - distance).label("similarity"), Job.description)
             .where(
+                Job.status == "active",
                 Job.description_embedding.is_not(None),
                 Job.id.not_in(manual_job_ids),
+                Job.id.not_in(archived_subq),
                 or_(
                     Job.visibility == "public",
                     Job.created_by_user_id == user_id,
@@ -131,19 +137,29 @@ class MatchingRepository:
         value = result.scalar_one_or_none()
         return float(value) if value is not None else None
 
-    async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
-        """Keep only the highest scoring automatic rows; never delete manual rows."""
-        keep = (
-            select(UserJobMatch.id)
-            .where(UserJobMatch.user_id == user_id, UserJobMatch.origin == "automatic")
-            .order_by(UserJobMatch.vector_score.desc(), UserJobMatch.job_id.desc())
-            .limit(limit)
-        )
+    async def prune_automatic_matches(
+        self,
+        *,
+        user_id: int,
+        limit: int,
+        keep_job_ids: list[int] | None = None,
+    ) -> None:
+        """Keep current full-refresh rows or the highest scoring incremental rows."""
+        if keep_job_ids is None:
+            keep = (
+                select(UserJobMatch.id)
+                .where(UserJobMatch.user_id == user_id, UserJobMatch.origin == "automatic")
+                .order_by(UserJobMatch.vector_score.desc(), UserJobMatch.job_id.desc())
+                .limit(limit)
+            )
+            delete_filter = UserJobMatch.id.not_in(keep)
+        else:
+            delete_filter = UserJobMatch.job_id.not_in(keep_job_ids)
         await self._session.execute(
             delete(UserJobMatch).where(
                 UserJobMatch.user_id == user_id,
                 UserJobMatch.origin == "automatic",
-                UserJobMatch.id.not_in(keep),
+                delete_filter,
             )
         )
 

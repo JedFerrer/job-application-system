@@ -100,8 +100,13 @@ class MatchingService:
             user_id=user_id,
             job_ids=await self._repo.list_manual_match_job_ids(user_id=user_id),
             limit=limit,
+            prune=False,
         )
-        await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
+        await self._repo.prune_automatic_matches(
+            user_id=user_id,
+            limit=limit,
+            keep_job_ids=[job_id for job_id, _, _ in ranked],
+        )
         logger.info("matches.ranked", user_id=user_id, count=len(ranked))
         return RankResponse(ranked=len(ranked), profile_id=profile.id)
 
@@ -138,7 +143,9 @@ class MatchingService:
             raise MatchNotFoundError(job_id)
         return summary
 
-    async def rank_job_ids(self, *, user_id: int, job_ids: list[int], limit: int) -> int:
+    async def rank_job_ids(
+        self, *, user_id: int, job_ids: list[int], limit: int, prune: bool = True
+    ) -> int:
         """Incrementally score embedded jobs for one user without a full scan."""
         profile = await self._repo.get_active_profile(user_id)
         if profile is None or profile.embedding is None:
@@ -158,7 +165,8 @@ class MatchingService:
                 origin="automatic",
             )
             ranked += 1
-        await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
+        if prune:
+            await self._repo.prune_automatic_matches(user_id=user_id, limit=limit)
         return ranked
 
     async def list_matches(

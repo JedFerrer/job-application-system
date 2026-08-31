@@ -25,6 +25,8 @@ async def test_vector_ranking_query_excludes_manual_match_rows() -> None:
 
     statement = session.execute.await_args.args[0]
     sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert "jobs.status" in sql
+    assert "user_jobs.status" in sql
     assert "user_job_matches.origin" in sql
     assert "user_job_matches.user_id" in sql
     assert "NOT IN" in sql
@@ -35,6 +37,7 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
     automatic_ids = list(range(1000, 1200))
     manual_ids = [10, 11]
     calls: list[dict[str, object]] = []
+    prune_calls: list[dict[str, object]] = []
 
     class FakeRepository:
         async def get_active_profile(self, user_id: int) -> object:
@@ -59,14 +62,26 @@ async def test_full_rank_has_200_automatic_candidates_and_refreshes_manual_rows(
         async def upsert_match(self, **kwargs: object) -> None:
             calls.append(dict(kwargs))
 
-        async def prune_automatic_matches(self, *, user_id: int, limit: int) -> None:
+        async def prune_automatic_matches(
+            self,
+            *,
+            user_id: int,
+            limit: int,
+            keep_job_ids: list[int] | None = None,
+        ) -> None:
             assert limit == 200
+            assert user_id == 1
+            assert keep_job_ids == automatic_ids
+            prune_calls.append(
+                {"user_id": user_id, "limit": limit, "keep_job_ids": keep_job_ids}
+            )
 
     response = await MatchingService(FakeRepository()).rank_jobs(1, 200)  # type: ignore[arg-type]
 
     automatic_calls = [call for call in calls if call["job_id"] in automatic_ids]
     manual_refresh_calls = [call for call in calls if call["job_id"] in manual_ids]
     assert response.ranked == 200
+    assert prune_calls == [{"user_id": 1, "limit": 200, "keep_job_ids": automatic_ids}]
     assert len(automatic_calls) == 200
     assert len(manual_refresh_calls) == len(manual_ids)
     assert automatic_calls[0]["matched_skills"] == ["python"]
