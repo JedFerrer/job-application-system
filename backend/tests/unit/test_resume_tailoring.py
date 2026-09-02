@@ -161,6 +161,84 @@ def test_prompt_is_sparse_and_source_preserving() -> None:
     assert "source wording joined with a semicolon" in TAILOR_RESUME_PROMPT
 
 
+def test_full_context_contract_accepts_evidence_backed_summary_and_skill_order() -> None:
+    profile = _profile()
+    result = sanitize_tailoring_output(
+        profile,
+        {
+            "summary_rewrite": {
+                "rewritten_text": "Backend Engineer Improved page performance",
+                "evidence_ids": ["summary:0", "role:0:context:0"],
+            },
+            "skill_order": ["skill:1", "skill:0"],
+            "rewrites": [],
+        },
+        [],
+        {0: set(), 1: set()},
+        [[0], [0]],
+        full_context_evidence={
+            "summary:0": "Backend Engineer",
+            "role:0:context:0": "Improved page performance",
+            "skill:0": "Python",
+            "skill:1": "FastAPI",
+        },
+        source_skill_ids=["skill:0", "skill:1"],
+        default_summary="Backend Engineer",
+    )
+
+    assert result.professional_summary == "Backend Engineer Improved page performance"
+    assert result.summary_evidence_ids == ["summary:0", "role:0:context:0"]
+    assert result.skill_order_source_ids == ["skill:1", "skill:0"]
+
+
+def test_full_context_contract_rejects_unverified_summary_and_invalid_skill_order() -> None:
+    result = sanitize_tailoring_output(
+        _profile(),
+        {
+            "summary_rewrite": {
+                "rewritten_text": "Backend Engineer led Kubernetes migration",
+                "evidence_ids": ["summary:0"],
+            },
+            "skill_order": ["skill:0", "skill:new"],
+            "rewrites": [],
+        },
+        ["kubernetes"],
+        {0: set(), 1: set()},
+        [[0], [0]],
+        full_context_evidence={"summary:0": "Backend Engineer"},
+        source_skill_ids=["skill:0", "skill:1"],
+        default_summary="Backend Engineer",
+    )
+
+    assert result.professional_summary == "Backend Engineer"
+    assert result.summary_evidence_ids == []
+    assert result.skill_order_source_ids == ["skill:0", "skill:1"]
+
+
+def test_full_context_contract_rejects_relationship_inference_across_evidence() -> None:
+    result = sanitize_tailoring_output(
+        _profile(),
+        {
+            "summary_rewrite": {
+                "rewritten_text": "Built FastAPI APIs with Redis",
+                "evidence_ids": ["role:0:context:0", "role:0:context:1"],
+            },
+            "rewrites": [],
+        },
+        [],
+        {0: set(), 1: set()},
+        [[0], [0]],
+        full_context_evidence={
+            "role:0:context:0": "Built FastAPI APIs.",
+            "role:0:context:1": "Implemented caching with Redis.",
+        },
+        default_summary="Backend Engineer",
+    )
+
+    assert result.professional_summary == "Backend Engineer"
+    assert result.summary_evidence_ids == []
+
+
 @pytest.mark.asyncio
 async def test_v2_layout_unavailable_never_falls_back_to_profile_prose() -> None:
     repository = AsyncMock()

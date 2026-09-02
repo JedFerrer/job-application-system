@@ -34,6 +34,7 @@ SOURCE_RESUME_SCHEMA_VERSION = "source-resume-v1"
 SOURCE_RESUME_SCHEMA_VERSION_V2 = "source-resume-v2"
 SOURCE_RESUME_SCHEMA_VERSION_V3 = "source-resume-v3"
 SOURCE_RESUME_SCHEMA_VERSION_V4 = "source-resume-v4"
+SOURCE_RESUME_SCHEMA_VERSION_V5 = "source-resume-v5"
 
 
 def _normalize_optional_text(value: object) -> object:
@@ -306,7 +307,7 @@ class ParsedResumeResult(NamedTuple):
 
     profile: ParsedProfile
     extraction_evidence: ExtractionEvidence
-    source_content: SourceResumeContentPayload | SourceResumeContentPayloadV2 | SourceResumeContentPayloadV3 | SourceResumeContentPayloadV4 | None = None
+    source_content: SourceResumeContentPayload | SourceResumeContentPayloadV2 | SourceResumeContentPayloadV3 | SourceResumeContentPayloadV4 | SourceResumeContentPayloadV5 | None = None
     source_validation_status: Literal["verified", "invalid"] | None = None
     source_validation_errors: tuple[str, ...] = ()
     source_layout_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
@@ -402,6 +403,7 @@ class SourceResumeCandidate(BaseModel):
     start_offset: int = Field(ge=0)
     end_offset: int = Field(ge=0)
     occurrence_ordinal: int = Field(ge=0)
+    kind: Literal["heading", "bullet", "text"] = "text"
 
 
 class SourceResumeRoleReferences(BaseModel):
@@ -543,6 +545,15 @@ class SourceResumeContentPayloadV3(BaseModel):
 
 class SourceResumeContentPayloadV4(BaseModel):
     schema_version: Literal["source-resume-v4"] = "source-resume-v4"
+    document: SourceResumeContentDocumentV4
+    layout_validation_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
+    layout_validation_errors: list[str] = Field(default_factory=list)
+
+
+class SourceResumeContentPayloadV5(BaseModel):
+    """V5 uses server-owned section allocation before the v4 layout is stored."""
+
+    schema_version: Literal["source-resume-v5"] = "source-resume-v5"
     document: SourceResumeContentDocumentV4
     layout_validation_status: Literal["verified", "invalid", "unavailable"] = "unavailable"
     layout_validation_errors: list[str] = Field(default_factory=list)
@@ -759,7 +770,7 @@ class TailoredResume(BaseModel):
     )
     # New generated snapshots distinguish full-resume semantics from legacy
     # sparse snapshots.  ``None`` is intentionally preserved for history.
-    tailoring_snapshot_version: Literal["full-resume-v1", "lossless-complete-v2"] | None = Field(
+    tailoring_snapshot_version: Literal["full-resume-v1", "lossless-complete-v2", "full-context-v1"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
     # Present on new source-backed snapshots.  Absent on legacy snapshots.
@@ -771,13 +782,15 @@ class TailoredResume(BaseModel):
     source_resume_content_id: int | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-    source_schema_version: Literal["source-resume-v3", "source-resume-v4"] | None = Field(
+    source_schema_version: Literal["source-resume-v3", "source-resume-v4", "source-resume-v5"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
     source_revision_sha256: str | None = Field(default=None, exclude_if=lambda value: value is None)
     source_section_order: list[str] = Field(
         default_factory=list, exclude_if=lambda value: not value
     )
+    summary_evidence_ids: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    skill_order_source_ids: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class TailoredResumeDraftCreate(BaseModel):

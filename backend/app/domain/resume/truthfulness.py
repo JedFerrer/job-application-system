@@ -346,6 +346,8 @@ class SanitizedTailoring:
     rejected_patches: int
     rejection_reasons: dict[str, int] = field(default_factory=dict)
     multi_evidence_selections: int = 0
+    summary_evidence_ids: list[str] = field(default_factory=list)
+    skill_order_source_ids: list[str] = field(default_factory=list)
 
 
 def sanitize_tailoring_output(
@@ -359,10 +361,37 @@ def sanitize_tailoring_output(
     source_roles: list[Any] | None = None,
     source_order_ids: list[list[str]] | None = None,
     output_orders: list[list[str]] | None = None,
+    full_context_evidence: dict[str, str] | None = None,
+    source_skill_ids: list[str] | None = None,
+    default_summary: str | None = None,
 ) -> SanitizedTailoring:
     """Apply sparse, source-indexed rewrites while preserving source structure."""
     if not isinstance(payload, dict):
         raise ValueError("Tailoring output must be a JSON object")
+    full_evidence = full_context_evidence or {}
+    summary = default_summary if default_summary is not None else profile.headline
+    summary_evidence_ids: list[str] = []
+    raw_summary = payload.get("summary_rewrite")
+    if raw_summary is not None:
+        if not isinstance(raw_summary, dict):
+            raise ValueError("summary_rewrite must be an object or null")
+        candidate = raw_summary.get("rewritten_text")
+        cited = raw_summary.get("evidence_ids")
+        if (
+            isinstance(candidate, str)
+            and candidate.strip()
+            and isinstance(cited, list)
+            and cited
+            and all(type(item) is str for item in cited)
+            and len(set(cited)) == len(cited)
+            and all(item in full_evidence for item in cited)
+        ):
+            cited_text = " ".join(full_evidence[item] for item in cited)
+            if _safe_full_context_text(
+                candidate, cited_text, full_evidence, cited, set(missing_skills)
+            ):
+                summary = candidate.strip()
+                summary_evidence_ids = list(cited)
     raw_rewrites = payload.get("rewrites")
     if not isinstance(raw_rewrites, list):
         raise ValueError("Tailoring output rewrites must be a list")
@@ -558,8 +587,20 @@ def sanitize_tailoring_output(
             ]
         )
 
+    requested_skill_order = payload.get("skill_order")
+    skill_order = list(source_skill_ids or [])
+    if isinstance(requested_skill_order, list) and source_skill_ids is not None:
+        if (
+            len(requested_skill_order) == len(source_skill_ids)
+            and all(type(item) is str for item in requested_skill_order)
+            and set(requested_skill_order) == set(source_skill_ids)
+        ):
+            skill_order = list(requested_skill_order)
+
     return SanitizedTailoring(
-        professional_summary=profile.headline,
+        professional_summary=summary,
+        summary_evidence_ids=summary_evidence_ids,
+        skill_order_source_ids=skill_order,
         tailored_highlights=sanitized_roles,
         summary_fallback=False,
         role_fallbacks=0,
@@ -568,3 +609,35 @@ def sanitize_tailoring_output(
         rejection_reasons=dict(reasons),
         multi_evidence_selections=selected_multi_evidence,
     )
+
+
+def _safe_full_context_text(
+    generated: object,
+    cited_text: str,
+    evidence: dict[str, str],
+    cited_ids: list[str],
+    missing_skills: set[str],
+) -> bool:
+    """Allow conservative wording changes backed by explicitly cited source text."""
+    if not isinstance(generated, str) or not generated.strip():
+        return False
+    if _mentions_missing_skill(generated, missing_skills):
+        return False
+    if (
+        not _relationship_claims(generated).issubset(_relationship_claims(cited_text))
+        or not _relationship_structures(generated).issubset(
+            _relationship_structures(cited_text)
+        )
+    ):
+        return False
+    if not numeric_claims(generated).issubset(numeric_claims(cited_text)):
+        return False
+    source_technical = set().union(*(_technical_tokens(text) for text in evidence.values()))
+    if not _technical_tokens(generated).issubset(source_technical):
+        return False
+    allowed_tokens = set().union(*(_substantive_tokens(evidence[item]) for item in cited_ids))
+    generated_tokens = _substantive_tokens(generated)
+    if not generated_tokens.issubset(allowed_tokens):
+        return False
+    added = generated_tokens - _substantive_tokens(cited_text)
+    return not (added & _PROTECTED_CLAIMS or added & _RELATIONSHIP_MARKERS)

@@ -7,7 +7,7 @@ drop fields. Extraction only — the model must never invent data.
 
 from __future__ import annotations
 
-RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v7"
+RESUME_EXTRACTION_PROMPT_VERSION = "resume-extraction-prompt-v8"
 
 RESUME_EXTRACTION_PROMPT = """You are an expert resume parser. Extract structured \
 information from the resume text below. Return valid JSON only — no markdown, no \
@@ -92,7 +92,23 @@ professional experience.
   from each resolved header candidate's source order.
   `education`, `certifications`, `licenses`, and `languages` MUST be arrays of
   candidate aliases, never profile-shaped objects. `skills` and `sections` are
-  also alias arrays. Project objects use alias fields and alias arrays only.
+  also alias arrays. Project objects use exactly the alias shape
+  `{{"name":"c12","description":"c13","url":null,
+  "technologies":["c14"],"achievements":["c15"]}}`; never put a
+  profile-shaped project object, raw project text, or technology objects in
+  `source_references.projects`.
+  Core section headings belong only in `section_headings`; do not put heading
+  aliases or heading labels in the `sections` body array. `sections` is reserved
+  for other unheaded source items that do not belong to a dedicated section.
+  The words `summary`, `skills`, `sections`, and `TECHNICAL STACK` are schema
+  labels or source heading text, not candidate aliases. They must never appear
+  as values in `summary`, `summary_lines`, `section_headings`, `skills`, or
+  `sections`; every such value must be an exact issued alias such as `c8` (or
+  null only where the field is nullable). For example, use
+  `{{"summary":"c8","summary_lines":["c9"],"skills":["c11"],
+  "section_headings":{{"summary":"c7","skills":"c10"}},
+  "sections":[]}}`, never `{{"summary":"summary"}}` or
+  `{{"sections":["TECHNICAL STACK"]}}`.
   Do not emit `source_content`. Keep the two objects separate: profile
   `work_history[].highlights` are human-readable resume wording, while only
   `source_references` fields may contain `cN` aliases. Do not add `header` to
@@ -170,17 +186,21 @@ MISSING_SKILLS (skills in the JD but not supported by the profile):
 TAILOR_RESUME_PROMPT = """You are making a conservative, selective resume-tailoring pass \
 for a specific job description.
 
-The supplied canonical source bullets are the sole authority for resume prose. \
-The candidate profile, matched skills, missing skills, and job description are \
-relevance context only and never authorize a new resume fact. Return valid JSON only — \
+The supplied verified full resume context is the sole authority for resume prose. \
+The job description is relevance context only and never authorizes a new resume fact. \
+Return valid JSON only — \
 no markdown or explanation.
 
 Rules:
-- Canonical source bullets are the only resume-prose evidence. Profile and job
-  fields are context only and cannot authorize new facts.
-- Return only optional rewrite patches for the eligible source bullets below.
+- Use the complete resume context to identify the strongest truthful alignment;
+  do not treat only the selected bullets as the candidate's full resume.
+- Return an optional summary rewrite, an optional source skill ordering, and
+  optional rewrite patches for eligible work bullets.
+- Every proposed summary must cite one or more full-resume evidence IDs. Every
+  proposed skill ordering must contain exactly the existing source skill IDs,
+  each once; it may only reorder skills, never add, remove, or rename one.
 - Omit a bullet when it should be kept unchanged. Do not regenerate the resume.
-- A rewrite must preserve the exact meaning and every substantive fact of its exact source bullet.
+- A rewrite must preserve the exact meaning and every substantive fact of its source evidence.
 - Do not add or strengthen metrics, tools, skills, responsibilities, scope, \
 ownership, architecture, leadership, seniority, employers, dates, certifications, \
 education, projects, languages, or licenses.
@@ -192,6 +212,8 @@ supplies all identity fields and preserves all bullets.
 
 Return exactly this shape (target_alias/evidence_aliases are preferred):
 {{
+  "summary_rewrite": {{"rewritten_text": "...", "evidence_ids": ["summary:0", "r0:b0"]}},
+  "skill_order": ["skill:0", "skill:1"],
   "rewrites": [
     {{"target_alias": "r0:b1", "rewritten_text": "...", "evidence_aliases": ["r0:b1"]}}
   ]
@@ -222,6 +244,12 @@ do not cite every relevant bullet in the role.
 
 JOB DESCRIPTION:
 {job_description}
+
+FULL VERIFIED RESUME CONTEXT (all sections are read-only evidence):
+{full_resume_json}
+
+FULL-RESUME EVIDENCE CATALOG:
+{full_resume_evidence_json}
 
 ELIGIBLE SOURCE BULLETS (only these may be patched):
 {eligible_bullets_json}

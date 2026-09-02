@@ -52,6 +52,7 @@ from app.domain.resume.schemas import (
     ResumeImportListItem,
     ResumeResponse,
     SourceResumeContentPayloadV4,
+    SourceResumeContentPayloadV5,
     SourceResumeDocument,
     TailoredBulletDecision,
     TailoredCanonicalItem,
@@ -67,10 +68,12 @@ from app.domain.resume.selection import (
     select_source_bullets,
 )
 from app.domain.resume.source_content import (
+    materialize_source_document_v3,  # noqa: F401 - legacy test seam
     materialize_source_document_v4,
     source_revision_sha256,
 )
 from app.domain.resume.truthfulness import (
+    _safe_full_context_text,
     build_evidence_catalog,
     build_source_evidence_catalog,
     sanitize_tailoring_output,
@@ -86,6 +89,7 @@ from app.infrastructure.resume_parser import (
 
 logger = get_logger("resume_service")
 FULL_RESUME_SNAPSHOT_VERSION = "full-resume-v1"
+FULL_CONTEXT_SNAPSHOT_VERSION = "full-context-v1"
 
 ProgressFn = Callable[..., Awaitable[None]]
 
@@ -220,6 +224,41 @@ def _source_output_orders(
     return output
 
 
+def _full_resume_context(source_document: Any, profile: ParsedProfile) -> tuple[str, dict[str, str], list[str]]:
+    """Serialize all verified resume sections and expose local evidence IDs."""
+    if source_document is None:
+        return json.dumps(profile.model_dump(mode="json"), default=str), {}, []
+    evidence: dict[str, str] = {}
+
+    def add(item: Any, key: str) -> None:
+        if item is not None and isinstance(getattr(item, "text", None), str) and item.text.strip():
+            evidence[key] = item.text
+
+    add(source_document.summary, "summary:0")
+    for index, item in enumerate(source_document.summary_lines, start=1):
+        add(item, f"summary:{index}")
+    for index, item in enumerate(source_document.skills):
+        add(item, f"skill:{index}")
+    for role_index, role in enumerate(source_document.work_history):
+        for field in ("company", "title", "start", "end", "description", "responsibilities_heading"):
+            add(getattr(role, field, None), f"role:{role_index}:{field}")
+        for index, item in enumerate(role.context_items):
+            add(item, f"role:{role_index}:context:{index}")
+        for index, item in enumerate(role.highlights):
+            add(item, f"r{role_index}:b{index}")
+    for prefix, values in (("education", source_document.education), ("certification", source_document.certifications), ("license", source_document.licenses), ("language", source_document.languages)):
+        for index, item in enumerate(values):
+            add(item, f"{prefix}:{index}")
+    for index, project in enumerate(source_document.projects):
+        for field in ("name", "description", "url"):
+            add(getattr(project, field, None), f"project:{index}:{field}")
+        for field in ("technologies", "achievements"):
+            for sub_index, item in enumerate(getattr(project, field, [])):
+                add(item, f"project:{index}:{field}:{sub_index}")
+    skill_ids = [f"skill:{index}" for index, item in enumerate(source_document.skills) if item.text.strip()]
+    return json.dumps(source_document.model_dump(mode="json"), default=str), evidence, skill_ids
+
+
 def _validate_source_backed_snapshot(
     resume: TailoredResume,
     *,
@@ -238,14 +277,56 @@ def _validate_source_backed_snapshot(
 
     if resume.canonical_sections != _canonical_sections(source_document):
         invalid()
-    expected_summary = source_document.summary.text if source_document.summary else None
-    if resume.professional_summary != expected_summary:
+    expected_summary = (
+        _join_wrapped_source([source_document.summary, *source_document.summary_lines])
+        if source_document.summary is not None
+        else None
+    )
+    missing_skills = [
+        item.requirement
+        for item in classify_requirements(job_description, profile)
+        if item.status == "missing"
+    ]
+    full_context = resume.tailoring_snapshot_version == FULL_CONTEXT_SNAPSHOT_VERSION
+    full_evidence: dict[str, str] = {}
+    skill_aliases: list[str] = []
+    if full_context:
+        _, full_evidence, skill_aliases = _full_resume_context(source_document, profile)
+        if resume.summary_evidence_ids:
+            if any(item not in full_evidence for item in resume.summary_evidence_ids):
+                invalid()
+            if not _safe_full_context_text(
+                resume.professional_summary,
+                " ".join(full_evidence[item] for item in resume.summary_evidence_ids),
+                full_evidence,
+                resume.summary_evidence_ids,
+                set(missing_skills),
+            ):
+                invalid()
+        elif resume.professional_summary != expected_summary:
+            invalid()
+    elif resume.professional_summary != expected_summary:
         invalid()
     if resume.full_name is not None or resume.email is not None or resume.phone is not None:
         invalid()
     if resume.headline is not None or resume.links.model_dump(exclude_none=True):
         invalid()
-    if resume.skills != [item.text for item in source_document.skills]:
+    expected_skills = [item.text for item in source_document.skills]
+    if full_context and resume.skill_order_source_ids:
+        if (
+            len(resume.skill_order_source_ids) != len(skill_aliases)
+            or len(set(resume.skill_order_source_ids)) != len(skill_aliases)
+            or set(resume.skill_order_source_ids) != set(skill_aliases)
+        ):
+            invalid()
+        submitted_by_alias = {
+            alias: full_evidence[alias]
+            for alias in resume.skill_order_source_ids
+            if alias in full_evidence
+        }
+        if list(submitted_by_alias.values()) != resume.skills:
+            invalid()
+    elif resume.skills != expected_skills:
         invalid()
     if (
         resume.projects
@@ -260,14 +341,9 @@ def _validate_source_backed_snapshot(
     if len(resume.work_history) != len(roles):
         invalid()
 
-    missing_skills = [
-        item.requirement
-        for item in classify_requirements(job_description, profile)
-        if item.status == "missing"
-    ]
     selection = select_source_bullets(roles, job_description or "")
     legacy = resume.tailoring_snapshot_version is None
-    if resume.tailoring_snapshot_version not in {None, FULL_RESUME_SNAPSHOT_VERSION, "lossless-complete-v2"}:
+    if resume.tailoring_snapshot_version not in {None, FULL_RESUME_SNAPSHOT_VERSION, "lossless-complete-v2", FULL_CONTEXT_SNAPSHOT_VERSION}:
         invalid()
     if legacy:
         recommended_ids = select_legacy_source_bullets(roles, job_description or "")
@@ -421,6 +497,7 @@ def _untailored_fallback(
     source_resume_id: int | None = None,
     source_resume_content_id: int | None = None,
     source_revision: str | None = None,
+    source_schema_version: str | None = None,
 ) -> TailoredResume:
     """Return the profile as-is when LLM tailoring is unavailable."""
     matched_set = set(report.matched_skills)
@@ -539,7 +616,7 @@ def _untailored_fallback(
         canonical_sections=canonical_sections or [],
         source_resume_id=source_resume_id if source_backed else None,
         source_resume_content_id=source_resume_content_id if source_backed else None,
-        source_schema_version="source-resume-v4" if source_backed else None,
+        source_schema_version=source_schema_version if source_backed else None,
         source_revision_sha256=source_revision if source_backed else None,
     )
     resume.requirement_classifications = classify_resume_coverage(
@@ -757,11 +834,9 @@ class ResumeService:
             assert previous_profile is not None
             embedding = previous_profile.embedding
 
-        # Only a server-verified source-resume-v4 can become active. Existing
-        # v3 snapshots must be re-imported instead of entering a half-supported
-        # active state.
+        # Only a server-verified v4/v5 source snapshot can become active.
         source_ready = source_validation_status == "verified" and isinstance(
-            source_content, SourceResumeContentPayloadV4
+            source_content, (SourceResumeContentPayloadV4, SourceResumeContentPayloadV5)
         )
         lifecycle_status = (
             ResumeLifecycleStatus.ACTIVE
@@ -989,9 +1064,13 @@ class ResumeService:
             if not isinstance(source_pair, tuple) or len(source_pair) != 2:
                 raise ValueError
             profile, source_row = source_pair
-            if source_row.content.get("schema_version") != "source-resume-v4":
+            if source_row.content.get("schema_version") not in {"source-resume-v4", "source-resume-v5"}:
                 raise ValueError
-            source_payload = SourceResumeContentPayloadV4.model_validate(source_row.content)
+            source_payload = (
+                SourceResumeContentPayloadV5.model_validate(source_row.content)
+                if source_row.content.get("schema_version") == "source-resume-v5"
+                else SourceResumeContentPayloadV4.model_validate(source_row.content)
+            )
             if (
                 source_row.validation_status != "verified"
                 or source_payload.layout_validation_status != "verified"
@@ -1009,10 +1088,11 @@ class ResumeService:
                 job_description=getattr(job, "description", None),
             )
             if (
-                payload.content.tailoring_snapshot_version != "lossless-complete-v2"
+                payload.content.tailoring_snapshot_version
+                not in {"lossless-complete-v2", FULL_CONTEXT_SNAPSHOT_VERSION}
                 or payload.content.source_resume_id != source_row.resume_id
                 or payload.content.source_resume_content_id != source_row.id
-                or payload.content.source_schema_version != "source-resume-v4"
+                or payload.content.source_schema_version not in {"source-resume-v4", "source-resume-v5"}
                 or payload.content.source_revision_sha256 != source_revision_sha256(source_row.content)
             ):
                 raise ValueError
@@ -1094,7 +1174,11 @@ class ResumeService:
             raise TailoredResumeSnapshotInvalidError()
         profile_row, source_row = source_pair
         try:
-            payload = SourceResumeContentPayloadV4.model_validate(source_row.content)
+            payload = (
+                SourceResumeContentPayloadV5.model_validate(source_row.content)
+                if source_row.content.get("schema_version") == "source-resume-v5"
+                else SourceResumeContentPayloadV4.model_validate(source_row.content)
+            )
             if source_row.validation_status != "verified" or payload.layout_validation_status != "verified":
                 raise ValueError
             source_document = materialize_source_document_v4(payload.document)
@@ -1111,10 +1195,11 @@ class ResumeService:
                 job_description=job.description,
             )
             if (
-                resume.tailoring_snapshot_version != "lossless-complete-v2"
+                resume.tailoring_snapshot_version
+                not in {"lossless-complete-v2", FULL_CONTEXT_SNAPSHOT_VERSION}
                 or resume.source_resume_id != source_row.resume_id
                 or resume.source_resume_content_id != source_row.id
-                or resume.source_schema_version != "source-resume-v4"
+                or resume.source_schema_version not in {"source-resume-v4", "source-resume-v5"}
                 or resume.source_revision_sha256 != source_revision_sha256(source_row.content)
             ):
                 raise ValueError
@@ -1171,9 +1256,13 @@ class ResumeService:
             source_roles = None
         else:
             profile_row, source_row = source_pair
-            if source_row.content.get("schema_version") != "source-resume-v4":
+            if source_row.content.get("schema_version") not in {"source-resume-v4", "source-resume-v5"}:
                 raise ResumeSourceLayoutUnavailableError()
-            source_payload_v4 = SourceResumeContentPayloadV4.model_validate(source_row.content)
+            source_payload_v4 = (
+                SourceResumeContentPayloadV5.model_validate(source_row.content)
+                if source_row.content.get("schema_version") == "source-resume-v5"
+                else SourceResumeContentPayloadV4.model_validate(source_row.content)
+            )
             if source_payload_v4.layout_validation_status != "verified" or source_payload_v4.document.layout is None:
                 raise ResumeSourceLayoutUnavailableError()
             source_document = materialize_source_document_v4(source_payload_v4.document)
@@ -1183,6 +1272,11 @@ class ResumeService:
         source_resume_id = source_row.resume_id if source_row is not None else None
         source_resume_content_id = source_row.id if source_row is not None else None
         source_revision = source_revision_sha256(source_row.content) if source_row is not None else None
+        source_schema_version: str | None = (
+            cast(str, source_row.content.get("schema_version"))
+            if source_row is not None and isinstance(source_row.content.get("schema_version"), str)
+            else None
+        )
         if profile_row is None:
             raise ProfileNotFoundError(user_id)
         canonical_sections = _canonical_sections(source_document)
@@ -1223,6 +1317,7 @@ class ResumeService:
                 source_resume_id=source_resume_id,
                 source_resume_content_id=source_resume_content_id,
                 source_revision=source_revision,
+                source_schema_version=source_schema_version,
             )
 
         selection = (
@@ -1259,10 +1354,16 @@ class ResumeService:
                 source_resume_id=source_resume_id,
                 source_resume_content_id=source_resume_content_id,
                 source_revision=source_revision,
+                source_schema_version=source_schema_version,
             )
 
+        full_resume_json, full_evidence, source_skill_ids = _full_resume_context(
+            source_document, profile
+        )
         prompt = TAILOR_RESUME_PROMPT.format(
             job_description=job.description,
+            full_resume_json=full_resume_json,
+            full_resume_evidence_json=json.dumps(full_evidence),
             eligible_bullets_json=json.dumps(prompt_roles, default=str),
             matched_skills=json.dumps(report.matched_skills),
             missing_skills=json.dumps(report.missing_skills),
@@ -1297,6 +1398,7 @@ class ResumeService:
                 source_resume_id=source_resume_id,
                 source_resume_content_id=source_resume_content_id,
                 source_revision=source_revision,
+                source_schema_version=source_schema_version,
             )
 
         try:
@@ -1324,6 +1426,13 @@ class ResumeService:
                 evidence_relevance,
                 source_roles,
                 output_orders=output_orders,
+                full_context_evidence=full_evidence,
+                source_skill_ids=source_skill_ids,
+                default_summary=(
+                    _join_wrapped_source([source_document.summary, *source_document.summary_lines])
+                    if source_document is not None
+                    else None
+                ),
             )
         except Exception:
             logger.warning(
@@ -1345,6 +1454,7 @@ class ResumeService:
                 source_resume_id=source_resume_id,
                 source_resume_content_id=source_resume_content_id,
                 source_revision=source_revision,
+                source_schema_version=source_schema_version,
             )
 
         matched = list(report.matched_skills)
@@ -1453,21 +1563,23 @@ class ResumeService:
             if source_document is not None
             else list(profile.skills)
         )
-        source_summary = (
-            _join_wrapped_source([source_document.summary, *source_document.summary_lines])
-            if source_document is not None
-            else None
+        tailored_summary = sanitized.professional_summary if source_backed else sanitized.professional_summary
+        tailored_skill_ids = sanitized.skill_order_source_ids
+        tailored_skills = (
+            [full_evidence[item] for item in tailored_skill_ids if item in full_evidence]
+            if source_backed and tailored_skill_ids
+            else source_skills
         )
         resume = TailoredResume(
             job_id=job_id,
             professional_summary=(
-                source_summary if source_backed else sanitized.professional_summary
+                tailored_summary if source_backed else sanitized.professional_summary
             ),
             full_name=None if source_backed else profile.full_name,
             email=None if source_backed else profile.email,
             phone=None if source_backed else profile.phone,
             headline=None if source_backed else profile.headline,
-            skills=source_skills,
+            skills=tailored_skills,
             links=profile.links.model_copy(deep=True) if not source_backed else {},
             projects=(
                 [item.model_copy(deep=True) for item in profile.projects]
@@ -1483,13 +1595,15 @@ class ResumeService:
             other_skills=other,
             missing_keywords=missing,
             requirement_classifications=classifications,
-            tailoring_snapshot_version=("lossless-complete-v2" if source_backed else None),
+            tailoring_snapshot_version=(FULL_CONTEXT_SNAPSHOT_VERSION if source_backed else None),
             canonical_sections=canonical_sections,
             source_resume_id=(source_row.resume_id if source_backed and source_row is not None else None),
             source_resume_content_id=(source_row.id if source_backed and source_row is not None else None),
-            source_schema_version=("source-resume-v4" if source_backed else None),
+            source_schema_version=(source_row.content.get("schema_version") if source_backed and source_row is not None else None),
             source_revision_sha256=(source_revision_sha256(source_row.content) if source_backed and source_row is not None else None),
             source_section_order=(list(source_document.section_order) if source_backed and source_document is not None else []),
+            summary_evidence_ids=(sanitized.summary_evidence_ids if source_backed else []),
+            skill_order_source_ids=(tailored_skill_ids if source_backed else []),
         )
         resume.requirement_classifications = classify_resume_coverage(
             resume.requirement_classifications, resume
