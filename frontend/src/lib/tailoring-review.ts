@@ -19,6 +19,8 @@ export interface ReviewState {
   source: TailoredResume;
   rejected: Set<string>;
   finalIncluded: Set<string>;
+  summaryRejected: boolean;
+  skillsSourceOrder: boolean;
 }
 
 function decisionKey(roleIndex: number, sourceIndex: number): string {
@@ -76,7 +78,37 @@ export function createReviewState(data: TailoredResume): ReviewState {
       if (decision.final_included) finalIncluded.add(decisionKey(roleIndex, decision.source_index));
     }
   }
-  return { source: data, rejected: new Set<string>(), finalIncluded };
+  return {
+    source: data,
+    rejected: new Set<string>(),
+    finalIncluded,
+    summaryRejected: false,
+    skillsSourceOrder: false,
+  };
+}
+
+function sourceSummary(data: TailoredResume): string | null {
+  const items = data.canonical_sections?.find((section) => section.section === "summary")?.items;
+  if (!items?.length) return null;
+  return items.reduce((joined, item) => {
+    const next = item.text.trim();
+    if (!next) return joined;
+    if (!joined) return next;
+    return joined.endsWith("-") ? `${joined}${next}` : `${joined} ${next}`;
+  }, "") || null;
+}
+
+export function summaryReview(data: TailoredResume): { original: string; suggestion: string; changed: boolean } | null {
+  const original = sourceSummary(data);
+  if (!original || !data.professional_summary) return null;
+  return { original, suggestion: data.professional_summary, changed: original !== data.professional_summary };
+}
+
+export function sourceSkillOrder(data: TailoredResume): { texts: string[]; ids: string[] } | null {
+  const skills = data.canonical_sections?.find((section) => section.section === "skills")?.items;
+  if (!skills?.length) return null;
+  const ordered = skills.slice().sort((a, b) => a.canonical_order - b.canonical_order);
+  return { texts: ordered.map((item) => item.text), ids: ordered.map((_, index) => `skill:${index}`) };
 }
 
 export function decisionItems(data: TailoredResume): ReviewItem[][] {
@@ -164,7 +196,15 @@ export function reviewedResume(state: ReviewState): TailoredResume {
       decision.output_rank = outputRankBySource.get(decision.source_index) ?? null;
     });
   }
-  return { ...state.source, work_history };
+  const sourceSkills = state.skillsSourceOrder ? sourceSkillOrder(state.source) : null;
+  return {
+    ...state.source,
+    professional_summary: state.summaryRejected ? sourceSummary(state.source) : state.source.professional_summary,
+    summary_evidence_ids: state.summaryRejected ? [] : state.source.summary_evidence_ids,
+    skills: sourceSkills?.texts ?? state.source.skills,
+    skill_order_source_ids: sourceSkills?.ids ?? state.source.skill_order_source_ids,
+    work_history,
+  };
 }
 
 export function sourceOnlyResume(data: TailoredResume): TailoredResume {

@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { displaySections, legacyDisplaySections, TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
+import { createReviewState, reviewedResume, sourceSkillOrder, summaryReview } from "@/lib/tailoring-review";
 
 const apiMocks = vi.hoisted(() => ({
   tailorResume: vi.fn(),
@@ -131,6 +132,76 @@ describe("TailorResumeDialog", () => {
     };
     expect(displaySections(canonical)).toBe(canonical.canonical_sections);
     expect(displaySections(canonical)[0]?.items[0]?.source_id).toBe("00000000-0000-0000-0000-000000000001");
+  });
+
+  it("lets reviewers restore the source summary and skill order", () => {
+    const fullContext = {
+      ...tailoredResume,
+      tailoring_snapshot_version: "full-context-v1" as const,
+      professional_summary: "Tailored summary for the job",
+      summary_evidence_ids: ["summary:0"],
+      skills: ["FastAPI", "Python"],
+      skill_order_source_ids: ["skill:1", "skill:0"],
+      canonical_sections: [
+        { section: "summary" as const, heading: "Summary", canonical_order: 0, items: [{ source_id: "summary-0", text: "Original develop-", canonical_order: 0 }, { source_id: "summary-1", text: "ment summary", canonical_order: 1 }] },
+        { section: "skills" as const, heading: "Skills", canonical_order: 1, items: [{ source_id: "skill-0", text: "Python", canonical_order: 1 }, { source_id: "skill-1", text: "FastAPI", canonical_order: 2 }] },
+      ],
+    };
+    expect(summaryReview(fullContext)).toEqual({ original: "Original develop-ment summary", suggestion: "Tailored summary for the job", changed: true });
+    expect(sourceSkillOrder(fullContext)).toEqual({ texts: ["Python", "FastAPI"], ids: ["skill:0", "skill:1"] });
+
+    const state = createReviewState(fullContext);
+    state.summaryRejected = true;
+    state.skillsSourceOrder = true;
+    const reviewed = reviewedResume(state);
+    expect(reviewed.professional_summary).toBe("Original develop-ment summary");
+    expect(reviewed.summary_evidence_ids).toEqual([]);
+    expect(reviewed.skills).toEqual(["Python", "FastAPI"]);
+    expect(reviewed.skill_order_source_ids).toEqual(["skill:0", "skill:1"]);
+
+    state.summaryRejected = false;
+    state.skillsSourceOrder = false;
+    const restored = reviewedResume(state);
+    expect(restored.professional_summary).toBe("Tailored summary for the job");
+    expect(restored.summary_evidence_ids).toEqual(["summary:0"]);
+    expect(restored.skills).toEqual(["FastAPI", "Python"]);
+    expect(restored.skill_order_source_ids).toEqual(["skill:1", "skill:0"]);
+  });
+
+  it("exposes reversible summary and skill controls in the review dialog", async () => {
+    const fullContext = {
+      ...tailoredResume,
+      tailoring_snapshot_version: "full-context-v1" as const,
+      professional_summary: "Tailored summary for the job",
+      summary_evidence_ids: ["summary:0"],
+      skills: ["FastAPI", "Python"],
+      skill_order_source_ids: ["skill:1", "skill:0"],
+      canonical_sections: [
+        { section: "summary" as const, heading: "Summary", canonical_order: 0, items: [{ source_id: "summary-0", text: "Original develop-", canonical_order: 0 }, { source_id: "summary-1", text: "ment summary", canonical_order: 1 }] },
+        { section: "skills" as const, heading: "Skills", canonical_order: 1, items: [{ source_id: "skill-0", text: "Python", canonical_order: 1 }, { source_id: "skill-1", text: "FastAPI", canonical_order: 2 }] },
+      ],
+    };
+    apiMocks.tailorResume.mockResolvedValue(fullContext);
+    apiMocks.createDraft.mockResolvedValue({ content: fullContext });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Keep original"));
+    expect(renderedText()).toContain("Restore source skill order");
+
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Keep original")?.click(); await Promise.resolve(); });
+    expect(renderedText()).toContain("Use suggestion");
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Restore source skill order")?.click(); await Promise.resolve(); });
+    expect(renderedText()).toContain("Use suggested order");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Regenerate draft"))?.click(); await Promise.resolve(); });
+    expect(confirm).toHaveBeenCalledWith("Regenerate and discard your unsaved review choices?");
+    expect(apiMocks.tailorResume).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"))?.click(); await Promise.resolve(); });
+    expect(apiMocks.createDraft).toHaveBeenCalledWith(expect.objectContaining({ content: expect.objectContaining({ professional_summary: "Original develop-ment summary", skills: ["Python", "FastAPI"], summary_evidence_ids: [] }) }));
   });
 
   it("waits for the user to start generation and labels the result as a review-required draft", async () => {
@@ -294,7 +365,9 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).toContain("github.com/ada");
     expect(renderedText()).toContain("Backend engineer with API design and");
     expect(renderedText()).toContain("automation experience.");
-    expect(container.querySelectorAll('[data-testid="canonical-summary"] p')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="canonical-summary"] p')).toHaveLength(2);
+    expect(renderedText()).toContain("Original:");
+    expect(renderedText()).toContain("Suggestion:");
     expect(renderedText()).toContain("PROFESSIONAL SUMMARY");
     expect(renderedText()).toContain("SELECTED PROJECTS");
     expect(renderedText()).toContain("TECHNICAL STACK");
