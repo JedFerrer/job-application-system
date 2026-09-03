@@ -12,11 +12,13 @@ from app.domain.resume.schemas import (
     SourceResumeContentDocumentV3,
     SourceResumeContentDocumentV4,
     SourceResumeLayoutReferencesV3,
+    SourceResumeLayoutReferencesV4,
 )
 from app.domain.resume.source_content import (
     SOURCE_VALIDATION_VERSION,
     InvalidReferenceDiagnostic,
     build_source_candidate_ledger,
+    canonicalize_source_layout_v5,
     classify_source_artifacts,
     has_usable_tailoring_semantics,
     materialize_source_document,
@@ -130,6 +132,65 @@ def test_v4_preserves_summary_block_and_core_headings() -> None:
     assert document.section_headings["skills"].text == "TECHNICAL STACK"
 
 
+@pytest.mark.parametrize(
+    "innovation_heading",
+    ["INNOVATION & SIDE PROJECTS", "INNOVATION AND SIDE PROJECTS"],
+)
+def test_v5_canonicalizer_prevents_cross_section_and_work_duplicates(
+    innovation_heading: str,
+) -> None:
+    raw = (
+        "Ada Example\n"
+        "PROFESSIONAL SUMMARY\n"
+        "Backend engineer with API experience.\n"
+        "TECHNICAL SKILLS\n"
+        "Python\n"
+        f"{innovation_heading}\n"
+        "AI Tutor App: Built a grounded tutoring platform.\n"
+        "PROFESSIONAL EXPERIENCE\n"
+        "Acme - Engineer\n"
+        "• Built APIs\n"
+        "PROJECTS\n"
+        "Portal\n"
+        "CERTIFICATIONS\n"
+        "Cloud certificate"
+    )
+    ledger = build_source_candidate_ledger(raw)
+    layout = canonicalize_source_layout_v5(
+        {
+            "contact": {"name": "c0"},
+            "links": {},
+            "summary": None,
+            "summary_lines": [],
+            "section_headings": {},
+            "skills": ["c8", "c10"],
+            "sections": [],
+            "work_history": [{
+                "order": 0, "header": "c8", "context": ["c9"],
+                "responsibilities_heading": None, "highlights": ["c9"],
+            }],
+            "projects": [{
+                "order": 0, "name": "c11", "description": "c11", "url": None,
+                "technologies": [], "achievements": [],
+            }],
+            "education": [],
+            "certifications": ["c13"],
+            "licenses": [],
+            "languages": [],
+            "named_sections": [],
+        },
+        ledger,
+    )
+    result = resolve_source_layout_v4(layout, ledger, classify_source_artifacts(ledger))
+    assert result.status == "verified"
+    assert result.layout is not None
+    resolved = cast(SourceResumeLayoutReferencesV4, result.layout)
+    assert resolved.skills == [ledger.candidates[4].source_id]
+    assert resolved.section_headings["named:0"] == ledger.candidates[5].source_id
+    assert resolved.named_sections[0].items == [ledger.candidates[6].source_id]
+    assert len(resolved.work_history[0].highlights) == 1
+
+
 def test_v4_accepts_and_materializes_projects_heading() -> None:
     raw = "PROJECTS\nAPI Portal\nDescription"
     ledger = build_source_candidate_ledger(raw)
@@ -147,6 +208,28 @@ def test_v4_accepts_and_materializes_projects_heading() -> None:
     )
     assert document is not None
     assert document.section_headings["projects"].text == "PROJECTS"
+
+
+def test_v4_ignores_null_optional_headings_from_strict_selector() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\nAcme - Engineer\nBuilt APIs"
+    )
+    result = resolve_source_layout_v4(
+        {
+            "section_headings": {
+                "summary": None,
+                "skills": None,
+                "work_history": "c0",
+                "education": None,
+            },
+            "work_history": [{"header": "c1", "highlights": ["c2"]}],
+        },
+        ledger,
+    )
+    assert result.status == "verified"
+    assert result.layout is not None
+    layout = cast(SourceResumeLayoutReferencesV4, result.layout)
+    assert layout.section_headings == {"work_history": ledger.candidates[0].source_id}
 
 
 def test_v3_server_owns_one_unclassified_candidate_without_source_content() -> None:
@@ -310,22 +393,22 @@ def _v3_layout() -> dict[str, object]:
         (
             lambda layout: layout["work_history"][0].update({"highlights": ["c1", "c3"]}),
             [],
-            "duplicate_source_candidate_ownership",
+            "invalid_source_references",
         ),
         (
             lambda layout: layout["named_sections"][0].update({"items": ["c1", "c5"]}),
             [],
-            "duplicate_source_candidate_ownership",
+            "invalid_source_references",
         ),
         (
             lambda layout: layout["named_sections"][0].update({"items": ["c3", "c5"]}),
             [],
-            "duplicate_source_candidate_ownership",
+            "invalid_source_references",
         ),
         (
             lambda layout: layout["named_sections"].append({"heading": "c4", "items": []}),
             [],
-            "duplicate_source_candidate_ownership",
+            "invalid_source_references",
         ),
         (
             lambda layout: layout.update({"contact": {"location": "c6"}}),
@@ -348,6 +431,54 @@ def test_v3_rejects_duplicate_canonical_candidate_ownership(
 
     assert result.status == "invalid"
     assert result.errors == (error,)
+
+
+def test_v3_duplicate_diagnostics_identify_alias_and_conflicting_paths() -> None:
+    ledger = build_source_candidate_ledger(
+        "Role\nContext\nResponsibilities:\nBullet\nAwards\nAward item\nOther"
+    )
+    layout = _v3_layout()
+    layout["sections"] = ["c6", "c6"]
+
+    result = resolve_source_layout_v3(layout, ledger)
+
+    assert result.errors == ("invalid_source_references",)
+    assert result.invalid_reference_diagnostics == (
+        InvalidReferenceDiagnostic("duplicate_exclusive_reference", "sections[0]", "c6"),
+        InvalidReferenceDiagnostic("duplicate_exclusive_reference", "sections[1]", "c6"),
+    )
+
+
+def test_v3_allows_one_physical_line_to_supply_multiple_metadata_fields() -> None:
+    ledger = build_source_candidate_ledger("Ada\nada@example.com")
+
+    result = resolve_source_layout_v3(
+        {"contact": {"name": "c0", "location": "c0"}, "links": {"profiles": "c0"}},
+        ledger,
+    )
+
+    assert result.status == "verified"
+
+
+def test_v4_reports_project_alias_selected_as_skill() -> None:
+    ledger = build_source_candidate_ledger(
+        "Ada\nTECHNICAL STACK\nPython\nPROJECTS\nResume Matcher"
+    )
+
+    result = resolve_source_layout_v4(
+        {
+            "contact": {"name": "c0"},
+            "section_headings": {"skills": "c1", "projects": "c3"},
+            "skills": ["c2", "c4"],
+            "projects": [{"name": "c4"}],
+        },
+        ledger,
+    )
+
+    assert result.status == "invalid"
+    assert InvalidReferenceDiagnostic(
+        "section_range_conflict", "skills[1]", "c4", "projects"
+    ) in result.invalid_reference_diagnostics
 
 
 def test_v3_rejects_candidate_owned_by_content_and_artifact() -> None:

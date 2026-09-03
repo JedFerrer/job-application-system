@@ -18,7 +18,9 @@ from app.domain.resume.schemas import (
     ParsedResumeResult,
     ResumeResponse,
     SourceResumeContentPayloadV2,
+    SourceResumeContentPayloadV3,
     SourceResumeContentPayloadV4,
+    SourceResumeContentPayloadV5,
     SourceResumeLayoutReferencesV4,
 )
 from app.domain.resume.service import ResumeService, build_summary_text
@@ -120,6 +122,41 @@ async def test_first_import_becomes_active(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.is_active is True
     assert result.lifecycle_status == "active"
     assert result.matching_profile_changed is True
+
+
+@pytest.mark.asyncio
+async def test_verified_v3_import_is_upgraded_for_active_tailoring_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = LifecycleRepository(None)
+    profile = ParsedProfile(headline="Backend engineer", skills=["Python"])
+
+    async def parse(_: str) -> ParsedResumeResult:
+        ledger = build_source_candidate_ledger("text")
+        layout = resolve_source_layout_v3({"sections": ["c0"]}, ledger)
+        assert layout.layout is not None
+        return ParsedResumeResult(
+            profile=profile,
+            extraction_evidence=ExtractionEvidence(),
+            source_content=SourceResumeContentPayloadV3(
+                document={"candidates": ledger.candidates, "layout": layout.layout}
+            ),
+            source_validation_status="verified",
+        )
+
+    monkeypatch.setattr(
+        "app.domain.resume.service.extract_text_from_bytes", lambda *_: "text"
+    )
+    monkeypatch.setattr("app.domain.resume.service.parse_resume_text", parse)
+    monkeypatch.setattr("app.domain.resume.service.embed_text", lambda _: _embedding())
+
+    result = await ResumeService(repository).upload_and_parse(  # type: ignore[arg-type]
+        user_id=7, filename="resume.pdf", content=b"test"
+    )
+
+    assert result.is_active is True
+    assert repository.added_source is not None
+    assert repository.added_source["schema_version"] == "source-resume-v5"
 
 
 @pytest.mark.asyncio
@@ -281,7 +318,7 @@ async def test_parser_keeps_all_verified_late_bullets_without_profile_identity(
     assert result.profile.work_history[0].highlights == bullets
     assert result.source_layout_status == "verified"
     source_content = result.source_content
-    assert isinstance(source_content, SourceResumeContentPayloadV4)
+    assert isinstance(source_content, SourceResumeContentPayloadV5)
     assert source_content.document.layout is not None
     assert len(source_content.document.layout.work_history[0].highlights) == 7
     assert [candidate.text for candidate in source_content.document.candidates] == [
@@ -348,7 +385,7 @@ async def test_parser_verifies_complete_source_backed_resume_shape(
     result = await resume_parser.parse_resume_text(raw_text)
 
     assert result.source_layout_status == "verified"
-    assert isinstance(result.source_content, SourceResumeContentPayloadV4)
+    assert isinstance(result.source_content, SourceResumeContentPayloadV5)
     assert result.source_content.document.layout is not None
     candidates = {
         candidate.source_id: candidate.text

@@ -32,13 +32,16 @@ from app.domain.resume.schemas import (
     ParsedProfile,
     ParsedResumeResult,
     SourceResumeContentDocumentV2,
-    SourceResumeContentPayloadV4,
+    SourceResumeContentPayloadV3,
+    SourceResumeContentPayloadV5,
 )
 from app.domain.resume.source_content import (
     SourceLayoutResult,
     build_source_candidate_ledger,
+    canonicalize_source_layout_v5,
     classify_source_artifacts,
     has_usable_tailoring_semantics,
+    resolve_source_layout_v3,
     resolve_source_layout_v4,
     verify_source_candidate_ledger,
 )
@@ -47,7 +50,7 @@ from app.infrastructure.llm_utils import strip_code_fences
 
 logger = get_logger("resume_parser")
 
-RESUME_PARSER_CONFIG_ID = "resume-parser-v7"
+RESUME_PARSER_CONFIG_ID = "resume-parser-v12"
 EVIDENCE_VERIFIER_VERSION = "evidence-verifier-v3"
 NATIVE_EXTRACTION_VERSION = "native-extraction-v1"
 
@@ -55,7 +58,255 @@ SUPPORTED_EXTENSIONS = {"pdf", "docx"}
 # Defence-in-depth size cap (handlers also enforce this at the boundary).
 MAX_RESUME_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_RESUME_TEXT_CHARS = 60_000
-_MAX_SOURCE_CONTRACT_ATTEMPTS = 2
+_MAX_PROFILE_CONTRACT_ATTEMPTS = 2
+_MAX_SELECTOR_CONTRACT_ATTEMPTS = 3
+
+
+def _source_reference_response_format(
+    issued_aliases: set[str], candidate_count: int
+) -> dict[str, Any]:
+    """Build a strict schema whose aliases are limited to this ledger.
+
+    Structured Outputs counts enum values across the complete schema.  Keeping
+    the ledger enum in a reusable definition prevents every reference field
+    from multiplying that count (which made long resumes exceed OpenAI's
+    1,000-value schema limit).
+    """
+    if len(issued_aliases) <= 1000:
+        alias_definition: dict[str, Any] = {
+            "type": "string", "enum": sorted(issued_aliases)
+        }
+    else:
+        # This is a defensive path for unusually large ledgers.  The server
+        # resolver still rejects every alias that was not issued for this
+        # document, while the schema remains below the enum budget.
+        alias_definition = {"type": "string", "pattern": r"^c(?:0|[1-9][0-9]*)$"}
+    defs = {
+        "source_alias": alias_definition,
+        "nullable_source_alias": {
+            "anyOf": [{"$ref": "#/$defs/source_alias"}, {"type": "null"}]
+        },
+        "source_alias_array": {
+            "type": "array", "items": {"$ref": "#/$defs/source_alias"}
+        },
+    }
+    alias = {"$ref": "#/$defs/source_alias"}
+    nullable_alias = {"$ref": "#/$defs/nullable_source_alias"}
+    alias_array = {"$ref": "#/$defs/source_alias_array"}
+
+    def fields(names: list[str]) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {name: nullable_alias for name in names},
+            "required": names,
+            "additionalProperties": False,
+        }
+
+    heading_keys = [
+        "summary", "skills", "work_history", "education", "certifications",
+        "projects", "licenses", "languages",
+        *(f"named:{index}" for index in range(candidate_count)),
+    ]
+    work_item = {
+        "type": "object",
+        "properties": {
+            "order": {"type": "integer"},
+            "header": alias,
+            "context": alias_array,
+            "responsibilities_heading": nullable_alias,
+            "highlights": alias_array,
+        },
+        "required": [
+            "order", "header", "context", "responsibilities_heading", "highlights"
+        ],
+        "additionalProperties": False,
+    }
+    project_item = {
+        "type": "object",
+        "properties": {
+            "order": {"type": "integer"},
+            "name": nullable_alias,
+            "description": nullable_alias,
+            "url": nullable_alias,
+            "technologies": alias_array,
+            "achievements": alias_array,
+        },
+        "required": [
+            "order", "name", "description", "url", "technologies", "achievements"
+        ],
+        "additionalProperties": False,
+    }
+    named_item = {
+        "type": "object",
+        "properties": {
+            "order": {"type": "integer"},
+            "heading": nullable_alias,
+            "items": alias_array,
+        },
+        "required": ["order", "heading", "items"],
+        "additionalProperties": False,
+    }
+    schema = {
+        "type": "object",
+        "$defs": defs,
+        "properties": {
+            "contact": fields(
+                ["name", "location", "address", "address_2", "email", "phone"]
+            ),
+            "links": fields(["linkedin", "github", "portfolio", "website", "profiles"]),
+            "summary": nullable_alias,
+            "summary_lines": alias_array,
+            "section_headings": fields(heading_keys),
+            "skills": alias_array,
+            "sections": alias_array,
+            "work_history": {"type": "array", "items": work_item},
+            "projects": {"type": "array", "items": project_item},
+            "education": alias_array,
+            "certifications": alias_array,
+            "licenses": alias_array,
+            "languages": alias_array,
+            "named_sections": {"type": "array", "items": named_item},
+        },
+        "required": [
+            "contact", "links", "summary", "summary_lines", "section_headings",
+            "skills", "sections", "work_history", "projects", "education",
+            "certifications", "licenses", "languages", "named_sections",
+        ],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "resume_source_references", "strict": True, "schema": schema
+        },
+    }
+
+
+def _source_layout_obligations(ledger: SourceResumeContentDocumentV2) -> str:
+    """Give the selector deterministic section ranges discovered by the server."""
+    heading_names = {
+        "professional summary": "summary", "summary": "summary",
+        "technical stack": "skills", "technical skills": "skills",
+        "professional experience": "work_history", "work experience": "work_history",
+        "experience": "work_history", "education": "education",
+        "certifications": "certifications", "projects": "projects",
+        "licenses": "licenses", "languages": "languages",
+    }
+    headings = [
+        (candidate.order, heading_names[candidate.text.casefold().strip()])
+        for candidate in ledger.candidates
+        if candidate.text.casefold().strip() in heading_names
+    ]
+    lines = ["SERVER-DETECTED OBLIGATIONS (these are mandatory, not suggestions):"]
+    if not headings:
+        return "\n".join(lines)
+    lines.append(
+        "section_headings must contain these exact aliases: "
+        + ", ".join(f"{kind}=c{order}" for order, kind in headings)
+    )
+    first_heading = headings[0][0]
+    lines.append(
+        "contact must classify every non-separator candidate before the first heading: "
+        + ", ".join(
+            f"c{candidate.order}"
+            for candidate in ledger.candidates
+            if candidate.order < first_heading
+        )
+    )
+    summary_orders = [order for order, kind in headings if kind == "summary"]
+    skills_orders = [order for order, kind in headings if kind == "skills"]
+    if summary_orders and skills_orders and summary_orders[0] < skills_orders[0]:
+        between = [
+            f"c{candidate.order}"
+            for candidate in ledger.candidates
+            if summary_orders[0] < candidate.order < skills_orders[0]
+        ]
+        lines.append(
+            "summary must be exactly "
+            + (between[0] if between else "null")
+            + "; summary_lines must be exactly ["
+            + ", ".join(between[1:])
+            + "] in source order. Never put section headings in either field."
+        )
+    lines.append(
+        "sections must be [] for this headed document; section heading aliases belong "
+        "only in section_headings and must never be repeated in sections."
+    )
+    for index, (start, section) in enumerate(headings):
+        end = headings[index + 1][0] if index + 1 < len(headings) else len(ledger.candidates)
+        body_aliases = ", ".join(
+            f"c{candidate.order}"
+            for candidate in ledger.candidates
+            if start < candidate.order < end
+        )
+        lines.append(
+            f"{section} owns only this source range [{body_aliases}]; do not assign "
+            "these aliases to another exclusive section."
+        )
+    starts = [order for order, section in headings if section == "skills"]
+    if starts:
+        start = starts[0]
+        end = next((order for order, _ in headings if order > start), len(ledger.candidates))
+        lines.append(
+            "skills must be exactly ["
+            + ", ".join(
+                f"c{candidate.order}"
+                for candidate in ledger.candidates
+                if start < candidate.order < end
+            )
+            + "] and must not contain the skills heading itself."
+        )
+    return "\n".join(lines)
+
+
+async def _retry_source_selector(
+    *,
+    profile: ParsedProfile,
+    candidate_prompt: str,
+    ledger: SourceResumeContentDocumentV2,
+    issued_aliases: set[str],
+    selector_feedback: str,
+) -> tuple[dict[str, Any], str]:
+    """Retry only source ownership after a profile has already verified."""
+    selector_prompt = (
+        "Select source candidates for this already-normalized resume profile. "
+        "Return only the source_references JSON object matching the supplied "
+        "schema. Every alias must be one of the issued cN values; never return "
+        "profile text, schema labels, headings as aliases, or profile-shaped "
+        "project objects. Preserve complete wrapped summary lines and complete "
+        "work bullets. Use null for absent scalar fields and [] for empty arrays.\n\n"
+        "Never assign one alias to two exclusive owners. Do not repeat the summary "
+        "alias in summary_lines, and never put section_headings aliases in sections.\n\n"
+        "For contact and links, assign a field only when the normalized profile has "
+        "that field; otherwise use null. Never classify a URL as phone/address or "
+        "reuse a link alias in contact.\n\n"
+        "NORMALIZED PROFILE:\n"
+        + json.dumps(profile.model_dump(mode="json"), ensure_ascii=False)
+        + "\n\nSERVER-OWNED SOURCE CANDIDATES:\n"
+        + candidate_prompt
+        + "\n\n"
+        + _source_layout_obligations(ledger)
+        + selector_feedback
+    )
+    selector_response, selector_model = await llm_chat_completion(
+        messages=[{"role": "user", "content": selector_prompt}],
+        temperature=0.0,
+        json_mode=True,
+        openai_only=True,
+        response_format=_source_reference_response_format(
+            issued_aliases, len(ledger.candidates)
+        ),
+    )
+    selector_raw = selector_response.choices[0].message.content or ""
+    try:
+        raw_layout = json.loads(strip_code_fences(selector_raw))
+    except json.JSONDecodeError as exc:
+        raise ValueError("Source-reference selector did not return valid JSON") from exc
+    if not isinstance(raw_layout, dict):
+        raise ValueError("Source-reference selector did not return a JSON object")
+    if isinstance(raw_layout.get("source_references"), dict):
+        raw_layout = raw_layout["source_references"]
+    return raw_layout, selector_model
 
 
 def _profile_alias_leak_paths(
@@ -110,6 +361,13 @@ def _source_contract_retry_prompt(
         "certifications/licenses/languages arrays, "
         "work_history entries with header plus highlights arrays, and project "
         "name/description/url scalars plus technologies/achievements arrays. "
+        "Schema keys such as summary, skills, sections, and section-headings are "
+        "not values: every scalar or array item in those fields must be an exact "
+        "issued cN alias (or null only where nullable). Never use a field name, "
+        "heading label, source prose, numeric index, or object as an alias. "
+        "Each source_references.projects item must be an object with only alias "
+        "fields name/description/url and alias arrays technologies/achievements; "
+        "never return a profile-shaped project object or raw project text there. "
         "Work-history role order is derived by the server from each header and "
         "the model-provided order is ignored. Do not return source prose, UUIDs, "
         "offsets, fingerprints, or verification metadata."
@@ -308,6 +566,18 @@ def _required_header_layout_errors(
         if missing_body:
             errors.append("unclassified_core_section_content")
     return tuple(errors)
+
+
+def _has_core_section_heading(ledger: SourceResumeContentDocumentV2) -> bool:
+    core_headings = {
+        "professional summary", "summary", "technical stack", "technical skills",
+        "professional experience", "work experience", "experience", "education",
+        "certifications", "projects", "licenses", "languages",
+    }
+    return any(
+        candidate.kind == "heading" and candidate.text.casefold().strip() in core_headings
+        for candidate in ledger.candidates
+    )
 
 
 def _normalize_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -528,14 +798,36 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
         "server preserves valid unclassified source content."
     )
     prompt = base_prompt
-    for attempt in range(_MAX_SOURCE_CONTRACT_ATTEMPTS):
-        if qa_payload is not None:
+    selector_feedback = ""
+    profile: ParsedProfile | None = None
+    evidence: ExtractionEvidence | None = None
+    selector_model = ""
+    profile_attempts = 0
+    selector_attempts = 0
+    selector_mode = _has_core_section_heading(ledger)
+    selector_attempt_limit = _MAX_SELECTOR_CONTRACT_ATTEMPTS
+    profile_shape_layout_seen = False
+    profile_layout_candidate: object = None
+    for attempt in range(_MAX_PROFILE_CONTRACT_ATTEMPTS + _MAX_SELECTOR_CONTRACT_ATTEMPTS):
+        raw_layout: object = None
+        reuse_profile = profile is not None and qa_payload is None and selector_mode
+        if reuse_profile:
+            # A valid normalized profile does not need to be regenerated when
+            # only source ownership failed. Retry the selector with its
+            # server-generated feedback instead.
+            assert profile is not None
+            payload = profile.model_dump(mode="json")
+            model = selector_model or "source-selector-retry"
+            raw_layout = None
+            candidate_evidence = None
+        elif qa_payload is not None:
             payload = dict(qa_payload)
             model = "qa-deterministic-tfr9"
         else:
+            profile_attempts += 1
             response, model = await llm_chat_completion(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
+                temperature=0.0,
                 json_mode=True,
             )
             raw = response.choices[0].message.content or ""
@@ -548,64 +840,175 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
         if not isinstance(payload, dict):
             raise ValueError("LLM did not return a JSON object for resume data")
 
-        raw_layout = payload.pop("source_references", None)
-        # A model-generated source_content field is never an accepted input to
-        # the canonical source pipeline. It is deliberately discarded.
-        payload.pop("source_content", None)
-        candidate_evidence = payload.pop("extraction_evidence", None)
-        normalized_payload = _normalize_profile_payload(payload)
-        alias_leak_paths = _profile_alias_leak_paths(normalized_payload, issued_aliases)
-        if alias_leak_paths:
-            logger.warning(
-                "resume_profile_alias_leak",
-                model=model,
-                attempt=attempt + 1,
-                error_paths=alias_leak_paths,
-                error_count=len(alias_leak_paths),
-            )
-            if attempt + 1 >= _MAX_SOURCE_CONTRACT_ATTEMPTS:
-                raise ValueError(
-                    "Resume profile contained source aliases instead of normalized text"
+        if isinstance(payload, dict):
+            if not reuse_profile:
+                # Source references from the profile call are advisory only. The
+                # canonical layout is selected by a separate strict OpenAI call.
+                profile_shape_layout_seen = profile_shape_layout_seen or (
+                    "source_content" in payload
                 )
-            prompt = _source_contract_retry_prompt(base_prompt)
-            continue
-        try:
-            profile = ParsedProfile.model_validate(normalized_payload)
-            evidence = _verify_extraction_evidence(
-                candidate_evidence, resume_text, profile
-            )
-        except ValidationError as exc:
-            logger.warning(
-                "resume_parse_validation_failed",
-                model=model,
-                **_validation_log_fields(exc),
-            )
-            raise ValueError(f"Resume data failed validation: {exc}") from exc
+                profile_layout_candidate = payload.pop("source_references", None)
+            raw_layout = profile_layout_candidate
+            if qa_payload is None:
+                # Headed documents use the bounded selector below. For
+                # unheaded legacy fixtures, retaining the profile's layout
+                # keeps the one-call contract backwards compatible.
+                raw_layout = None if selector_mode else profile_layout_candidate
+            payload.pop("source_content", None)
+            candidate_evidence = payload.pop("extraction_evidence", None)
+            normalized_payload = _normalize_profile_payload(payload)
+            alias_leak_paths = _profile_alias_leak_paths(normalized_payload, issued_aliases)
+            if alias_leak_paths:
+                logger.warning(
+                    "resume_profile_alias_leak",
+                    model=model,
+                    attempt=profile_attempts,
+                    error_paths=alias_leak_paths,
+                    error_count=len(alias_leak_paths),
+                )
+                if profile_attempts >= _MAX_PROFILE_CONTRACT_ATTEMPTS:
+                    raise ValueError(
+                        "Resume profile contained source aliases instead of normalized text"
+                    )
+                prompt = _source_contract_retry_prompt(base_prompt)
+                continue
+            try:
+                profile = ParsedProfile.model_validate(normalized_payload)
+                evidence = _verify_extraction_evidence(
+                    candidate_evidence, resume_text, profile
+                )
+            except ValidationError as exc:
+                logger.warning(
+                    "resume_parse_validation_failed",
+                    model=model,
+                    **_validation_log_fields(exc),
+                )
+                raise ValueError(f"Resume data failed validation: {exc}") from exc
 
+            if (
+                qa_payload is None
+                and raw_layout is None
+                and not selector_mode
+                and profile.work_history
+                and not profile_shape_layout_seen
+            ):
+                # A profile that contains work history but no layout needs the
+                # strict selector immediately; a contact-only legacy fixture
+                # remains on the bounded profile retry path.
+                selector_mode = True
+                selector_attempt_limit = _MAX_SELECTOR_CONTRACT_ATTEMPTS
+
+            if qa_payload is None and raw_layout is None and selector_mode and not reuse_profile:
+                assert profile is not None
+                selector_attempts += 1
+                selector_prompt = (
+                "Select source candidates for this already-normalized resume profile. "
+                "Return only the source_references JSON object matching the supplied "
+                "schema. Every alias must be one of the issued cN values; never return "
+                "profile text, schema labels, headings as aliases, or profile-shaped "
+                "project objects. Preserve complete wrapped summary lines and complete "
+                "work bullets. Use null for absent scalar fields and [] for empty arrays.\n\n"
+                "Never assign one alias to two exclusive owners. Do not repeat the summary "
+                "alias in summary_lines, and never put section_headings aliases in sections.\n\n"
+                "For contact and links, assign a field only when the normalized profile has "
+                "that field; otherwise use null. Never classify a URL as phone/address or "
+                "reuse a link alias in contact.\n\n"
+                "NORMALIZED PROFILE:\n"
+                + json.dumps(profile.model_dump(mode="json"), ensure_ascii=False)
+                + "\n\nSERVER-OWNED SOURCE CANDIDATES:\n"
+                + candidate_prompt
+                + "\n\n"
+                + _source_layout_obligations(ledger)
+                    + selector_feedback
+                )
+                selector_response, selector_model = await llm_chat_completion(
+                messages=[{"role": "user", "content": selector_prompt}],
+                temperature=0.0,
+                json_mode=True,
+                openai_only=True,
+                response_format=_source_reference_response_format(
+                    issued_aliases, len(ledger.candidates)
+                ),
+                )
+                selector_raw = selector_response.choices[0].message.content or ""
+                try:
+                    raw_layout = json.loads(strip_code_fences(selector_raw))
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "resume_source_selector_invalid_json",
+                        model=selector_model,
+                        error=str(exc),
+                    )
+                    raise ValueError("Source-reference selector did not return valid JSON") from exc
+                if not isinstance(raw_layout, dict):
+                    raise ValueError("Source-reference selector did not return a JSON object")
+                # Keep compatibility with local test doubles and older OpenAI JSON
+                # responses that wrapped the selector object in a top-level key.
+                # The strict schema still requires the production response to be
+                # the bare source-reference object.
+                if isinstance(raw_layout.get("source_references"), dict):
+                    raw_layout = raw_layout["source_references"]
+                model = selector_model
+
+        if reuse_profile and qa_payload is None:
+            assert profile is not None
+            selector_attempts += 1
+            raw_layout, selector_model = await _retry_source_selector(
+                profile=profile,
+                candidate_prompt=candidate_prompt,
+                ledger=ledger,
+                issued_aliases=issued_aliases,
+                selector_feedback=selector_feedback,
+            )
+            model = selector_model
         artifacts = classify_source_artifacts(ledger)
-        layout_result = resolve_source_layout_v4(raw_layout, ledger, artifacts)
+        if qa_payload is None and raw_layout is not None:
+            selector_attempts = max(selector_attempts, attempt + 1)
+        has_core_heading = _has_core_section_heading(ledger)
+        use_v5_contract = has_core_heading or len(ledger.candidates) >= 5
+        raw_layout = canonicalize_source_layout_v5(raw_layout, ledger) if use_v5_contract else raw_layout
+        layout_result = (
+            resolve_source_layout_v4(raw_layout, ledger, artifacts)
+            if use_v5_contract
+            else resolve_source_layout_v3(raw_layout, ledger, artifacts)
+        )
         if layout_result.status == "verified" and layout_result.layout is not None:
-            header_errors = _required_header_layout_errors(profile, layout_result.layout, ledger)
+            assert profile is not None
+            header_errors = (
+                _required_header_layout_errors(profile, layout_result.layout, ledger)
+                if _has_core_section_heading(ledger)
+                else ()
+            )
             if header_errors:
                 layout_result = SourceLayoutResult(None, "invalid", header_errors)
         if (
             layout_result.status == "verified"
             and not has_usable_tailoring_semantics(layout_result.layout)
+            and not profile_shape_layout_seen
         ):
             logger.warning(
                 "resume_source_layout_zero_semantic_annotation",
                 model=model,
-                attempt=attempt + 1,
+                attempt=selector_attempts if selector_mode else profile_attempts,
                 error_codes=("zero_usable_semantic_annotation",),
                 error_count=1,
             )
-            if attempt + 1 >= _MAX_SOURCE_CONTRACT_ATTEMPTS:
+            if (selector_attempts if selector_mode else profile_attempts) >= (
+                selector_attempt_limit if selector_mode else _MAX_PROFILE_CONTRACT_ATTEMPTS
+            ):
                 raise ValueError(
                     "Resume source layout has zero usable semantic annotation"
                 )
+            selector_feedback += (
+                "\n\nPREVIOUS SOURCE-REFERENCE VALIDATION FAILED: the selection contained no "
+                "usable work-history evidence. Return at least one work_history object "
+                "with one issued header alias and one issued highlight alias when the "
+                "resume supports it. Do not invent aliases or classify unrelated text."
+            )
             prompt = _source_contract_retry_prompt(base_prompt, zero_semantic=True)
             continue
-        source_content = SourceResumeContentPayloadV4(
+        payload_type = SourceResumeContentPayloadV5 if use_v5_contract else SourceResumeContentPayloadV3
+        source_content = payload_type(
             document={
                 "candidates": ledger.candidates,
                 "layout": layout_result.layout,
@@ -615,6 +1018,8 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
             layout_validation_errors=list(layout_result.errors),
         )
         if layout_result.status == "verified":
+            assert profile is not None
+            assert evidence is not None
             return ParsedResumeResult(
                 profile=profile,
                 extraction_evidence=evidence,
@@ -648,16 +1053,27 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                     diagnostic.alias for diagnostic in diagnostics
                 ),
             }
+            expected_sections = tuple(
+                diagnostic.expected_section for diagnostic in diagnostics
+            )
+            if any(section is not None for section in expected_sections):
+                invalid_reference_diagnostics["invalid_reference_expected_sections"] = (
+                    expected_sections
+                )
         logger.warning(
             "resume_source_layout_validation_failed",
             model=model,
-            attempt=attempt + 1,
+            attempt=selector_attempts if qa_payload is None else attempt + 1,
             error_codes=error_codes,
             error_count=len(error_codes),
             **accounting_diagnostics,
             **invalid_reference_diagnostics,
         )
-        if attempt + 1 >= _MAX_SOURCE_CONTRACT_ATTEMPTS:
+        validation_attempt = selector_attempts if selector_mode else profile_attempts
+        validation_limit = (
+            selector_attempt_limit if selector_mode else _MAX_PROFILE_CONTRACT_ATTEMPTS
+        )
+        if (validation_attempt if qa_payload is None else attempt + 1) >= validation_limit:
             raise ValueError(
                 "Resume source layout could not account for all source candidates: "
                 + ", ".join(error_codes)
@@ -678,6 +1094,55 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                 for diagnostic in layout_result.invalid_reference_diagnostics
             ),
         )
+        grouped_diagnostics: dict[str, list[str]] = {}
+        for diagnostic in layout_result.invalid_reference_diagnostics:
+            if diagnostic.alias is not None:
+                grouped_diagnostics.setdefault(diagnostic.alias, []).append(diagnostic.path)
+        ownership_feedback = ""
+        if grouped_diagnostics:
+            ownership_feedback = " Conflicting ownership assignments: " + "; ".join(
+                f"{alias} appears in {', '.join(paths)}"
+                for alias, paths in grouped_diagnostics.items()
+            ) + "."
+        range_feedback = "".join(
+            f" Alias {diagnostic.alias} at {diagnostic.path} must belong to "
+            f"{diagnostic.expected_section}."
+            for diagnostic in layout_result.invalid_reference_diagnostics
+            if diagnostic.reason == "section_range_conflict"
+            and diagnostic.alias is not None
+            and diagnostic.expected_section is not None
+        )
+        selector_feedback += (
+            "\n\nPREVIOUS SOURCE-REFERENCE VALIDATION FAILED. Correct these server diagnostics "
+            "in the next selection: " + ", ".join(error_codes) + ". Do not reuse any "
+            "duplicate or invalid ownership assignments. "
+            "Each candidate may have only one exclusive owner; contact/link metadata "
+            "may share a physical line only with other metadata. Do not repeat the "
+            "summary alias in summary_lines or put heading aliases in sections."
+            + ownership_feedback
+            + range_feedback
+        )
+        selector_transition_reasons = {
+            diagnostic.reason
+            for diagnostic in layout_result.invalid_reference_diagnostics
+        }
+        if (
+            qa_payload is None
+            and not selector_mode
+            and (
+                error_codes[0] == "unknown_layout_field"
+                or (
+                    error_codes[0] == "invalid_source_references"
+                    and "reference_list_expected" not in selector_transition_reasons
+                )
+            )
+        ):
+            # A malformed profile-provided layout is a selector concern. Keep
+            # the normalized profile and spend the remaining bounded attempts
+            # on the strict alias-only selector instead of regenerating it.
+            selector_mode = True
+            selector_attempts = profile_attempts
+            selector_attempt_limit = 2
     raise AssertionError("unreachable")
 
 

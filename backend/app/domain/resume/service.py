@@ -51,9 +51,12 @@ from app.domain.resume.schemas import (
     ResumeImportDetail,
     ResumeImportListItem,
     ResumeResponse,
+    SourceResumeContentDocumentV4,
+    SourceResumeContentPayloadV3,
     SourceResumeContentPayloadV4,
     SourceResumeContentPayloadV5,
     SourceResumeDocument,
+    SourceResumeLayoutReferencesV4,
     TailoredBulletDecision,
     TailoredCanonicalItem,
     TailoredCanonicalSection,
@@ -103,6 +106,42 @@ def _join_wrapped_source(items: list[Any]) -> str | None:
     for value in values[1:]:
         joined += value if joined.endswith("-") else f" {value}"
     return joined
+
+
+def _upgrade_verified_v3_source(
+    source_content: Any,
+) -> SourceResumeContentPayloadV4 | SourceResumeContentPayloadV5 | Any:
+    """Upgrade verified legacy layout data before production persistence.
+
+    Parser-level V3 compatibility is retained for older callers and fixtures,
+    but the production lifecycle requires the V4/V5 document contract so the
+    uploaded resume can become an active tailoring source.
+    """
+    if not isinstance(source_content, SourceResumeContentPayloadV3):
+        return source_content
+    document = source_content.document
+    layout = document.layout
+    upgraded_layout = (
+        SourceResumeLayoutReferencesV4.model_validate(
+            {
+                **layout.model_dump(mode="json"),
+                "summary_lines": [],
+                "section_headings": {},
+            }
+        )
+        if layout is not None
+        else None
+    )
+    upgraded_document = SourceResumeContentDocumentV4(
+        candidates=document.candidates,
+        layout=upgraded_layout,
+        artifacts=document.artifacts,
+    )
+    return SourceResumeContentPayloadV5(
+        document=upgraded_document,
+        layout_validation_status=source_content.layout_validation_status,
+        layout_validation_errors=source_content.layout_validation_errors,
+    )
 
 
 def _canonical_sections(source_document: Any) -> list[TailoredCanonicalSection]:
@@ -255,6 +294,10 @@ def _full_resume_context(source_document: Any, profile: ParsedProfile) -> tuple[
         for field in ("technologies", "achievements"):
             for sub_index, item in enumerate(getattr(project, field, [])):
                 add(item, f"project:{index}:{field}:{sub_index}")
+    for section_index, section in enumerate(source_document.named_sections):
+        add(section.heading, f"named:{section_index}:heading")
+        for item_index, item in enumerate(section.items):
+            add(item, f"named:{section_index}:item:{item_index}")
     skill_ids = [f"skill:{index}" for index, item in enumerate(source_document.skills) if item.text.strip()]
     return json.dumps(source_document.model_dump(mode="json"), default=str), evidence, skill_ids
 
@@ -776,7 +819,7 @@ class ResumeService:
         if isinstance(parsed_result, ParsedResumeResult):
             profile = parsed_result.profile
             extraction_evidence = parsed_result.extraction_evidence
-            source_content = parsed_result.source_content
+            source_content = _upgrade_verified_v3_source(parsed_result.source_content)
             source_validation_status = cast(
                 str | None, parsed_result.source_validation_status
             )

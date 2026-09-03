@@ -23,6 +23,7 @@ from app.domain.resume.exceptions import (
 from app.domain.resume.schemas import (
     ParsedProfile,
     RequirementClassification,
+    SourceNamedSection,
     SourceResumeDocument,
     SourceRole,
     SourceTextItem,
@@ -36,6 +37,7 @@ from app.domain.resume.selection import select_source_bullets
 from app.domain.resume.service import (
     ResumeService,
     _canonical_sections,
+    _full_resume_context,
     _validate_source_backed_snapshot,
 )
 from app.domain.resume.source_content import source_revision_sha256
@@ -464,6 +466,27 @@ async def test_full_context_snapshot_saves_and_validates_for_export(
     assert await service.validate_resume_export(
         user_id=7, resume=content, job_repository=jobs
     ) == content
+
+
+def test_full_context_evidence_includes_named_sections() -> None:
+    source = _source_document().model_copy(
+        update={
+            "named_sections": [
+                SourceNamedSection(
+                    order=9,
+                    heading=SourceTextItem(text="Innovation & Side Projects", order=0),
+                    items=[SourceTextItem(text="Built a workflow prototype.", order=1)],
+                )
+            ]
+        }
+    )
+
+    _, evidence, _ = _full_resume_context(
+        source, ParsedProfile.model_validate({"skills": ["Python"]})
+    )
+
+    assert evidence["named:0:heading"] == "Innovation & Side Projects"
+    assert evidence["named:0:item:0"] == "Built a workflow prototype."
 
 
 def test_full_context_snapshot_rejects_duplicate_skill_source_ids() -> None:

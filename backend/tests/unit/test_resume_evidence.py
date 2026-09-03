@@ -825,6 +825,125 @@ async def test_parser_retries_invalid_alias_then_materializes_valid_layout(
     assert result.source_content.document.layout is not None
 
 
+@pytest.mark.asyncio
+async def test_parser_retries_schema_label_used_as_source_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Schema labels must not be accepted as candidate references."""
+    responses = [
+        {
+            "full_name": "Ada",
+            "work_history": [
+                {"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}
+            ],
+            "source_references": {
+                "sections": ["summary"],
+                "contact": {"name": "c0"},
+                "work_history": [{"header": "c1", "highlights": ["c2"]}],
+            },
+        },
+        {
+            "full_name": "Ada",
+            "work_history": [
+                {"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}
+            ],
+            "source_references": {
+                "contact": {"name": "c0"},
+                "work_history": [{"header": "c1", "highlights": ["c2"]}],
+            },
+        },
+    ]
+    prompts: list[str] = []
+    selector_formats: list[object] = []
+    calls = 0
+
+    async def completion(**kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        prompts.append(str(kwargs["messages"]))
+        if "response_format" in kwargs:
+            selector_formats.append(kwargs["response_format"])
+        payload = responses[calls]
+        calls += 1
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Ada\nAcme - Engineer\nBuilt APIs")
+
+    assert calls == 2
+    assert result.source_layout_status == "verified"
+    assert selector_formats
+    schema = selector_formats[0]
+    assert isinstance(schema, dict)
+    assert schema["type"] == "json_schema"
+    assert schema["json_schema"]["strict"] is True
+
+
+@pytest.mark.asyncio
+async def test_parser_retries_profile_shaped_project_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Project source references must use aliases, not profile-shaped objects."""
+    responses = [
+        {
+            "full_name": "Ada",
+            "work_history": [
+                {"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}
+            ],
+            "projects": [{"name": "Project X", "description": "Built it"}],
+            "source_references": {
+                "contact": {"name": "c0"},
+                "work_history": [{"header": "c1", "highlights": ["c2"]}],
+                "projects": [{"name": "Project X", "description": "Built it"}],
+            },
+        },
+        {
+            "full_name": "Ada",
+            "work_history": [
+                {"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}
+            ],
+            "projects": [{"name": "Project X", "description": "Built it"}],
+            "source_references": {
+                "contact": {"name": "c0"},
+                "work_history": [{"header": "c1", "highlights": ["c2"]}],
+                "projects": [{"name": "c3", "description": None}],
+            },
+        },
+    ]
+    prompts: list[str] = []
+    selector_formats: list[object] = []
+    calls = 0
+
+    async def completion(**kwargs: object) -> tuple[object, str]:
+        nonlocal calls
+        prompts.append(str(kwargs["messages"]))
+        if "response_format" in kwargs:
+            selector_formats.append(kwargs["response_format"])
+        payload = responses[calls]
+        calls += 1
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Ada\nAcme - Engineer\nBuilt APIs\nProject X")
+
+    assert calls == 2
+    assert result.source_layout_status == "verified"
+    assert selector_formats
+    project_schema = selector_formats[0]["json_schema"]["schema"]["properties"]["projects"]["items"]  # type: ignore[index]
+    assert set(project_schema["properties"]) == {
+        "order", "name", "description", "url", "technologies", "achievements"
+    }
+
+
 def test_validation_log_fields_exclude_invalid_resume_values() -> None:
     secret = "Private Candidate Name"
     with pytest.raises(ValidationError) as caught:
@@ -833,6 +952,81 @@ def test_validation_log_fields_exclude_invalid_resume_values() -> None:
     fields = resume_parser._validation_log_fields(caught.value)
     assert secret not in repr(fields)
     assert set(fields) == {"error_count", "error_types", "error_paths"}
+
+
+def test_source_reference_schema_reuses_alias_enum_definition() -> None:
+    response_format = resume_parser._source_reference_response_format({"c0", "c1"}, 2)
+    schema = response_format["json_schema"]["schema"]
+
+    assert schema["$defs"]["source_alias"]["enum"] == ["c0", "c1"]
+    assert "enum" not in repr(schema["properties"])
+    assert schema["properties"]["skills"] == {"$ref": "#/$defs/source_alias_array"}
+    assert schema["properties"]["summary"] == {
+        "$ref": "#/$defs/nullable_source_alias"
+    }
+
+
+def test_source_reference_schema_uses_pattern_for_large_ledgers() -> None:
+    response_format = resume_parser._source_reference_response_format(
+        {f"c{index}" for index in range(1001)}, 1001
+    )
+    alias_schema = response_format["json_schema"]["schema"]["$defs"]["source_alias"]
+
+    assert "enum" not in alias_schema
+    assert alias_schema["pattern"] == r"^c(?:0|[1-9][0-9]*)$"
+
+
+@pytest.mark.asyncio
+async def test_parser_retries_only_selector_after_duplicate_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = [
+        {
+            "full_name": "Ada",
+            "work_history": [
+                {"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}
+            ],
+        },
+        {
+            "contact": {"name": "c0"},
+            "sections": ["c2"],
+            "work_history": [{"header": "c1", "highlights": ["c2"]}],
+        },
+        {
+            "contact": {"name": "c0"},
+            "sections": ["c2"],
+            "work_history": [{"header": "c1", "highlights": ["c2"]}],
+        },
+        {
+            "contact": {"name": "c0"},
+            "work_history": [{"header": "c1", "highlights": ["c2"]}],
+        },
+    ]
+    calls: list[dict[str, object]] = []
+
+    async def completion(**kwargs: object) -> tuple[object, str]:
+        calls.append(kwargs)
+        payload = responses[len(calls) - 1]
+        return (
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(resume_parser, "llm_chat_completion", completion)
+    result = await resume_parser.parse_resume_text("Ada\nAcme - Engineer\nBuilt APIs")
+
+    assert result.source_layout_status == "verified"
+    assert len(calls) == 4
+    assert "response_format" not in calls[0]
+    assert "response_format" in calls[1]
+    assert "response_format" in calls[2]
+    assert "response_format" in calls[3]
+    retry_prompt = str(calls[2]["messages"])
+    assert "c2 appears in sections[0]" in retry_prompt
+    assert "work_history[0].highlights[0]" in retry_prompt
+    assert "Conflicting ownership assignments" in str(calls[3]["messages"])
 
 
 @pytest.mark.asyncio

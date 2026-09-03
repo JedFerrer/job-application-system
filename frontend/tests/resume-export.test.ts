@@ -188,6 +188,71 @@ describe("lossless resume exports", () => {
     }
   });
 
+  it("uses full-context wording and order while keeping role context as one paragraph", async () => {
+    const fullContext: TailoredResume = {
+      ...resume,
+      tailoring_snapshot_version: "full-context-v1",
+      professional_summary: "TAILORED_SUMMARY_MARKER: platform leadership aligned to the role.",
+      summary_evidence_ids: ["summary-1"],
+      skills: ["TAILORED_SKILL_FIRST", "TAILORED_SKILL_SECOND"],
+      canonical_sections: [
+        canonical("summary", "Summary", SUMMARY, 1),
+        canonical("skills", "Skills", "SOURCE_SKILL_FIRST", 2),
+      ],
+      work_history: [{
+        ...resume.work_history[0]!,
+        role_context: ["ROLE_CONTEXT_PART_ONE", "PART_TWO"],
+        responsibilities_heading: RESPONSIBILITIES,
+      }],
+    };
+
+    const copied = formatResumeText(fullContext);
+    expect(copied).toContain("TAILORED_SUMMARY_MARKER: platform leadership aligned to the role.");
+    expect(copied).not.toContain(SUMMARY);
+    expect(copied.indexOf("TAILORED_SKILL_FIRST")).toBeLessThan(copied.indexOf("TAILORED_SKILL_SECOND"));
+    expect(copied).not.toContain("SOURCE_SKILL_FIRST");
+    expect(copied).toContain("ROLE_CONTEXT_PART_ONE PART_TWO");
+    expect(copied.indexOf("ROLE_CONTEXT_PART_ONE PART_TWO")).toBeLessThan(copied.indexOf(RESPONSIBILITIES));
+
+    downloadResumePdf(fullContext, "full-context-resume");
+    expect(capture.pdfText).toContain("TAILORED_SUMMARY_MARKER: platform leadership aligned to the role.");
+    expect(capture.pdfText).toContain("TAILORED_SKILL_FIRST, TAILORED_SKILL_SECOND");
+    expect(capture.pdfText).toContain("ROLE_CONTEXT_PART_ONE PART_TWO");
+
+    capture.docxText.length = 0;
+    await downloadResumeDocx(fullContext, "full-context-resume");
+    expect(capture.docxText).toContain("TAILORED_SUMMARY_MARKER: platform leadership aligned to the role.");
+    expect(capture.docxText).toContain("TAILORED_SKILL_FIRST, TAILORED_SKILL_SECOND");
+    expect(capture.docxText).toContain("ROLE_CONTEXT_PART_ONE PART_TWO");
+  });
+
+  it("keeps source-backed section order consistent across copy, PDF, and DOCX", async () => {
+    const ordered: TailoredResume = {
+      ...resume,
+      canonical_sections: [
+        { ...canonical("summary", "Summary", SUMMARY, 90), items: [{ source_id: "summary-source", text: SUMMARY, canonical_order: 90 }] },
+        { ...canonical("projects", "Projects", "PROJECTS_MARKER", 10), items: [{ source_id: "projects-source", text: "PROJECTS_MARKER", canonical_order: 10 }] },
+        { ...canonical("education", "Education", EDUCATION, 20), items: [{ source_id: "education-source", text: EDUCATION, canonical_order: 20 }] },
+      ],
+      source_section_order: ["summary-source", "role-source", "projects-source", "education-source"],
+      work_history: [{ ...resume.work_history[0]!, source_role_id: "role-source" }],
+    };
+
+    const assertOrder = (output: string[]) => {
+      const text = output.join("\n");
+      expect(text.indexOf("SUMMARY")).toBeLessThan(text.indexOf("PROFESSIONAL EXPERIENCE"));
+      expect(text.indexOf("PROFESSIONAL EXPERIENCE")).toBeLessThan(text.indexOf("PROJECTS_MARKER"));
+      expect(text.indexOf("PROJECTS_MARKER")).toBeLessThan(text.indexOf(EDUCATION));
+    };
+
+    expect(formatResumeText(ordered).indexOf("PROFESSIONAL EXPERIENCE")).toBeLessThan(formatResumeText(ordered).indexOf("PROJECTS_MARKER"));
+    downloadResumePdf(ordered, "ordered-resume");
+    assertOrder(capture.pdfText);
+    capture.docxText.length = 0;
+    await downloadResumeDocx(ordered, "ordered-resume");
+    assertOrder(capture.docxText);
+  });
+
   it("excludes unclassified passthrough content from exports", async () => {
     const marker = "PASSTHROUGH_MARKER: literal source text";
     const passthrough: TailoredResume = {

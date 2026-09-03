@@ -52,6 +52,7 @@ async def llm_chat_completion(
     model: str | None = None,
     temperature: float = 0.4,
     json_mode: bool = False,
+    openai_only: bool = False,
     **kwargs: Any,
 ) -> tuple[ChatCompletion, str]:
     """Call chat completions with automatic provider fallback.
@@ -65,9 +66,14 @@ async def llm_chat_completion(
     """
     settings = get_settings()
     chain = settings.get_fallback_chain()
+    if openai_only:
+        chain = [provider for provider in chain if provider.get("name") == "openai"]
     if not chain:
         raise LLMUnavailableError(
-            "No LLM provider configured. Set OPENAI_API_KEY, DEEPSEEK_API_KEY, "
+            "OpenAI is required for strict source-reference verification. "
+            "Set OPENAI_API_KEY."
+            if openai_only
+            else "No LLM provider configured. Set OPENAI_API_KEY, DEEPSEEK_API_KEY, "
             "or ANTHROPIC_API_KEY."
         )
 

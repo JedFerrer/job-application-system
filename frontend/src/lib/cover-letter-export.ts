@@ -104,6 +104,7 @@ function dateRange(start: string | null, end: string | null): string {
 }
 
 function resumeSkills(data: TailoredResume): string[] {
+  if (data.tailoring_snapshot_version === "full-context-v1" && data.skills) return data.skills;
   return data.canonical_sections?.find((section) => section.section === "skills")?.items.map((item) => item.text)
     ?? data.skills
     ?? [...data.matched_skills, ...data.other_skills];
@@ -138,6 +139,18 @@ function canonicalValues(data: TailoredResume, section: TailoredCanonicalSection
   if (!match) return null;
   const values = match.items.map((item) => item.text);
   return section === "summary" ? [joinSourceLines(values)] : values;
+}
+
+function resumeSummary(data: TailoredResume): string[] | null {
+  if (data.tailoring_snapshot_version === "full-context-v1" && data.summary_evidence_ids?.length && data.professional_summary) {
+    return [data.professional_summary];
+  }
+  return canonicalValues(data, "summary") ?? (data.professional_summary ? [data.professional_summary] : null);
+}
+
+function roleContext(role: TailoredResume["work_history"][number]): string | null {
+  if (!role.role_context?.length) return null;
+  return joinSourceLines(role.role_context);
 }
 
 function canonicalHeaderItems(data: TailoredResume): string[] | null {
@@ -181,10 +194,25 @@ export function resumeSectionHeading(section: TailoredCanonicalSection["section"
 }
 
 export interface ResumeRenderSection {
-  section: TailoredCanonicalSection["section"] | null;
+  section: TailoredCanonicalSection["section"] | "work_history" | null;
   heading: string | null;
   items: string[];
+  sourceIds?: string[];
   order: number;
+  roles?: TailoredResume["work_history"];
+}
+
+function sourceOrder(data: TailoredResume, sourceId?: string | null): number | null {
+  if (!sourceId || !data.source_section_order?.length) return null;
+  const index = data.source_section_order.indexOf(sourceId);
+  return index >= 0 ? index : null;
+}
+
+function workHistoryOrder(data: TailoredResume, role: TailoredResume["work_history"][number], index: number): number {
+  const roleOrder = sourceOrder(data, role.source_role_id);
+  if (roleOrder != null) return roleOrder;
+  const decisionOrders = (role.selection_decisions ?? []).map((decision) => decision.canonical_order);
+  return decisionOrders.length ? Math.min(...decisionOrders) : Number.MAX_SAFE_INTEGER + index;
 }
 
 /** One ordered, empty-heading-free model shared by all resume exports. */
@@ -195,11 +223,17 @@ export function buildResumeRenderModel(data: TailoredResume): ResumeRenderSectio
       section: section.section,
       heading: section.section === "unclassified" ? null : resumeSectionHeading(section.section, section.heading),
       items: section.section === "summary"
-        ? [joinSourceLines(section.items.map((item) => item.text))]
+        ? resumeSummary(data) ?? [joinSourceLines(section.items.map((item) => item.text))]
+        : section.section === "skills" && data.tailoring_snapshot_version === "full-context-v1"
+          ? resumeSkills(data)
         : section.items.map((item) => item.text),
-      order: section.canonical_order ?? 0,
+      sourceIds: section.items.map((item) => item.source_id),
+      order: sourceOrder(data, section.items[0]?.source_id) ?? section.canonical_order ?? 0,
     }));
-  if (canonical.length) return canonical.sort((a, b) => a.order - b.order);
+  const work = data.work_history.length
+    ? [{ section: "work_history" as const, heading: "PROFESSIONAL EXPERIENCE", items: [], roles: data.work_history, order: Math.min(...data.work_history.map((role, index) => workHistoryOrder(data, role, index))) }]
+    : [];
+  if (canonical.length) return [...canonical, ...work].sort((a, b) => a.order - b.order);
   const fallback: ResumeRenderSection[] = [];
   const add = (section: TailoredCanonicalSection["section"], heading: string, items: string[]) => {
     const values = items.filter(Boolean);
@@ -214,7 +248,7 @@ export function buildResumeRenderModel(data: TailoredResume): ResumeRenderSectio
   add("certifications", "CERTIFICATIONS", data.certifications);
   add("licenses", "LICENSES", data.licenses?.map((item) => [item.name, item.issuer].filter(Boolean).join(" | ")) ?? []);
   add("languages", "LANGUAGES", data.languages?.map((item) => [item.language, item.proficiency].filter(Boolean).join(" | ")) ?? []);
-  return fallback;
+  return [...fallback, ...work];
 }
 
 const DEDICATED_RESUME_SECTION_TYPES = new Set<TailoredCanonicalSection["section"]>([
@@ -223,7 +257,7 @@ const DEDICATED_RESUME_SECTION_TYPES = new Set<TailoredCanonicalSection["section
 
 function remainingCanonicalSections(data: TailoredResume): ResumeRenderSection[] {
   return buildResumeRenderModel(data).filter(
-    (section) => section.section === null || !DEDICATED_RESUME_SECTION_TYPES.has(section.section),
+    (section) => section.section !== "work_history" && (section.section === null || !DEDICATED_RESUME_SECTION_TYPES.has(section.section)),
   );
 }
 
@@ -234,16 +268,17 @@ export function formatResumeText(data: TailoredResume): string {
   for (const section of buildResumeRenderModel(data)) {
     if (canonical && (section.section === "contact" || section.section === "links")) continue;
     if (section.heading) lines.push(section.heading);
-    lines.push(...section.items, "");
-  }
-  if (data.work_history.length) {
-    lines.push("PROFESSIONAL EXPERIENCE", "");
-    for (const role of data.work_history) {
-      lines.push(role.source_header || [role.title, role.company, dateRange(role.start, role.end)].filter(Boolean).join(" | ") || "Role");
-      lines.push(...(role.role_context ?? []));
-      if (role.responsibilities_heading) lines.push(role.responsibilities_heading);
-      lines.push(...role.tailored_highlights.map((item) => `  • ${item}`), "");
+    if (section.section === "work_history") {
+      for (const role of section.roles ?? []) {
+        lines.push(role.source_header || [role.title, role.company, dateRange(role.start, role.end)].filter(Boolean).join(" | ") || "Role");
+        const context = roleContext(role);
+        if (context) lines.push(context);
+        if (role.responsibilities_heading) lines.push(role.responsibilities_heading);
+        lines.push(...role.tailored_highlights.map((item) => `  • ${item}`), "");
+      }
+      continue;
     }
+    lines.push(...section.items, "");
   }
   return lines.join("\n").trim();
 }
@@ -328,8 +363,40 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
   }
   ctx.y += 4;
 
+  // Source-backed resumes use the same ordered model as copied text. Legacy
+  // resumes retain the established template fallback below.
+  if (hasCanonicalSections(data)) {
+    for (const rendered of buildResumeRenderModel(data)) {
+      if (rendered.section === "contact" || rendered.section === "links") continue;
+      if (rendered.section === "work_history") {
+        if (!rendered.roles?.length) continue;
+        writeSectionHeading(ctx, rendered.heading || "PROFESSIONAL EXPERIENCE");
+        for (const role of rendered.roles) {
+          ensureSpace(ctx, LINE_H + 2);
+          const title = role.title || "Role";
+          const company = role.company || "";
+          const date = dateRange(role.start, role.end);
+          writeLine(ctx, role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`, BODY_SIZE, true);
+          const context = roleContext(role);
+          if (context) writeWrapped(ctx, context, BODY_SIZE, textW);
+          if (role.responsibilities_heading) writeLine(ctx, role.responsibilities_heading, BODY_SIZE, true);
+          for (const bullet of role.tailored_highlights) writeBullet(ctx, bullet);
+          ctx.y += JOB_GAP;
+        }
+        continue;
+      }
+      if (!rendered.items.length) continue;
+      writeSectionHeading(ctx, rendered.heading || "");
+      const values = rendered.section === "skills" ? [rendered.items.join(", ")] : rendered.items;
+      for (const value of values) writeWrapped(ctx, value, BODY_SIZE, textW);
+      ctx.y += SECTION_GAP;
+    }
+    pdf.save(buildFilename(stem, "pdf"));
+    return;
+  }
+
   // Professional Summary
-  const canonicalSummary = canonicalValues(data, "summary");
+  const canonicalSummary = resumeSummary(data);
   if (canonicalSummary?.length || data.professional_summary) {
     writeSectionHeading(ctx, canonicalSection(data, "summary")?.heading || "PROFESSIONAL SUMMARY");
     for (const summary of canonicalSummary ?? [data.professional_summary!]) writeWrapped(ctx, summary, BODY_SIZE, textW);
@@ -377,7 +444,8 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
       // Write job header
       ensureSpace(ctx, LINE_H + 2);
       writeLine(ctx, header, BODY_SIZE, true);
-      for (const context of role.role_context ?? []) writeWrapped(ctx, context, BODY_SIZE, textW);
+      const context = roleContext(role);
+      if (context) writeWrapped(ctx, context, BODY_SIZE, textW);
       if (role.responsibilities_heading) writeLine(ctx, role.responsibilities_heading, BODY_SIZE, true);
 
       // Write bullets
@@ -474,8 +542,40 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
     p(title, { bold: true, size: SZ_HEAD, spaceAfter: 60 });
   }
 
+  // Source-backed resumes use the same ordered model as copied text. Legacy
+  // resumes retain the established template fallback below.
+  if (hasCanonicalSections(data)) {
+    for (const rendered of buildResumeRenderModel(data)) {
+      if (rendered.section === "contact" || rendered.section === "links") continue;
+      if (rendered.section === "work_history") {
+        if (!rendered.roles?.length) continue;
+        section(rendered.heading || "PROFESSIONAL EXPERIENCE");
+        for (const role of rendered.roles) {
+          const title = role.title || "Role";
+          const company = role.company || "";
+          const date = dateRange(role.start, role.end);
+          p(role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`, { bold: true, spaceAfter: 40 });
+          const context = roleContext(role);
+          if (context) p(context, { spaceAfter: 20 });
+          if (role.responsibilities_heading) p(role.responsibilities_heading, { bold: true, spaceAfter: 20 });
+          for (const bullet of role.tailored_highlights) p(`  • ${bullet}`, { spaceAfter: 20 });
+          p("", { spaceAfter: 80 });
+        }
+        continue;
+      }
+      if (!rendered.items.length) continue;
+      section(rendered.heading || "");
+      const values = rendered.section === "skills" ? [rendered.items.join(", ")] : rendered.items;
+      for (const value of values) p(value);
+    }
+    const doc = new Document({ sections: [{ children }] });
+    const buffer = await Packer.toBlob(doc);
+    triggerDownload(buffer, buildFilename(stem, "docx"));
+    return;
+  }
+
   // Professional Summary
-  const canonicalSummary = canonicalValues(data, "summary");
+  const canonicalSummary = resumeSummary(data);
   if (canonicalSummary?.length || data.professional_summary) {
     section(canonicalSection(data, "summary")?.heading || "PROFESSIONAL SUMMARY");
     for (const value of canonicalSummary ?? [data.professional_summary!]) p(value, { spaceAfter: 100 });
@@ -496,7 +596,8 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
       const company = role.company || "";
       const date = dateRange(role.start, role.end);
       p(role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`, { bold: true, spaceAfter: 40 });
-      for (const context of role.role_context ?? []) p(context, { spaceAfter: 20 });
+      const context = roleContext(role);
+      if (context) p(context, { spaceAfter: 20 });
       if (role.responsibilities_heading) p(role.responsibilities_heading, { bold: true, spaceAfter: 20 });
       for (const h of role.tailored_highlights) {
         p(`  • ${h}`, { spaceAfter: 20 });

@@ -71,6 +71,8 @@ const tailoredResume = {
       original_highlights: ["Built APIs"],
       tailored_highlights: ["Built Python APIs"],
       tailored_highlight_source_indices: [0],
+      role_context: ["Owned API delivery across the platform.", "Partnered with product."],
+      responsibilities_heading: "Selected responsibilities",
     },
   ],
   education: [],
@@ -169,6 +171,8 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).not.toContain("No skills or experience were invented.");
     expect(renderedText()).toContain("Acme");
     expect(renderedText()).toContain("Built Python APIs");
+    expect(renderedText()).toContain("Owned API delivery across the platform. Partnered with product.");
+    expect(renderedText()).toContain("Selected responsibilities");
     expect(renderedText()).toContain("Analytical Engine");
     expect(renderedText()).toContain("Registered Engineer");
     expect(renderedText()).toContain("Spanish");

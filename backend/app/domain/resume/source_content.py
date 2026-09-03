@@ -83,6 +83,7 @@ class InvalidReferenceDiagnostic:
     reason: str
     path: str
     alias: str | None = None
+    expected_section: str | None = None
 
 
 class _InvalidSourceReferenceError(ValueError):
@@ -208,7 +209,8 @@ _SOURCE_HEADINGS = {
     "professional summary", "summary", "technical stack", "technical skills",
     "professional experience", "work experience", "experience", "education",
     "certifications", "awards and achievements", "awards & achievements",
-    "projects", "languages", "licenses",
+    "projects", "languages", "licenses", "innovation & side projects",
+    "innovation and side projects",
 }
 
 
@@ -273,6 +275,19 @@ def build_source_candidate_ledger(raw_text: str) -> SourceResumeContentDocumentV
                 start_offset=start_offset,
                 end_offset=end_offset,
                 occurrence_ordinal=ordinal,
+                kind=(
+                    "heading"
+                    if text.casefold() in _SOURCE_HEADINGS
+                    else (
+                        "bullet"
+                        if _is_list_marker(
+                            raw_text,
+                            max(raw_text.rfind("\n", 0, start_offset), raw_text.rfind("\r", 0, start_offset)) + 1,
+                            start_offset,
+                        )
+                        else "text"
+                    )
+                ),
             )
         )
     return SourceResumeContentDocumentV2(candidates=candidates)
@@ -522,30 +537,69 @@ def resolve_source_layout(
         # references retain exclusive candidate ownership. A metadata
         # candidate may not also be claimed by exclusive content, which keeps
         # the relaxation narrow and prevents cross-category ambiguity.
-        metadata_referenced: list[UUID] = []
-        metadata_referenced.extend(layout.contact.values())
-        metadata_referenced.extend(layout.links.values())
-        exclusive_referenced: list[UUID] = []
-        exclusive_referenced.extend(item for item in [layout.summary] if item is not None)
-        exclusive_referenced.extend(layout.skills + layout.sections + layout.education)
-        exclusive_referenced.extend(layout.certifications + layout.licenses + layout.languages)
-        for role in layout.work_history:
-            exclusive_referenced.extend(item for item in [role.header] if item is not None)
-            exclusive_referenced.extend(role.highlights)
-        for project in layout.projects:
-            exclusive_referenced.extend(
-                item for item in (project.name, project.description, project.url)
-                if item is not None
-            )
-            exclusive_referenced.extend(project.technologies + project.achievements)
+        metadata_owners: dict[UUID, list[str]] = {}
+        exclusive_owners: dict[UUID, list[str]] = {}
+
+        def own(mapping: dict[UUID, list[str]], candidate_id: UUID, path: str) -> None:
+            mapping.setdefault(candidate_id, []).append(path)
+
+        for field_name, candidate_id in layout.contact.items():
+            own(metadata_owners, candidate_id, f"contact.{field_name}")
+        for field_name, candidate_id in layout.links.items():
+            own(metadata_owners, candidate_id, f"links.{field_name}")
+        if layout.summary is not None:
+            own(exclusive_owners, layout.summary, "summary")
+        for field_name, values in (
+            ("skills", layout.skills),
+            ("sections", layout.sections),
+            ("education", layout.education),
+            ("certifications", layout.certifications),
+            ("licenses", layout.licenses),
+            ("languages", layout.languages),
+        ):
+            for index, candidate_id in enumerate(values):
+                own(exclusive_owners, candidate_id, f"{field_name}[{index}]")
+        for role_index, role in enumerate(layout.work_history):
+            own(exclusive_owners, role.header, f"work_history[{role_index}].header")
+            for index, candidate_id in enumerate(role.highlights):
+                own(exclusive_owners, candidate_id, f"work_history[{role_index}].highlights[{index}]")
+        for project_index, project in enumerate(layout.projects):
+            for field_name in ("name", "description", "url"):
+                candidate_id = getattr(project, field_name)
+                if candidate_id is not None:
+                    own(exclusive_owners, candidate_id, f"projects[{project_index}].{field_name}")
+            for field_name, values in (
+                ("technologies", project.technologies),
+                ("achievements", project.achievements),
+            ):
+                for index, candidate_id in enumerate(values):
+                    own(exclusive_owners, candidate_id, f"projects[{project_index}].{field_name}[{index}]")
+        metadata_referenced = list(metadata_owners)
+        exclusive_referenced = list(exclusive_owners)
         if not metadata_referenced and not exclusive_referenced and not allow_empty:
             raise _InvalidSourceReferenceError("empty_source_references", "source_references")
-        if len(exclusive_referenced) != len(set(exclusive_referenced)):
-            raise _InvalidSourceReferenceError(
-                "duplicate_exclusive_reference", "source_references"
-            )
-        if set(metadata_referenced) & set(exclusive_referenced):
-            raise _InvalidSourceReferenceError("metadata_content_overlap", "source_references")
+        candidate_aliases = {candidate.source_id: f"c{candidate.order}" for candidate in ledger.candidates}
+        duplicate_diagnostics: list[InvalidReferenceDiagnostic] = []
+        for candidate_id, paths in exclusive_owners.items():
+            if len(paths) > 1:
+                duplicate_diagnostics.extend(
+                    InvalidReferenceDiagnostic(
+                        "duplicate_exclusive_reference", path, candidate_aliases.get(candidate_id)
+                    )
+                    for path in paths
+                )
+        if duplicate_diagnostics:
+            return _invalid_reference_result(*duplicate_diagnostics)
+        overlap = set(metadata_owners) & set(exclusive_owners)
+        if overlap:
+            diagnostics = [
+                InvalidReferenceDiagnostic(
+                    "metadata_content_overlap", path, candidate_aliases.get(candidate_id)
+                )
+                for candidate_id in sorted(overlap, key=lambda item: candidate_aliases.get(item, ""))
+                for path in (*metadata_owners[candidate_id], *exclusive_owners[candidate_id])
+            ]
+            return _invalid_reference_result(*diagnostics)
         return SourceLayoutResult(layout, "verified")
     except _InvalidSourceReferenceError as exc:
         return _invalid_reference_result(exc.diagnostic)
@@ -735,13 +789,16 @@ def resolve_source_layout_v3(
         def own(candidate_id: UUID, descriptor: str) -> None:
             ownership.setdefault(candidate_id, []).append(descriptor)
 
+        candidate_aliases = {
+            candidate.source_id: f"c{candidate.order}" for candidate in ledger.candidates
+        }
         # A physical contact/link line may legitimately provide several
         # metadata fields. It remains one canonical metadata owner, while any
         # use outside that category is still rejected below.
-        for candidate_id in set(layout.contact.values()):
-            own(candidate_id, "contact")
-        for candidate_id in set(layout.links.values()):
-            own(candidate_id, "links")
+        for field_name, candidate_id in layout.contact.items():
+            own(candidate_id, f"contact.{field_name}")
+        for field_name, candidate_id in layout.links.items():
+            own(candidate_id, f"links.{field_name}")
         if layout.summary is not None:
             own(layout.summary, "summary")
         for index, candidate_id in enumerate(layout.skills):
@@ -788,9 +845,26 @@ def resolve_source_layout_v3(
             return SourceLayoutResult(
                 None, "invalid", ("duplicate_source_candidate_ownership",)
             )
-        if any(len(owners) != 1 for owners in ownership.values()):
+        duplicate_diagnostics: list[InvalidReferenceDiagnostic] = []
+        for candidate_id, owners in ownership.items():
+            metadata = [path for path in owners if path.startswith(("contact.", "links."))]
+            exclusive = [path for path in owners if path not in metadata]
+            if len(exclusive) > 1 or (metadata and exclusive):
+                reason = (
+                    "duplicate_exclusive_reference"
+                    if len(exclusive) > 1
+                    else "metadata_content_overlap"
+                )
+                duplicate_diagnostics.extend(
+                    InvalidReferenceDiagnostic(reason, path, candidate_aliases.get(candidate_id))
+                    for path in owners
+                )
+        if duplicate_diagnostics:
             return SourceLayoutResult(
-                None, "invalid", ("duplicate_source_candidate_ownership",)
+                None,
+                "invalid",
+                ("invalid_source_references",),
+                invalid_reference_diagnostics=tuple(duplicate_diagnostics),
             )
         unclassified = [
             candidate.source_id
@@ -816,10 +890,6 @@ def resolve_source_layout_v3(
                 ("incomplete_source_accounting",),
                 missing_candidate_orders=missing_candidate_orders,
             )
-        if any(len(owners) != 1 for owners in ownership.values()):
-            return SourceLayoutResult(
-                None, "invalid", ("duplicate_source_candidate_ownership",)
-            )
         return SourceLayoutResult(layout, "verified")
     except _InvalidSourceReferenceError as exc:
         return _invalid_reference_result(exc.diagnostic)
@@ -827,6 +897,72 @@ def resolve_source_layout_v3(
         return _invalid_reference_result(*_schema_validation_diagnostics(exc))
     except (KeyError, TypeError, ValueError):
         return _invalid_reference_result(InvalidReferenceDiagnostic("schema_validation_failed", "source_references"))
+
+
+def _annotate_section_range_conflicts(
+    raw_layout: object,
+    ledger: SourceResumeContentDocumentV2,
+    result: SourceLayoutResult,
+) -> SourceLayoutResult:
+    """Annotate duplicate aliases assigned outside their detected section."""
+    if result.status != "invalid" or not isinstance(raw_layout, dict):
+        return result
+    if not isinstance(raw_layout.get("section_headings"), dict):
+        return result
+    heading_names = {
+        "professional summary": "summary", "summary": "summary",
+        "technical stack": "skills", "technical skills": "skills",
+        "professional experience": "work_history", "work experience": "work_history",
+        "experience": "work_history", "education": "education",
+        "certifications": "certifications", "projects": "projects",
+        "licenses": "licenses", "languages": "languages",
+    }
+    detected = [
+        (candidate.order, heading_names[candidate.text.casefold().strip()])
+        for candidate in ledger.candidates
+        if candidate.text.casefold().strip() in heading_names
+    ]
+    if not detected:
+        return result
+    alias_orders = {f"c{candidate.order}": candidate.order for candidate in ledger.candidates}
+    expected_by_order: dict[int, str] = {}
+    for index, (start, section) in enumerate(detected):
+        end = detected[index + 1][0] if index + 1 < len(detected) else len(ledger.candidates)
+        expected_by_order.update({order: section for order in range(start + 1, end)})
+    body_roots = {
+        "summary", "summary_lines", "skills", "sections", "work_history",
+        "projects", "education", "certifications", "licenses", "languages",
+        "named_sections",
+    }
+    diagnostics: list[InvalidReferenceDiagnostic] = []
+    changed = False
+    for diagnostic in result.invalid_reference_diagnostics:
+        order = alias_orders.get(diagnostic.alias or "")
+        expected = expected_by_order.get(order) if order is not None else None
+        actual = diagnostic.path.split("[", 1)[0].split(".", 1)[0]
+        if (
+            diagnostic.reason == "duplicate_exclusive_reference"
+            and expected is not None
+            and actual in body_roots
+            and actual != expected
+        ):
+            diagnostics.append(
+                InvalidReferenceDiagnostic(
+                    "section_range_conflict", diagnostic.path, diagnostic.alias, expected
+                )
+            )
+            changed = True
+        else:
+            diagnostics.append(diagnostic)
+    if not changed:
+        return result
+    return SourceLayoutResult(
+        result.layout,
+        result.status,
+        result.errors,
+        result.missing_candidate_orders,
+        tuple(diagnostics),
+    )
 
 
 def materialize_source_document(
@@ -948,6 +1084,135 @@ def materialize_source_document_v3(
     )
 
 
+def canonicalize_source_layout_v5(
+    raw_layout: object,
+    ledger: SourceResumeContentDocumentV2,
+) -> object:
+    """Constrain semantic selection to server-detected source section ranges.
+
+    The selector still supplies header/contact semantics, but body ownership is
+    deterministic. This prevents one model alias from becoming both a skill and
+    a project/certification item, and allocates each work candidate exactly once.
+    """
+    if not isinstance(raw_layout, dict):
+        return raw_layout
+    candidates = {f"c{item.order}": item for item in ledger.candidates}
+    ordered = sorted(ledger.candidates, key=lambda item: item.order)
+    heading_names = {
+        "professional summary": "summary", "summary": "summary",
+        "technical stack": "skills", "technical skills": "skills",
+        "professional experience": "work_history", "work experience": "work_history",
+        "experience": "work_history", "education": "education",
+        "certifications": "certifications", "projects": "projects",
+        "licenses": "licenses", "languages": "languages",
+    }
+    detected: list[tuple[int, str]] = []
+    named_index = 0
+    for item in ordered:
+        normalized = item.text.casefold().strip()
+        if normalized in heading_names:
+            detected.append((item.order, heading_names[normalized]))
+        elif item.kind == "heading":
+            detected.append((item.order, f"named:{named_index}"))
+            named_index += 1
+    if not detected:
+        return raw_layout
+    ranges: dict[str, list[str]] = {}
+    for index, (start, section) in enumerate(detected):
+        end = detected[index + 1][0] if index + 1 < len(detected) else len(ordered)
+        ranges.setdefault(section, []).extend(
+            f"c{item.order}" for item in ordered if start < item.order < end
+        )
+    headings = {section: f"c{order}" for order, section in detected}
+    result = dict(raw_layout)
+    result["section_headings"] = headings
+    result["sections"] = []
+
+    summary_body = ranges.get("summary", [])
+    result["summary"] = summary_body[0] if summary_body else None
+    result["summary_lines"] = summary_body[1:]
+    result["skills"] = ranges.get("skills", [])
+    for section in ("education", "certifications", "licenses", "languages"):
+        result[section] = ranges.get(section, [])
+
+    project_body = ranges.get("projects", [])
+    result["projects"] = (
+        [{"order": 0, "name": None, "description": None, "url": None,
+          "technologies": [], "achievements": project_body}]
+        if project_body else []
+    )
+
+    work_body = ranges.get("work_history", [])
+    work_start = next((order for order, section in detected if section == "work_history"), None)
+    if work_start is not None and isinstance(raw_layout.get("work_history"), list):
+        header_aliases: list[str] = []
+        for role in raw_layout["work_history"]:
+            if not isinstance(role, dict):
+                continue
+            alias = role.get("header")
+            if isinstance(alias, str) and alias in candidates and alias in work_body:
+                header_aliases.append(alias)
+        header_aliases = sorted(set(header_aliases), key=lambda alias: candidates[alias].order)
+        rebuilt_roles: list[dict[str, object]] = []
+        for index, alias in enumerate(header_aliases):
+            start = candidates[alias].order
+            end = (
+                candidates[header_aliases[index + 1]].order
+                if index + 1 < len(header_aliases)
+                else len(ordered)
+            )
+            body = [
+                item for item in ordered
+                if start < item.order < end and f"c{item.order}" in work_body
+            ]
+            responsibilities = next(
+                (
+                    f"c{item.order}"
+                    for item in body
+                    if "responsibilit" in item.text.casefold()
+                    and item.kind != "bullet"
+                ),
+                None,
+            )
+            bullet_items = [item for item in body if item.kind == "bullet"]
+            has_explicit_bullets = bool(bullet_items)
+            if not has_explicit_bullets:
+                # Plain-text extracts often lose list markers; retain those
+                # role statements as selectable highlights rather than dropping
+                # all tailoring semantics.
+                bullet_items = [
+                    item for item in body
+                    if f"c{item.order}" != responsibilities
+                ]
+            rebuilt_roles.append({
+                "order": index,
+                "header": alias,
+                "context": [
+                    f"c{item.order}"
+                    for item in body
+                    if has_explicit_bullets
+                    and item.kind == "text"
+                    and f"c{item.order}" != responsibilities
+                ],
+                "responsibilities_heading": responsibilities,
+                "highlights": [f"c{item.order}" for item in bullet_items],
+            })
+        result["work_history"] = rebuilt_roles
+
+    named_sections = []
+    for order, section in detected:
+        if not section.startswith("named:"):
+            continue
+        items = ranges.get(section, [])
+        named_sections.append({
+            "order": order,
+            "heading": f"c{order}",
+            "items": items,
+        })
+    result["named_sections"] = named_sections
+    return result
+
+
 def resolve_source_layout_v4(
     raw_layout: object,
     ledger: SourceResumeContentDocumentV2,
@@ -985,6 +1250,10 @@ def resolve_source_layout_v4(
         for key in headings
     ):
         return SourceLayoutResult(None, "invalid", ("unknown_section_heading",))
+    # The strict selector schema requires every supported heading key to be
+    # present, using null for headings that are absent in this document. Null
+    # is not a source candidate and must not be passed into the v3 resolver.
+    headings = {key: value for key, value in headings.items() if value is not None}
     transformed = dict(raw_layout)
     transformed.pop("summary_lines", None)
     transformed.pop("section_headings", None)
@@ -1009,6 +1278,7 @@ def resolve_source_layout_v4(
         *list(raw_layout.get("sections", [])),
     ]
     result = resolve_source_layout_v3(transformed, ledger, artifacts)
+    result = _annotate_section_range_conflicts(raw_layout, ledger, result)
     if result.status != "verified" or result.layout is None:
         return result
     layout = result.layout
