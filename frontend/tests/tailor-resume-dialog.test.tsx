@@ -776,4 +776,38 @@ describe("TailorResumeDialog", () => {
     expect(exportMocks.downloadResumeDocx).not.toHaveBeenCalled();
     expect(apiMocks.validateExport).not.toHaveBeenCalled();
   });
+
+  it("shows Original kept when a read-only saved draft restored the source bullet", async () => {
+    const saved = {
+      ...tailoredResume,
+      work_history: [{
+        ...tailoredResume.work_history[0]!,
+        tailored_highlights: ["Built APIs"],
+        selection_decisions: [{
+          source_id: "00000000-0000-0000-0000-000000000001",
+          source_index: 0,
+          canonical_order: 0,
+          original_text: "Built APIs",
+          suggested_text: "Built Python APIs",
+          final_text: "Built APIs",
+          recommended_included: true,
+          final_included: true,
+          recommendation_rank: 0,
+          output_rank: 0,
+        }],
+      }],
+    };
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} initialData={saved} readOnly />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => expect(renderedText()).toContain("Original kept"));
+    expect(renderedText()).toContain("Built APIs");
+    expect(renderedText()).not.toMatch(/Use suggestion/);
+  });
 });

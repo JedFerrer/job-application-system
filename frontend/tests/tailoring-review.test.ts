@@ -158,4 +158,53 @@ describe("tailoring review", () => {
     expect(reviewed.work_history[0]!.selection_decisions?.[0]?.final_included).toBe(false);
     expect(reviewed.work_history[0]!.selection_decisions?.[0]?.final_text).toBe("Original");
   });
+
+  it("does not treat a fresh accepted suggestion as Keep Original", () => {
+    const source = resume(["Suggested", "Other"]);
+    source.work_history[0] = {
+      ...source.work_history[0]!,
+      original_highlights: ["Original", "Other"],
+      tailored_highlights: ["Suggested", "Other"],
+      tailored_highlight_source_indices: [0, 1],
+      selection_decisions: [
+        { source_id: "00000000-0000-0000-0000-000000000001", source_index: 0, canonical_order: 0, original_text: "Original", suggested_text: "Suggested", final_text: "Suggested", recommended_included: true, final_included: true, recommendation_rank: 0, output_rank: 0 },
+        { source_id: "00000000-0000-0000-0000-000000000002", source_index: 1, canonical_order: 1, original_text: "Other", suggested_text: "Other", final_text: "Other", recommended_included: true, final_included: true, recommendation_rank: 1, output_rank: 1 },
+      ],
+    };
+    const state = createReviewState(source);
+    expect(state.rejected.size).toBe(0);
+    expect(reviewedResume(state).work_history[0]!.tailored_highlights).toEqual(["Suggested", "Other"]);
+  });
+
+  it("rehydrates Keep Original, omission, and recommended-first order from saved decisions", () => {
+    const source = resume(["Suggested", "Second", "Third"]);
+    source.work_history[0] = {
+      ...source.work_history[0]!,
+      original_highlights: ["Original", "Second", "Third"],
+      tailored_highlights: ["Suggested", "Second", "Third"],
+      tailored_highlight_source_indices: [0, 1, 2],
+      selection_decisions: [
+        { source_id: "00000000-0000-0000-0000-000000000001", source_index: 0, canonical_order: 0, original_text: "Original", suggested_text: "Suggested", final_text: "Suggested", recommended_included: true, final_included: true, recommendation_rank: 0, output_rank: 0 },
+        { source_id: "00000000-0000-0000-0000-000000000002", source_index: 1, canonical_order: 1, original_text: "Second", suggested_text: "Second", final_text: "Second", recommended_included: true, final_included: true, recommendation_rank: 1, output_rank: 1 },
+        { source_id: "00000000-0000-0000-0000-000000000003", source_index: 2, canonical_order: 2, original_text: "Third", suggested_text: "Third", final_text: "Third", recommended_included: true, final_included: true, recommendation_rank: 2, output_rank: 2 },
+      ],
+    };
+    const state = createReviewState(source);
+    state.rejected.add("0:0");
+    state.finalIncluded.delete("0:1");
+    const saved = reviewedResume(state);
+    expect(saved.work_history[0]!.selection_decisions?.[0]?.final_text).toBe("Original");
+    expect(saved.work_history[0]!.tailored_highlights).toEqual(["Original", "Third"]);
+    expect(saved.work_history[0]!.tailored_highlight_source_indices).toEqual([0, 2]);
+
+    const reopened = createReviewState(saved);
+    expect(reopened.rejected.has("0:0")).toBe(true);
+    expect(reopened.finalIncluded.has("0:1")).toBe(false);
+    const restored = reviewedResume(reopened);
+    expect(restored.work_history[0]!.tailored_highlights).toEqual(saved.work_history[0]!.tailored_highlights);
+    expect(restored.work_history[0]!.tailored_highlights.join("\n")).not.toContain("Suggested");
+    expect(restored.work_history[0]!.selection_decisions?.[0]?.final_text).toBe("Original");
+    expect(restored.work_history[0]!.selection_decisions?.[1]?.final_included).toBe(false);
+    expect(restored.work_history[0]!.tailored_highlight_source_indices).toEqual([0, 2]);
+  });
 });

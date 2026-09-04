@@ -80,7 +80,7 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   const items = useMemo(() => generatedData ? reviewItems(generatedData) : null, [generatedData]);
   const allItems = useMemo(() => generatedData ? decisionItems(generatedData) : null, [generatedData]);
   useEffect(() => { if (open && !readOnly) { generateMutation.reset(); setDraftData(initialData); setReviewState(null); } }, [open, readOnly, jobId]);
-  useEffect(() => { if (generatedData && !readOnly && items) setReviewState(createReviewState(generatedData)); }, [generatedData, items, readOnly]);
+  useEffect(() => { if (generatedData && items) setReviewState(createReviewState(generatedData)); }, [generatedData, items, readOnly]);
   useEffect(() => setCoverageAnalysis(generatedData?.requirement_classifications ?? null), [generatedData]);
   const data = generatedData ? (!readOnly && !items ? sourceOnlyResume(generatedData) : reviewState ? reviewedResume(reviewState) : generatedData) : null;
   const canonical: DisplaySection[] = data ? displaySections(data) : [];

@@ -70,6 +70,7 @@ export function reviewItems(data: TailoredResume): ReviewItem[][] | null {
 
 export function createReviewState(data: TailoredResume): ReviewState {
   const finalIncluded = new Set<string>();
+  const rejected = new Set<string>();
   for (const [roleIndex, role] of data.work_history.entries()) {
     if (!role.selection_decisions?.length) {
       for (const sourceIndex of role.tailored_highlight_source_indices ?? []) {
@@ -77,12 +78,19 @@ export function createReviewState(data: TailoredResume): ReviewState {
       }
     }
     for (const decision of role.selection_decisions ?? []) {
-      if (decision.final_included) finalIncluded.add(decisionKey(roleIndex, decision.source_index));
+      const key = decisionKey(roleIndex, decision.source_index);
+      if (decision.final_included) finalIncluded.add(key);
+      if (
+        decision.suggested_text !== decision.original_text
+        && decision.final_text === decision.original_text
+      ) {
+        rejected.add(key);
+      }
     }
   }
   return {
     source: data,
-    rejected: new Set<string>(),
+    rejected,
     finalIncluded,
     summaryRejected: false,
     skillsSourceOrder: false,
