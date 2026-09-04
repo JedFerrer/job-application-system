@@ -1,4 +1,4 @@
-import type { TailoredResume, TailoredWorkItem } from "./types";
+import type { TailoredEvidenceReference, TailoredResume, TailoredWorkItem } from "./types";
 
 export type ReviewLabel = "Reworded" | "Moved higher" | "Reworded + moved higher" | "Comparison unavailable; showing source bullets safely.";
 
@@ -13,6 +13,7 @@ export interface ReviewItem {
   label: ReviewLabel | null;
   included?: boolean;
   recommendedIncluded?: boolean;
+  evidence?: TailoredEvidenceReference[];
 }
 
 export interface ReviewState {
@@ -61,6 +62,7 @@ export function reviewItems(data: TailoredResume): ReviewItem[][] | null {
         changed,
         moved,
         label,
+        evidence: undefined,
       };
     }),
   );
@@ -127,6 +129,7 @@ export function decisionItems(data: TailoredResume): ReviewItem[][] {
         label: "Comparison unavailable; showing source bullets safely.",
         included: true,
         recommendedIncluded: true,
+        evidence: undefined,
       }));
     }
     const outputIndexBySource = new Map(
@@ -148,6 +151,7 @@ export function decisionItems(data: TailoredResume): ReviewItem[][] {
         label: changed ? (movedHigher ? "Reworded + moved higher" : "Reworded") : (movedHigher ? "Moved higher" : null),
         included: decision.final_included,
         recommendedIncluded: decision.recommended_included,
+        evidence: decision.evidence,
       };
     });
   });
@@ -201,6 +205,7 @@ export function reviewedResume(state: ReviewState): TailoredResume {
     ...state.source,
     professional_summary: state.summaryRejected ? sourceSummary(state.source) : state.source.professional_summary,
     summary_evidence_ids: state.summaryRejected ? [] : state.source.summary_evidence_ids,
+    summary_evidence: state.summaryRejected ? [] : state.source.summary_evidence,
     skills: sourceSkills?.texts ?? state.source.skills,
     skill_order_source_ids: sourceSkills?.ids ?? state.source.skill_order_source_ids,
     work_history,
