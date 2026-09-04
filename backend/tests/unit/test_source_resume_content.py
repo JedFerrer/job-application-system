@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID
 
 import pytest
 
 from app.domain.resume.schemas import (
     SourceResumeArtifact,
+    SourceResumeCandidate,
     SourceResumeContentDocumentV2,
     SourceResumeContentDocumentV3,
     SourceResumeContentDocumentV4,
     SourceResumeDocument,
     SourceResumeLayoutReferencesV3,
     SourceResumeLayoutReferencesV4,
+    SourceResumeRoleReferencesV3,
 )
 from app.domain.resume.source_content import (
     SOURCE_VALIDATION_VERSION,
@@ -26,6 +28,7 @@ from app.domain.resume.source_content import (
     materialize_source_document,
     materialize_source_document_v3,
     materialize_source_document_v4,
+    repair_work_history_source_layout,
     resolve_source_layout,
     resolve_source_layout_v3,
     resolve_source_layout_v4,
@@ -1552,3 +1555,101 @@ def test_reconstruction_preserves_source_ids_and_order() -> None:
     assert [role.order for role in layout.work_history] == [
         before["Northwind Analytics - Platform Engineer"][1]
     ]
+
+
+def _line_candidate(
+    text: str, order: int, kind: Literal["heading", "bullet", "text"] = "text"
+) -> SourceResumeCandidate:
+    return SourceResumeCandidate(
+        text=text,
+        order=order,
+        kind=kind,
+        fingerprint=source_fingerprint(text),
+        start_offset=order * 10,
+        end_offset=order * 10 + len(text),
+        occurrence_ordinal=0,
+    )
+
+
+def test_materialize_repairs_persisted_post_boundary_context_without_id_churn() -> None:
+    header = _line_candidate("Northwind - Engineer", 0, "heading")
+    narrative = _line_candidate("Led the billing platform.", 1)
+    heading = _line_candidate("Responsibilities", 2, "heading")
+    bullet = _line_candidate("Built the billing API.", 3, "bullet")
+    leftover = _line_candidate("including operational analysis for the same role.", 4)
+    layout = SourceResumeLayoutReferencesV3(
+        work_history=[
+            SourceResumeRoleReferencesV3(
+                order=0,
+                header=header.source_id,
+                context=[narrative.source_id, leftover.source_id],
+                responsibilities_heading=heading.source_id,
+                highlights=[bullet.source_id],
+            )
+        ],
+        unclassified=[],
+    )
+    repaired = repair_work_history_source_layout(
+        layout, [header, narrative, heading, bullet, leftover]
+    )
+    assert repaired.work_history[0].context == [narrative.source_id]
+    assert repaired.work_history[0].highlights == [bullet.source_id]
+    assert repaired.unclassified == [leftover.source_id]
+
+    document = materialize_source_document_v3(
+        SourceResumeContentDocumentV3(
+            candidates=[header, narrative, heading, bullet, leftover],
+            layout=layout,
+        )
+    )
+    assert document is not None
+    role = document.work_history[0]
+    assert [item.text for item in role.context_items] == ["Led the billing platform."]
+    assert [item.source_id for item in role.highlights] == [bullet.source_id]
+    assert [item.text for item in document.unclassified] == [
+        "including operational analysis for the same role."
+    ]
+    assert [item.source_id for item in document.unclassified] == [leftover.source_id]
+
+
+def test_repair_is_idempotent_for_phase1_correct_layout() -> None:
+    header = _line_candidate("Northwind - Engineer", 0, "heading")
+    narrative = _line_candidate("Led the billing platform.", 1)
+    bullet = _line_candidate("Built the billing API.", 2, "bullet")
+    leftover = _line_candidate("including leftover source prose.", 3)
+    layout = SourceResumeLayoutReferencesV3(
+        work_history=[
+            SourceResumeRoleReferencesV3(
+                order=0,
+                header=header.source_id,
+                context=[narrative.source_id],
+                highlights=[bullet.source_id],
+            )
+        ],
+        unclassified=[leftover.source_id],
+    )
+    repaired = repair_work_history_source_layout(
+        layout, [header, narrative, bullet, leftover]
+    )
+    assert repaired.work_history[0].context == [narrative.source_id]
+    assert repaired.work_history[0].highlights == [bullet.source_id]
+    assert repaired.unclassified == [leftover.source_id]
+
+
+def test_repair_does_not_convert_narrative_only_role_into_highlights() -> None:
+    header = _line_candidate("Northwind - Engineer", 0, "heading")
+    narrative = _line_candidate("Owned catalog delivery for two years.", 1)
+    layout = SourceResumeLayoutReferencesV3(
+        work_history=[
+            SourceResumeRoleReferencesV3(
+                order=0,
+                header=header.source_id,
+                context=[narrative.source_id],
+                highlights=[],
+            )
+        ]
+    )
+    repaired = repair_work_history_source_layout(layout, [header, narrative])
+    assert repaired.work_history[0].context == [narrative.source_id]
+    assert repaired.work_history[0].highlights == []
+    assert repaired.unclassified == []

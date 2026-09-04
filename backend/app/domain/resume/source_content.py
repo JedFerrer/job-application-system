@@ -1121,6 +1121,66 @@ def materialize_source_document(
     )
 
 
+def repair_work_history_source_layout(
+    layout: SourceResumeLayoutReferencesV3,
+    candidates: list[SourceResumeCandidate],
+) -> SourceResumeLayoutReferencesV3:
+    """Reclassify post-boundary role context without minting new source IDs.
+
+    Persisted pre-Phase-1 layouts may still list leftover body text in
+    ``role.context``. Highlight membership and UUIDs stay untouched so review
+    decisions can keep using the same source identity.
+    """
+    by_id = {candidate.source_id: candidate for candidate in candidates}
+    rebuilt_roles: list[SourceResumeRoleReferencesV3] = []
+    moved: list[UUID] = []
+    for role in layout.work_history:
+        assigned = [
+            by_id[item_id]
+            for item_id in (
+                *role.context,
+                *([role.responsibilities_heading] if role.responsibilities_heading else []),
+                *role.highlights,
+            )
+            if item_id in by_id
+        ]
+        assigned.sort(key=lambda item: item.order)
+        boundary = next(
+            (
+                item.order
+                for item in assigned
+                if item.source_id == role.responsibilities_heading
+                or item.kind in {"bullet", "heading"}
+            ),
+            None,
+        )
+        kept: list[UUID] = []
+        seen: set[UUID] = set()
+        for item_id in role.context:
+            if item_id in seen:
+                continue
+            item = by_id.get(item_id)
+            if item is None:
+                continue
+            seen.add(item_id)
+            if role.highlights and boundary is not None and item.order >= boundary:
+                moved.append(item_id)
+            else:
+                kept.append(item_id)
+        kept.sort(key=lambda item_id: by_id[item_id].order)
+        rebuilt_roles.append(role.model_copy(update={"context": kept}))
+    existing = set(layout.unclassified)
+    moved_ids = {item_id for item_id in moved if item_id not in existing}
+    unclassified = [
+        candidate.source_id
+        for candidate in sorted(candidates, key=lambda item: item.order)
+        if candidate.source_id in existing or candidate.source_id in moved_ids
+    ]
+    return layout.model_copy(
+        update={"work_history": rebuilt_roles, "unclassified": unclassified}
+    )
+
+
 def materialize_source_document_v3(
     ledger: SourceResumeContentDocumentV3,
 ) -> SourceResumeDocument | None:
@@ -1131,7 +1191,7 @@ def materialize_source_document_v3(
         candidate.source_id: SourceTextItem.model_validate(candidate.model_dump())
         for candidate in ledger.candidates
     }
-    layout = ledger.layout
+    layout = repair_work_history_source_layout(ledger.layout, ledger.candidates)
 
     def item(candidate_id: UUID | None) -> SourceTextItem | None:
         return by_id.get(candidate_id) if candidate_id is not None else None
@@ -1142,7 +1202,7 @@ def materialize_source_document_v3(
             order=role.order,
             company=item(role.header),
             title=item(role.header),
-            context_items=[by_id[value] for value in role.context],
+            context_items=[by_id[value] for value in role.context if value in by_id],
             responsibilities_heading=item(role.responsibilities_heading),
             highlights=[by_id[value] for value in role.highlights],
         )

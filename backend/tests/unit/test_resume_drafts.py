@@ -38,6 +38,7 @@ from app.domain.resume.service import (
     ResumeService,
     _canonical_sections,
     _full_resume_context,
+    _rehydrate_source_backed_snapshot,
     _validate_source_backed_snapshot,
 )
 from app.domain.resume.source_content import source_revision_sha256
@@ -139,23 +140,45 @@ def _source_document() -> SourceResumeDocument:
 
 
 def _source_backed_content(source: SourceResumeDocument) -> TailoredResume:
-    role = source.work_history[0]
-    assert role.company is not None and role.title is not None
-    decisions = [
-        {
-            "source_id": bullet.source_id,
-            "source_index": index,
-            "canonical_order": bullet.order,
-            "original_text": bullet.text,
-            "suggested_text": "Built Python APIs" if index == 0 else bullet.text,
-            "final_text": "Built Python APIs" if index == 0 else bullet.text,
-            "recommended_included": True,
-            "final_included": True,
-            "recommendation_rank": index,
-            "output_rank": index,
-        }
-        for index, bullet in enumerate(role.highlights)
-    ]
+    work_history: list[TailoredWorkItem] = []
+    for role_index, role in enumerate(source.work_history):
+        decisions = [
+            {
+                "source_id": bullet.source_id,
+                "source_index": index,
+                "canonical_order": bullet.order,
+                "original_text": bullet.text,
+                "suggested_text": (
+                    "Built Python APIs" if role_index == 0 and index == 0 else bullet.text
+                ),
+                "final_text": (
+                    "Built Python APIs" if role_index == 0 and index == 0 else bullet.text
+                ),
+                "recommended_included": True,
+                "final_included": True,
+                "recommendation_rank": index,
+                "output_rank": index,
+            }
+            for index, bullet in enumerate(role.highlights)
+        ]
+        work_history.append(
+            TailoredWorkItem(
+                company=role.company.text if role.company is not None else None,
+                title=role.title.text if role.title is not None else None,
+                original_highlights=[bullet.text for bullet in role.highlights],
+                tailored_highlights=[item["final_text"] for item in decisions],
+                tailored_highlight_source_indices=list(range(len(decisions))),
+                source_role_id=role.source_id,
+                source_header=role.company.text if role.company is not None else None,
+                role_context=[item.text for item in role.context_items],
+                responsibilities_heading=(
+                    role.responsibilities_heading.text
+                    if role.responsibilities_heading is not None
+                    else None
+                ),
+                selection_decisions=decisions,
+            )
+        )
     return TailoredResume(
         job_id=11,
         professional_summary="Backend engineer",
@@ -170,24 +193,7 @@ def _source_backed_content(source: SourceResumeDocument) -> TailoredResume:
         licenses=[],
         education=[],
         certifications=[],
-        work_history=[
-            TailoredWorkItem(
-                company=role.company.text,
-                title=role.title.text,
-                original_highlights=[bullet.text for bullet in role.highlights],
-                tailored_highlights=["Built Python APIs", "Reviewed service code."],
-                tailored_highlight_source_indices=[0, 1],
-                source_role_id=role.source_id,
-                source_header=role.company.text,
-                role_context=[item.text for item in role.context_items],
-                responsibilities_heading=(
-                    role.responsibilities_heading.text
-                    if role.responsibilities_heading is not None
-                    else None
-                ),
-                selection_decisions=decisions,
-            )
-        ],
+        work_history=work_history,
         canonical_sections=_canonical_sections(source),
     )
 
@@ -1151,3 +1157,312 @@ class TestDraftRouteContract:
         assert client.get("/resume/drafts").status_code == 200
         assert client.post("/resume/drafts", json=_payload()).status_code == 201
         assert not service.tailor_for_job.called
+
+
+def _prepare_full_context(
+    source: SourceResumeDocument,
+    source_row: SimpleNamespace,
+    *,
+    job_description: str = "Python backend engineer",
+) -> TailoredResume:
+    content = _source_backed_content(source)
+    content.tailoring_snapshot_version = "full-context-v1"
+    content.summary_evidence_ids = ["summary:0"]
+    content.skill_order_source_ids = ["skill:0"]
+    content.source_resume_id = source_row.resume_id
+    content.source_resume_content_id = source_row.id
+    content.source_schema_version = "source-resume-v5"
+    content.source_revision_sha256 = source_revision_sha256(source_row.content)
+    for role, recommended in zip(
+        content.work_history,
+        select_source_bullets(source.work_history, job_description).recommended_ids,
+        strict=True,
+    ):
+        for decision in role.selection_decisions:
+            source_id = str(decision.source_id)
+            decision.recommended_included = source_id in recommended
+            decision.recommendation_rank = (
+                recommended.index(source_id) if source_id in recommended else None
+            )
+        included = [
+            index
+            for index, decision in enumerate(role.selection_decisions)
+            if decision.final_included
+        ]
+        included.sort(
+            key=lambda index: (
+                not role.selection_decisions[index].recommended_included,
+                role.selection_decisions[index].recommendation_rank
+                if role.selection_decisions[index].recommended_included
+                else role.selection_decisions[index].canonical_order,
+            )
+        )
+        role.tailored_highlight_source_indices = included
+        role.tailored_highlights = [
+            role.selection_decisions[index].final_text for index in included
+        ]
+        for index, decision in enumerate(role.selection_decisions):
+            decision.output_rank = included.index(index) if index in included else None
+    return content
+
+
+def _source_row() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=12, resume_id=13, content={"schema_version": "source-resume-v5"}
+    )
+
+
+def _second_role() -> SourceRole:
+    return SourceRole(
+        source_id=uuid4(),
+        order=1,
+        company=SourceTextItem(text="Beta Labs", order=10),
+        title=SourceTextItem(text="Engineer", order=11),
+        highlights=[SourceTextItem(text="Shipped catalog APIs.", order=12)],
+    )
+
+
+def test_clean_full_context_draft_rehydrates_exportably() -> None:
+    source = _source_document()
+    source_row = _source_row()
+    content = _prepare_full_context(source, source_row)
+    rehydrated = _rehydrate_source_backed_snapshot(
+        content,
+        source,
+        profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+        job_description="Python backend engineer",
+    )
+    assert rehydrated is not None
+    assert rehydrated.requires_regeneration is False
+    assert rehydrated.work_history[0].role_context == [
+        item.text for item in source.work_history[0].context_items
+    ]
+    _validate_source_backed_snapshot(
+        rehydrated,
+        source_document=source,
+        profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+        job_description="Python backend engineer",
+    )
+
+
+def test_malformed_role_context_is_rebuilt_while_preserving_review_choices() -> None:
+    source = _source_document()
+    leftover = "including operational analysis for the same role."
+    source.unclassified = [SourceTextItem(text=leftover, order=20)]
+    source_row = _source_row()
+    content = _prepare_full_context(source, source_row)
+    content.work_history[0].role_context = [
+        *content.work_history[0].role_context,
+        leftover,
+        "payments across three regions",
+    ]
+
+    rehydrated = _rehydrate_source_backed_snapshot(
+        content,
+        source,
+        profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+        job_description="Python backend engineer",
+    )
+    assert rehydrated is not None
+    role = rehydrated.work_history[0]
+    assert leftover not in role.role_context
+    assert "payments across three regions" not in role.role_context
+    assert role.role_context == [item.text for item in source.work_history[0].context_items]
+    assert role.selection_decisions[0].final_text == "Built Python APIs"
+    assert role.selection_decisions[0].suggested_text == "Built Python APIs"
+    assert role.selection_decisions[1].final_text == "Reviewed service code."
+    assert role.selection_decisions[1].suggested_text == "Reviewed service code."
+    unclassified = [
+        section for section in rehydrated.canonical_sections if section.section == "unclassified"
+    ]
+    assert unclassified and leftover in [item.text for item in unclassified[0].items]
+    _validate_source_backed_snapshot(
+        rehydrated,
+        source_document=source,
+        profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+        job_description="Python backend engineer",
+    )
+
+
+def test_restored_original_and_reviewed_order_survive_rehydration() -> None:
+    source = _source_document()
+    source_row = _source_row()
+    content = _prepare_full_context(source, source_row)
+    first, second = content.work_history[0].selection_decisions
+    first.final_text = first.original_text
+    first.final_included = False
+    first.output_rank = None
+    content.work_history[0].tailored_highlight_source_indices = [1]
+    content.work_history[0].tailored_highlights = [second.final_text]
+    second.output_rank = 0
+    rehydrated = _rehydrate_source_backed_snapshot(
+        content,
+        source,
+        profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+        job_description="Python backend engineer",
+    )
+    assert rehydrated is not None
+    role = rehydrated.work_history[0]
+    assert role.selection_decisions[0].final_text == role.selection_decisions[0].original_text
+    assert role.selection_decisions[0].suggested_text == "Built Python APIs"
+    assert role.selection_decisions[0].final_included is False
+    assert role.selection_decisions[1].final_text == "Reviewed service code."
+    assert role.tailored_highlight_source_indices == [1]
+    assert role.tailored_highlights == ["Reviewed service code."]
+    _validate_source_backed_snapshot(
+        rehydrated,
+        source_document=source,
+        profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+        job_description="Python backend engineer",
+    )
+
+
+def test_missing_cross_role_and_duplicate_source_ids_fail_closed() -> None:
+    first = _source_document()
+    source = first.model_copy(
+        update={"work_history": [first.work_history[0], _second_role()]}
+    )
+    source_row = _source_row()
+    content = _prepare_full_context(source, source_row)
+    profile = ParsedProfile.model_validate({"skills": ["Python"]})
+
+    missing = content.model_copy(deep=True)
+    missing.work_history[0].selection_decisions[0].source_id = uuid4()
+    assert (
+        _rehydrate_source_backed_snapshot(
+            missing, source, profile=profile, job_description="Python backend engineer"
+        )
+        is None
+    )
+
+    cross = content.model_copy(deep=True)
+    cross.work_history[0].selection_decisions[0].source_id = (
+        source.work_history[1].highlights[0].source_id
+    )
+    assert (
+        _rehydrate_source_backed_snapshot(
+            cross, source, profile=profile, job_description="Python backend engineer"
+        )
+        is None
+    )
+
+    duplicate = content.model_copy(deep=True)
+    duplicate.work_history[0].selection_decisions[1].source_id = (
+        source.work_history[0].highlights[0].source_id
+    )
+    assert (
+        _rehydrate_source_backed_snapshot(
+            duplicate, source, profile=profile, job_description="Python backend engineer"
+        )
+        is None
+    )
+
+
+def test_unclassified_source_is_preserved_but_not_tailorable_evidence() -> None:
+    source = _source_document()
+    leftover = SourceTextItem(text="including leftover source prose.", order=20)
+    source.unclassified = [leftover]
+    _, evidence, _ = _full_resume_context(
+        source, ParsedProfile.model_validate({"skills": ["Python"]})
+    )
+    assert leftover.text not in evidence.values()
+    content = _source_backed_content(source)
+    assert leftover.text not in content.work_history[0].role_context
+    unclassified = [
+        section for section in content.canonical_sections if section.section == "unclassified"
+    ]
+    assert [item.text for item in unclassified[0].items] == [leftover.text]
+
+
+def test_legacy_draft_is_not_forced_through_full_context_rehydration() -> None:
+    source = _source_document()
+    legacy = TailoredResume.model_validate(_content())
+    result = _rehydrate_source_backed_snapshot(
+        legacy,
+        source,
+        profile=ParsedProfile.model_validate({"skills": ["Python"]}),
+        job_description="Python backend engineer",
+    )
+    assert result is legacy
+    assert result.work_history == []
+    assert result.full_name == "Ada Lovelace"
+
+
+@pytest.mark.asyncio
+async def test_affected_full_context_draft_saves_after_role_context_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_document()
+    leftover = "including operational analysis for the same role."
+    source.unclassified = [SourceTextItem(text=leftover, order=20)]
+    repository = AsyncMock()
+    source_row = _configure_v5_active_source(repository, source)
+    repository.create_tailored_draft.return_value = _draft()
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description="Python backend engineer"
+    )
+    monkeypatch.setattr(
+        "app.domain.resume.service.materialize_source_document_v4", lambda _: source
+    )
+    content = _prepare_full_context(source, source_row)
+    content.work_history[0].role_context = [*content.work_history[0].role_context, leftover]
+    service = ResumeService(repository)
+
+    await service.create_tailored_draft(
+        user_id=7,
+        payload=TailoredResumeDraftCreate(job_id=11, content=content),
+        job_repository=jobs,
+    )
+    saved = repository.create_tailored_draft.await_args.kwargs["content"]
+    assert leftover not in saved["work_history"][0]["role_context"]
+    exported = await service.validate_resume_export(
+        user_id=7, resume=content, job_repository=jobs
+    )
+    assert leftover not in exported.work_history[0].role_context
+    assert exported.requires_regeneration is False
+
+
+@pytest.mark.asyncio
+async def test_get_repairs_malformed_context_and_marks_unsafe_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_document()
+    leftover = "including operational analysis for the same role."
+    source.unclassified = [SourceTextItem(text=leftover, order=20)]
+    repository = AsyncMock()
+    source_row = _configure_v5_active_source(repository, source)
+    monkeypatch.setattr(
+        "app.domain.resume.service.materialize_source_document_v4", lambda _: source
+    )
+    content = _prepare_full_context(source, source_row)
+    content.work_history[0].role_context = [*content.work_history[0].role_context, leftover]
+    missing = content.model_copy(deep=True)
+    missing.work_history[0].selection_decisions[0].source_id = uuid4()
+    draft = _draft()
+    draft.content = missing.model_dump(mode="json")
+    repository.get_tailored_draft.return_value = draft
+    service = ResumeService(repository)
+
+    readable = await service.get_tailored_draft(user_id=7, draft_id=4)
+    assert leftover not in readable.content.work_history[0].role_context
+    assert readable.content.requires_regeneration is True
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description="Python backend engineer"
+    )
+    with pytest.raises(TailoredResumeSnapshotInvalidError):
+        await service.validate_resume_export(
+            user_id=7, resume=missing, job_repository=jobs
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_returns_legacy_draft_without_source_rehydration() -> None:
+    repository = AsyncMock()
+    draft = _draft()
+    repository.get_tailored_draft.return_value = draft
+    service = ResumeService(repository)
+    detail = await service.get_tailored_draft(user_id=7, draft_id=4)
+    assert detail.content.full_name == "Ada Lovelace"
+    repository.get_active_tailoring_source.assert_not_awaited()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,16 +15,23 @@ from app.domain.resume.prompts import TAILOR_RESUME_PROMPT
 from app.domain.resume.schemas import (
     ParsedProfile,
     RequirementClassification,
+    SourceResumeCandidate,
+    SourceResumeContentDocumentV4,
     SourceResumeContentPayload,
     SourceResumeContentPayloadV2,
     SourceResumeContentPayloadV3,
+    SourceResumeContentPayloadV5,
+    SourceResumeLayoutReferencesV4,
+    SourceResumeRoleReferencesV3,
     TailoredResume,
 )
-from app.domain.resume.service import ResumeService
+from app.domain.resume.service import ResumeService, _full_resume_context
 from app.domain.resume.source_content import (
     build_source_candidate_ledger,
+    materialize_source_document_v4,
     resolve_source_layout,
     resolve_source_layout_v3,
+    source_fingerprint,
 )
 from app.domain.resume.truthfulness import (
     build_evidence_catalog,
@@ -1573,3 +1581,130 @@ async def test_malformed_output_and_llm_failure_use_source_fallback(
         malformed.work_history[0].tailored_highlights
     )
     assert failed.requirement_classifications == malformed.requirement_classifications
+
+
+def _line_candidate(
+    text: str, order: int, kind: Literal["heading", "bullet", "text"] = "text"
+) -> SourceResumeCandidate:
+    return SourceResumeCandidate(
+        text=text,
+        order=order,
+        kind=kind,
+        fingerprint=source_fingerprint(text),
+        start_offset=order * 10,
+        end_offset=order * 10 + len(text),
+        occurrence_ordinal=0,
+    )
+
+
+def _malformed_v5_payload() -> tuple[SourceResumeContentPayloadV5, str]:
+    header = _line_candidate("Northwind - Engineer", 0, "heading")
+    narrative = _line_candidate("Led the billing platform.", 1)
+    heading = _line_candidate("Responsibilities", 2, "heading")
+    bullet = _line_candidate("Built Python APIs.", 3, "bullet")
+    leftover = _line_candidate("including leftover source prose.", 4)
+    layout = SourceResumeLayoutReferencesV4(
+        work_history=[
+            SourceResumeRoleReferencesV3(
+                order=0,
+                header=header.source_id,
+                context=[narrative.source_id, leftover.source_id],
+                responsibilities_heading=heading.source_id,
+                highlights=[bullet.source_id],
+            )
+        ],
+        unclassified=[],
+    )
+    payload = SourceResumeContentPayloadV5(
+        document=SourceResumeContentDocumentV4(
+            candidates=[header, narrative, heading, bullet, leftover],
+            layout=layout,
+        ),
+        layout_validation_status="verified",
+    )
+    return payload, leftover.text
+
+
+@pytest.mark.asyncio
+async def test_new_full_context_tailoring_uses_repaired_role_structure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, leftover = _malformed_v5_payload()
+    repository = AsyncMock()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=_profile().model_dump()),
+        SimpleNamespace(
+            id=12,
+            resume_id=13,
+            validation_status="verified",
+            content=payload.model_dump(mode="json"),
+        ),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        description="Build Python APIs"
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"rewrites": []}'))]
+    )
+    llm_mock = AsyncMock(return_value=(response, "test-model"))
+    monkeypatch.setattr(resume_service, "llm_chat_completion", llm_mock)
+
+    result = await ResumeService(repository).tailor_for_job(
+        user_id=7, job_id=11, job_repository=jobs
+    )
+    assert leftover not in result.work_history[0].role_context
+    assert result.work_history[0].role_context == ["Led the billing platform."]
+    unclassified_text = [
+        item.text
+        for section in result.canonical_sections
+        if section.section == "unclassified"
+        for item in section.items
+    ]
+    assert leftover in unclassified_text
+    assert llm_mock.await_args is not None
+    prompt = llm_mock.await_args.kwargs["messages"][0]["content"]
+    assert '"role:0:context:1"' not in prompt
+    source_document = materialize_source_document_v4(payload.document)
+    assert source_document is not None
+    _, evidence, _ = _full_resume_context(source_document, _profile())
+    assert leftover not in evidence.values()
+    catalog = build_source_evidence_catalog(source_document.work_history)
+    assert leftover not in {item.text for item in catalog.values()}
+
+
+@pytest.mark.asyncio
+async def test_source_backed_invalid_model_output_keeps_repaired_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, leftover = _malformed_v5_payload()
+    repository = AsyncMock()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=_profile().model_dump()),
+        SimpleNamespace(
+            id=12,
+            resume_id=13,
+            validation_status="verified",
+            content=payload.model_dump(mode="json"),
+        ),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        description="Build Python APIs"
+    )
+    monkeypatch.setattr(
+        resume_service,
+        "llm_chat_completion",
+        AsyncMock(return_value=(
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"rewrites": "bad"}'))]
+            ),
+            "test-model",
+        )),
+    )
+    result = await ResumeService(repository).tailor_for_job(
+        user_id=7, job_id=11, job_repository=jobs
+    )
+    assert leftover not in result.work_history[0].role_context
+    assert result.work_history[0].tailored_highlights == ["Built Python APIs."]
+    assert result.tailoring_snapshot_version == "lossless-complete-v2"
