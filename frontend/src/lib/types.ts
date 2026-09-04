@@ -223,6 +223,20 @@ export interface TailoredBulletDecision {
   final_included: boolean;
   recommendation_rank?: number | null;
   output_rank?: number | null;
+  evidence?: TailoredEvidenceReference[];
+}
+
+export interface TailoredEvidenceReference {
+  evidence_id: string;
+  excerpt: string;
+  section: string;
+  role_label?: string | null;
+  source_id?: string | null;
+  role_index?: number | null;
+  source_index?: number | null;
+  relevance_label: string;
+  matched_requirements?: string[];
+  relevance_rank?: number | null;
 }
 
 export interface TailoredResume {
@@ -247,6 +261,9 @@ export interface TailoredResume {
   tailoring_snapshot_version?: "full-resume-v1" | "lossless-complete-v2" | "full-context-v1" | null;
   summary_evidence_ids?: string[];
   skill_order_source_ids?: string[];
+  review_evidence_version?: "review-evidence-v1" | null;
+  summary_evidence?: TailoredEvidenceReference[];
+  skill_evidence?: TailoredEvidenceReference[];
   canonical_sections?: TailoredCanonicalSection[];
   source_resume_id?: number | null;
   source_resume_content_id?: number | null;

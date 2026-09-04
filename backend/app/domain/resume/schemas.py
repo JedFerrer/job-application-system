@@ -684,6 +684,21 @@ class TailoredWorkItem(BaseModel):
         return self
 
 
+class TailoredEvidenceReference(BaseModel):
+    """Human-readable, validated provenance for a tailored suggestion."""
+
+    evidence_id: str = Field(min_length=1)
+    excerpt: str = Field(min_length=1)
+    section: str = Field(min_length=1)
+    role_label: str | None = None
+    source_id: str | None = None
+    role_index: int | None = Field(default=None, ge=0)
+    source_index: int | None = Field(default=None, ge=0)
+    relevance_label: str = Field(min_length=1)
+    matched_requirements: list[str] = Field(default_factory=list)
+    relevance_rank: int | None = Field(default=None, ge=0)
+
+
 class TailoredBulletDecision(BaseModel):
     """Canonical provenance and selection state for one work bullet."""
 
@@ -697,6 +712,7 @@ class TailoredBulletDecision(BaseModel):
     final_included: bool
     recommendation_rank: int | None = Field(default=None, ge=0)
     output_rank: int | None = Field(default=None, ge=0)
+    evidence: list[TailoredEvidenceReference] = Field(default_factory=list)
 
 
 class TailoredCanonicalItem(BaseModel):
@@ -791,6 +807,15 @@ class TailoredResume(BaseModel):
     )
     summary_evidence_ids: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
     skill_order_source_ids: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    review_evidence_version: Literal["review-evidence-v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    summary_evidence: list[TailoredEvidenceReference] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
+    skill_evidence: list[TailoredEvidenceReference] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
 
 
 class TailoredResumeDraftCreate(BaseModel):

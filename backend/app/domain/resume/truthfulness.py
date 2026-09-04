@@ -348,6 +348,7 @@ class SanitizedTailoring:
     multi_evidence_selections: int = 0
     summary_evidence_ids: list[str] = field(default_factory=list)
     skill_order_source_ids: list[str] = field(default_factory=list)
+    bullet_evidence_ids: dict[str, list[str]] = field(default_factory=dict)
 
 
 def sanitize_tailoring_output(
@@ -371,6 +372,7 @@ def sanitize_tailoring_output(
     full_evidence = full_context_evidence or {}
     summary = default_summary if default_summary is not None else profile.headline
     summary_evidence_ids: list[str] = []
+    bullet_evidence_ids: dict[str, list[str]] = {}
     raw_summary = payload.get("summary_rewrite")
     if raw_summary is not None:
         if not isinstance(raw_summary, dict):
@@ -526,6 +528,7 @@ def sanitize_tailoring_output(
             continue
         if _safe_text_with_evidence(rewritten, source, valid_refs, missing_set):
             rewrites[key] = rewritten.strip()
+            bullet_evidence_ids[key] = list(raw_evidence_ids)
         else:
             composed = _neutral_combination(
                 source,
@@ -536,6 +539,7 @@ def sanitize_tailoring_output(
             )
             if composed is not None:
                 rewrites[key] = composed
+                bullet_evidence_ids[key] = list(raw_evidence_ids)
                 if len(valid_refs) > 2:
                     selected_multi_evidence += 1
                 continue
@@ -608,6 +612,7 @@ def sanitize_tailoring_output(
         rejected_patches=rejected,
         rejection_reasons=dict(reasons),
         multi_evidence_selections=selected_multi_evidence,
+        bullet_evidence_ids=bullet_evidence_ids,
     )
 
 

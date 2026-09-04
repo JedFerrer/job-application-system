@@ -60,6 +60,7 @@ from app.domain.resume.schemas import (
     TailoredBulletDecision,
     TailoredCanonicalItem,
     TailoredCanonicalSection,
+    TailoredEvidenceReference,
     TailoredResume,
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
@@ -302,6 +303,120 @@ def _full_resume_context(source_document: Any, profile: ParsedProfile) -> tuple[
     return json.dumps(source_document.model_dump(mode="json"), default=str), evidence, skill_ids
 
 
+def _review_evidence(
+    evidence_ids: list[str],
+    evidence: dict[str, str],
+    source_document: Any,
+    profile: ParsedProfile,
+    report: SkillMatchReport,
+    selection: Any | None,
+) -> list[TailoredEvidenceReference]:
+    """Materialize only validated source evidence for the review surface."""
+    if source_document is None:
+        return []
+    matched = {normalize_skill(item) for item in report.matched_skills}
+    role_labels = {
+        index: " | ".join(
+            value.text
+            for value in (role.title, role.company)
+            if value is not None and value.text.strip()
+        )
+        for index, role in enumerate(source_document.work_history)
+    }
+    bullet_lookup = {
+        str(bullet.source_id): (role_index, source_index)
+        for role_index, role in enumerate(source_document.work_history)
+        for source_index, bullet in enumerate(role.highlights)
+    }
+    refs: list[TailoredEvidenceReference] = []
+    for evidence_id in evidence_ids:
+        excerpt = evidence.get(evidence_id)
+        if not excerpt:
+            continue
+        role_index: int | None = None
+        source_index: int | None = None
+        source_id: str | None = None
+        section = "Resume source"
+        role_label: str | None = None
+        relevance_rank: int | None = None
+        matched_requirements: list[str] = []
+        if evidence_id.startswith("r") and ":b" in evidence_id:
+            try:
+                role_index, source_index = (
+                    int(evidence_id[1 : evidence_id.index(":b")]),
+                    int(evidence_id.split(":b", 1)[1]),
+                )
+            except ValueError:
+                role_index = source_index = None
+            if (
+                role_index is not None
+                and source_index is not None
+                and 0 <= role_index < len(source_document.work_history)
+                and 0 <= source_index < len(source_document.work_history[role_index].highlights)
+            ):
+                bullet = source_document.work_history[role_index].highlights[source_index]
+                source_id = str(bullet.source_id)
+                section = "Work history"
+                role_label = role_labels.get(role_index) or f"Role {role_index + 1}"
+                if selection is not None:
+                    matched_requirements = sorted(selection.skills.get(source_id, frozenset()))
+                    recommended = selection.recommended_ids[role_index]
+                    relevance_rank = recommended.index(source_id) if source_id in recommended else None
+        elif evidence_id.startswith("skill:"):
+            section = "Skills"
+            try:
+                skill_index = int(evidence_id.split(":", 1)[1])
+                skill = source_document.skills[skill_index]
+                source_id = str(skill.source_id)
+                matched_requirements = [skill.text] if normalize_skill(skill.text) in matched else []
+            except (ValueError, IndexError):
+                continue
+        elif evidence_id.startswith("summary:"):
+            section = "Summary"
+        elif evidence_id.startswith("role:"):
+            section = "Work history"
+            parts = evidence_id.split(":")
+            try:
+                role_index = int(parts[1])
+                role_label = role_labels.get(role_index) or f"Role {role_index + 1}"
+            except (IndexError, ValueError):
+                pass
+        elif evidence_id.startswith("project:"):
+            section = "Projects"
+        elif evidence_id.startswith("education:"):
+            section = "Education"
+        elif evidence_id.startswith("certification:"):
+            section = "Certifications"
+        elif evidence_id.startswith("license:"):
+            section = "Licenses"
+        elif evidence_id.startswith("language:"):
+            section = "Languages"
+        elif evidence_id.startswith("named:"):
+            section = "Additional information"
+        if source_id in bullet_lookup:
+            role_index, source_index = bullet_lookup[source_id]
+        relevance_label = (
+            "Matched job requirement"
+            if matched_requirements
+            else "Relevant source evidence" if relevance_rank is not None else "Verified source evidence"
+        )
+        refs.append(
+            TailoredEvidenceReference(
+                evidence_id=evidence_id,
+                excerpt=excerpt,
+                section=section,
+                role_label=role_label,
+                source_id=source_id,
+                role_index=role_index,
+                source_index=source_index,
+                relevance_label=relevance_label,
+                matched_requirements=matched_requirements,
+                relevance_rank=relevance_rank,
+            )
+        )
+    return refs
+
+
 def _validate_source_backed_snapshot(
     resume: TailoredResume,
     *,
@@ -330,6 +445,14 @@ def _validate_source_backed_snapshot(
         for item in classify_requirements(job_description, profile)
         if item.status == "missing"
     ]
+    review_report = SkillMatchReport(
+        matched_skills=[
+            item.requirement
+            for item in classify_requirements(job_description, profile)
+            if item.status == "verified"
+        ],
+        missing_skills=missing_skills,
+    )
     full_context = resume.tailoring_snapshot_version == FULL_CONTEXT_SNAPSHOT_VERSION
     full_evidence: dict[str, str] = {}
     skill_aliases: list[str] = []
@@ -400,6 +523,38 @@ def _validate_source_backed_snapshot(
     eligible = {index: set(ids) for index, ids in enumerate(rewrite_ids)}
     orders = [list(ids) for ids in rewrite_ids]
     relevance = selection.scores
+
+    if resume.review_evidence_version is not None and not full_context:
+        invalid()
+    if full_context:
+        if (
+            len(set(resume.summary_evidence_ids)) != len(resume.summary_evidence_ids)
+            or len(set(resume.skill_order_source_ids)) != len(resume.skill_order_source_ids)
+        ):
+            invalid()
+        expected_summary_evidence = _review_evidence(
+            resume.summary_evidence_ids,
+            full_evidence,
+            source_document,
+            profile,
+            review_report,
+            selection,
+        )
+        if resume.review_evidence_version == "review-evidence-v1":
+            if resume.summary_evidence != expected_summary_evidence:
+                invalid()
+            expected_skill_evidence = _review_evidence(
+                resume.skill_order_source_ids,
+                full_evidence,
+                source_document,
+                profile,
+                review_report,
+                selection,
+            )
+            if resume.skill_evidence != expected_skill_evidence:
+                invalid()
+        elif resume.summary_evidence or resume.skill_evidence:
+            invalid()
 
     for role_index, (submitted, source_role) in enumerate(
         zip(resume.work_history, roles, strict=True)
@@ -477,6 +632,35 @@ def _validate_source_backed_snapshot(
                     invalid()
             if decision.final_text not in {decision.original_text, decision.suggested_text}:
                 invalid()
+            evidence_ids = [item.evidence_id for item in decision.evidence]
+            if len(set(evidence_ids)) != len(evidence_ids):
+                invalid()
+            if full_context and resume.review_evidence_version == "review-evidence-v1":
+                expected_evidence = _review_evidence(
+                    evidence_ids,
+                    full_evidence,
+                    source_document,
+                    profile,
+                    review_report,
+                    selection,
+                )
+                if decision.evidence != expected_evidence:
+                    invalid()
+                if any(ref.role_index != role_index for ref in decision.evidence):
+                    invalid()
+                if decision.suggested_text == decision.original_text:
+                    if decision.evidence:
+                        invalid()
+                elif not evidence_ids or f"r{role_index}:b{source_index}" not in evidence_ids:
+                    invalid()
+                elif not _safe_full_context_text(
+                    decision.suggested_text,
+                    " ".join(full_evidence[item] for item in evidence_ids if item in full_evidence),
+                    full_evidence,
+                    evidence_ids,
+                    set(missing_skills),
+                ):
+                    invalid()
             suggestion_by_index[source_index] = decision.final_text
 
         included_indices = [
@@ -758,6 +942,7 @@ def _selection_decisions(
     recommended_ids: list[str],
     output_ids: list[str],
     output_text: list[str],
+    evidence_by_source_id: dict[str, list[TailoredEvidenceReference]] | None = None,
 ) -> list[Any]:
     """Build UUID-traceable recommendation state for one canonical role."""
     output_text_by_id = dict(zip(output_ids, output_text, strict=True))
@@ -777,6 +962,7 @@ def _selection_decisions(
             final_included=True,
             recommendation_rank=recommendation_rank.get(str(bullet.source_id)),
             output_rank=output_rank.get(str(bullet.source_id)),
+            evidence=(evidence_by_source_id or {}).get(str(bullet.source_id), []),
         )
         for index, bullet in enumerate(role.highlights)
     ]
@@ -1513,6 +1699,23 @@ class ResumeService:
             if recommended_orders is not None
             else [[] for _ in output_roles]
         )
+        source_backed = source_document is not None
+        review_evidence_by_source_id = (
+            {
+                str(bullet.source_id): _review_evidence(
+                    sanitized.bullet_evidence_ids.get(str(bullet.source_id), []),
+                    full_evidence,
+                    source_document,
+                    profile,
+                    report,
+                    selection,
+                )
+                for role in output_roles
+                for bullet in role.highlights
+            }
+            if source_backed
+            else {}
+        )
         tailored_wh = [
             TailoredWorkItem(
                 company=(
@@ -1573,6 +1776,7 @@ class ResumeService:
                         recommendation_orders[role_index],
                         rendered_orders[role_index],
                         sanitized_bullets,
+                        evidence_by_source_id=review_evidence_by_source_id,
                     )
                     if source_roles is not None
                     else []
@@ -1647,6 +1851,31 @@ class ResumeService:
             source_section_order=(list(source_document.section_order) if source_backed and source_document is not None else []),
             summary_evidence_ids=(sanitized.summary_evidence_ids if source_backed else []),
             skill_order_source_ids=(tailored_skill_ids if source_backed else []),
+            review_evidence_version=("review-evidence-v1" if source_backed else None),
+            summary_evidence=(
+                _review_evidence(
+                    sanitized.summary_evidence_ids,
+                    full_evidence,
+                    source_document,
+                    profile,
+                    report,
+                    selection,
+                )
+                if source_backed
+                else []
+            ),
+            skill_evidence=(
+                _review_evidence(
+                    tailored_skill_ids,
+                    full_evidence,
+                    source_document,
+                    profile,
+                    report,
+                    selection,
+                )
+                if source_backed
+                else []
+            ),
         )
         resume.requirement_classifications = classify_resume_coverage(
             resume.requirement_classifications, resume
