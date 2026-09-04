@@ -948,6 +948,14 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                 # the bare source-reference object.
                 if isinstance(raw_layout.get("source_references"), dict):
                     raw_layout = raw_layout["source_references"]
+                elif set(raw_layout).intersection(
+                    {"full_name", "headline", "years_experience", "preferred_roles", "seniority"}
+                ):
+                    # Older locked completions return the normalized profile
+                    # again when the selector has no semantic annotations.
+                    # Treat that response as an empty selector result; do not
+                    # pass profile fields into the strict layout resolver.
+                    raw_layout = {}
                 model = selector_model
 
         if reuse_profile and qa_payload is None:
@@ -960,7 +968,23 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                 issued_aliases=issued_aliases,
                 selector_feedback=selector_feedback,
             )
+            if set(raw_layout).intersection(
+                {"full_name", "headline", "years_experience", "preferred_roles", "seniority"}
+            ):
+                # Keep the same compatibility behavior as the initial selector
+                # call for older locked completions with no annotations.
+                raw_layout = {}
             model = selector_model
+        if (
+            qa_payload is None
+            and raw_layout is None
+            and profile is not None
+            and not profile.work_history
+        ):
+            # A headed resume with no semantic profile sections has no selector
+            # payload to resolve; represent that legacy zero-semantic result as
+            # an empty layout instead of an invalid missing object.
+            raw_layout = {}
         artifacts = classify_source_artifacts(ledger)
         if qa_payload is None and raw_layout is not None:
             selector_attempts = max(selector_attempts, attempt + 1)
@@ -972,6 +996,7 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
             if use_v5_contract
             else resolve_source_layout_v3(raw_layout, ledger, artifacts)
         )
+        header_errors: tuple[str, ...] = ()
         if layout_result.status == "verified" and layout_result.layout is not None:
             assert profile is not None
             header_errors = (
@@ -979,8 +1004,25 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                 if _has_core_section_heading(ledger)
                 else ()
             )
+            # The candidate ledger is the source-of-truth for import safety.
+            # Header/section completeness is advisory tailoring metadata: an AI
+            # selector missing an address line, contact reference, or body
+            # candidate must not make an otherwise readable resume impossible to
+            # import. Invalid aliases, duplicate ownership, and schema failures
+            # remain fail-closed in the source-layout resolver above.
             if header_errors:
-                layout_result = SourceLayoutResult(None, "invalid", header_errors)
+                logger.warning(
+                    "resume_source_layout_partial",
+                    model=model,
+                    attempt=selector_attempts if selector_mode else profile_attempts,
+                    error_codes=header_errors,
+                    error_count=len(header_errors),
+                )
+                layout_result = SourceLayoutResult(
+                    layout_result.layout,
+                    "verified",
+                    header_errors,
+                )
         if (
             layout_result.status == "verified"
             and not has_usable_tailoring_semantics(layout_result.layout)
@@ -993,9 +1035,17 @@ async def parse_resume_text(resume_text: str) -> ParsedResumeResult:
                 error_codes=("zero_usable_semantic_annotation",),
                 error_count=1,
             )
-            if (selector_attempts if selector_mode else profile_attempts) >= (
-                selector_attempt_limit if selector_mode else _MAX_PROFILE_CONTRACT_ATTEMPTS
-            ):
+            if header_errors and selector_mode:
+                zero_semantic_limit = 1
+            elif header_errors:
+                zero_semantic_limit = 2
+            else:
+                zero_semantic_limit = (
+                    selector_attempt_limit
+                    if selector_mode
+                    else _MAX_PROFILE_CONTRACT_ATTEMPTS
+                )
+            if (selector_attempts if selector_mode else profile_attempts) >= zero_semantic_limit:
                 raise ValueError(
                     "Resume source layout has zero usable semantic annotation"
                 )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -424,6 +425,48 @@ async def test_invalid_source_fails_before_persistence(
         )
     assert repository.added_resume is None
     assert repository.added_source is None
+
+
+@pytest.mark.asyncio
+async def test_parser_imports_readable_resume_when_header_line_is_unclassified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = (
+        "Ada Example\n123 Main Street\nPROFESSIONAL EXPERIENCE\n"
+        "Acme - Engineer\n• Built APIs"
+    )
+    payload = {
+        "full_name": "Ada Example",
+        "work_history": [{"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}],
+        "source_references": {
+            "contact": {"name": "c0"},
+            "section_headings": {"work_history": "c2"},
+            "work_history": [{"header": "c3", "highlights": ["c4"]}],
+        },
+    }
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
+    monkeypatch.setattr(
+        resume_parser,
+        "llm_chat_completion",
+        AsyncMock(return_value=(response, "test-model")),
+    )
+
+    result = await resume_parser.parse_resume_text(raw_text)
+
+    assert result.source_validation_status == "verified"
+    assert result.source_layout_status == "verified"
+    assert result.source_content is not None
+    source_content = cast(SourceResumeContentPayloadV5, result.source_content)
+    assert source_content.layout_validation_status == "verified"
+    assert source_content.layout_validation_errors == ["missing_source_header_candidates"]
+    layout = cast(SourceResumeLayoutReferencesV4, source_content.document.layout)
+    assert layout is not None
+    candidates = {
+        candidate.text: candidate.source_id for candidate in source_content.document.candidates
+    }
+    assert candidates["123 Main Street"] in layout.unclassified
 
 
 @pytest.mark.asyncio
