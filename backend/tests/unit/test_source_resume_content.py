@@ -1166,8 +1166,7 @@ def test_malformed_wrap_resume_keeps_continuations_inside_source_items() -> None
     role_a, role_b = document.work_history
 
     assert [item.text for item in role_a.context_items] == [
-        "Led the billing platform through a multi-year",
-        "modernization of core services.",
+        "Led the billing platform through a multi-year modernization of core services."
     ]
     assert role_a.responsibilities_heading is not None
     assert role_a.responsibilities_heading.text == "Responsibilities"
@@ -1263,6 +1262,101 @@ def test_ledger_joins_unindented_lowercase_bullet_continuation() -> None:
     assert ledger.candidates[1].kind == "bullet"
 
 
+def test_ledger_does_not_join_lowercase_prose_after_complete_bullet() -> None:
+    raw = (
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Built the synchronization process.\n\n"
+        "including operational analysis was a separate part of the role.\n"
+    )
+    ledger = build_source_candidate_ledger(raw)
+    assert [candidate.text for candidate in ledger.candidates] == [
+        "PROFESSIONAL EXPERIENCE",
+        "Built the synchronization process.",
+        "including operational analysis was a separate part of the role.",
+    ]
+    assert [candidate.kind for candidate in ledger.candidates] == [
+        "heading",
+        "bullet",
+        "text",
+    ]
+    assert verify_source_candidate_ledger(ledger, raw) == ()
+
+
+def test_complete_bullet_lowercase_prose_is_unclassified_not_context() -> None:
+    _, _, document = _materialize_canonical_roles(
+        "PROFESSIONAL EXPERIENCE\n"
+        "Northwind Analytics - Platform Engineer\n"
+        "• Built the synchronization process.\n\n"
+        "including operational analysis was a separate part of the role.\n"
+        "• Added checkout monitors.\n",
+        "Northwind Analytics - Platform Engineer",
+    )
+    role = document.work_history[0]
+    leftover = "including operational analysis was a separate part of the role."
+    assert [item.text for item in role.highlights] == [
+        "Built the synchronization process.",
+        "Added checkout monitors.",
+    ]
+    assert leftover not in [item.text for item in role.context_items]
+    assert leftover not in [item.text for item in role.highlights]
+    assert [item.text for item in document.unclassified] == [leftover]
+
+
+def test_ledger_does_not_join_lowercase_list_item_to_preceding_bullet() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Built the synchronization process.\n"
+        "- added monitoring for failed retries.\n"
+        "1. documented the cutover checklist.\n"
+    )
+    assert [candidate.kind for candidate in ledger.candidates] == [
+        "heading",
+        "bullet",
+        "bullet",
+        "bullet",
+    ]
+    assert [candidate.text for candidate in ledger.candidates[1:]] == [
+        "Built the synchronization process.",
+        "added monitoring for failed retries.",
+        "documented the cutover checklist.",
+    ]
+
+
+def test_work_history_narrative_wrap_becomes_one_logical_context_item() -> None:
+    raw = (
+        "PROFESSIONAL EXPERIENCE\n"
+        "Senior Engineer\n"
+        "Worked across backend services and\n"
+        "internal warehouse automation systems.\n"
+        "Responsibilities\n"
+        "• Built API integrations for billing.\n"
+    )
+    ledger, _, document = _materialize_canonical_roles(raw, "Senior Engineer")
+    role = document.work_history[0]
+    assert [item.text for item in role.context_items] == [
+        "Worked across backend services and internal warehouse automation systems."
+    ]
+    narrative = role.context_items[0]
+    source = next(
+        candidate
+        for candidate in ledger.candidates
+        if candidate.source_id == narrative.source_id
+    )
+    assert source.kind == "text"
+    assert raw[source.start_offset:source.end_offset].startswith(
+        "Worked across backend services and"
+    )
+    assert raw[source.start_offset:source.end_offset].endswith(
+        "internal warehouse automation systems."
+    )
+    assert "internal warehouse automation systems." not in [
+        item.text
+        for item in ledger.candidates
+        if item.source_id != narrative.source_id
+    ]
+    assert verify_source_candidate_ledger(ledger, raw) == ()
+
+
 def test_ledger_joins_hyphenated_bullet_continuation() -> None:
     ledger = build_source_candidate_ledger(
         "PROFESSIONAL EXPERIENCE\n"
@@ -1326,8 +1420,7 @@ def test_narrative_wrap_stays_narrative_and_does_not_become_a_bullet() -> None:
     )
     role = document.work_history[0]
     assert [item.text for item in role.context_items] == [
-        "Led the billing platform through a multi-year",
-        "modernization of core services.",
+        "Led the billing platform through a multi-year modernization of core services."
     ]
     assert [item.text for item in role.highlights] == [
         "Added service-level monitors for checkout."

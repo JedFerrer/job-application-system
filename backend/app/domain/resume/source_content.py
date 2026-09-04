@@ -212,6 +212,24 @@ _SOURCE_HEADINGS = {
     "projects", "languages", "licenses", "innovation & side projects",
     "innovation and side projects",
 }
+_HEADING_SECTIONS = {
+    "professional summary": "summary",
+    "summary": "summary",
+    "technical stack": "skills",
+    "technical skills": "skills",
+    "professional experience": "work_history",
+    "work experience": "work_history",
+    "experience": "work_history",
+    "education": "education",
+    "certifications": "certifications",
+    "awards and achievements": "named",
+    "awards & achievements": "named",
+    "projects": "projects",
+    "languages": "languages",
+    "licenses": "licenses",
+    "innovation & side projects": "named",
+    "innovation and side projects": "named",
+}
 
 
 _ROLE_HEADER_SEPARATOR_RE = re.compile(r"\s[-–—|]\s")
@@ -257,14 +275,18 @@ def _previous_looks_like_wrap(previous_text: str) -> bool:
     )
 
 
-def _is_compatible_bullet_continuation(
+def _previous_looks_complete(previous_text: str) -> bool:
+    return normalize_source_text(previous_text).rstrip().endswith((".", "!", "?"))
+
+
+def _is_compatible_continuation(
     raw_text: str,
     previous_start: int,
     previous_end: int,
     next_start: int,
     next_end: int,
 ) -> bool:
-    """Attach a wrap only to the immediately preceding structurally compatible bullet."""
+    """Attach a wrap only to the immediately preceding structurally compatible item."""
     next_text = normalize_source_text(raw_text[next_start:next_end])
     folded = next_text.casefold().strip()
     if (
@@ -276,11 +298,29 @@ def _is_compatible_bullet_continuation(
         return False
     indented = raw_text[next_start:next_end] != raw_text[next_start:next_end].lstrip(" \t")
     previous_text = normalize_source_text(raw_text[previous_start:previous_end])
-    return bool(
-        indented
-        or _previous_looks_like_wrap(previous_text)
-        or _starts_with_lowercase_alpha(next_text)
+    if indented or _previous_looks_like_wrap(previous_text):
+        return True
+    return _starts_with_lowercase_alpha(next_text) and not _previous_looks_complete(
+        previous_text
     )
+
+
+def _extend_compatible_span(
+    raw_text: str,
+    physical: list[tuple[int, int]],
+    start: int,
+    last_end: int,
+    index: int,
+) -> tuple[int, int]:
+    while index < len(physical):
+        next_start, next_end = physical[index]
+        if not _is_compatible_continuation(
+            raw_text, start, last_end, next_start, next_end
+        ):
+            break
+        last_end = next_end
+        index += 1
+    return last_end, index
 
 
 def _logical_source_spans(raw_text: str) -> list[tuple[int, int]]:
@@ -288,6 +328,7 @@ def _logical_source_spans(raw_text: str) -> list[tuple[int, int]]:
     physical = _raw_line_spans(raw_text)
     grouped: list[tuple[int, int]] = []
     index = 0
+    current_section: str | None = None
     while index < len(physical):
         start, end = physical[index]
         text = normalize_source_text(raw_text[start:end]).casefold().strip()
@@ -295,19 +336,19 @@ def _logical_source_spans(raw_text: str) -> list[tuple[int, int]]:
         is_bullet = _is_list_marker(raw_text, start, end)
         if is_heading:
             grouped.append((start, end))
+            current_section = _HEADING_SECTIONS.get(text)
             index += 1
             continue
         if is_bullet:
-            last_end = end
-            index += 1
-            while index < len(physical):
-                next_start, next_end = physical[index]
-                if not _is_compatible_bullet_continuation(
-                    raw_text, start, last_end, next_start, next_end
-                ):
-                    break
-                last_end = next_end
-                index += 1
+            last_end, index = _extend_compatible_span(
+                raw_text, physical, start, end, index + 1
+            )
+            grouped.append((start, last_end))
+            continue
+        if current_section == "work_history":
+            last_end, index = _extend_compatible_span(
+                raw_text, physical, start, end, index + 1
+            )
             grouped.append((start, last_end))
             continue
         grouped.append((start, end))
