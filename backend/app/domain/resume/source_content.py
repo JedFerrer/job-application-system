@@ -214,9 +214,73 @@ _SOURCE_HEADINGS = {
 }
 
 
+_ROLE_HEADER_SEPARATOR_RE = re.compile(r"\s[-–—|]\s")
+_ROLE_HEADER_DATE_RANGE_RE = re.compile(
+    r"\b(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|present|current)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_list_marker(raw_text: str, start: int, end: int) -> bool:
     line = raw_text[start:end].lstrip(" \t")
     return re.match(r"(?:[•*]|[-–—]|\d+[.)])[ \t]+", line) is not None
+
+
+def _is_responsibilities_heading_text(text: str) -> bool:
+    return "responsibilit" in text.casefold()
+
+
+def _looks_like_role_header(text: str) -> bool:
+    """Reject only structurally header-like lines; never match resume wording."""
+    stripped = normalize_source_text(text)
+    if not stripped:
+        return False
+    first = next((character for character in stripped if character.isalnum()), "")
+    if not first.isalpha() or not first.isupper():
+        return False
+    return bool(
+        _ROLE_HEADER_SEPARATOR_RE.search(stripped)
+        or _ROLE_HEADER_DATE_RANGE_RE.search(stripped)
+    )
+
+
+def _starts_with_lowercase_alpha(text: str) -> bool:
+    stripped = normalize_source_text(text)
+    first = next((character for character in stripped if not character.isspace()), "")
+    return first.isalpha() and first.islower()
+
+
+def _previous_looks_like_wrap(previous_text: str) -> bool:
+    previous = previous_text.casefold().rstrip()
+    return previous.endswith((",", ";", ":", "-")) or previous.endswith(
+        (" and", " or", " with", " to")
+    )
+
+
+def _is_compatible_bullet_continuation(
+    raw_text: str,
+    previous_start: int,
+    previous_end: int,
+    next_start: int,
+    next_end: int,
+) -> bool:
+    """Attach a wrap only to the immediately preceding structurally compatible bullet."""
+    next_text = normalize_source_text(raw_text[next_start:next_end])
+    folded = next_text.casefold().strip()
+    if (
+        folded in _SOURCE_HEADINGS
+        or _is_list_marker(raw_text, next_start, next_end)
+        or _is_responsibilities_heading_text(next_text)
+        or _looks_like_role_header(next_text)
+    ):
+        return False
+    indented = raw_text[next_start:next_end] != raw_text[next_start:next_end].lstrip(" \t")
+    previous_text = normalize_source_text(raw_text[previous_start:previous_end])
+    return bool(
+        indented
+        or _previous_looks_like_wrap(previous_text)
+        or _starts_with_lowercase_alpha(next_text)
+    )
 
 
 def _logical_source_spans(raw_text: str) -> list[tuple[int, int]]:
@@ -238,13 +302,9 @@ def _logical_source_spans(raw_text: str) -> list[tuple[int, int]]:
             index += 1
             while index < len(physical):
                 next_start, next_end = physical[index]
-                next_text = normalize_source_text(raw_text[next_start:next_end]).casefold().strip()
-                if next_text in _SOURCE_HEADINGS or _is_list_marker(raw_text, next_start, next_end):
-                    break
-                previous_text = normalize_source_text(raw_text[start:last_end]).casefold().rstrip()
-                unindented = raw_text[next_start:next_end] == raw_text[next_start:next_end].lstrip(" \t")
-                likely_wrap = previous_text.endswith((",", ";", ":")) or previous_text.endswith((" and", " or", " with", " to"))
-                if unindented and not likely_wrap:
+                if not _is_compatible_bullet_continuation(
+                    raw_text, start, last_end, next_start, next_end
+                ):
                     break
                 last_end = next_end
                 index += 1
@@ -1084,6 +1144,39 @@ def materialize_source_document_v3(
     )
 
 
+def _reconstruct_role_source_items(
+    body: list[SourceResumeCandidate],
+    responsibilities: str | None,
+) -> tuple[list[str], list[str]]:
+    """Classify one role body from source order without inventing membership.
+
+    Bullet wraps are joined before this step. Leftover text after a heading or
+    bullet is left unassigned so the resolver can preserve it as unclassified
+    instead of promoting it to role prose.
+    """
+    bullet_items = [item for item in body if item.kind == "bullet"]
+    if not bullet_items:
+        # Plain-text extracts often lose list markers; retain those
+        # role statements as selectable highlights rather than dropping
+        # all tailoring semantics.
+        return [], [
+            f"c{item.order}"
+            for item in body
+            if f"c{item.order}" != responsibilities
+        ]
+
+    context: list[str] = []
+    seen_boundary = False
+    for item in body:
+        alias = f"c{item.order}"
+        if alias == responsibilities or item.kind in {"bullet", "heading"}:
+            seen_boundary = True
+            continue
+        if not seen_boundary and item.kind == "text":
+            context.append(alias)
+    return context, [f"c{item.order}" for item in bullet_items]
+
+
 def canonicalize_source_layout_v5(
     raw_layout: object,
     ledger: SourceResumeContentDocumentV2,
@@ -1174,28 +1267,15 @@ def canonicalize_source_layout_v5(
                 ),
                 None,
             )
-            bullet_items = [item for item in body if item.kind == "bullet"]
-            has_explicit_bullets = bool(bullet_items)
-            if not has_explicit_bullets:
-                # Plain-text extracts often lose list markers; retain those
-                # role statements as selectable highlights rather than dropping
-                # all tailoring semantics.
-                bullet_items = [
-                    item for item in body
-                    if f"c{item.order}" != responsibilities
-                ]
+            context_aliases, highlight_aliases = _reconstruct_role_source_items(
+                body, responsibilities
+            )
             rebuilt_roles.append({
                 "order": index,
                 "header": alias,
-                "context": [
-                    f"c{item.order}"
-                    for item in body
-                    if has_explicit_bullets
-                    and item.kind == "text"
-                    and f"c{item.order}" != responsibilities
-                ],
+                "context": context_aliases,
                 "responsibilities_heading": responsibilities,
-                "highlights": [f"c{item.order}" for item in bullet_items],
+                "highlights": highlight_aliases,
             })
         result["work_history"] = rebuilt_roles
 
