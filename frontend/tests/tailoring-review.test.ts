@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createReviewState, mappingIsValid, reviewItems, reviewedResume, sourceOnlyResume, wordDiff } from "@/lib/tailoring-review";
+import { createReviewState, mappingIsValid, reviewItems, reviewedResume, reviewStateIsDirty, sourceOnlyResume, wordDiff } from "@/lib/tailoring-review";
 import type { TailoredResume } from "@/lib/types";
 
 const resume = (tailored = ["Built Python APIs", "Built Python APIs"]): TailoredResume => ({
@@ -206,5 +206,49 @@ describe("tailoring review", () => {
     expect(restored.work_history[0]!.selection_decisions?.[0]?.final_text).toBe("Original");
     expect(restored.work_history[0]!.selection_decisions?.[1]?.final_included).toBe(false);
     expect(restored.work_history[0]!.tailored_highlight_source_indices).toEqual([0, 2]);
+    expect(reviewStateIsDirty(reopened)).toBe(false);
+  });
+
+  it("does not treat a no-rewrite decision as Keep Original", () => {
+    const source = resume(["Same", "Other"]);
+    source.work_history[0] = {
+      ...source.work_history[0]!,
+      original_highlights: ["Same", "Other"],
+      tailored_highlights: ["Same", "Other"],
+      tailored_highlight_source_indices: [0, 1],
+      selection_decisions: [
+        { source_id: "00000000-0000-0000-0000-000000000001", source_index: 0, canonical_order: 0, original_text: "Same", suggested_text: "Same", final_text: "Same", recommended_included: true, final_included: true, recommendation_rank: 0, output_rank: 0 },
+        { source_id: "00000000-0000-0000-0000-000000000002", source_index: 1, canonical_order: 1, original_text: "Other", suggested_text: "Other", final_text: "Other", recommended_included: true, final_included: true, recommendation_rank: 1, output_rank: 1 },
+      ],
+    };
+    const state = createReviewState(source);
+    expect(state.rejected.size).toBe(0);
+    expect(reviewedResume(state).work_history[0]!.tailored_highlights).toEqual(["Same", "Other"]);
+    expect(reviewStateIsDirty(state)).toBe(false);
+  });
+
+  it("treats a reopened Keep Original draft as clean until wording or inclusion changes", () => {
+    const source = resume(["Suggested", "Other"]);
+    source.work_history[0] = {
+      ...source.work_history[0]!,
+      original_highlights: ["Original", "Other"],
+      tailored_highlights: ["Original", "Other"],
+      tailored_highlight_source_indices: [0, 1],
+      selection_decisions: [
+        { source_id: "00000000-0000-0000-0000-000000000001", source_index: 0, canonical_order: 0, original_text: "Original", suggested_text: "Suggested", final_text: "Original", recommended_included: true, final_included: true, recommendation_rank: 0, output_rank: 0 },
+        { source_id: "00000000-0000-0000-0000-000000000002", source_index: 1, canonical_order: 1, original_text: "Other", suggested_text: "Other", final_text: "Other", recommended_included: true, final_included: true, recommendation_rank: 1, output_rank: 1 },
+      ],
+    };
+    const reopened = createReviewState(source);
+    expect(reopened.rejected.has("0:0")).toBe(true);
+    expect(reviewStateIsDirty(reopened)).toBe(false);
+
+    reopened.rejected.delete("0:0");
+    expect(reviewStateIsDirty(reopened)).toBe(true);
+
+    reopened.rejected.add("0:0");
+    expect(reviewStateIsDirty(reopened)).toBe(false);
+    reopened.finalIncluded.delete("0:1");
+    expect(reviewStateIsDirty(reopened)).toBe(true);
   });
 });

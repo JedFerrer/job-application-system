@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { resumeApi } from "@/lib/api";
 import { buildResumeHeaderItems, buildResumeRenderModel, downloadResumeDocx, downloadResumePdf, formatResumeText, resumeSectionHeading } from "@/lib/cover-letter-export";
 import type { RequirementClassification, TailoredCanonicalSection, TailoredEvidenceReference, TailoredResume } from "@/lib/types";
-import { createReviewState, decisionItems, reviewItems, reviewedResume, sourceOnlyResume, sourceSkillOrder, summaryReview, wordDiff, type ReviewItem, type ReviewState } from "@/lib/tailoring-review";
+import { createReviewState, decisionItems, reviewItems, reviewedResume, reviewStateIsDirty, sourceOnlyResume, sourceSkillOrder, summaryReview, wordDiff, type ReviewItem, type ReviewState } from "@/lib/tailoring-review";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -82,7 +82,7 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   useEffect(() => { if (open && !readOnly) { generateMutation.reset(); setDraftData(initialData); setReviewState(null); } }, [open, readOnly, jobId]);
   useEffect(() => { if (generatedData && items) setReviewState(createReviewState(generatedData)); }, [generatedData, items, readOnly]);
   useEffect(() => setCoverageAnalysis(generatedData?.requirement_classifications ?? null), [generatedData]);
-  const data = generatedData ? (!readOnly && !items ? sourceOnlyResume(generatedData) : reviewState ? reviewedResume(reviewState) : generatedData) : null;
+  const data = generatedData ? (!readOnly && !items ? sourceOnlyResume(generatedData) : !readOnly && reviewState ? reviewedResume(reviewState) : generatedData) : null;
   const canonical: DisplaySection[] = data ? displaySections(data) : [];
   const hasCanonical = Boolean(data?.canonical_sections?.length);
   const headerPreview = data ? buildResumeHeaderItems(data) : [];
@@ -107,7 +107,7 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   const toggleSummary = () => setReviewState((current) => { if (!current) return current; const next = { ...current, summaryRejected: !current.summaryRejected }; refreshCoverage(reviewedResume(next)); return next; });
   const restoreSkillOrder = () => setReviewState((current) => { if (!current) return current; const next = { ...current, skillsSourceOrder: !current.skillsSourceOrder }; refreshCoverage(reviewedResume(next)); return next; });
   const includeAll = () => setReviewState((current) => { if (!current) return current; const finalIncluded = new Set<string>(); current.source.work_history.forEach((role, roleIndex) => (role.selection_decisions ?? []).forEach((decision) => finalIncluded.add(`${roleIndex}:${decision.source_index}`))); const next = { ...current, finalIncluded }; refreshCoverage(reviewedResume(next)); return next; });
-  const generate = () => { if (readOnly || jobId == null) return; const dirty = Boolean(reviewState?.summaryRejected || reviewState?.skillsSourceOrder) || (reviewState?.source.work_history.some((role, roleIndex) => (role.selection_decisions ?? []).some((decision) => reviewState.finalIncluded.has(`${roleIndex}:${decision.source_index}`) !== decision.final_included || reviewState.rejected.has(`${roleIndex}:${decision.source_index}`))) ?? false); if (dirty && !window.confirm("Regenerate and discard your unsaved review choices?")) return; generateMutation.reset(); generateMutation.mutate(); };
+  const generate = () => { if (readOnly || jobId == null) return; const dirty = reviewState ? reviewStateIsDirty(reviewState) : false; if (dirty && !window.confirm("Regenerate and discard your unsaved review choices?")) return; generateMutation.reset(); generateMutation.mutate(); };
   const ensureExportable = async (): Promise<TailoredResume | null> => { if (!data) return null; if (data.requires_regeneration) { toast.error("This resume must be re-generated after the source resume changes."); return null; } const sourceBacked = data.tailoring_snapshot_version === "lossless-complete-v2" || data.tailoring_snapshot_version === "full-context-v1"; if (data.canonical_sections?.length && data.tailoring_snapshot_version === "full-resume-v1") { toast.error("This saved resume must be re-generated before export."); return null; } if (!sourceBacked) return data; try { return await exportValidationMutation.mutateAsync(data); } catch { toast.error("This resume must be re-generated after the source resume changes."); return null; } };
   const copy = async () => { const validated = await ensureExportable(); if (validated) navigator.clipboard.writeText(formatResumeText(validated)).then(() => toast.success("Copied to clipboard"), () => toast.error("Copy failed")); };
   const exportPdf = async () => { const validated = await ensureExportable(); if (validated) downloadResumePdf(validated, stem); };

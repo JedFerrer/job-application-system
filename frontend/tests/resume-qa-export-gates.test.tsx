@@ -103,6 +103,44 @@ describe("Phase 4 QA export gates", () => {
     expect(container.textContent).not.toMatch(/Use suggestion/);
   });
 
+  it("preserves persisted output_rank on a read-only saved draft", async () => {
+    const source = qaWrapResume();
+    const decisions = source.work_history[0]!.selection_decisions!;
+    const kept = {
+      ...decisions[0]!,
+      final_text: decisions[0]!.original_text,
+      output_rank: 1,
+    };
+    const omitted = { ...decisions[1]!, final_included: false, output_rank: null };
+    const first = { ...decisions[2]!, output_rank: 0 };
+    const saved = {
+      ...source,
+      work_history: [{
+        ...source.work_history[0]!,
+        tailored_highlights: [first.final_text, kept.final_text],
+        tailored_highlight_source_indices: [2, 0],
+        selection_decisions: [kept, omitted, first],
+      }, source.work_history[1]!],
+    };
+    expect(reviewedResume(createReviewState(saved)).work_history[0]!.tailored_highlights).toEqual([
+      kept.final_text,
+      first.final_text,
+    ]);
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    apiMocks.validateExport.mockImplementation(async (content: unknown) => content);
+    await renderDialog(saved);
+    await vi.waitFor(() => expect(container.textContent).toContain("Original kept"));
+    expect(container.textContent!.indexOf(first.final_text)).toBeLessThan(container.textContent!.indexOf(kept.final_text));
+
+    await clickLabel("Copy all");
+    expect(writeText).toHaveBeenCalled();
+    const copied = String(writeText.mock.calls[0]?.[0] ?? "");
+    expect(copied.indexOf(first.final_text)).toBeLessThan(copied.indexOf(kept.final_text));
+    expect(exportMocks.downloadResumePdf).not.toHaveBeenCalled();
+  });
+
   it("keeps an unsafe source-backed draft readable and blocks copy/PDF/DOCX when export validation fails", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });

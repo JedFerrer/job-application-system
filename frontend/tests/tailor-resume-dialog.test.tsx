@@ -810,4 +810,137 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).toContain("Built APIs");
     expect(renderedText()).not.toMatch(/Use suggestion/);
   });
+
+  it("preserves persisted output order on a read-only saved draft", async () => {
+    const first = "Persisted first bullet";
+    const second = "Persisted recommended bullet";
+    const saved = {
+      ...tailoredResume,
+      work_history: [{
+        ...tailoredResume.work_history[0]!,
+        original_highlights: [first, second],
+        tailored_highlights: [first, second],
+        tailored_highlight_source_indices: [0, 1],
+        selection_decisions: [
+          {
+            source_id: "00000000-0000-0000-0000-000000000001",
+            source_index: 0,
+            canonical_order: 0,
+            original_text: first,
+            suggested_text: first,
+            final_text: first,
+            recommended_included: false,
+            final_included: true,
+            recommendation_rank: null,
+            output_rank: 0,
+          },
+          {
+            source_id: "00000000-0000-0000-0000-000000000002",
+            source_index: 1,
+            canonical_order: 1,
+            original_text: second,
+            suggested_text: second,
+            final_text: second,
+            recommended_included: true,
+            final_included: true,
+            recommendation_rank: 0,
+            output_rank: 1,
+          },
+        ],
+      }],
+    };
+    expect(reviewedResume(createReviewState(saved)).work_history[0]!.tailored_highlights).toEqual([second, first]);
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} initialData={saved} readOnly />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => expect(renderedText()).toContain(first));
+    expect(renderedText().indexOf(first)).toBeLessThan(renderedText().indexOf(second));
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"))?.click();
+      await Promise.resolve();
+    });
+    expect(writeText).toHaveBeenCalled();
+    const copied = String(writeText.mock.calls[0]?.[0] ?? "");
+    expect(copied.indexOf(first)).toBeLessThan(copied.indexOf(second));
+  });
+
+  it("preserves saved original wording on editable reopen until the reviewer changes it", async () => {
+    const saved = {
+      ...tailoredResume,
+      work_history: [{
+        ...tailoredResume.work_history[0]!,
+        original_highlights: ["Built APIs", "Shipped dashboards"],
+        tailored_highlights: ["Built APIs", "Shipped dashboards"],
+        tailored_highlight_source_indices: [0, 1],
+        selection_decisions: [
+          {
+            source_id: "00000000-0000-0000-0000-000000000001",
+            source_index: 0,
+            canonical_order: 0,
+            original_text: "Built APIs",
+            suggested_text: "Built Python APIs",
+            final_text: "Built APIs",
+            recommended_included: true,
+            final_included: true,
+            recommendation_rank: 0,
+            output_rank: 0,
+          },
+          {
+            source_id: "00000000-0000-0000-0000-000000000002",
+            source_index: 1,
+            canonical_order: 1,
+            original_text: "Shipped dashboards",
+            suggested_text: "Shipped dashboards",
+            final_text: "Shipped dashboards",
+            recommended_included: true,
+            final_included: true,
+            recommendation_rank: 1,
+            output_rank: 1,
+          },
+        ],
+      }],
+    };
+    apiMocks.createDraft.mockResolvedValue({ content: saved });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} initialData={saved} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => expect(renderedText()).toContain("Original kept"));
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"))?.click();
+      await Promise.resolve();
+    });
+    expect(apiMocks.createDraft.mock.calls[0]?.[0].content.work_history[0].tailored_highlights).toEqual([
+      "Built APIs",
+      "Shipped dashboards",
+    ]);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Use suggestion"))?.click();
+      await Promise.resolve();
+    });
+    expect(renderedText()).not.toContain("Original kept");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"))?.click();
+      await Promise.resolve();
+    });
+    expect(apiMocks.createDraft.mock.calls[1]?.[0].content.work_history[0].tailored_highlights).toEqual([
+      "Built Python APIs",
+      "Shipped dashboards",
+    ]);
+  });
 });

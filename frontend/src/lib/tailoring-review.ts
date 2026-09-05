@@ -68,6 +68,11 @@ export function reviewItems(data: TailoredResume): ReviewItem[][] | null {
   );
 }
 
+function wordingWasRestored(decision: { original_text: string; suggested_text: string; final_text: string }): boolean {
+  return decision.suggested_text !== decision.original_text
+    && decision.final_text === decision.original_text;
+}
+
 export function createReviewState(data: TailoredResume): ReviewState {
   const finalIncluded = new Set<string>();
   const rejected = new Set<string>();
@@ -80,12 +85,7 @@ export function createReviewState(data: TailoredResume): ReviewState {
     for (const decision of role.selection_decisions ?? []) {
       const key = decisionKey(roleIndex, decision.source_index);
       if (decision.final_included) finalIncluded.add(key);
-      if (
-        decision.suggested_text !== decision.original_text
-        && decision.final_text === decision.original_text
-      ) {
-        rejected.add(key);
-      }
+      if (wordingWasRestored(decision)) rejected.add(key);
     }
   }
   return {
@@ -95,6 +95,17 @@ export function createReviewState(data: TailoredResume): ReviewState {
     summaryRejected: false,
     skillsSourceOrder: false,
   };
+}
+
+export function reviewStateIsDirty(state: ReviewState): boolean {
+  if (state.summaryRejected || state.skillsSourceOrder) return true;
+  return state.source.work_history.some((role, roleIndex) =>
+    (role.selection_decisions ?? []).some((decision) => {
+      const key = decisionKey(roleIndex, decision.source_index);
+      return state.finalIncluded.has(key) !== decision.final_included
+        || state.rejected.has(key) !== wordingWasRestored(decision);
+    }),
+  );
 }
 
 function sourceSummary(data: TailoredResume): string | null {

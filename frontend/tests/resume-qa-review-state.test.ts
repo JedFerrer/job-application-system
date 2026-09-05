@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createReviewState, reviewedResume } from "@/lib/tailoring-review";
+import { createReviewState, reviewedResume, reviewStateIsDirty } from "@/lib/tailoring-review";
 import { qaWrapResume } from "./fixtures/tailored-resume-qa";
 
 describe("Phase 4 QA review-state contracts", () => {
@@ -61,5 +61,30 @@ describe("Phase 4 QA review-state contracts", () => {
     expect(reopened.work_history[0]!.selection_decisions![0]!.final_text).toBe(original);
     expect(reopened.work_history[0]!.selection_decisions![1]!.final_included).toBe(false);
     expect(reopened.work_history[0]!.tailored_highlight_source_indices).toEqual([0, 2]);
+    expect(reviewStateIsDirty(createReviewState(saved))).toBe(false);
+  });
+
+  it("does not treat a no-rewrite decision as Keep Original", () => {
+    const state = createReviewState(qaWrapResume());
+    expect(state.rejected.has("0:0")).toBe(false);
+    expect(state.rejected.has("0:1")).toBe(false);
+    expect(state.rejected.has("1:0")).toBe(false);
+  });
+
+  it("marks a reopened Keep Original draft dirty only after wording or inclusion changes", () => {
+    const source = qaWrapResume();
+    const state = createReviewState(source);
+    state.rejected.add("0:0");
+    const reopened = createReviewState(reviewedResume(state));
+    expect(reopened.rejected.has("0:0")).toBe(true);
+    expect(reviewStateIsDirty(reopened)).toBe(false);
+
+    reopened.rejected.delete("0:0");
+    expect(reviewStateIsDirty(reopened)).toBe(true);
+
+    reopened.rejected.add("0:0");
+    expect(reviewStateIsDirty(reopened)).toBe(false);
+    reopened.finalIncluded.delete("0:1");
+    expect(reviewStateIsDirty(reopened)).toBe(true);
   });
 });
