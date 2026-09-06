@@ -212,6 +212,31 @@ _SOURCE_HEADINGS = {
     "projects", "languages", "licenses", "innovation & side projects",
     "innovation and side projects",
 }
+_HEADING_SECTIONS = {
+    "professional summary": "summary",
+    "summary": "summary",
+    "technical stack": "skills",
+    "technical skills": "skills",
+    "professional experience": "work_history",
+    "work experience": "work_history",
+    "experience": "work_history",
+    "education": "education",
+    "certifications": "certifications",
+    "awards and achievements": "named",
+    "awards & achievements": "named",
+    "projects": "projects",
+    "languages": "languages",
+    "licenses": "licenses",
+    "innovation & side projects": "named",
+    "innovation and side projects": "named",
+}
+
+
+_ROLE_HEADER_SEPARATOR_RE = re.compile(r"\s[-–—|]\s")
+_ROLE_HEADER_DATE_RANGE_RE = re.compile(
+    r"\b(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|present|current)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_list_marker(raw_text: str, start: int, end: int) -> bool:
@@ -219,11 +244,91 @@ def _is_list_marker(raw_text: str, start: int, end: int) -> bool:
     return re.match(r"(?:[•*]|[-–—]|\d+[.)])[ \t]+", line) is not None
 
 
+def _is_responsibilities_heading_text(text: str) -> bool:
+    return "responsibilit" in text.casefold()
+
+
+def _looks_like_role_header(text: str) -> bool:
+    """Reject only structurally header-like lines; never match resume wording."""
+    stripped = normalize_source_text(text)
+    if not stripped:
+        return False
+    first = next((character for character in stripped if character.isalnum()), "")
+    if not first.isalpha() or not first.isupper():
+        return False
+    return bool(
+        _ROLE_HEADER_SEPARATOR_RE.search(stripped)
+        or _ROLE_HEADER_DATE_RANGE_RE.search(stripped)
+    )
+
+
+def _starts_with_lowercase_alpha(text: str) -> bool:
+    stripped = normalize_source_text(text)
+    first = next((character for character in stripped if not character.isspace()), "")
+    return first.isalpha() and first.islower()
+
+
+def _previous_looks_like_wrap(previous_text: str) -> bool:
+    previous = previous_text.casefold().rstrip()
+    return previous.endswith((",", ";", ":", "-")) or previous.endswith(
+        (" and", " or", " with", " to")
+    )
+
+
+def _previous_looks_complete(previous_text: str) -> bool:
+    return normalize_source_text(previous_text).rstrip().endswith((".", "!", "?"))
+
+
+def _is_compatible_continuation(
+    raw_text: str,
+    previous_start: int,
+    previous_end: int,
+    next_start: int,
+    next_end: int,
+) -> bool:
+    """Attach a wrap only to the immediately preceding structurally compatible item."""
+    next_text = normalize_source_text(raw_text[next_start:next_end])
+    folded = next_text.casefold().strip()
+    if (
+        folded in _SOURCE_HEADINGS
+        or _is_list_marker(raw_text, next_start, next_end)
+        or _is_responsibilities_heading_text(next_text)
+        or _looks_like_role_header(next_text)
+    ):
+        return False
+    indented = raw_text[next_start:next_end] != raw_text[next_start:next_end].lstrip(" \t")
+    previous_text = normalize_source_text(raw_text[previous_start:previous_end])
+    if indented or _previous_looks_like_wrap(previous_text):
+        return True
+    return _starts_with_lowercase_alpha(next_text) and not _previous_looks_complete(
+        previous_text
+    )
+
+
+def _extend_compatible_span(
+    raw_text: str,
+    physical: list[tuple[int, int]],
+    start: int,
+    last_end: int,
+    index: int,
+) -> tuple[int, int]:
+    while index < len(physical):
+        next_start, next_end = physical[index]
+        if not _is_compatible_continuation(
+            raw_text, start, last_end, next_start, next_end
+        ):
+            break
+        last_end = next_end
+        index += 1
+    return last_end, index
+
+
 def _logical_source_spans(raw_text: str) -> list[tuple[int, int]]:
     """Group visual wraps into logical source statements without crossing headings."""
     physical = _raw_line_spans(raw_text)
     grouped: list[tuple[int, int]] = []
     index = 0
+    current_section: str | None = None
     while index < len(physical):
         start, end = physical[index]
         text = normalize_source_text(raw_text[start:end]).casefold().strip()
@@ -231,23 +336,19 @@ def _logical_source_spans(raw_text: str) -> list[tuple[int, int]]:
         is_bullet = _is_list_marker(raw_text, start, end)
         if is_heading:
             grouped.append((start, end))
+            current_section = _HEADING_SECTIONS.get(text)
             index += 1
             continue
         if is_bullet:
-            last_end = end
-            index += 1
-            while index < len(physical):
-                next_start, next_end = physical[index]
-                next_text = normalize_source_text(raw_text[next_start:next_end]).casefold().strip()
-                if next_text in _SOURCE_HEADINGS or _is_list_marker(raw_text, next_start, next_end):
-                    break
-                previous_text = normalize_source_text(raw_text[start:last_end]).casefold().rstrip()
-                unindented = raw_text[next_start:next_end] == raw_text[next_start:next_end].lstrip(" \t")
-                likely_wrap = previous_text.endswith((",", ";", ":")) or previous_text.endswith((" and", " or", " with", " to"))
-                if unindented and not likely_wrap:
-                    break
-                last_end = next_end
-                index += 1
+            last_end, index = _extend_compatible_span(
+                raw_text, physical, start, end, index + 1
+            )
+            grouped.append((start, last_end))
+            continue
+        if current_section == "work_history":
+            last_end, index = _extend_compatible_span(
+                raw_text, physical, start, end, index + 1
+            )
             grouped.append((start, last_end))
             continue
         grouped.append((start, end))
@@ -1020,6 +1121,66 @@ def materialize_source_document(
     )
 
 
+def repair_work_history_source_layout(
+    layout: SourceResumeLayoutReferencesV3,
+    candidates: list[SourceResumeCandidate],
+) -> SourceResumeLayoutReferencesV3:
+    """Reclassify post-boundary role context without minting new source IDs.
+
+    Persisted pre-Phase-1 layouts may still list leftover body text in
+    ``role.context``. Highlight membership and UUIDs stay untouched so review
+    decisions can keep using the same source identity.
+    """
+    by_id = {candidate.source_id: candidate for candidate in candidates}
+    rebuilt_roles: list[SourceResumeRoleReferencesV3] = []
+    moved: list[UUID] = []
+    for role in layout.work_history:
+        assigned = [
+            by_id[item_id]
+            for item_id in (
+                *role.context,
+                *([role.responsibilities_heading] if role.responsibilities_heading else []),
+                *role.highlights,
+            )
+            if item_id in by_id
+        ]
+        assigned.sort(key=lambda item: item.order)
+        boundary = next(
+            (
+                item.order
+                for item in assigned
+                if item.source_id == role.responsibilities_heading
+                or item.kind in {"bullet", "heading"}
+            ),
+            None,
+        )
+        kept: list[UUID] = []
+        seen: set[UUID] = set()
+        for item_id in role.context:
+            if item_id in seen:
+                continue
+            item = by_id.get(item_id)
+            if item is None:
+                continue
+            seen.add(item_id)
+            if role.highlights and boundary is not None and item.order >= boundary:
+                moved.append(item_id)
+            else:
+                kept.append(item_id)
+        kept.sort(key=lambda item_id: by_id[item_id].order)
+        rebuilt_roles.append(role.model_copy(update={"context": kept}))
+    existing = set(layout.unclassified)
+    moved_ids = {item_id for item_id in moved if item_id not in existing}
+    unclassified = [
+        candidate.source_id
+        for candidate in sorted(candidates, key=lambda item: item.order)
+        if candidate.source_id in existing or candidate.source_id in moved_ids
+    ]
+    return layout.model_copy(
+        update={"work_history": rebuilt_roles, "unclassified": unclassified}
+    )
+
+
 def materialize_source_document_v3(
     ledger: SourceResumeContentDocumentV3,
 ) -> SourceResumeDocument | None:
@@ -1030,7 +1191,7 @@ def materialize_source_document_v3(
         candidate.source_id: SourceTextItem.model_validate(candidate.model_dump())
         for candidate in ledger.candidates
     }
-    layout = ledger.layout
+    layout = repair_work_history_source_layout(ledger.layout, ledger.candidates)
 
     def item(candidate_id: UUID | None) -> SourceTextItem | None:
         return by_id.get(candidate_id) if candidate_id is not None else None
@@ -1041,7 +1202,7 @@ def materialize_source_document_v3(
             order=role.order,
             company=item(role.header),
             title=item(role.header),
-            context_items=[by_id[value] for value in role.context],
+            context_items=[by_id[value] for value in role.context if value in by_id],
             responsibilities_heading=item(role.responsibilities_heading),
             highlights=[by_id[value] for value in role.highlights],
         )
@@ -1082,6 +1243,39 @@ def materialize_source_document_v3(
         ],
         unclassified=[by_id[value] for value in layout.unclassified],
     )
+
+
+def _reconstruct_role_source_items(
+    body: list[SourceResumeCandidate],
+    responsibilities: str | None,
+) -> tuple[list[str], list[str]]:
+    """Classify one role body from source order without inventing membership.
+
+    Bullet wraps are joined before this step. Leftover text after a heading or
+    bullet is left unassigned so the resolver can preserve it as unclassified
+    instead of promoting it to role prose.
+    """
+    bullet_items = [item for item in body if item.kind == "bullet"]
+    if not bullet_items:
+        # Plain-text extracts often lose list markers; retain those
+        # role statements as selectable highlights rather than dropping
+        # all tailoring semantics.
+        return [], [
+            f"c{item.order}"
+            for item in body
+            if f"c{item.order}" != responsibilities
+        ]
+
+    context: list[str] = []
+    seen_boundary = False
+    for item in body:
+        alias = f"c{item.order}"
+        if alias == responsibilities or item.kind in {"bullet", "heading"}:
+            seen_boundary = True
+            continue
+        if not seen_boundary and item.kind == "text":
+            context.append(alias)
+    return context, [f"c{item.order}" for item in bullet_items]
 
 
 def canonicalize_source_layout_v5(
@@ -1174,28 +1368,15 @@ def canonicalize_source_layout_v5(
                 ),
                 None,
             )
-            bullet_items = [item for item in body if item.kind == "bullet"]
-            has_explicit_bullets = bool(bullet_items)
-            if not has_explicit_bullets:
-                # Plain-text extracts often lose list markers; retain those
-                # role statements as selectable highlights rather than dropping
-                # all tailoring semantics.
-                bullet_items = [
-                    item for item in body
-                    if f"c{item.order}" != responsibilities
-                ]
+            context_aliases, highlight_aliases = _reconstruct_role_source_items(
+                body, responsibilities
+            )
             rebuilt_roles.append({
                 "order": index,
                 "header": alias,
-                "context": [
-                    f"c{item.order}"
-                    for item in body
-                    if has_explicit_bullets
-                    and item.kind == "text"
-                    and f"c{item.order}" != responsibilities
-                ],
+                "context": context_aliases,
                 "responsibilities_heading": responsibilities,
-                "highlights": [f"c{item.order}" for item in bullet_items],
+                "highlights": highlight_aliases,
             })
         result["work_history"] = rebuilt_roles
 

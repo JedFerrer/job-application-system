@@ -6,6 +6,7 @@
 
 import { Document, Packer, Paragraph, TextRun } from "docx";
 import jsPDF from "jspdf";
+import { buildReviewedWorkHistory, type RenderedResumeRole } from "./reviewed-resume-render";
 import type { TailoredCanonicalSection, TailoredResume } from "./types";
 
 function buildFilename(stem: string, ext: string): string {
@@ -148,9 +149,11 @@ function resumeSummary(data: TailoredResume): string[] | null {
   return canonicalValues(data, "summary") ?? (data.professional_summary ? [data.professional_summary] : null);
 }
 
-function roleContext(role: TailoredResume["work_history"][number]): string | null {
-  if (!role.role_context?.length) return null;
-  return joinSourceLines(role.role_context);
+function renderedRoleHeader(role: RenderedResumeRole): string {
+  const title = role.title || "Role";
+  const company = role.company || "";
+  const date = dateRange(role.start, role.end);
+  return role.header || `${title} | ${company}${date ? ` | ${date}` : ""}`;
 }
 
 function canonicalHeaderItems(data: TailoredResume): string[] | null {
@@ -199,7 +202,7 @@ export interface ResumeRenderSection {
   items: string[];
   sourceIds?: string[];
   order: number;
-  roles?: TailoredResume["work_history"];
+  roles?: RenderedResumeRole[];
 }
 
 function sourceOrder(data: TailoredResume, sourceId?: string | null): number | null {
@@ -231,7 +234,7 @@ export function buildResumeRenderModel(data: TailoredResume): ResumeRenderSectio
       order: sourceOrder(data, section.items[0]?.source_id) ?? section.canonical_order ?? 0,
     }));
   const work = data.work_history.length
-    ? [{ section: "work_history" as const, heading: "PROFESSIONAL EXPERIENCE", items: [], roles: data.work_history, order: Math.min(...data.work_history.map((role, index) => workHistoryOrder(data, role, index))) }]
+    ? [{ section: "work_history" as const, heading: "PROFESSIONAL EXPERIENCE", items: [], roles: buildReviewedWorkHistory(data), order: Math.min(...data.work_history.map((role, index) => workHistoryOrder(data, role, index))) }]
     : [];
   if (canonical.length) return [...canonical, ...work].sort((a, b) => a.order - b.order);
   const fallback: ResumeRenderSection[] = [];
@@ -270,11 +273,10 @@ export function formatResumeText(data: TailoredResume): string {
     if (section.heading) lines.push(section.heading);
     if (section.section === "work_history") {
       for (const role of section.roles ?? []) {
-        lines.push(role.source_header || [role.title, role.company, dateRange(role.start, role.end)].filter(Boolean).join(" | ") || "Role");
-        const context = roleContext(role);
-        if (context) lines.push(context);
-        if (role.responsibilities_heading) lines.push(role.responsibilities_heading);
-        lines.push(...role.tailored_highlights.map((item) => `  • ${item}`), "");
+        lines.push(renderedRoleHeader(role));
+        if (role.narrative) lines.push(role.narrative);
+        if (role.responsibilityHeading) lines.push(role.responsibilityHeading);
+        lines.push(...role.bullets.map((item) => `  • ${item.text}`), "");
       }
       continue;
     }
@@ -373,14 +375,10 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
         writeSectionHeading(ctx, rendered.heading || "PROFESSIONAL EXPERIENCE");
         for (const role of rendered.roles) {
           ensureSpace(ctx, LINE_H + 2);
-          const title = role.title || "Role";
-          const company = role.company || "";
-          const date = dateRange(role.start, role.end);
-          writeLine(ctx, role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`, BODY_SIZE, true);
-          const context = roleContext(role);
-          if (context) writeWrapped(ctx, context, BODY_SIZE, textW);
-          if (role.responsibilities_heading) writeLine(ctx, role.responsibilities_heading, BODY_SIZE, true);
-          for (const bullet of role.tailored_highlights) writeBullet(ctx, bullet);
+          writeLine(ctx, renderedRoleHeader(role), BODY_SIZE, true);
+          if (role.narrative) writeWrapped(ctx, role.narrative, BODY_SIZE, textW);
+          if (role.responsibilityHeading) writeLine(ctx, role.responsibilityHeading, BODY_SIZE, true);
+          for (const bullet of role.bullets) writeBullet(ctx, bullet.text);
           ctx.y += JOB_GAP;
         }
         continue;
@@ -412,18 +410,16 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
   }
 
   // Professional Experience
-  if (data.work_history.length > 0) {
+  const legacyRoles = buildReviewedWorkHistory(data);
+  if (legacyRoles.length > 0) {
     writeSectionHeading(ctx, "PROFESSIONAL EXPERIENCE");
 
-    for (let i = 0; i < data.work_history.length; i++) {
-      const role = data.work_history[i]!;
-      const title = role.title || "Role";
-      const company = role.company || "";
-      const date = dateRange(role.start, role.end);
-      const header = role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`;
+    for (let i = 0; i < legacyRoles.length; i++) {
+      const role = legacyRoles[i]!;
+      const header = renderedRoleHeader(role);
 
       // Calculate room needed: header + at least 2 bullets
-      const bullets = role.tailored_highlights;
+      const bullets = role.bullets.map((item) => item.text);
       const minBullets = Math.min(2, bullets.length);
       const textLines: number[] = [];
       for (let b = 0; b < bullets.length; b++) {
@@ -431,7 +427,6 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
         textLines.push(lines);
       }
       const minBlock = LINE_H + PARA_GAP + minBullets * (LINE_H + PARA_GAP);
-      const fullBlock = LINE_H + PARA_GAP + bullets.length * (LINE_H + PARA_GAP);
       const remaining = ctx.pageH - MARGIN - ctx.y;
 
       // If not enough room for heading + 2 bullets, new page
@@ -444,9 +439,8 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
       // Write job header
       ensureSpace(ctx, LINE_H + 2);
       writeLine(ctx, header, BODY_SIZE, true);
-      const context = roleContext(role);
-      if (context) writeWrapped(ctx, context, BODY_SIZE, textW);
-      if (role.responsibilities_heading) writeLine(ctx, role.responsibilities_heading, BODY_SIZE, true);
+      if (role.narrative) writeWrapped(ctx, role.narrative, BODY_SIZE, textW);
+      if (role.responsibilityHeading) writeLine(ctx, role.responsibilityHeading, BODY_SIZE, true);
 
       // Write bullets
       for (let b = 0; b < bullets.length; b++) {
@@ -551,14 +545,10 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
         if (!rendered.roles?.length) continue;
         section(rendered.heading || "PROFESSIONAL EXPERIENCE");
         for (const role of rendered.roles) {
-          const title = role.title || "Role";
-          const company = role.company || "";
-          const date = dateRange(role.start, role.end);
-          p(role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`, { bold: true, spaceAfter: 40 });
-          const context = roleContext(role);
-          if (context) p(context, { spaceAfter: 20 });
-          if (role.responsibilities_heading) p(role.responsibilities_heading, { bold: true, spaceAfter: 20 });
-          for (const bullet of role.tailored_highlights) p(`  • ${bullet}`, { spaceAfter: 20 });
+          p(renderedRoleHeader(role), { bold: true, spaceAfter: 40 });
+          if (role.narrative) p(role.narrative, { spaceAfter: 20 });
+          if (role.responsibilityHeading) p(role.responsibilityHeading, { bold: true, spaceAfter: 20 });
+          for (const bullet of role.bullets) p(`  • ${bullet.text}`, { spaceAfter: 20 });
           p("", { spaceAfter: 80 });
         }
         continue;
@@ -589,18 +579,15 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
   }
 
   // Professional Experience
-  if (data.work_history.length > 0) {
+  const legacyRoles = buildReviewedWorkHistory(data);
+  if (legacyRoles.length > 0) {
     section("PROFESSIONAL EXPERIENCE");
-    for (const role of data.work_history) {
-      const title = role.title || "Role";
-      const company = role.company || "";
-      const date = dateRange(role.start, role.end);
-      p(role.source_header || `${title} | ${company}${date ? ` | ${date}` : ""}`, { bold: true, spaceAfter: 40 });
-      const context = roleContext(role);
-      if (context) p(context, { spaceAfter: 20 });
-      if (role.responsibilities_heading) p(role.responsibilities_heading, { bold: true, spaceAfter: 20 });
-      for (const h of role.tailored_highlights) {
-        p(`  • ${h}`, { spaceAfter: 20 });
+    for (const role of legacyRoles) {
+      p(renderedRoleHeader(role), { bold: true, spaceAfter: 40 });
+      if (role.narrative) p(role.narrative, { spaceAfter: 20 });
+      if (role.responsibilityHeading) p(role.responsibilityHeading, { bold: true, spaceAfter: 20 });
+      for (const bullet of role.bullets) {
+        p(`  • ${bullet.text}`, { spaceAfter: 20 });
       }
       p("", { spaceAfter: 80 });
     }

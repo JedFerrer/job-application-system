@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID
 
 import pytest
 
 from app.domain.resume.schemas import (
     SourceResumeArtifact,
+    SourceResumeCandidate,
+    SourceResumeContentDocumentV2,
     SourceResumeContentDocumentV3,
     SourceResumeContentDocumentV4,
+    SourceResumeDocument,
     SourceResumeLayoutReferencesV3,
     SourceResumeLayoutReferencesV4,
+    SourceResumeRoleReferencesV3,
 )
 from app.domain.resume.source_content import (
     SOURCE_VALIDATION_VERSION,
@@ -24,6 +28,7 @@ from app.domain.resume.source_content import (
     materialize_source_document,
     materialize_source_document_v3,
     materialize_source_document_v4,
+    repair_work_history_source_layout,
     resolve_source_layout,
     resolve_source_layout_v3,
     resolve_source_layout_v4,
@@ -1076,3 +1081,575 @@ def test_v2_layout_rejects_unknown_or_cross_category_duplicate_metadata(
     result = resolve_source_layout(layout, ledger)
 
     assert result.status == "invalid"
+
+
+MALFORMED_WRAP_RESUME = """Ada Example
+ada@example.com
+PROFESSIONAL EXPERIENCE
+Northwind Analytics - Platform Engineer
+Led the billing platform through a multi-year
+modernization of core services.
+Responsibilities
+• Designed an event pipeline that processed
+payments across three regions without
+losing audit history.
+• Coordinated a cutover that preserved
+customer invoicing during the
+
+migration window and reduced failed retries.
+• Added service-level monitors for checkout.
+Contoso Labs - Backend Engineer
+Owned API delivery for the catalog service.
+Responsibilities
+• Built FastAPI services for catalog search.
+"""
+
+
+def _alias_for(ledger: SourceResumeContentDocumentV2, text: str) -> str:
+    for candidate in ledger.candidates:
+        if candidate.text == text:
+            return f"c{candidate.order}"
+    raise AssertionError(f"missing source candidate: {text}")
+
+
+def _empty_v5_layout(*headers: str) -> dict[str, object]:
+    return {
+        "contact": {},
+        "links": {},
+        "summary": None,
+        "summary_lines": [],
+        "section_headings": {},
+        "skills": [],
+        "sections": [],
+        "work_history": [
+            {
+                "order": index,
+                "header": header,
+                "context": [],
+                "responsibilities_heading": None,
+                "highlights": [],
+            }
+            for index, header in enumerate(headers)
+        ],
+        "projects": [],
+        "education": [],
+        "certifications": [],
+        "licenses": [],
+        "languages": [],
+        "named_sections": [],
+    }
+
+
+def _materialize_canonical_roles(
+    raw: str, *header_texts: str
+) -> tuple[SourceResumeContentDocumentV2, SourceResumeLayoutReferencesV4, SourceResumeDocument]:
+    ledger = build_source_candidate_ledger(raw)
+    assert verify_source_candidate_ledger(ledger, raw) == ()
+    layout = canonicalize_source_layout_v5(
+        _empty_v5_layout(*(_alias_for(ledger, header) for header in header_texts)),
+        ledger,
+    )
+    result = resolve_source_layout_v4(layout, ledger, classify_source_artifacts(ledger))
+    assert result.status == "verified"
+    assert result.layout is not None
+    resolved = cast(SourceResumeLayoutReferencesV4, result.layout)
+    document = materialize_source_document_v4(
+        SourceResumeContentDocumentV4(candidates=ledger.candidates, layout=resolved)
+    )
+    assert document is not None
+    return ledger, resolved, document
+
+
+def test_malformed_wrap_resume_keeps_continuations_inside_source_items() -> None:
+    ledger, layout, document = _materialize_canonical_roles(
+        MALFORMED_WRAP_RESUME,
+        "Northwind Analytics - Platform Engineer",
+        "Contoso Labs - Backend Engineer",
+    )
+    role_a, role_b = document.work_history
+
+    assert [item.text for item in role_a.context_items] == [
+        "Led the billing platform through a multi-year modernization of core services."
+    ]
+    assert role_a.responsibilities_heading is not None
+    assert role_a.responsibilities_heading.text == "Responsibilities"
+    assert [item.text for item in role_a.highlights] == [
+        (
+            "Designed an event pipeline that processed payments across three "
+            "regions without losing audit history."
+        ),
+        (
+            "Coordinated a cutover that preserved customer invoicing during the "
+            "migration window and reduced failed retries."
+        ),
+        "Added service-level monitors for checkout.",
+    ]
+    assert [item.text for item in role_b.context_items] == [
+        "Owned API delivery for the catalog service."
+    ]
+    assert role_b.responsibilities_heading is not None
+    assert role_b.responsibilities_heading.text == "Responsibilities"
+    assert [item.text for item in role_b.highlights] == [
+        "Built FastAPI services for catalog search."
+    ]
+
+    role_a_ids = {
+        role_a.source_id,
+        *(item.source_id for item in role_a.context_items),
+        role_a.responsibilities_heading.source_id,
+        *(item.source_id for item in role_a.highlights),
+    }
+    role_b_ids = {
+        role_b.source_id,
+        *(item.source_id for item in role_b.context_items),
+        role_b.responsibilities_heading.source_id,
+        *(item.source_id for item in role_b.highlights),
+    }
+    assert role_a.source_id == next(
+        candidate.source_id
+        for candidate in ledger.candidates
+        if candidate.text == "Northwind Analytics - Platform Engineer"
+    )
+    assert role_b.source_id == next(
+        candidate.source_id
+        for candidate in ledger.candidates
+        if candidate.text == "Contoso Labs - Backend Engineer"
+    )
+    assert not role_a_ids & role_b_ids
+    assert [role.order for role in layout.work_history] == [
+        next(
+            candidate.order
+            for candidate in ledger.candidates
+            if candidate.text == "Northwind Analytics - Platform Engineer"
+        ),
+        next(
+            candidate.order
+            for candidate in ledger.candidates
+            if candidate.text == "Contoso Labs - Backend Engineer"
+        ),
+    ]
+    assert [item.order for item in role_a.highlights] == sorted(
+        item.order for item in role_a.highlights
+    )
+    context_text = " ".join(item.text for item in role_a.context_items)
+    highlight_text = " ".join(item.text for item in role_a.highlights)
+    assert "payments across three regions without" not in context_text
+    assert "migration window and reduced failed retries" not in context_text
+    assert "payments across three regions without" in highlight_text
+    assert "migration window and reduced failed retries" in highlight_text
+    assert "Owned API delivery for the catalog service." not in highlight_text
+    unclassified_text = {item.text for item in document.unclassified}
+    assert unclassified_text <= {"Ada Example", "ada@example.com"}
+    represented = {
+        item.text
+        for item in (
+            *role_a.context_items,
+            *role_a.highlights,
+            *role_b.context_items,
+            *role_b.highlights,
+        )
+    }
+    assert not unclassified_text & represented
+
+
+def test_ledger_joins_unindented_lowercase_bullet_continuation() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Designed an event pipeline that processed\n"
+        "payments across three regions.\n"
+    )
+    assert [candidate.text for candidate in ledger.candidates] == [
+        "PROFESSIONAL EXPERIENCE",
+        "Designed an event pipeline that processed payments across three regions.",
+    ]
+    assert ledger.candidates[1].kind == "bullet"
+
+
+def test_ledger_does_not_join_lowercase_prose_after_complete_bullet() -> None:
+    raw = (
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Built the synchronization process.\n\n"
+        "including operational analysis was a separate part of the role.\n"
+    )
+    ledger = build_source_candidate_ledger(raw)
+    assert [candidate.text for candidate in ledger.candidates] == [
+        "PROFESSIONAL EXPERIENCE",
+        "Built the synchronization process.",
+        "including operational analysis was a separate part of the role.",
+    ]
+    assert [candidate.kind for candidate in ledger.candidates] == [
+        "heading",
+        "bullet",
+        "text",
+    ]
+    assert verify_source_candidate_ledger(ledger, raw) == ()
+
+
+def test_complete_bullet_lowercase_prose_is_unclassified_not_context() -> None:
+    _, _, document = _materialize_canonical_roles(
+        "PROFESSIONAL EXPERIENCE\n"
+        "Northwind Analytics - Platform Engineer\n"
+        "• Built the synchronization process.\n\n"
+        "including operational analysis was a separate part of the role.\n"
+        "• Added checkout monitors.\n",
+        "Northwind Analytics - Platform Engineer",
+    )
+    role = document.work_history[0]
+    leftover = "including operational analysis was a separate part of the role."
+    assert [item.text for item in role.highlights] == [
+        "Built the synchronization process.",
+        "Added checkout monitors.",
+    ]
+    assert leftover not in [item.text for item in role.context_items]
+    assert leftover not in [item.text for item in role.highlights]
+    assert [item.text for item in document.unclassified] == [leftover]
+
+
+def test_ledger_does_not_join_lowercase_list_item_to_preceding_bullet() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Built the synchronization process.\n"
+        "- added monitoring for failed retries.\n"
+        "1. documented the cutover checklist.\n"
+    )
+    assert [candidate.kind for candidate in ledger.candidates] == [
+        "heading",
+        "bullet",
+        "bullet",
+        "bullet",
+    ]
+    assert [candidate.text for candidate in ledger.candidates[1:]] == [
+        "Built the synchronization process.",
+        "added monitoring for failed retries.",
+        "documented the cutover checklist.",
+    ]
+
+
+def test_work_history_narrative_wrap_becomes_one_logical_context_item() -> None:
+    raw = (
+        "PROFESSIONAL EXPERIENCE\n"
+        "Senior Engineer\n"
+        "Worked across backend services and\n"
+        "internal warehouse automation systems.\n"
+        "Responsibilities\n"
+        "• Built API integrations for billing.\n"
+    )
+    ledger, _, document = _materialize_canonical_roles(raw, "Senior Engineer")
+    role = document.work_history[0]
+    assert [item.text for item in role.context_items] == [
+        "Worked across backend services and internal warehouse automation systems."
+    ]
+    narrative = role.context_items[0]
+    source = next(
+        candidate
+        for candidate in ledger.candidates
+        if candidate.source_id == narrative.source_id
+    )
+    assert source.kind == "text"
+    assert raw[source.start_offset:source.end_offset].startswith(
+        "Worked across backend services and"
+    )
+    assert raw[source.start_offset:source.end_offset].endswith(
+        "internal warehouse automation systems."
+    )
+    assert "internal warehouse automation systems." not in [
+        item.text
+        for item in ledger.candidates
+        if item.source_id != narrative.source_id
+    ]
+    assert verify_source_candidate_ledger(ledger, raw) == ()
+
+
+def test_ledger_joins_hyphenated_bullet_continuation() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Coordinated a mid-year cutover of the billing-\n"
+        "service replica set.\n"
+    )
+    assert [candidate.text for candidate in ledger.candidates] == [
+        "PROFESSIONAL EXPERIENCE",
+        "Coordinated a mid-year cutover of the billing- service replica set.",
+    ]
+
+
+def test_ledger_joins_bullet_continuation_across_page_boundary() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Coordinated a cutover that preserved\n"
+        "customer invoicing during the\n\n"
+        "migration window and reduced failed retries.\n"
+    )
+    assert [candidate.text for candidate in ledger.candidates] == [
+        "PROFESSIONAL EXPERIENCE",
+        (
+            "Coordinated a cutover that preserved customer invoicing during the "
+            "migration window and reduced failed retries."
+        ),
+    ]
+
+
+def test_ledger_does_not_join_adjacent_bullets_or_following_heading() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\n"
+        "• Built the billing API.\n"
+        "• Added checkout monitors.\n"
+        "Responsibilities\n"
+        "• Kept a later bullet independent.\n"
+    )
+    assert [candidate.kind for candidate in ledger.candidates] == [
+        "heading",
+        "bullet",
+        "bullet",
+        "text",
+        "bullet",
+    ]
+    assert [candidate.text for candidate in ledger.candidates[1:]] == [
+        "Built the billing API.",
+        "Added checkout monitors.",
+        "Responsibilities",
+        "Kept a later bullet independent.",
+    ]
+
+
+def test_narrative_wrap_stays_narrative_and_does_not_become_a_bullet() -> None:
+    _, _, document = _materialize_canonical_roles(
+        "PROFESSIONAL EXPERIENCE\n"
+        "Northwind Analytics - Platform Engineer\n"
+        "Led the billing platform through a multi-year\n"
+        "modernization of core services.\n"
+        "Responsibilities\n"
+        "• Added service-level monitors for checkout.\n",
+        "Northwind Analytics - Platform Engineer",
+    )
+    role = document.work_history[0]
+    assert [item.text for item in role.context_items] == [
+        "Led the billing platform through a multi-year modernization of core services."
+    ]
+    assert [item.text for item in role.highlights] == [
+        "Added service-level monitors for checkout."
+    ]
+
+
+def test_heading_then_bullets_keeps_heading_out_of_context_and_highlights() -> None:
+    _, _, document = _materialize_canonical_roles(
+        "PROFESSIONAL EXPERIENCE\n"
+        "Northwind Analytics - Platform Engineer\n"
+        "Responsibilities\n"
+        "• Built the billing API.\n"
+        "• Added checkout monitors.\n",
+        "Northwind Analytics - Platform Engineer",
+    )
+    role = document.work_history[0]
+    assert role.context_items == []
+    assert role.responsibilities_heading is not None
+    assert role.responsibilities_heading.text == "Responsibilities"
+    assert [item.text for item in role.highlights] == [
+        "Built the billing API.",
+        "Added checkout monitors.",
+    ]
+
+
+def test_role_transition_does_not_join_final_bullet_to_next_role() -> None:
+    ledger, _, document = _materialize_canonical_roles(
+        "PROFESSIONAL EXPERIENCE\n"
+        "Northwind Analytics - Platform Engineer\n"
+        "• Added service-level monitors for checkout.\n"
+        "Contoso Labs - Backend Engineer\n"
+        "Owned API delivery for the catalog service.\n"
+        "• Built FastAPI services for catalog search.\n",
+        "Northwind Analytics - Platform Engineer",
+        "Contoso Labs - Backend Engineer",
+    )
+    role_a, role_b = document.work_history
+    assert [item.text for item in role_a.highlights] == [
+        "Added service-level monitors for checkout."
+    ]
+    assert role_a.context_items == []
+    assert [item.text for item in role_b.context_items] == [
+        "Owned API delivery for the catalog service."
+    ]
+    assert [item.text for item in role_b.highlights] == [
+        "Built FastAPI services for catalog search."
+    ]
+    assert role_b.source_id == next(
+        candidate.source_id
+        for candidate in ledger.candidates
+        if candidate.text == "Contoso Labs - Backend Engineer"
+    )
+
+
+def test_ambiguous_capitalized_continuation_is_preserved_not_attached() -> None:
+    _, layout, document = _materialize_canonical_roles(
+        "PROFESSIONAL EXPERIENCE\n"
+        "Northwind Analytics - Platform Engineer\n"
+        "• Added service-level monitors for checkout.\n"
+        "Additional program notes remain source-backed.\n"
+        "• Built a second independent bullet.\n",
+        "Northwind Analytics - Platform Engineer",
+    )
+    role = document.work_history[0]
+    assert [item.text for item in role.highlights] == [
+        "Added service-level monitors for checkout.",
+        "Built a second independent bullet.",
+    ]
+    assert "Additional program notes remain source-backed." not in [
+        item.text for item in role.context_items
+    ]
+    assert "Additional program notes remain source-backed." not in [
+        item.text for item in role.highlights
+    ]
+    assert [
+        item.text for item in document.unclassified
+    ] == ["Additional program notes remain source-backed."]
+    notes = next(
+        item for item in document.unclassified if item.text.startswith("Additional")
+    )
+    assert notes.source_id == layout.unclassified[0]
+
+
+def test_malformed_source_relationship_stays_fail_closed() -> None:
+    ledger = build_source_candidate_ledger(
+        "PROFESSIONAL EXPERIENCE\nNorthwind Analytics - Platform Engineer\n• Built APIs.\n"
+    )
+    result = resolve_source_layout_v4(
+        {
+            "section_headings": {"work_history": "c0"},
+            "work_history": [{"header": "c99", "highlights": ["c2"]}],
+        },
+        ledger,
+    )
+    assert result.status == "invalid"
+    assert result.layout is None
+    assert result.errors == ("invalid_source_references",)
+
+
+def test_reconstruction_preserves_source_ids_and_order() -> None:
+    raw = (
+        "PROFESSIONAL EXPERIENCE\n"
+        "Northwind Analytics - Platform Engineer\n"
+        "Led platform delivery.\n"
+        "Responsibilities\n"
+        "• Built the billing API.\n"
+        "• Added checkout monitors.\n"
+    )
+    ledger, layout, document = _materialize_canonical_roles(
+        raw, "Northwind Analytics - Platform Engineer"
+    )
+    before = {
+        candidate.text: (candidate.source_id, candidate.order)
+        for candidate in ledger.candidates
+    }
+    role = document.work_history[0]
+    assert (role.source_id, role.order) == before["Northwind Analytics - Platform Engineer"]
+    assert role.responsibilities_heading is not None
+    assert (
+        role.responsibilities_heading.source_id,
+        role.responsibilities_heading.order,
+    ) == before["Responsibilities"]
+    assert [
+        (item.source_id, item.order) for item in role.context_items
+    ] == [before["Led platform delivery."]]
+    assert [
+        (item.source_id, item.order) for item in role.highlights
+    ] == [before["Built the billing API."], before["Added checkout monitors."]]
+    assert [role.order for role in layout.work_history] == [
+        before["Northwind Analytics - Platform Engineer"][1]
+    ]
+
+
+def _line_candidate(
+    text: str, order: int, kind: Literal["heading", "bullet", "text"] = "text"
+) -> SourceResumeCandidate:
+    return SourceResumeCandidate(
+        text=text,
+        order=order,
+        kind=kind,
+        fingerprint=source_fingerprint(text),
+        start_offset=order * 10,
+        end_offset=order * 10 + len(text),
+        occurrence_ordinal=0,
+    )
+
+
+def test_materialize_repairs_persisted_post_boundary_context_without_id_churn() -> None:
+    header = _line_candidate("Northwind - Engineer", 0, "heading")
+    narrative = _line_candidate("Led the billing platform.", 1)
+    heading = _line_candidate("Responsibilities", 2, "heading")
+    bullet = _line_candidate("Built the billing API.", 3, "bullet")
+    leftover = _line_candidate("including operational analysis for the same role.", 4)
+    layout = SourceResumeLayoutReferencesV3(
+        work_history=[
+            SourceResumeRoleReferencesV3(
+                order=0,
+                header=header.source_id,
+                context=[narrative.source_id, leftover.source_id],
+                responsibilities_heading=heading.source_id,
+                highlights=[bullet.source_id],
+            )
+        ],
+        unclassified=[],
+    )
+    repaired = repair_work_history_source_layout(
+        layout, [header, narrative, heading, bullet, leftover]
+    )
+    assert repaired.work_history[0].context == [narrative.source_id]
+    assert repaired.work_history[0].highlights == [bullet.source_id]
+    assert repaired.unclassified == [leftover.source_id]
+
+    document = materialize_source_document_v3(
+        SourceResumeContentDocumentV3(
+            candidates=[header, narrative, heading, bullet, leftover],
+            layout=layout,
+        )
+    )
+    assert document is not None
+    role = document.work_history[0]
+    assert [item.text for item in role.context_items] == ["Led the billing platform."]
+    assert [item.source_id for item in role.highlights] == [bullet.source_id]
+    assert [item.text for item in document.unclassified] == [
+        "including operational analysis for the same role."
+    ]
+    assert [item.source_id for item in document.unclassified] == [leftover.source_id]
+
+
+def test_repair_is_idempotent_for_phase1_correct_layout() -> None:
+    header = _line_candidate("Northwind - Engineer", 0, "heading")
+    narrative = _line_candidate("Led the billing platform.", 1)
+    bullet = _line_candidate("Built the billing API.", 2, "bullet")
+    leftover = _line_candidate("including leftover source prose.", 3)
+    layout = SourceResumeLayoutReferencesV3(
+        work_history=[
+            SourceResumeRoleReferencesV3(
+                order=0,
+                header=header.source_id,
+                context=[narrative.source_id],
+                highlights=[bullet.source_id],
+            )
+        ],
+        unclassified=[leftover.source_id],
+    )
+    repaired = repair_work_history_source_layout(
+        layout, [header, narrative, bullet, leftover]
+    )
+    assert repaired.work_history[0].context == [narrative.source_id]
+    assert repaired.work_history[0].highlights == [bullet.source_id]
+    assert repaired.unclassified == [leftover.source_id]
+
+
+def test_repair_does_not_convert_narrative_only_role_into_highlights() -> None:
+    header = _line_candidate("Northwind - Engineer", 0, "heading")
+    narrative = _line_candidate("Owned catalog delivery for two years.", 1)
+    layout = SourceResumeLayoutReferencesV3(
+        work_history=[
+            SourceResumeRoleReferencesV3(
+                order=0,
+                header=header.source_id,
+                context=[narrative.source_id],
+                highlights=[],
+            )
+        ]
+    )
+    repaired = repair_work_history_source_layout(layout, [header, narrative])
+    assert repaired.work_history[0].context == [narrative.source_id]
+    assert repaired.work_history[0].highlights == []
+    assert repaired.unclassified == []

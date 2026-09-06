@@ -10,6 +10,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+from pydantic import ValidationError
+
 from app.core.logging import get_logger
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
@@ -300,6 +302,8 @@ def _full_resume_context(source_document: Any, profile: ParsedProfile) -> tuple[
         for item_index, item in enumerate(section.items):
             add(item, f"named:{section_index}:item:{item_index}")
     skill_ids = [f"skill:{index}" for index, item in enumerate(source_document.skills) if item.text.strip()]
+    # Unclassified source text stays in the verified document dump so the
+    # complete resume is available, but it is never an evidence alias.
     return json.dumps(source_document.model_dump(mode="json"), default=str), evidence, skill_ids
 
 
@@ -415,6 +419,288 @@ def _review_evidence(
             )
         )
     return refs
+
+
+SOURCE_BACKED_SNAPSHOT_VERSIONS = frozenset(
+    {"lossless-complete-v2", FULL_CONTEXT_SNAPSHOT_VERSION}
+)
+
+
+def _source_item_text(item: Any) -> str | None:
+    return item.text if item is not None else None
+
+
+def _overlay_source_controlled_fields(
+    resume: TailoredResume,
+    source_document: SourceResumeDocument,
+) -> TailoredResume | None:
+    """Replace source-owned role fields from the corrected structured source."""
+    if len(resume.work_history) != len(source_document.work_history):
+        return None
+    rebuilt_roles: list[TailoredWorkItem] = []
+    for submitted, source_role in zip(
+        resume.work_history, source_document.work_history, strict=True
+    ):
+        if submitted.source_role_id != source_role.source_id:
+            return None
+        rebuilt_roles.append(
+            submitted.model_copy(
+                update={
+                    "company": _source_item_text(source_role.company),
+                    "title": _source_item_text(source_role.title),
+                    "start": _source_item_text(source_role.start),
+                    "end": _source_item_text(source_role.end),
+                    "source_header": _source_item_text(source_role.company),
+                    "role_context": [item.text for item in source_role.context_items],
+                    "responsibilities_heading": _source_item_text(
+                        source_role.responsibilities_heading
+                    ),
+                    "original_highlights": [item.text for item in source_role.highlights],
+                }
+            )
+        )
+    return resume.model_copy(
+        update={
+            "work_history": rebuilt_roles,
+            "canonical_sections": _canonical_sections(source_document),
+            "requires_regeneration": False,
+        }
+    )
+
+
+def _required_included_indices(
+    decisions: list[TailoredBulletDecision],
+) -> list[int]:
+    included = [
+        index for index, decision in enumerate(decisions) if decision.final_included
+    ]
+    included.sort(
+        key=lambda index: (
+            not decisions[index].recommended_included,
+            decisions[index].recommendation_rank
+            if decisions[index].recommended_included
+            else decisions[index].canonical_order,
+        )
+    )
+    return included
+
+
+def _rehydrate_source_backed_snapshot(
+    resume: TailoredResume,
+    source_document: SourceResumeDocument,
+    *,
+    profile: ParsedProfile,
+    job_description: str | None = None,
+) -> TailoredResume | None:
+    """Rebuild source-controlled snapshot fields from Phase 1 structure.
+
+    Review decisions are remapped only by stable source IDs. Text similarity is
+    never used as identity. Returns None when the mapping cannot be proven.
+    """
+    if resume.tailoring_snapshot_version not in SOURCE_BACKED_SNAPSHOT_VERSIONS:
+        return resume
+    overlaid = _overlay_source_controlled_fields(resume, source_document)
+    if overlaid is None:
+        return None
+
+    highlight_owner: dict[Any, tuple[int, int, Any]] = {}
+    for role_index, source_role in enumerate(source_document.work_history):
+        for source_index, bullet in enumerate(source_role.highlights):
+            if bullet.source_id in highlight_owner:
+                return None
+            highlight_owner[bullet.source_id] = (role_index, source_index, bullet)
+
+    full_context = resume.tailoring_snapshot_version == FULL_CONTEXT_SNAPSHOT_VERSION
+    full_evidence: dict[str, str] = {}
+    skill_aliases: list[str] = []
+    if full_context:
+        _, full_evidence, skill_aliases = _full_resume_context(source_document, profile)
+        if any(item not in full_evidence for item in resume.summary_evidence_ids):
+            return None
+        if resume.skill_order_source_ids:
+            if (
+                len(resume.skill_order_source_ids) != len(skill_aliases)
+                or len(set(resume.skill_order_source_ids)) != len(skill_aliases)
+                or set(resume.skill_order_source_ids) != set(skill_aliases)
+            ):
+                return None
+
+    selection = (
+        select_source_bullets(source_document.work_history, job_description or "")
+        if job_description is not None
+        else None
+    )
+    missing_skills = [
+        item.requirement
+        for item in classify_requirements(job_description, profile)
+        if item.status == "missing"
+    ]
+    review_report = SkillMatchReport(
+        matched_skills=[
+            item.requirement
+            for item in classify_requirements(job_description, profile)
+            if item.status == "verified"
+        ],
+        missing_skills=missing_skills,
+    )
+
+    rebuilt_roles: list[TailoredWorkItem] = []
+    for role_index, (submitted, source_role) in enumerate(
+        zip(overlaid.work_history, source_document.work_history, strict=True)
+    ):
+        persisted = submitted.selection_decisions
+        if len(persisted) != len(source_role.highlights):
+            return None
+        seen_ids: set[Any] = set()
+        by_source_id: dict[Any, TailoredBulletDecision] = {}
+        by_source_index: dict[int, TailoredBulletDecision] = {}
+        for decision in persisted:
+            if decision.source_id in seen_ids or decision.source_index in by_source_index:
+                return None
+            owner = highlight_owner.get(decision.source_id)
+            if owner is None:
+                return None
+            owner_role, _, _ = owner
+            if owner_role != role_index:
+                return None
+            seen_ids.add(decision.source_id)
+            by_source_id[decision.source_id] = decision
+            by_source_index[decision.source_index] = decision
+        if any(bullet.source_id not in by_source_id for bullet in source_role.highlights):
+            return None
+
+        included_ids: list[Any] = []
+        for source_index in submitted.tailored_highlight_source_indices:
+            included_decision = by_source_index.get(source_index)
+            if included_decision is None or not included_decision.final_included:
+                return None
+            included_ids.append(included_decision.source_id)
+        flagged_included = {
+            decision.source_id for decision in persisted if decision.final_included
+        }
+        if set(included_ids) != flagged_included:
+            return None
+
+        recommended_ids = (
+            selection.recommended_ids[role_index] if selection is not None else []
+        )
+        recommended_set = set(recommended_ids)
+        rebuilt_decisions: list[TailoredBulletDecision] = []
+        for source_index, bullet in enumerate(source_role.highlights):
+            persisted_decision = by_source_id[bullet.source_id]
+            restored = persisted_decision.final_text == persisted_decision.original_text
+            suggestion_was_original = (
+                persisted_decision.suggested_text == persisted_decision.original_text
+            )
+            original_text = bullet.text
+            suggested_text = (
+                original_text
+                if suggestion_was_original
+                else persisted_decision.suggested_text
+            )
+            final_text = original_text if restored else persisted_decision.final_text
+            evidence_ids = [item.evidence_id for item in persisted_decision.evidence]
+            if full_context and any(item not in full_evidence for item in evidence_ids):
+                return None
+            evidence = (
+                _review_evidence(
+                    evidence_ids,
+                    full_evidence,
+                    source_document,
+                    profile,
+                    review_report,
+                    selection,
+                )
+                if full_context and evidence_ids
+                else list(persisted_decision.evidence)
+            )
+            recommendation_rank = (
+                recommended_ids.index(str(bullet.source_id))
+                if selection is not None and str(bullet.source_id) in recommended_set
+                else persisted_decision.recommendation_rank
+                if selection is None
+                else None
+            )
+            rebuilt_decisions.append(
+                persisted_decision.model_copy(
+                    update={
+                        "source_id": bullet.source_id,
+                        "source_index": source_index,
+                        "canonical_order": bullet.order,
+                        "original_text": original_text,
+                        "suggested_text": suggested_text,
+                        "final_text": final_text,
+                        "recommended_included": (
+                            str(bullet.source_id) in recommended_set
+                            if selection is not None
+                            else persisted_decision.recommended_included
+                        ),
+                        "recommendation_rank": recommendation_rank,
+                        "evidence": evidence,
+                    }
+                )
+            )
+
+        new_index_by_id = {
+            decision.source_id: decision.source_index for decision in rebuilt_decisions
+        }
+        included_indices = [new_index_by_id[source_id] for source_id in included_ids]
+        if selection is not None and included_indices != _required_included_indices(
+            rebuilt_decisions
+        ):
+            return None
+        output_ranks = {index: rank for rank, index in enumerate(included_indices)}
+        rebuilt_decisions = [
+            decision.model_copy(update={"output_rank": output_ranks.get(index)})
+            for index, decision in enumerate(rebuilt_decisions)
+        ]
+        rebuilt_roles.append(
+            submitted.model_copy(
+                update={
+                    "selection_decisions": rebuilt_decisions,
+                    "tailored_highlight_source_indices": included_indices,
+                    "tailored_highlights": [
+                        rebuilt_decisions[index].final_text for index in included_indices
+                    ],
+                }
+            )
+        )
+
+    skills = overlaid.skills
+    if full_context and overlaid.skill_order_source_ids:
+        skills = [
+            full_evidence[alias]
+            for alias in overlaid.skill_order_source_ids
+            if alias in full_evidence
+        ]
+    summary_evidence = overlaid.summary_evidence
+    skill_evidence = overlaid.skill_evidence
+    if full_context and overlaid.review_evidence_version == "review-evidence-v1":
+        summary_evidence = _review_evidence(
+            overlaid.summary_evidence_ids,
+            full_evidence,
+            source_document,
+            profile,
+            review_report,
+            selection,
+        )
+        skill_evidence = _review_evidence(
+            overlaid.skill_order_source_ids,
+            full_evidence,
+            source_document,
+            profile,
+            review_report,
+            selection,
+        )
+    return overlaid.model_copy(
+        update={
+            "work_history": rebuilt_roles,
+            "skills": skills,
+            "summary_evidence": summary_evidence,
+            "skill_evidence": skill_evidence,
+            "requires_regeneration": False,
+        }
+    )
 
 
 def _validate_source_backed_snapshot(
@@ -1310,19 +1596,27 @@ class ResumeService:
             if source_document is None:
                 raise ValueError
             profile_model = ParsedProfile.model_validate(profile.parsed)
-            _validate_source_backed_snapshot(
+            submitted = _rehydrate_source_backed_snapshot(
                 payload.content,
+                source_document,
+                profile=profile_model,
+                job_description=getattr(job, "description", None),
+            )
+            if submitted is None:
+                raise TailoredResumeSnapshotInvalidError()
+            _validate_source_backed_snapshot(
+                submitted,
                 source_document=source_document,
                 profile=profile_model,
                 job_description=getattr(job, "description", None),
             )
             if (
-                payload.content.tailoring_snapshot_version
-                not in {"lossless-complete-v2", FULL_CONTEXT_SNAPSHOT_VERSION}
-                or payload.content.source_resume_id != source_row.resume_id
-                or payload.content.source_resume_content_id != source_row.id
-                or payload.content.source_schema_version not in {"source-resume-v4", "source-resume-v5"}
-                or payload.content.source_revision_sha256 != source_revision_sha256(source_row.content)
+                submitted.tailoring_snapshot_version
+                not in SOURCE_BACKED_SNAPSHOT_VERSIONS
+                or submitted.source_resume_id != source_row.resume_id
+                or submitted.source_resume_content_id != source_row.id
+                or submitted.source_schema_version not in {"source-resume-v4", "source-resume-v5"}
+                or submitted.source_revision_sha256 != source_revision_sha256(source_row.content)
             ):
                 raise ValueError
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -1332,11 +1626,12 @@ class ResumeService:
         classifications = classify_requirements(
             getattr(job, "description", None), profile_model
         )
-        authoritative_content = payload.content.model_copy(
+        authoritative_content = submitted.model_copy(
             update={
                 "requirement_classifications": classify_resume_coverage(
-                    classifications, payload.content
-                )
+                    classifications, submitted
+                ),
+                "requires_regeneration": False,
             }
         )
         content = authoritative_content.model_dump(mode="json")
@@ -1349,7 +1644,7 @@ class ResumeService:
             not in payload.content.model_fields_set
         ):
             content.pop("requirement_classifications", None)
-        if payload.content.tailoring_snapshot_version is None:
+        if submitted.tailoring_snapshot_version is None:
             content.pop("tailoring_snapshot_version", None)
 
         draft = await self._repository.create_tailored_draft(
@@ -1417,24 +1712,32 @@ class ResumeService:
             job = await job_repository.get_visible_by_id(user_id=user_id, job_id=resume.job_id)
             if job is None:
                 raise ValueError
-            _validate_source_backed_snapshot(
+            submitted = _rehydrate_source_backed_snapshot(
                 resume,
+                source_document,
+                profile=profile,
+                job_description=job.description,
+            )
+            if submitted is None:
+                raise TailoredResumeSnapshotInvalidError()
+            _validate_source_backed_snapshot(
+                submitted,
                 source_document=source_document,
                 profile=profile,
                 job_description=job.description,
             )
             if (
-                resume.tailoring_snapshot_version
-                not in {"lossless-complete-v2", FULL_CONTEXT_SNAPSHOT_VERSION}
-                or resume.source_resume_id != source_row.resume_id
-                or resume.source_resume_content_id != source_row.id
-                or resume.source_schema_version not in {"source-resume-v4", "source-resume-v5"}
-                or resume.source_revision_sha256 != source_revision_sha256(source_row.content)
+                submitted.tailoring_snapshot_version
+                not in SOURCE_BACKED_SNAPSHOT_VERSIONS
+                or submitted.source_resume_id != source_row.resume_id
+                or submitted.source_resume_content_id != source_row.id
+                or submitted.source_schema_version not in {"source-resume-v4", "source-resume-v5"}
+                or submitted.source_revision_sha256 != source_revision_sha256(source_row.content)
             ):
                 raise ValueError
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             raise TailoredResumeSnapshotInvalidError() from exc
-        return resume
+        return submitted
 
     async def list_tailored_drafts(
         self, *, user_id: int
@@ -1450,7 +1753,45 @@ class ResumeService:
         )
         if draft is None:
             raise TailoredResumeDraftNotFoundError(draft_id)
-        return self._draft_response(draft)
+        content = TailoredResume.model_validate(draft.content)
+        if content.tailoring_snapshot_version in SOURCE_BACKED_SNAPSHOT_VERSIONS:
+            try:
+                source_pair = await self._repository.get_active_tailoring_source(user_id)
+                if isinstance(source_pair, tuple) and len(source_pair) == 2:
+                    profile_row, source_row = source_pair
+                    source_document = materialize_source_document_v4(
+                        (
+                            SourceResumeContentPayloadV5.model_validate(source_row.content)
+                            if source_row.content.get("schema_version") == "source-resume-v5"
+                            else SourceResumeContentPayloadV4.model_validate(source_row.content)
+                        ).document
+                    )
+                    if source_document is not None:
+                        profile_model = ParsedProfile.model_validate(profile_row.parsed)
+                        rehydrated = _rehydrate_source_backed_snapshot(
+                            content,
+                            source_document,
+                            profile=profile_model,
+                        )
+                        if rehydrated is not None:
+                            content = rehydrated
+                        else:
+                            overlaid = _overlay_source_controlled_fields(
+                                content, source_document
+                            )
+                            content = (
+                                overlaid.model_copy(
+                                    update={"requires_regeneration": True}
+                                )
+                                if overlaid is not None
+                                else content.model_copy(
+                                    update={"requires_regeneration": True}
+                                )
+                            )
+            except (ValueError, TypeError, KeyError, AttributeError, ValidationError):
+                pass
+        response = self._draft_response(draft)
+        return response.model_copy(update={"content": content})
 
     async def delete_tailored_draft(
         self, *, user_id: int, draft_id: int

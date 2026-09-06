@@ -1,0 +1,41 @@
+{
+  "description": "Sanitized wrap-continuation resume. Schematic: Senior Engineer / Company dates / wrapped narrative / Responsibilities / three wrapped bullets / second role.",
+  "role_headers": [
+    "Acme Platform - Senior Engineer",
+    "Beacon Systems - Software Engineer"
+  ],
+  "roles": [
+    {
+      "header": "Acme Platform - Senior Engineer",
+      "narrative": "Worked across backend and platform systems supporting operational workflows.",
+      "responsibilities_heading": "Responsibilities",
+      "bullets": [
+        "Designed an event pipeline that processed payments across three regions without interruption.",
+        "Coordinated the migration window and reduced failed retries.",
+        "Built internal APIs and operational dashboards."
+      ]
+    },
+    {
+      "header": "Beacon Systems - Software Engineer",
+      "narrative": "Maintained internal tooling for release operations.",
+      "responsibilities_heading": "Responsibilities",
+      "bullets": [
+        "Improved deployment checks for backend services."
+      ]
+    }
+  ],
+  "orphan_fragments": [
+    "supporting operational workflows.",
+    "payments across three regions without interruption.",
+    "failed retries."
+  ],
+  "truncated_prefixes": [
+    "Worked across backend and platform systems",
+    "Designed an event pipeline that processed",
+    "Coordinated the migration window and reduced"
+  ],
+  "unclassified_contact": [
+    "Jordan Example",
+    "jordan@example.com"
+  ]
+}

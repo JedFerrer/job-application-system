@@ -9,6 +9,7 @@ const apiMocks = vi.hoisted(() => ({
   tailorResume: vi.fn(),
   previewCoverage: vi.fn(),
   createDraft: vi.fn(),
+  validateExport: vi.fn(async (content: unknown) => content),
 }));
 const exportMocks = vi.hoisted(() => ({
   buildResumeHeaderItems: vi.fn((data: { canonical_sections?: Array<{ section: string; items: Array<{ source_id: string; text: string; canonical_order: number }> }> }) => {
@@ -104,6 +105,8 @@ describe("TailorResumeDialog", () => {
     apiMocks.tailorResume.mockReset();
     apiMocks.previewCoverage.mockReset();
     apiMocks.createDraft.mockReset();
+    apiMocks.validateExport.mockReset();
+    apiMocks.validateExport.mockImplementation(async (content: unknown) => content);
     exportMocks.downloadResumePdf.mockReset();
     exportMocks.downloadResumeDocx.mockReset();
   });
@@ -674,5 +677,270 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).toContain("Not shown");
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Include all experience"))?.click());
     expect(renderedText()).not.toContain("Not shown");
+  });
+
+  it("renders source-backed role narrative once and keeps continuation fragments out of preview", async () => {
+    const narrative = "Owned event delivery for payment processing across the platform.";
+    const heading = "Responsibilities";
+    const bullet = "Designed an event pipeline that processed payments across three regions without interruption.";
+    const fragment = "payments across three regions without";
+    apiMocks.tailorResume.mockResolvedValue({
+      ...tailoredResume,
+      tailoring_snapshot_version: "full-context-v1" as const,
+      work_history: [{
+        ...tailoredResume.work_history[0],
+        original_highlights: [bullet, "Coordinated the migration window and reduced failed retries."],
+        tailored_highlights: [bullet, "Coordinated the migration window and reduced failed retries."],
+        tailored_highlight_source_indices: [0, 1],
+        role_context: [narrative],
+        responsibilities_heading: heading,
+        selection_decisions: [
+          {
+            source_id: "00000000-0000-0000-0000-000000000001",
+            source_index: 0,
+            canonical_order: 0,
+            original_text: bullet,
+            suggested_text: bullet,
+            final_text: bullet,
+            recommended_included: true,
+            final_included: true,
+            output_rank: 0,
+          },
+          {
+            source_id: "00000000-0000-0000-0000-000000000002",
+            source_index: 1,
+            canonical_order: 1,
+            original_text: "Coordinated the migration window and reduced failed retries.",
+            suggested_text: "Coordinated the migration window and reduced failed retries.",
+            final_text: "Coordinated the migration window and reduced failed retries.",
+            recommended_included: true,
+            final_included: true,
+            output_rank: 1,
+          },
+        ],
+      }],
+      canonical_sections: [{
+        section: "unclassified" as const,
+        canonical_order: 9,
+        items: [{ source_id: "00000000-0000-0000-0000-000000000099", text: fragment, canonical_order: 9 }],
+      }],
+    });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(container.querySelector('[data-testid="role-context-0"]')?.textContent).toBe(narrative));
+    expect(container.querySelectorAll('[data-testid="role-context-0"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="responsibilities-heading-0"]')?.textContent).toBe(heading);
+    expect(container.querySelectorAll('[data-testid="responsibilities-heading-0"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="role-context-0"]')?.textContent).not.toContain(fragment);
+    expect(renderedText()).toContain(bullet);
+    const diagnostics = Array.from(container.querySelectorAll("details")).find((detail) => detail.textContent?.includes("Unclassified source text"));
+    expect(diagnostics).toBeDefined();
+    expect(diagnostics?.open).toBe(false);
+  });
+
+  it("blocks copy and export when a saved draft requires regeneration", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const blocked = {
+      ...tailoredResume,
+      tailoring_snapshot_version: "full-context-v1" as const,
+      requires_regeneration: true,
+    };
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} initialData={blocked} readOnly />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => expect(renderedText()).toContain("This resume must be re-generated after the source resume changes."));
+    const copyButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"));
+    const pdfButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "PDF");
+    const docxButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "DOCX");
+    expect((copyButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+    expect((pdfButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+    expect((docxButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+    await act(async () => { copyButton?.click(); await Promise.resolve(); });
+    await act(async () => { pdfButton?.click(); await Promise.resolve(); });
+    await act(async () => { docxButton?.click(); await Promise.resolve(); });
+    expect(writeText).not.toHaveBeenCalled();
+    expect(exportMocks.downloadResumePdf).not.toHaveBeenCalled();
+    expect(exportMocks.downloadResumeDocx).not.toHaveBeenCalled();
+    expect(apiMocks.validateExport).not.toHaveBeenCalled();
+  });
+
+  it("shows Original kept when a read-only saved draft restored the source bullet", async () => {
+    const saved = {
+      ...tailoredResume,
+      work_history: [{
+        ...tailoredResume.work_history[0]!,
+        tailored_highlights: ["Built APIs"],
+        selection_decisions: [{
+          source_id: "00000000-0000-0000-0000-000000000001",
+          source_index: 0,
+          canonical_order: 0,
+          original_text: "Built APIs",
+          suggested_text: "Built Python APIs",
+          final_text: "Built APIs",
+          recommended_included: true,
+          final_included: true,
+          recommendation_rank: 0,
+          output_rank: 0,
+        }],
+      }],
+    };
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} initialData={saved} readOnly />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => expect(renderedText()).toContain("Original kept"));
+    expect(renderedText()).toContain("Built APIs");
+    expect(renderedText()).not.toMatch(/Use suggestion/);
+  });
+
+  it("preserves persisted output order on a read-only saved draft", async () => {
+    const first = "Persisted first bullet";
+    const second = "Persisted recommended bullet";
+    const saved = {
+      ...tailoredResume,
+      work_history: [{
+        ...tailoredResume.work_history[0]!,
+        original_highlights: [first, second],
+        tailored_highlights: [first, second],
+        tailored_highlight_source_indices: [0, 1],
+        selection_decisions: [
+          {
+            source_id: "00000000-0000-0000-0000-000000000001",
+            source_index: 0,
+            canonical_order: 0,
+            original_text: first,
+            suggested_text: first,
+            final_text: first,
+            recommended_included: false,
+            final_included: true,
+            recommendation_rank: null,
+            output_rank: 0,
+          },
+          {
+            source_id: "00000000-0000-0000-0000-000000000002",
+            source_index: 1,
+            canonical_order: 1,
+            original_text: second,
+            suggested_text: second,
+            final_text: second,
+            recommended_included: true,
+            final_included: true,
+            recommendation_rank: 0,
+            output_rank: 1,
+          },
+        ],
+      }],
+    };
+    expect(reviewedResume(createReviewState(saved)).work_history[0]!.tailored_highlights).toEqual([second, first]);
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} initialData={saved} readOnly />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => expect(renderedText()).toContain(first));
+    expect(renderedText().indexOf(first)).toBeLessThan(renderedText().indexOf(second));
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy all"))?.click();
+      await Promise.resolve();
+    });
+    expect(writeText).toHaveBeenCalled();
+    const copied = String(writeText.mock.calls[0]?.[0] ?? "");
+    expect(copied.indexOf(first)).toBeLessThan(copied.indexOf(second));
+  });
+
+  it("preserves saved original wording on editable reopen until the reviewer changes it", async () => {
+    const saved = {
+      ...tailoredResume,
+      work_history: [{
+        ...tailoredResume.work_history[0]!,
+        original_highlights: ["Built APIs", "Shipped dashboards"],
+        tailored_highlights: ["Built APIs", "Shipped dashboards"],
+        tailored_highlight_source_indices: [0, 1],
+        selection_decisions: [
+          {
+            source_id: "00000000-0000-0000-0000-000000000001",
+            source_index: 0,
+            canonical_order: 0,
+            original_text: "Built APIs",
+            suggested_text: "Built Python APIs",
+            final_text: "Built APIs",
+            recommended_included: true,
+            final_included: true,
+            recommendation_rank: 0,
+            output_rank: 0,
+          },
+          {
+            source_id: "00000000-0000-0000-0000-000000000002",
+            source_index: 1,
+            canonical_order: 1,
+            original_text: "Shipped dashboards",
+            suggested_text: "Shipped dashboards",
+            final_text: "Shipped dashboards",
+            recommended_included: true,
+            final_included: true,
+            recommendation_rank: 1,
+            output_rank: 1,
+          },
+        ],
+      }],
+    };
+    apiMocks.createDraft.mockResolvedValue({ content: saved });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} initialData={saved} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => expect(renderedText()).toContain("Original kept"));
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"))?.click();
+      await Promise.resolve();
+    });
+    expect(apiMocks.createDraft.mock.calls[0]?.[0].content.work_history[0].tailored_highlights).toEqual([
+      "Built APIs",
+      "Shipped dashboards",
+    ]);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Use suggestion"))?.click();
+      await Promise.resolve();
+    });
+    expect(renderedText()).not.toContain("Original kept");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"))?.click();
+      await Promise.resolve();
+    });
+    expect(apiMocks.createDraft.mock.calls[1]?.[0].content.work_history[0].tailored_highlights).toEqual([
+      "Built Python APIs",
+      "Shipped dashboards",
+    ]);
   });
 });

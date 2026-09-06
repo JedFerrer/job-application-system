@@ -270,6 +270,9 @@ export interface TailoredResume {
   source_schema_version?: "source-resume-v3" | "source-resume-v4" | "source-resume-v5" | null;
   source_revision_sha256?: string | null;
   source_section_order?: string[];
+  // Additive Phase 2 flag: true on GET when a readable draft cannot safely
+  // reconcile to its immutable source. Omitted/false for compatible drafts.
+  requires_regeneration?: boolean;
 }
 
 export interface RequirementClassification {

@@ -816,6 +816,11 @@ class TailoredResume(BaseModel):
     skill_evidence: list[TailoredEvidenceReference] = Field(
         default_factory=list, exclude_if=lambda value: not value
     )
+    # Set only when a persisted source-backed snapshot cannot be remapped
+    # losslessly onto the current structured source. Omitted when compatible.
+    requires_regeneration: bool = Field(
+        default=False, exclude_if=lambda value: not value
+    )
 
 
 class TailoredResumeDraftCreate(BaseModel):
