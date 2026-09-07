@@ -17,6 +17,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.repository import JobRepository
 from app.models.application import Application
 from app.models.job import Job
@@ -55,6 +56,8 @@ async def _seed_user_and_jobs(db: AsyncSession, *, count: int) -> list[int]:
         await db.execute(
             insert(Job).values(
                 fingerprint=fp,
+                identity_scope="user:1",
+                identity_key=scoped_key("user:1", f"legacy:pagination:{i}"),
                 title=f"Role {i}",
                 company=f"Corp{i}",
                 location="Remote",

@@ -26,6 +26,7 @@ from app.domain.applications.schemas import (
 from app.domain.applications.service import ApplicationService
 from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.repository import JobRepository
 from app.models.application_event import ApplicationEvent
 from app.models.job import Job
@@ -122,6 +123,8 @@ async def _seed_public_job(
         insert(Job).values(
             id=job_id,
             fingerprint=fp,
+            identity_scope="public",
+            identity_key=scoped_key("public", f"legacy:test-job:{job_id}"),
             title=title,
             company=company,
             location="Remote",

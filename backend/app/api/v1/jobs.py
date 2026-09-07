@@ -16,6 +16,7 @@ from app.domain.jobs.schemas import (
     JobImportRequest,
     JobListResponse,
     JobResponse,
+    JobSourceLinkResponse,
     SourceCapabilityResponse,
 )
 from app.infrastructure.database import async_session_factory
@@ -49,10 +50,16 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
                 )  # local to avoid module-level cycle  # noqa: PLC0415
 
                 repository = JobRepository(db)
+                qa_browser_isolated = settings.qa_unit_1a_browser_fixtures_enabled
                 service = JobService(
                     repository,
                     user_timezone=settings.user_timezone,
-                    embedding_coordinator=JobEmbeddingCoordinator(repository, get_redis()),
+                    embedding_coordinator=(
+                        None
+                        if qa_browser_isolated
+                        else JobEmbeddingCoordinator(repository, get_redis())
+                    ),
+                    external_enrichment_enabled=not qa_browser_isolated,
                 )
                 result = await service.ingest(
                     request,
@@ -60,9 +67,7 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
                     default_country=settings.job_search_country,
                     default_results=settings.job_results_wanted,
                     proxies=settings.proxy_list or None,
-                    qa_unit_1a_browser=getattr(
-                        settings, "qa_unit_1a_browser_fixtures_enabled", False
-                    ),
+                    qa_unit_1a_browser=qa_browser_isolated,
                     progress=_progress,
                     user_id=user_id,
                 )
@@ -227,6 +232,15 @@ async def import_job(
 ) -> JobResponse:
     """Manually import a single job posting from a URL."""
     return await service.import_job(payload, user_id=current_user.id)
+
+
+@router.get("/{job_id}/sources", response_model=list[JobSourceLinkResponse])
+async def list_job_sources(
+    job_id: int,
+    current_user: CurrentUser,
+    service: JobServiceDep,
+) -> list[JobSourceLinkResponse]:
+    return await service.list_job_sources(user_id=current_user.id, job_id=job_id)
 
 
 @router.get("/{job_id}", response_model=JobResponse)

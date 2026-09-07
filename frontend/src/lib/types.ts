@@ -377,6 +377,16 @@ export interface Job {
   employer_summary?: EmployerSummary | null;
 }
 
+export interface JobSourceLink {
+  source: string;
+  source_url: string | null;
+  canonical_url: string | null;
+  external_apply_url: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  status: string;
+}
+
 export interface EmployerSummary {
   company: string;
   company_logo: string | null;

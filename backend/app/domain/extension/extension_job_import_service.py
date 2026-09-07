@@ -12,6 +12,7 @@ Key responsibilities:
 
 from __future__ import annotations
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.domain.extension.repository import ExtensionRepository
 from app.domain.extension.schemas import (
@@ -20,8 +21,8 @@ from app.domain.extension.schemas import (
     ExtensionJobLookupResponse,
 )
 from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.identity import resolve_source_identity, scope_for, scoped_key
 from app.domain.jobs.repository import JobRepository
-from app.domain.jobs.source_id_extractor import extract_source_id
 
 logger = get_logger("extension_job_import")
 
@@ -44,46 +45,65 @@ class ExtensionJobImportService:
     ) -> ExtensionJobImportResponse:
         """Import a job from the browser extension.
 
-        Dedup order:
-        1. Extract stable source ID → check job_source_links for existing public job.
-        2. Fall back to fingerprint (company, title, location).
-
-        Privacy: new jobs are created as private (visibility='private',
-        created_by_user_id=user_id). If an existing public job is found, we
-        link to it without creating a duplicate.
+        An extension import may link to an existing public posting only through
+        the exact, validated source identity. Otherwise it is private from the
+        initial insert and is scoped to the importing user.
 
         Raw extension payload is always stored in user_job_imports.
         """
-        # ── Dedup: try stable source ID first ──────────────────────────
-        source_id = extract_source_id(request.source_url, request.ats_type)
-        existing_job_id: int | None = None
-        if source_id:
-            existing_job_id = await self._lookup_by_source_id(
-                source_id[0], source_id[1]
-            )
-
-        # ── Dedup fallback: fingerprint ────────────────────────────────
-        if existing_job_id is None:
+        identity = resolve_source_identity(
+            request.source_url, source_hint=request.source, ats_type=request.ats_type
+        )
+        if identity is None:
+            raise ValueError("job URL is not a valid HTTP(S) URL")
+        public_scope = scope_for(visibility="public")
+        public_job = await self._jobs.find_by_alias_identity(
+            scope_key=public_scope,
+            identity_key=scoped_key(public_scope, identity.stable_token),
+        )
+        scope = public_scope if public_job is not None else scope_for(
+            visibility="private", user_id=user_id
+        )
+        if public_job is not None:
+            # Exact public identity permits linking, never replacement of
+            # shared fields with untrusted extension payload content.
+            job_id, was_inserted = public_job.id, False
+        else:
             fp = job_fingerprint(request.company, request.title, request.location)
             values: dict[str, object] = {
                 "fingerprint": fp,
+                "identity_scope": scope,
+                "identity_key": scoped_key(scope, identity.stable_token),
+                "visibility": "private",
+                "created_by_user_id": user_id,
+                "ingest_source": "extension",
                 "title": request.title,
                 "company": request.company,
                 "location": request.location,
                 "description": request.description,
                 "source": request.source,
                 "source_url": request.source_url,
+                "raw_response": {},
             }
             job_id, was_inserted = await self._jobs.upsert_job(values)
-        else:
-            job_id = existing_job_id
-            was_inserted = False
 
         # ── Privacy: mark new jobs as private ──────────────────────────
         if was_inserted:
             await self._jobs.mark_as_private_import(
                 job_id=job_id, user_id=user_id, ingest_source="extension"
             )
+
+        await self._jobs.attach_source_link(
+            job_id=job_id,
+            scope_key=scope,
+            identity_key=scoped_key(scope, identity.stable_token),
+            source=identity.source,
+            source_job_id=identity.source_job_id,
+            source_tenant=identity.source_tenant,
+            source_url=request.source_url,
+            canonical_url=identity.canonical_url,
+            external_apply_url=request.external_apply_url,
+        )
 
         # ── Link user → job ────────────────────────────────────────────
         await self._jobs.link_user_jobs(
@@ -122,7 +142,11 @@ class ExtensionJobImportService:
 
         # ── Embedding (async via Celery) ────────────────────────────────
         match_status = "existing"
-        if was_inserted and request.description:
+        if (
+            was_inserted
+            and request.description
+            and not get_settings().qa_unit_1a_browser_fixtures_enabled
+        ):
             match_status = "queued"
             from app.workers.job_imports import embed_imported_job  # noqa: PLC0415
 
@@ -159,15 +183,18 @@ class ExtensionJobImportService:
             match_status=match_status,
         )
 
-    async def _lookup_by_source_id(
-        self, source: str, source_job_id: str
-    ) -> int | None:
-        """Check job_source_links for an existing public job."""
-        return await self._jobs.find_by_source_id(source, source_job_id)
-
-    async def lookup_by_url(self, source_url: str) -> ExtensionJobLookupResponse:
+    async def lookup_by_url(
+        self, *, user_id: int, source_url: str
+    ) -> ExtensionJobLookupResponse:
         """Look up a job by source URL."""
-        job = await self._jobs.find_by_source_url(source_url)
+        canonical = resolve_source_identity(source_url)
+        job = (
+            None
+            if canonical is None
+            else await self._jobs.resolve_visible_by_url(
+                user_id=user_id, canonical_url=canonical.canonical_url
+            )
+        )
 
         if job is None:
             return ExtensionJobLookupResponse(job_id=None, exists=False)

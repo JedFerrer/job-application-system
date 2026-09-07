@@ -48,6 +48,7 @@ import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
 import { InterviewPrepDialog } from "@/components/interview/interview-prep-dialog";
 import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { CircularScore, SourceIcon } from "@/components/jobs/job-card";
+import { JobSourceLinks } from "@/components/jobs/job-source-links";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -219,6 +220,12 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const jobQuery = useQuery({
     queryKey: ["job", jobId],
     queryFn: () => jobsApi.get(jobId),
+    staleTime: 60_000,
+  });
+  const sourceLinksQuery = useQuery({
+    queryKey: ["job-source-links", jobId],
+    queryFn: () => jobsApi.listSources(jobId),
+    enabled: jobQuery.isSuccess,
     staleTime: 60_000,
   });
 
@@ -681,6 +688,8 @@ export function JobDetailView({ jobId }: { jobId: number }) {
             </DropdownMenu>
             </div>
           </div>
+
+          {sourceLinksQuery.isSuccess && <JobSourceLinks links={sourceLinksQuery.data} />}
 
           {/* ── Overview card ────────────────────────────────── */}
           {/* ── Tabs: Description / Requirements / Skills / Notes */}

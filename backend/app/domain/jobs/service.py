@@ -20,6 +20,12 @@ from app.core.logging import get_logger
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.embedding_coordinator import JobEmbeddingCoordinator
 from app.domain.jobs.exceptions import JobNotFoundError
+from app.domain.jobs.identity import (
+    resolve_source_identity,
+    scope_for,
+    scoped_key,
+    strong_employer_apply_url,
+)
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.schemas import (
     EmployerSummary,
@@ -28,6 +34,7 @@ from app.domain.jobs.schemas import (
     JobImportRequest,
     JobListResponse,
     JobResponse,
+    JobSourceLinkResponse,
     SourceRunResult,
 )
 from app.domain.jobs.shift_detector import ShiftDetector, classify_shift_llm
@@ -81,10 +88,16 @@ class JobService:
         repository: JobRepository,
         user_timezone: str = "Asia/Manila",
         embedding_coordinator: JobEmbeddingCoordinator | None = None,
+        *,
+        external_enrichment_enabled: bool = True,
     ) -> None:
         self._repo = repository
         self._shift = ShiftDetector(user_timezone)
         self._embedding_coordinator = embedding_coordinator
+        # The isolated Browser QA fixture must not make provider calls.  This
+        # is explicit at the composition boundary; normal runtime behavior
+        # remains enabled by default.
+        self._external_enrichment_enabled = external_enrichment_enabled
 
     async def ingest(
         self,
@@ -262,10 +275,11 @@ class JobService:
 
             # LLM shift classification for new jobs where regex returned None.
             # Best-effort: failures are logged and skipped, never crash ingest.
-            for job_id, title, description in to_classify:
-                llm_shift = await classify_shift_llm(title, description)
-                if llm_shift and llm_shift != "unknown":
-                    await self._repo.set_shift_type(job_id, llm_shift)
+            if self._external_enrichment_enabled:
+                for job_id, title, description in to_classify:
+                    llm_shift = await classify_shift_llm(title, description)
+                    if llm_shift and llm_shift != "unknown":
+                        await self._repo.set_shift_type(job_id, llm_shift)
 
             source_results.append(
                 SourceRunResult(
@@ -334,16 +348,31 @@ class JobService:
     async def _upsert(
         self, post: RawJobPost, shift_type: str | None = None
     ) -> tuple[int, bool, bool]:
+        identity = resolve_source_identity(post.source_url, source_hint=post.source)
+        if identity is None:
+            raise ValueError("job source URL is not a valid HTTP(S) URL")
+        scope = scope_for(visibility="public")
+        link_key = scoped_key(scope, identity.stable_token)
+        existing = await self._repo.find_by_alias_identity(
+            scope_key=scope, identity_key=link_key
+        )
+        apply_url = strong_employer_apply_url(post.external_apply_url or "")
+        if existing is None and apply_url is not None:
+            existing = await self._repo.find_by_apply_url(
+                scope_key=scope, canonical_url=apply_url
+            )
+        job_key = scoped_key(scope, identity.stable_token)
         fingerprint = job_fingerprint(post.company, post.title, post.location)
 
         # Convert HTML descriptions to markdown for consistent formatting.
         description = _normalise_description(post.description)
-        exists, previous_description = await self._repo.get_description_by_fingerprint(
-            fingerprint
-        )
+        exists = existing is not None
+        previous_description = None if existing is None else existing.description
 
         values: dict[str, object] = {
             "fingerprint": fingerprint,
+            "identity_scope": scope,
+            "identity_key": existing.identity_key if existing is not None else job_key,
             "title": post.title,
             "company": post.company,
             "location": post.location,
@@ -361,12 +390,25 @@ class JobService:
             "raw_response": post.raw,
         }
         job_id, was_inserted = await self._repo.upsert_job(values)
+        await self._repo.attach_source_link(
+            job_id=job_id,
+            scope_key=scope,
+            identity_key=link_key,
+            source=identity.source,
+            source_job_id=identity.source_job_id,
+            source_tenant=identity.source_tenant,
+            source_url=post.source_url,
+            canonical_url=identity.canonical_url,
+            external_apply_url=apply_url,
+        )
         description_changed = (
             exists and description is not None and description != previous_description
         )
         return job_id, was_inserted, description_changed
 
     async def _embed_job(self, job_id: int, description: str, *, force: bool = False) -> bool:
+        if not self._external_enrichment_enabled:
+            return False
         if self._embedding_coordinator is not None:
             try:
                 result = await self._embedding_coordinator.ensure_embedding(job_id, force=force)
@@ -506,32 +548,68 @@ class JobService:
             )
         return response
 
+    async def list_job_sources(
+        self, *, user_id: int, job_id: int
+    ) -> list[JobSourceLinkResponse]:
+        links = await self._repo.list_visible_source_links(user_id=user_id, job_id=job_id)
+        if links is None:
+            raise JobNotFoundError(job_id)
+        return [
+            JobSourceLinkResponse(
+                source=link.source,
+                source_url=link.source_url,
+                canonical_url=link.canonical_url,
+                external_apply_url=link.external_apply_url,
+                first_seen_at=link.first_seen_at,
+                last_seen_at=link.last_seen_at,
+                status=link.status,
+            )
+            for link in links
+        ]
+
     async def import_job(self, payload: JobImportRequest, *, user_id: int) -> JobResponse:
-        """Manually import a single job posting.
+        """Manually import a single job posting without fuzzy identity matching.
 
-        Privacy: new jobs are created with ``visibility='private'`` and
-        ``created_by_user_id=user_id``.  If an existing public job matches the
-        fingerprint, we link to it instead of creating a duplicate.
+        A validated public alias may link the import to that public job.  Every
+        other import is owner-private from its initial INSERT.
         """
-        fingerprint = job_fingerprint(payload.company, payload.title, None)
-
-        # Check if a public job with this fingerprint already exists.
-        # If so, link the user to the existing public job (no duplicate).
-        values: dict[str, object] = {
-            "fingerprint": fingerprint,
-            "title": payload.title,
-            "company": payload.company,
-            "description": payload.description,
-            "source": "manual",
-            "source_url": payload.url,
-            "raw_response": {"imported_from": payload.url},
-        }
-        job_id, was_inserted = await self._repo.upsert_job(values)
+        identity = resolve_source_identity(payload.url, source_hint="manual")
+        if identity is None:
+            raise ValueError("job URL is not a valid HTTP(S) URL")
+        public_scope = scope_for(visibility="public")
+        link_key = scoped_key(public_scope, identity.stable_token)
+        public_job = await self._repo.find_by_alias_identity(
+            scope_key=public_scope, identity_key=link_key
+        )
+        scope = public_scope if public_job is not None else scope_for(
+            visibility="private", user_id=user_id
+        )
+        if public_job is not None:
+            # An import may associate its user with an exact public identity,
+            # but untrusted import fields must never refresh public content.
+            job_id, was_inserted = public_job.id, False
+        else:
+            fingerprint = job_fingerprint(payload.company, payload.title, None)
+            values: dict[str, object] = {
+                "fingerprint": fingerprint,
+                "identity_scope": scope,
+                "identity_key": scoped_key(scope, identity.stable_token),
+                "visibility": "private",
+                "created_by_user_id": user_id,
+                "ingest_source": "manual",
+                "title": payload.title,
+                "company": payload.company,
+                "description": payload.description,
+                "source": "manual",
+                "source_url": payload.url,
+                "raw_response": {"imported_from": payload.url},
+            }
+            job_id, was_inserted = await self._repo.upsert_job(values)
 
         # If this is a brand-new job, mark it as private to the importing user.
         if was_inserted:
             await self._repo.mark_as_private_import(job_id=job_id, user_id=user_id)
-            if payload.description:
+            if payload.description and self._external_enrichment_enabled:
                 # Dispatch async embedding via Celery — don't block the response.
                 from app.workers.job_imports import embed_imported_job  # noqa: PLC0415
 
@@ -543,6 +621,19 @@ class JobService:
             relationship_source = "manual"
             import_method = "manual"
             uj_status = "imported"
+
+        # Imported aliases may be written to a public job only for this exact,
+        # validated identity; raw import content is never copied into the link.
+        await self._repo.attach_source_link(
+            job_id=job_id,
+            scope_key=scope,
+            identity_key=scoped_key(scope, identity.stable_token),
+            source=identity.source,
+            source_job_id=identity.source_job_id,
+            source_tenant=identity.source_tenant,
+            source_url=payload.url,
+            canonical_url=identity.canonical_url,
+        )
 
         # Link user to the job (or re-link if already linked via different source)
         await self._repo.link_user_jobs(

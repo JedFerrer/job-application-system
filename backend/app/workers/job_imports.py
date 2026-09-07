@@ -51,13 +51,18 @@ def embed_imported_job(self: Any, job_id: int, user_id: int) -> None:
     the job is flagged so a reconciliation task can pick it up later.
     """
 
+    settings = get_settings()
+    if settings.qa_unit_1a_browser_fixtures_enabled:
+        logger.info("embed_imported_job.disabled_for_isolated_browser_qa", job_id=job_id)
+        return
+
     async def _run() -> None:
         factory = _make_worker_session_factory()
         async with factory() as db:
             job_repo = JobRepository(db)
 
             redis = aioredis.from_url(  # type: ignore[no-untyped-call]
-                get_settings().redis_url, decode_responses=True
+                settings.redis_url, decode_responses=True
             )
             try:
                 result = await JobEmbeddingCoordinator(job_repo, redis).ensure_embedding(job_id)

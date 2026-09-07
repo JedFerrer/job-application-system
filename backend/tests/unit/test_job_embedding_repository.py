@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.repository import JobRepository
 from app.models.job import Job
 
@@ -41,6 +42,8 @@ def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 async def create_job(db: AsyncSession, *, raw_response: dict[str, object]) -> Job:
     job = Job(
         fingerprint="embed-repo-test",
+        identity_scope="public",
+        identity_key=scoped_key("public", "legacy:embedding-repository-test"),
         title="Embedding Repository Test",
         company="Acme",
         location="Remote",

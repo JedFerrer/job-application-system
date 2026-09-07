@@ -76,6 +76,18 @@ class EmployerSummary(BaseModel):
     job_count: int
 
 
+class JobSourceLinkResponse(BaseModel):
+    """Safe source-alias projection; native IDs and raw payloads stay private."""
+
+    source: str
+    source_url: str | None
+    canonical_url: str | None
+    external_apply_url: str | None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    status: str
+
+
 class JobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.domain.jobs.identity import scoped_key
 from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
 from app.models.job import Job
@@ -87,6 +88,8 @@ async def test_full_refresh_keeps_only_visible_active_automatic_rows(engine: Asy
 
         active_job = Job(
             fingerprint=f"active-{run_id}"[:16],
+            identity_scope="public",
+            identity_key=scoped_key("public", f"legacy:ranking:{run_id}:active"),
             title="Active candidate",
             company="Active Co",
             location="Remote",
@@ -101,6 +104,8 @@ async def test_full_refresh_keeps_only_visible_active_automatic_rows(engine: Asy
         )
         manual_job = Job(
             fingerprint=f"manual-{run_id}"[:16],
+            identity_scope="public",
+            identity_key=scoped_key("public", f"legacy:ranking:{run_id}:manual"),
             title="Manual analysis",
             company="Manual Co",
             location="Remote",
@@ -115,6 +120,8 @@ async def test_full_refresh_keeps_only_visible_active_automatic_rows(engine: Asy
         )
         archived_job = Job(
             fingerprint=f"archived-{run_id}"[:16],
+            identity_scope="public",
+            identity_key=scoped_key("public", f"legacy:ranking:{run_id}:archived"),
             title="Archived active job",
             company="Archived Co",
             location="Remote",
@@ -129,6 +136,8 @@ async def test_full_refresh_keeps_only_visible_active_automatic_rows(engine: Asy
         )
         expired_job = Job(
             fingerprint=f"expired-{run_id}"[:16],
+            identity_scope="public",
+            identity_key=scoped_key("public", f"legacy:ranking:{run_id}:expired"),
             title="Expired stale job",
             company="Expired Co",
             location="Remote",

@@ -39,6 +39,8 @@ class RawJobPost:
     salary_currency: str | None = None
     posted_at: datetime | None = None
     company_logo: str | None = None
+    # An employer application URL is optional source evidence, never inferred.
+    external_apply_url: str | None = None
     raw: dict[str, object] = field(default_factory=dict)
 
 

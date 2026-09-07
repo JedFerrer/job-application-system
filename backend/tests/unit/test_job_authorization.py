@@ -23,6 +23,7 @@ from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.service import ApplicationService
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.exceptions import JobNotFoundError
+from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
 from app.models.application import Application
@@ -108,10 +109,13 @@ async def _create_job(
     company: str = "Test Corp",
 ) -> Job:
     fp = job_fingerprint(company, title, f"location-{job_id}")
+    scope = "public" if visibility == "public" else f"user:{created_by_user_id}"
     await db.execute(
         insert(Job).values(
             id=job_id,
             fingerprint=fp,
+            identity_scope=scope,
+            identity_key=scoped_key(scope, f"legacy:authorization:{job_id}"),
             title=title,
             company=company,
             location="Remote",

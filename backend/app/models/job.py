@@ -31,7 +31,10 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    fingerprint: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    # A non-unique possible-duplicate signal; never a merge key.
+    fingerprint: Mapped[str] = mapped_column(String(16), index=True)
+    identity_scope: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    identity_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     title: Mapped[str] = mapped_column(String(255))
     company: Mapped[str | None] = mapped_column(String(255))
     location: Mapped[str | None] = mapped_column(String(255))

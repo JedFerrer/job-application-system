@@ -41,6 +41,7 @@ from app.models.application_form_session import ApplicationFormSession
 from app.models.cover_letter import CoverLetter
 from app.models.interview_prep import InterviewPrep
 from app.models.job import Job
+from app.models.job_source_link import JobSourceLink
 from app.models.resume import TailoredResumeDraft
 from app.models.user_job import UserJob
 from app.models.user_job_import import UserJobImport
@@ -96,19 +97,19 @@ class JobRepository:
         await self._session.commit()
 
     async def upsert_job(self, values: dict[str, object]) -> tuple[int, bool]:
-        """Insert a job or merge into an existing fingerprint.
+        """Insert a job or refresh an existing scoped stable identity.
 
         Returns ``(job_id, inserted)`` where ``inserted`` is ``True`` for a new
         row and ``False`` when an existing row was refreshed. On conflict we
         refresh ``fetched_at`` and backfill fields only when the incoming value
         is non-null (a second source may supply salary the first lacked).
         """
+        if not values.get("identity_key"):
+            raise ValueError("job upserts require an explicit scoped identity key")
         stmt = pg_insert(Job).values(**values)
         update_cols: dict[str, object] = {
             "fetched_at": datetime.now(UTC),
             "title": stmt.excluded.title,
-            "source": stmt.excluded.source,
-            "source_url": stmt.excluded.source_url,
             "raw_response": stmt.excluded.raw_response,
         }
         # Backfill optional fields only when the new value is present.
@@ -127,19 +128,19 @@ class JobRepository:
         ):
             update_cols[col] = func.coalesce(stmt.excluded[col], getattr(Job, col))
         upsert: Any = stmt.on_conflict_do_update(
-            index_elements=[Job.fingerprint],
+            index_elements=[Job.identity_key],
             set_=update_cols,
         ).returning(Job.id, literal_column("(xmax = 0)").label("inserted"))
         result = await self._session.execute(upsert)
         row = result.one()
         return int(row.id), bool(row.inserted)
 
-    async def get_description_by_fingerprint(
-        self, fingerprint: str
+    async def get_description_by_identity(
+        self, identity_key: str
     ) -> tuple[bool, str | None]:
         """Return whether a deduplicated job exists and its stored description."""
         result = await self._session.execute(
-            select(Job.description).where(Job.fingerprint == fingerprint)
+            select(Job.description).where(Job.identity_key == identity_key)
         )
         row = result.first()
         return (row is not None, None if row is None else row[0])
@@ -524,23 +525,110 @@ class JobRepository:
         """Set one existing archived relationship back to the default state."""
         await self.set_user_job_status(user_id, job_id, "new")
 
-    async def find_by_source_url(self, url: str) -> Job | None:
-        """Find a job by its source URL (exact match)."""
-        result = await self._session.execute(select(Job).where(Job.source_url == url).limit(1))
+    async def find_by_alias_identity(self, *, scope_key: str, identity_key: str) -> Job | None:
+        """Resolve an alias only within its public or owner-private scope."""
+        result = await self._session.execute(
+            select(Job)
+            .join(JobSourceLink, JobSourceLink.job_id == Job.id)
+            .where(
+                JobSourceLink.scope_key == scope_key,
+                JobSourceLink.identity_key == identity_key,
+                Job.identity_scope == scope_key,
+            )
+            .limit(1)
+        )
         return result.scalar_one_or_none()
 
-    async def find_by_source_id(self, source: str, source_job_id: str) -> int | None:
-        """Look up a job_id from job_source_links by (source, source_job_id)."""
-        from app.models.job_source_link import JobSourceLink
-
+    async def find_by_apply_url(self, *, scope_key: str, canonical_url: str) -> Job | None:
         result = await self._session.execute(
-            select(JobSourceLink.job_id).where(
-                JobSourceLink.source == source,
-                JobSourceLink.source_job_id == source_job_id,
+            select(Job)
+            .join(JobSourceLink, JobSourceLink.job_id == Job.id)
+            .where(
+                JobSourceLink.scope_key == scope_key,
+                JobSourceLink.external_apply_url == canonical_url,
+                Job.identity_scope == scope_key,
             )
+            .limit(1)
         )
-        row = result.first()
-        return int(row[0]) if row else None
+        return result.scalar_one_or_none()
+
+    async def find_by_job_identity(self, identity_key: str) -> Job | None:
+        result = await self._session.execute(select(Job).where(Job.identity_key == identity_key))
+        return result.scalar_one_or_none()
+
+    async def attach_source_link(
+        self,
+        *,
+        job_id: int,
+        scope_key: str,
+        identity_key: str,
+        source: str,
+        source_job_id: str | None,
+        source_tenant: str | None,
+        source_url: str,
+        canonical_url: str,
+        external_apply_url: str | None = None,
+    ) -> None:
+        """Attach or refresh one alias without ever reassigning a conflict."""
+        job_scope = await self._session.scalar(
+            select(Job.identity_scope).where(Job.id == job_id).with_for_update()
+        )
+        if job_scope != scope_key:
+            raise ValueError("source link scope does not match parent job")
+        stmt = pg_insert(JobSourceLink).values(
+            job_id=job_id,
+            scope_key=scope_key,
+            identity_key=identity_key,
+            source=source,
+            source_job_id=source_job_id,
+            source_tenant=source_tenant,
+            source_url=source_url,
+            canonical_url=canonical_url,
+            external_apply_url=external_apply_url,
+        )
+        result = await self._session.execute(
+            stmt.on_conflict_do_update(
+                constraint="uq_job_source_link_identity",
+                set_={
+                    "last_seen_at": datetime.now(UTC),
+                    "external_apply_url": func.coalesce(
+                        stmt.excluded.external_apply_url,
+                        JobSourceLink.external_apply_url,
+                    ),
+                },
+                where=JobSourceLink.job_id == job_id,
+            ).returning(JobSourceLink.job_id)
+        )
+        linked_job_id = result.scalar_one_or_none()
+        if linked_job_id != job_id:
+            raise ValueError("source alias is already linked to another job")
+
+    async def list_visible_source_links(
+        self, *, user_id: int, job_id: int
+    ) -> list[JobSourceLink] | None:
+        job = await self.get_visible_by_id(user_id=user_id, job_id=job_id)
+        if job is None:
+            return None
+        result = await self._session.execute(
+            select(JobSourceLink)
+            .where(JobSourceLink.job_id == job_id, JobSourceLink.scope_key == job.identity_scope)
+            .order_by(JobSourceLink.first_seen_at.asc(), JobSourceLink.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def resolve_visible_by_url(self, *, user_id: int, canonical_url: str) -> Job | None:
+        """Resolve a URL alias without exposing another user's private job."""
+        result = await self._session.execute(
+            select(Job)
+            .join(JobSourceLink, JobSourceLink.job_id == Job.id)
+            .where(
+                JobSourceLink.canonical_url == canonical_url,
+                Job.status == "active",
+                or_(Job.visibility == "public", Job.created_by_user_id == user_id),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def list_jobs(
         self,
@@ -589,7 +677,15 @@ class JobRepository:
                 )
             )
         if source is not None:
-            filters.append(Job.source == source)
+            filters.append(
+                exists(
+                    select(1).where(
+                        JobSourceLink.job_id == Job.id,
+                        JobSourceLink.source == source,
+                        JobSourceLink.scope_key == Job.identity_scope,
+                    )
+                )
+            )
         if is_remote is not None:
             filters.append(Job.is_remote.is_(is_remote))
         if min_salary is not None:

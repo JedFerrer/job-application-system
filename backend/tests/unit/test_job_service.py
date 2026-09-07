@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.domain.jobs.exceptions import JobNotFoundError
+from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.schemas import IngestRequest, JobResponse
 from app.domain.jobs.service import JobService
 from app.infrastructure.job_sources.base import RawJobPost
@@ -36,6 +38,8 @@ async def test_get_job_returns_job_response(service: JobService, mock_repo: Asyn
     job = Job(
         id=1,
         fingerprint="abc1234567890def",
+        identity_scope="public",
+        identity_key=scoped_key("public", "legacy:job-service:get-job"),
         title="Senior Engineer",
         company="Acme Corp",
         location="Manila",
@@ -66,6 +70,8 @@ async def test_get_job_includes_employer_summary_for_multiple_public_jobs(
     job = Job(
         id=1,
         fingerprint="abc1234567890def",
+        identity_scope="public",
+        identity_key=scoped_key("public", "legacy:job-service:employer-summary"),
         title="Senior Engineer",
         company="  Acme   Corp ",
         location="Manila",
@@ -98,6 +104,8 @@ async def test_get_job_omits_employer_summary_for_private_jobs(
     job = Job(
         id=1,
         fingerprint="abc1234567890def",
+        identity_scope="user:1",
+        identity_key=scoped_key("user:1", "legacy:job-service:private"),
         title="Senior Engineer",
         company="Acme Corp",
         location="Manila",
@@ -124,6 +132,8 @@ async def test_get_job_omits_employer_summary_for_a_single_related_job(
     job = Job(
         id=1,
         fingerprint="abc1234567890def",
+        identity_scope="public",
+        identity_key=scoped_key("public", "legacy:job-service:single-related"),
         title="Senior Engineer",
         company="Acme Corp",
         location="Manila",
@@ -151,6 +161,8 @@ async def test_get_job_omits_employer_summary_for_a_blank_company(
     job = Job(
         id=1,
         fingerprint="abc1234567890def",
+        identity_scope="public",
+        identity_key=scoped_key("public", "legacy:job-service:blank-company"),
         title="Senior Engineer",
         company="   ",
         location="Manila",
@@ -194,8 +206,13 @@ async def test_changed_description_is_forced_into_incremental_embedding_handoff(
             return [post]
 
     repository = AsyncMock()
-    repository.get_description_by_fingerprint.return_value = (True, "Old description")
+    repository.find_by_alias_identity.return_value = SimpleNamespace(
+        identity_key=scoped_key("public", "url:https://example.test/jobs/9"),
+        description="Old description",
+    )
+    repository.find_by_apply_url.return_value = None
     repository.upsert_job.return_value = (9, False)
+    repository.attach_source_link = AsyncMock()
 
     class Coordinator:
         async def ensure_embedding(self, job_id: int, *, force: bool = False) -> object:

@@ -41,4 +41,4 @@ async def lookup_job_by_url(
     service: ExtensionJobImportServiceDep,
 ) -> ExtensionJobLookupResponse:
     """Look up an existing job by its source URL."""
-    return await service.lookup_by_url(url)
+    return await service.lookup_by_url(user_id=current_user.id, source_url=url)

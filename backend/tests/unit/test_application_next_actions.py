@@ -19,6 +19,7 @@ from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.schemas import ApplicationUpdate
 from app.domain.applications.service import ApplicationService
 from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.repository import JobRepository
 from app.models.application import Application
 from app.models.application_event import ApplicationEvent
@@ -73,6 +74,8 @@ async def _seed_public_job(
         insert(Job).values(
             id=job_id,
             fingerprint=fp,
+            identity_scope="public",
+            identity_key=scoped_key("public", f"legacy:test-job:{job_id}"),
             title=title,
             company=company,
             location="Remote",

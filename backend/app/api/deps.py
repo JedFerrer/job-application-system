@@ -251,10 +251,15 @@ ResumeServiceDep = Annotated[ResumeService, Depends(get_resume_service)]
 
 def get_job_service(db: DbSession) -> JobService:
     job_repository = JobRepository(db)
+    settings = get_settings()
+    qa_browser_isolated = settings.qa_unit_1a_browser_fixtures_enabled
     return JobService(
         job_repository,
-        user_timezone=get_settings().user_timezone,
-        embedding_coordinator=JobEmbeddingCoordinator(job_repository, get_redis()),
+        user_timezone=settings.user_timezone,
+        embedding_coordinator=(
+            None if qa_browser_isolated else JobEmbeddingCoordinator(job_repository, get_redis())
+        ),
+        external_enrichment_enabled=not qa_browser_isolated,
     )
 
 

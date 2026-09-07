@@ -54,7 +54,7 @@ class Unit1ABrowserFixtureSource:
             availability_evidence_supported=False,
             configuration_available=True,
             passive_health="available",
-            max_results_per_search=1,
+            max_results_per_search=2,
         )
 
     def search(self, query: JobQuery) -> SourceSearchResult:
@@ -75,12 +75,25 @@ class Unit1ABrowserFixtureSource:
             location="QA Lab",
             is_remote=True,
             description="Synthetic Unit 1A Browser QA listing. No provider was contacted.",
+            external_apply_url="https://boards.greenhouse.io/qa-fixture/jobs/424242",
         )
         return SourceSearchResult(
             source=self.name,
             status="success",
-            posts=[post],
-            fetched=1,
+            posts=[
+                post,
+                RawJobPost(
+                    source="qa-unit-1a-alternate",
+                    source_url="https://jobs.lever.co/qa-fixture/11111111-1111-1111-1111-111111111111",
+                    title=post.title,
+                    company=post.company,
+                    location=post.location,
+                    is_remote=True,
+                    description=post.description,
+                    external_apply_url="https://boards.greenhouse.io/qa-fixture/jobs/424242",
+                ),
+            ],
+            fetched=2,
             completeness="known_complete",
         )
 

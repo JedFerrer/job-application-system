@@ -13,6 +13,7 @@ import type {
   InterviewPrepRequest,
   InterviewPrepResponse,
   Job,
+  JobSourceLink,
   SourceCapability,
   JobListResponse,
   MatchExplanation,
@@ -318,6 +319,7 @@ export const jobsApi = {
   },
   /** Fetch a single job by id. */
   get: (jobId: number) => apiRequest<Job>(`/jobs/${jobId}`),
+  listSources: (jobId: number) => apiRequest<JobSourceLink[]>(`/jobs/${jobId}/sources`),
 };
 
 // ---- Matches ----------------------------------------------------------------

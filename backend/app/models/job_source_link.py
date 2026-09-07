@@ -13,7 +13,16 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,7 +32,11 @@ from app.infrastructure.database import Base
 class JobSourceLink(Base):
     __tablename__ = "job_source_links"
     __table_args__ = (
-        UniqueConstraint("source", "source_job_id", name="uq_source_job_id"),
+        UniqueConstraint("scope_key", "identity_key", name="uq_job_source_link_identity"),
+        CheckConstraint(
+            "scope_key = 'public' OR scope_key LIKE 'user:%'",
+            name="ck_job_source_links_scope",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -36,6 +49,9 @@ class JobSourceLink(Base):
         String(50), nullable=False
     )
     """``greenhouse`` | ``lever`` | ``workday`` | ``linkedin`` | ``indeed`` | ..."""
+    scope_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_tenant: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     source_job_id: Mapped[str | None] = mapped_column(Text, default=None)
     """The platform's native identifier (job ID, posting UUID, requisition ID)."""

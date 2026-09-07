@@ -24,6 +24,7 @@ from app.api.deps import get_current_user
 from app.api.v1 import resume as resume_module
 from app.core.config import get_settings
 from app.domain.interview.repository import InterviewRepository
+from app.domain.jobs.identity import scoped_key
 from app.domain.matching.repository import MatchingRepository
 from app.domain.resume.provenance import build_resume_import_provenance
 from app.domain.resume.repository import ResumeRepository
@@ -492,6 +493,8 @@ class TestProfileIntegration:
 
             automatic_job = Job(
                 fingerprint="cleanup-auto",
+                identity_scope="public",
+                identity_key=scoped_key("public", "legacy:profile-cleanup:auto"),
                 title="Automatic match",
                 company="Acme",
                 source="test",
@@ -501,6 +504,8 @@ class TestProfileIntegration:
             )
             manual_job = Job(
                 fingerprint="cleanup-manual",
+                identity_scope="public",
+                identity_key=scoped_key("public", "legacy:profile-cleanup:manual"),
                 title="Manual match",
                 company="Beta",
                 source="test",

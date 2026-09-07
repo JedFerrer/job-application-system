@@ -20,6 +20,7 @@ from app.domain.extension.schemas import (
     MarkAppliedRequest,
     MarkAppliedResponse,
 )
+from app.domain.jobs.identity import canonicalize_job_url
 from app.domain.jobs.repository import JobRepository
 
 logger = get_logger("application_events")
@@ -54,7 +55,14 @@ class ApplicationEventService:
 
         # For apply_clicked, try to find or import the job first
         if request.event_type == "apply_clicked" and request.job_url:
-            job = await self._jobs.find_by_source_url(request.job_url)
+            canonical = canonicalize_job_url(request.job_url)
+            job = (
+                None
+                if canonical is None
+                else await self._jobs.resolve_visible_by_url(
+                    user_id=user_id, canonical_url=canonical
+                )
+            )
 
             if job is not None:
                 job_id = job.id
@@ -106,7 +114,14 @@ class ApplicationEventService:
         Only called after confirmation_detected or user_marked_applied.
         """
         # Find the job by URL
-        job = await self._jobs.find_by_source_url(request.job_url)
+        canonical = canonicalize_job_url(request.job_url)
+        job = (
+            None
+            if canonical is None
+            else await self._jobs.resolve_visible_by_url(
+                user_id=user_id, canonical_url=canonical
+            )
+        )
 
         if job is None:
             raise ExtensionSessionNotFoundError(

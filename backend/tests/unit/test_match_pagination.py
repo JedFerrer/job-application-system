@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.identity import scoped_key
 from app.domain.matching.repository import MatchingRepository
 from app.models.job import Job
 from app.models.user import User
@@ -55,10 +56,13 @@ async def _create_job(
     ingest_source: str,
 ) -> None:
     fp = job_fingerprint(company, title, f"location-{job_id}")
+    scope = "public" if visibility == "public" else f"user:{created_by_user_id}"
     await db.execute(
         insert(Job).values(
             id=job_id,
             fingerprint=fp,
+            identity_scope=scope,
+            identity_key=scoped_key(scope, f"legacy:match-pagination:{job_id}"),
             title=title,
             company=company,
             location="Remote",

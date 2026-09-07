@@ -35,6 +35,7 @@ from app.domain.extension.schemas import (
     MarkAppliedRequest,
 )
 from app.domain.jobs.dedup import job_fingerprint
+from app.domain.jobs.identity import resolve_source_identity, scoped_key
 from app.models.application import Application
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -223,13 +224,14 @@ class FakeJobRepository:
         self.jobs: dict[int, dict[str, Any]] = {}
         self.user_jobs: set[tuple[int, int]] = set()
         self.embeddings: dict[int, list[float]] = {}
+        self.aliases: dict[tuple[str, str], int] = {}
         self._next_id = 1
 
     async def upsert_job(self, values: dict[str, object]) -> tuple[int, bool]:
-        fp = values.get("fingerprint", "")
-        # Check for existing fingerprint
+        identity_key = values.get("identity_key", "")
+        # Stable identity, never fingerprint, controls merge behaviour.
         for jid, job in self.jobs.items():
-            if job.get("fingerprint") == fp:
+            if job.get("identity_key") == identity_key:
                 # Merge
                 for key in (
                     "title",
@@ -271,11 +273,24 @@ class FakeJobRepository:
                 return _DictObj(job)
         return None
 
-    async def find_by_source_id(
-        self, source: str, source_job_id: str
-    ) -> int | None:
-        """Fake lookup — returns None (no source links in fake store)."""
+    async def find_by_alias_identity(self, *, scope_key: str, identity_key: str) -> Any | None:
+        job_id = self.aliases.get((scope_key, identity_key))
+        return _DictObj(self.jobs[job_id]) if job_id is not None else None
+
+    async def attach_source_link(self, **kwargs: Any) -> None:
+        key = (kwargs["scope_key"], kwargs["identity_key"])
+        existing = self.aliases.get(key)
+        if existing is not None and existing != kwargs["job_id"]:
+            raise ValueError("source alias is already linked to another job")
+        self.aliases[key] = kwargs["job_id"]
+
+    async def resolve_visible_by_url(self, *, user_id: int, canonical_url: str) -> Any | None:
+        from app.domain.jobs.identity import canonicalize_job_url
+        for job in self.jobs.values():
+            if canonicalize_job_url(str(job.get("source_url", ""))) == canonical_url:
+                return _DictObj(job)
         return None
+
 
     async def mark_as_private_import(
         self, *, job_id: int, user_id: int, ingest_source: str = "manual"
@@ -568,6 +583,11 @@ class TestJobImport:
         assert result.was_existing_job is False
         assert result.application_id is None  # No application created
         assert (42, result.job_id) in job_repo.user_jobs
+        stored = job_repo.jobs[result.job_id]
+        assert stored["identity_scope"] == "user:42"
+        assert stored["visibility"] == "private"
+        assert stored["created_by_user_id"] == 42
+        assert stored["ingest_source"] == "extension"
 
         # Event recorded
         assert len(ext_repo.events) == 1
@@ -582,6 +602,38 @@ class TestJobImport:
         assert result.was_existing_application is False
 
     @pytest.mark.asyncio
+    async def test_exact_public_import_does_not_overwrite_public_content(self) -> None:
+        job_repo, _, svc = self._service()
+        url = "https://linkedin.com/jobs/view/123"
+        identity = resolve_source_identity(url, source_hint="linkedin")
+        assert identity is not None
+        key = scoped_key("public", identity.stable_token)
+        job_repo.jobs[1] = {
+            "id": 1,
+            "identity_scope": "public",
+            "identity_key": key,
+            "title": "Trusted public title",
+            "company": "Trusted public company",
+            "description": "Trusted public description",
+        }
+        job_repo.aliases[("public", key)] = 1
+
+        result = await svc.import_job(
+            user_id=42,
+            request=self._request(
+                title="Untrusted import title",
+                company="Untrusted import company",
+                description="Untrusted import description",
+            ),
+        )
+
+        assert result.job_id == 1
+        assert result.was_existing_job is True
+        assert job_repo.jobs[1]["title"] == "Trusted public title"
+        assert job_repo.jobs[1]["company"] == "Trusted public company"
+        assert job_repo.jobs[1]["description"] == "Trusted public description"
+
+    @pytest.mark.asyncio
     async def test_duplicate_import_dedups_by_fingerprint(self) -> None:
         job_repo, ext_repo, svc = self._service()
         req = self._request()
@@ -594,9 +646,8 @@ class TestJobImport:
         assert len(job_repo.jobs) == 1
 
     @pytest.mark.asyncio
-    async def test_same_job_different_urls_dedups_by_title_company_location(self) -> None:
-        """The fingerprint uses (company, title, location) — NOT source_url — so
-        the same role posted on LinkedIn and Indeed collapses to one row."""
+    async def test_same_text_different_urls_do_not_merge(self) -> None:
+        """Text similarity is a possible-duplicate signal, never identity."""
         job_repo, _, svc = self._service()
 
         linkedin = await svc.import_job(
@@ -614,9 +665,8 @@ class TestJobImport:
             ),
         )
 
-        assert indeed.job_id == linkedin.job_id
-        assert indeed.was_existing_job is True
-        assert len(job_repo.jobs) == 1
+        assert indeed.job_id != linkedin.job_id
+        assert len(job_repo.jobs) == 2
 
     @pytest.mark.asyncio
     async def test_different_jobs_get_different_ids(self) -> None:
@@ -628,7 +678,11 @@ class TestJobImport:
         )
         second = await svc.import_job(
             user_id=42,
-            request=self._request(title="Frontend Engineer", company="Acme"),
+            request=self._request(
+                title="Frontend Engineer",
+                company="Acme",
+                source_url="https://linkedin.com/jobs/view/456",
+            ),
         )
 
         assert first.job_id != second.job_id
@@ -829,8 +883,10 @@ class TestMarkApplied:
                 return application
 
         class AttachedJobRepository:
-            async def find_by_source_url(self, source_url: str) -> SimpleNamespace:
-                assert source_url == "https://linkedin.com/jobs/view/123"
+            async def resolve_visible_by_url(
+                self, *, user_id: int, canonical_url: str
+            ) -> SimpleNamespace:
+                assert (user_id, canonical_url) == (42, "https://linkedin.com/jobs/view/123")
                 return SimpleNamespace(id=1)
 
         service = ApplicationEventService(

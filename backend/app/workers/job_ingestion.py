@@ -187,10 +187,17 @@ async def _scrape_single_query_async(
                 request.sources or settings.enabled_job_sources
             )
 
+            job_repository = JobRepository(db)
+            qa_browser_isolated = settings.qa_unit_1a_browser_fixtures_enabled
             service = JobService(
-                JobRepository(db),
+                job_repository,
                 user_timezone=settings.user_timezone,
-                embedding_coordinator=JobEmbeddingCoordinator(JobRepository(db), redis),
+                embedding_coordinator=(
+                    None
+                    if qa_browser_isolated
+                    else JobEmbeddingCoordinator(job_repository, redis)
+                ),
+                external_enrichment_enabled=not qa_browser_isolated,
             )
 
             # Record the moment before ingest so we can link subscribers to
@@ -204,6 +211,7 @@ async def _scrape_single_query_async(
                     default_country=settings.job_search_country,
                     default_results=settings.job_results_wanted,
                     proxies=settings.proxy_list or None,
+                    qa_unit_1a_browser=qa_browser_isolated,
                     # No user_id — we link subscribers after ingest.
                     user_id=None,
                     preference_id=None,

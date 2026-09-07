@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.repository import ExpiredJobPurgeBatch, JobRepository
 from app.models.application import Application
 from app.models.application_event import ApplicationEvent
@@ -59,6 +60,8 @@ async def _job(
     job = Job(
         id=job_id,
         fingerprint=f"purge{job_id:011d}",
+        identity_scope="public",
+        identity_key=scoped_key("public", f"legacy:purge:{job_id}"),
         title=f"Purge Job {job_id}",
         company="Acme",
         location="Remote",
@@ -94,6 +97,8 @@ async def test_purge_deletes_old_unreferenced_job_and_automatic_match(engine: As
             JobSourceLink(
                 job_id=job.id,
                 source="test",
+                scope_key="public",
+                identity_key=scoped_key("public", "legacy:purge:source-1"),
                 source_job_id="purge-source-1",
                 raw_payload={"source": "payload"},
             )

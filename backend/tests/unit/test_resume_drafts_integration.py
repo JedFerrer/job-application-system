@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.domain.jobs.identity import scoped_key
 from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.source_content import (
     build_source_candidate_ledger,
@@ -198,6 +199,8 @@ async def test_source_or_profile_deletion_cascades_only_its_tied_draft(
         profile_b, source_b = await _seed_current_provenance(db, user_id=1, suffix="cascade-b")
         job_a = Job(
             fingerprint="tfr9-cascade-a",
+            identity_scope="public",
+            identity_key=scoped_key("public", "legacy:resume-draft:cascade-a"),
             title="Backend Engineer",
             company="Acme",
             source="test",
@@ -207,6 +210,8 @@ async def test_source_or_profile_deletion_cascades_only_its_tied_draft(
         )
         job_b = Job(
             fingerprint="tfr9-cascade-b",
+            identity_scope="public",
+            identity_key=scoped_key("public", "legacy:resume-draft:cascade-b"),
             title="Platform Engineer",
             company="Beta",
             source="test",
@@ -282,6 +287,8 @@ async def test_upsert_replaces_same_user_job_and_keeps_id(
         profile, source = await _seed_current_provenance(db, user_id=1, suffix="upsert")
         job = Job(
             fingerprint="tfr9-upsert-01",
+            identity_scope="public",
+            identity_key=scoped_key("public", "legacy:resume-draft:upsert"),
             title="Backend Engineer",
             company="Acme",
             source="test",
@@ -340,6 +347,8 @@ async def test_upsert_is_independent_by_user_and_job(
         jobs = [
             Job(
                 fingerprint=f"tfr9-scope-{index}",
+                identity_scope="public",
+                identity_key=scoped_key("public", f"legacy:resume-draft:scope:{index}"),
                 title=f"Role {index}",
                 company="Acme",
                 source="test",
