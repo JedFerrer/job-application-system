@@ -16,13 +16,16 @@ from app.domain.jobs.schemas import (
     JobImportRequest,
     JobListResponse,
     JobResponse,
+    SourceCapabilityResponse,
 )
 from app.infrastructure.database import async_session_factory
+from app.infrastructure.job_sources.registry import build_sources
 from app.infrastructure.redis_client import get_redis
 from app.infrastructure.task_store import TaskStore
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = get_logger(__name__)
+_SAFE_INGEST_FAILURE_MESSAGE = "Job refresh could not be completed. Please try again."
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +60,9 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
                     default_country=settings.job_search_country,
                     default_results=settings.job_results_wanted,
                     proxies=settings.proxy_list or None,
+                    qa_unit_1a_browser=getattr(
+                        settings, "qa_unit_1a_browser_fixtures_enabled", False
+                    ),
                     progress=_progress,
                     user_id=user_id,
                 )
@@ -65,11 +71,13 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
                 await db.rollback()
                 raise
 
+        task_status = "failed" if result.outcome == "failed" else "done"
         await store.update(
             task_id,
-            status="done",
+            status=task_status,
             message=(
-                f"Done — {result.fetched} fetched, "
+                f"{'Completed' if task_status == 'done' else 'No source completed'} — "
+                f"{result.fetched} fetched, "
                 f"{result.inserted} new, {result.embedded} embedded"
             ),
             fetched=result.fetched,
@@ -78,20 +86,55 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
             embedded=result.embedded,
             sources=result.sources,
             result=result.model_dump(),
+            error=(
+                "No requested source completed successfully."
+                if task_status == "failed"
+                else None
+            ),
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("bg_ingest.failed", task_id=task_id)
         await store.update(
             task_id,
             status="failed",
-            error=str(exc),
-            message=f"Failed: {exc}",
+            error=_SAFE_INGEST_FAILURE_MESSAGE,
+            message=_SAFE_INGEST_FAILURE_MESSAGE,
         )
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get("/sources", response_model=list[SourceCapabilityResponse])
+async def list_source_capabilities(current_user: CurrentUser) -> list[SourceCapabilityResponse]:
+    """Return configured source capabilities without probing providers."""
+    del current_user  # Authentication is required; no user-specific data is returned.
+    settings = get_settings()
+    return [
+        SourceCapabilityResponse(
+            source=source.capabilities.source,
+            supported_query_fields=list(source.capabilities.supported_query_fields),
+            country_coverage=(
+                list(source.capabilities.country_coverage)
+                if source.capabilities.country_coverage is not None
+                else None
+            ),
+            detail_supported=source.capabilities.detail_supported,
+            pagination_mode=source.capabilities.pagination_mode,
+            availability_evidence_supported=source.capabilities.availability_evidence_supported,
+            configuration_available=source.capabilities.configuration_available,
+            passive_health=source.capabilities.passive_health,
+            max_results_per_search=source.capabilities.max_results_per_search,
+        )
+        for source in build_sources(
+            settings.enabled_job_sources,
+            qa_unit_1a_browser=getattr(
+                settings, "qa_unit_1a_browser_fixtures_enabled", False
+            ),
+        )
+    ]
 
 
 @router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)

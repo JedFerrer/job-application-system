@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -102,6 +103,9 @@ class Settings(BaseSettings):
     # satisfied by the parser.
     qa_deterministic_parser: bool = False
     qa_fixture_sha256: str = "67b1a3997048b0fa3480f5370c27e9d19303ef9815427f57b861078004a5d44b"
+    # Unit 1A Browser QA fixtures are deliberately inert unless this explicit
+    # opt-in is paired with the isolated test database guard below.
+    qa_unit_1a_browser_enabled: bool = False
 
     # --- Embeddings ---
     embedding_model: str = "text-embedding-3-small"
@@ -172,6 +176,21 @@ class Settings(BaseSettings):
     def requires_public_security(self) -> bool:
         """Whether deployment must use production-equivalent safeguards."""
         return self.environment in {"staging", "production"}
+
+    @property
+    def qa_unit_1a_browser_fixtures_enabled(self) -> bool:
+        """Whether deterministic source fixtures may be selected.
+
+        This is intentionally stricter than a development toggle: a browser
+        QA process must use the isolated ``job_app_test`` database.  A flag
+        alone can never enable fixtures for the normal local database.
+        """
+        database_name = urlsplit(self.database_url).path.rstrip("/").rsplit("/", 1)[-1]
+        return (
+            self.qa_unit_1a_browser_enabled
+            and self.environment == "test"
+            and database_name == "job_app_test"
+        )
 
     def _api_key_for(self, provider: str) -> str:
         keys = {

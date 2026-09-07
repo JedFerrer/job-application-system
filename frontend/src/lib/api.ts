@@ -13,6 +13,7 @@ import type {
   InterviewPrepRequest,
   InterviewPrepResponse,
   Job,
+  SourceCapability,
   JobListResponse,
   MatchExplanation,
   MatchSummary,
@@ -261,6 +262,7 @@ export const jobsApi = {
     }),
   getTaskStatus: (taskId: string) =>
     apiRequest<TaskStatus>(`/jobs/tasks/${taskId}`),
+  listSourceCapabilities: () => apiRequest<SourceCapability[]>("/jobs/sources"),
   list: (
     opts: {
       q?: string;

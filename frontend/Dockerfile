@@ -9,6 +9,8 @@ RUN npm ci
 # ---- builder ----
 FROM node:22-alpine AS builder
 WORKDIR /app
+ARG NEXT_PUBLIC_UNIT_1A_BROWSER_QA=false
+ENV NEXT_PUBLIC_UNIT_1A_BROWSER_QA=$NEXT_PUBLIC_UNIT_1A_BROWSER_QA
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

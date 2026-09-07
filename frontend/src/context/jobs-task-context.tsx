@@ -16,7 +16,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ApiError, jobsApi } from "@/lib/api";
 import { useAuth } from "@/context/auth-context";
-import type { IngestResponse } from "@/lib/types";
+import type { IngestResponse, SourceRunResult } from "@/lib/types";
 
 interface JobsTaskContextValue {
   taskId: string | null;
@@ -24,6 +24,7 @@ interface JobsTaskContextValue {
   setTask: (taskId: string, sources: string[]) => void;
   isRunning: boolean;
   progressMsg: string | null;
+  sourceResults: SourceRunResult[];
 }
 
 const JobsTaskContext = createContext<JobsTaskContextValue>({
@@ -31,9 +32,8 @@ const JobsTaskContext = createContext<JobsTaskContextValue>({
   setTask: () => {},
   isRunning: false,
   progressMsg: null,
+  sourceResults: [],
 });
-
-const PROXY_REQUIRED_SOURCES = new Set(["google"]);
 
 export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
@@ -53,12 +53,14 @@ export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
       return [];
     }
   });
+  const [lastSourceResults, setLastSourceResults] = useState<SourceRunResult[]>([]);
 
   const setTask = (id: string, sources: string[]) => {
     setTaskIdState(id);
     setTaskSourcesState(sources);
     sessionStorage.setItem("jobs_task_id", id);
     sessionStorage.setItem("jobs_task_sources", JSON.stringify(sources));
+    setLastSourceResults([]);
   };
 
   const clearTask = () => {
@@ -95,33 +97,28 @@ export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const data = taskQuery.data;
     if (!data || (data.status !== "done" && data.status !== "failed")) return;
-    const sources = taskSources;
     clearTask();
 
+    const result = data.result as IngestResponse | undefined;
+    setLastSourceResults(data.source_results ?? result?.source_results ?? []);
     if (data.status === "failed") {
-      toast.error(data.error || "Ingestion failed", {
+      toast.error(result?.source_results?.length ? "No requested source completed successfully." : (data.error || "Ingestion failed"), {
         action: { label: "View jobs", onClick: () => router.push("/dashboard/jobs") },
         duration: 8000,
       });
       return;
     }
 
-    const result = data.result as IngestResponse | undefined;
-    if (!result || result.fetched === 0) {
-      if (sources.some((s) => PROXY_REQUIRED_SOURCES.has(s))) {
-        toast.warning(
-          "Google Jobs returned 0 results — Google blocks server IPs. Add residential proxies to the backend.",
-          {
-            action: { label: "View jobs", onClick: () => router.push("/dashboard/jobs") },
-            duration: 8000,
-          },
-        );
-      } else {
-        toast.warning("No jobs found. Try a different search term, location, or source.", {
+    if (!result || result.outcome === "partial_success") {
+      toast.warning("Job refresh completed with some source results unavailable. Review the source summary.", {
             action: { label: "View jobs", onClick: () => router.push("/dashboard/jobs") },
           duration: 8000,
         });
-      }
+    } else if (result.fetched === 0) {
+      toast.warning("No results returned. Source completeness may be unknown.", {
+        action: { label: "View jobs", onClick: () => router.push("/dashboard/jobs") },
+        duration: 8000,
+      });
     } else {
       toast.success(
         `Ingested ${result.fetched} jobs — ${result.inserted} new, ${result.updated} updated, ${result.embedded} embedded`,
@@ -146,9 +143,12 @@ export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
       : taskId
         ? "Starting…"
         : null;
+  const sourceResults = taskQuery.data?.source_results
+    ?? (taskQuery.data?.result as IngestResponse | undefined)?.source_results
+    ?? lastSourceResults;
 
   return (
-    <JobsTaskContext.Provider value={{ taskId, setTask, isRunning, progressMsg }}>
+    <JobsTaskContext.Provider value={{ taskId, setTask, isRunning, progressMsg, sourceResults }}>
       {children}
     </JobsTaskContext.Provider>
   );

@@ -32,6 +32,7 @@ export interface TaskStatus {
   updated?: number;
   embedded?: number;
   sources?: string[];
+  source_results?: SourceRunResult[];
   // Terminal fields
   error?: string | null;
   result?: IngestResponse | ResumeResponse | RankResponse | null;
@@ -320,6 +321,33 @@ export interface IngestResponse {
   updated: number;
   embedded: number;
   sources: string[];
+  outcome: "success" | "partial_success" | "failed";
+  source_results: SourceRunResult[];
+}
+
+export interface SourceRunResult {
+  source: string;
+  status: "queued" | "running" | "success" | "empty" | "unsupported" | "unavailable" | "failed" | "skipped_fresh";
+  reason_code?: string | null;
+  duration_ms?: number | null;
+  fetched: number;
+  accepted: number;
+  rejected: number;
+  truncated: boolean;
+  truncation_reason?: string | null;
+  completeness: "known_complete" | "unknown";
+}
+
+export interface SourceCapability {
+  source: string;
+  supported_query_fields: string[];
+  country_coverage: string[] | null;
+  detail_supported: boolean;
+  pagination_mode: "internal" | "none";
+  availability_evidence_supported: boolean;
+  configuration_available: boolean;
+  passive_health: "available" | "unknown";
+  max_results_per_search: number | null;
 }
 
 export interface Job {

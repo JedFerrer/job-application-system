@@ -28,9 +28,15 @@ from app.domain.jobs.schemas import (
     JobImportRequest,
     JobListResponse,
     JobResponse,
+    SourceRunResult,
 )
 from app.domain.jobs.shift_detector import ShiftDetector, classify_shift_llm
-from app.infrastructure.job_sources.base import JobQuery, RawJobPost
+from app.infrastructure.job_sources.base import (
+    JobQuery,
+    RawJobPost,
+    SourceSearchResult,
+    fetch_compat_result,
+)
 from app.infrastructure.job_sources.registry import build_sources
 
 logger = get_logger(__name__)
@@ -88,6 +94,7 @@ class JobService:
         default_country: str,
         default_results: int,
         proxies: list[str] | None,
+        qa_unit_1a_browser: bool = False,
         progress: ProgressFn | None = None,
         user_id: int | None = None,
         preference_id: int | None = None,
@@ -97,7 +104,9 @@ class JobService:
                 await progress(**kw)
 
         source_names = request.sources or default_sources
-        sources = build_sources(source_names, proxies=proxies)
+        sources = build_sources(
+            source_names, proxies=proxies, qa_unit_1a_browser=qa_unit_1a_browser
+        )
         query = JobQuery(
             search_term=request.search_term,
             location=request.location,
@@ -113,16 +122,14 @@ class JobService:
         updated = 0
         embedded = 0
         used_sources: set[str] = set()
+        source_results: list[SourceRunResult] = []
         # Every job touched this run (new or refreshed) is linked to the user
         # so it appears in their scoped feed.
         linked_job_ids: set[int] = set()
         embedded_job_ids: list[int] = []
 
         for source in sources:
-            # Human-friendly name for progress messages (one site per adapter).
-            source_name = (getattr(source, "_sites", None) or [getattr(source, "name", "source")])[
-                0
-            ]
+            source_name = source.name
 
             await _emit(
                 status="running",
@@ -131,25 +138,100 @@ class JobService:
                 inserted=inserted,
                 updated=updated,
                 embedded=embedded,
+                source_results=[item.model_dump() for item in source_results],
             )
+            capabilities = getattr(source, "capabilities", None)
+            unsupported_reason: str | None = None
+            if capabilities is not None and capabilities.configuration_available and (
+                capabilities.country_coverage is not None
+                and query.country not in capabilities.country_coverage
+            ):
+                unsupported_reason = "unsupported_country"
+            elif capabilities is not None and capabilities.configuration_available:
+                requested_fields = {
+                    "search_term",
+                    *(
+                        field
+                        for field, value in (
+                            ("location", query.location),
+                            ("is_remote", query.is_remote),
+                            ("hours_old", query.hours_old),
+                            ("google_search_term", query.google_search_term),
+                        )
+                        if value is not None
+                    ),
+                    "country",
+                    "results_wanted",
+                }
+                if not requested_fields.issubset(capabilities.supported_query_fields):
+                    unsupported_reason = "unsupported_filter"
+            if unsupported_reason is not None:
+                source_results.append(
+                    SourceRunResult(
+                        source=source_name,
+                        status="unsupported",
+                        reason_code=unsupported_reason,
+                    )
+                )
+                await _emit(
+                    status="running",
+                    message=f"Skipped unsupported {source_name} query",
+                    fetched=fetched,
+                    inserted=inserted,
+                    updated=updated,
+                    embedded=embedded,
+                    source_results=[item.model_dump() for item in source_results],
+                )
+                continue
             try:
-                posts = await to_thread.run_sync(source.fetch, query)
-            except Exception:  # noqa: BLE001
+                search = getattr(source, "search", None)
+                search_result: SourceSearchResult
+                if callable(search):
+                    search_result = await to_thread.run_sync(search, query)
+                else:
+                    search_result = await to_thread.run_sync(fetch_compat_result, source, query)
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "jobs.ingest.source_failed",
                     source=source_name,
                     exc_info=True,
                 )
+                reason_code = (
+                    "dependency_missing"
+                    if exc.__class__.__name__ == "JobSpyUnavailableError"
+                    else "provider_error"
+                )
+                source_results.append(
+                    SourceRunResult(
+                        source=source_name,
+                        status="unavailable" if reason_code == "dependency_missing" else "failed",
+                        reason_code=reason_code,
+                    )
+                )
+                await _emit(
+                    status="running",
+                    message=f"Finished {source_name}",
+                    fetched=fetched,
+                    inserted=inserted,
+                    updated=updated,
+                    embedded=embedded,
+                    source_results=[item.model_dump() for item in source_results],
+                )
                 continue
 
-            fetched += len(posts)
+            posts = search_result.posts
+            fetched += search_result.fetched
             # Separate upsert pass so we can batch-emit progress before embedding.
             to_embed: list[tuple[int, str, bool]] = []
             # LLM shift fallback: new jobs where regex found no shift keyword.
             to_classify: list[tuple[int, str, str]] = []
+            accepted = 0
+            rejected = 0
             for post in posts:
                 if not post.title or not post.source_url:
+                    rejected += 1
                     continue
+                accepted += 1
                 used_sources.add(post.source)
                 shift_type = self._shift.detect_regex(post.title, post.description)
                 job_id, was_inserted, description_changed = await self._upsert(
@@ -185,6 +267,33 @@ class JobService:
                 if llm_shift and llm_shift != "unknown":
                     await self._repo.set_shift_type(job_id, llm_shift)
 
+            source_results.append(
+                SourceRunResult(
+                    source=search_result.source,
+                    status=search_result.status,
+                    reason_code=search_result.reason_code,
+                    duration_ms=search_result.duration_ms,
+                    fetched=search_result.fetched,
+                    accepted=accepted,
+                    rejected=rejected,
+                    truncated=search_result.truncated or len(posts) >= query.results_wanted,
+                    truncation_reason=(
+                        search_result.truncation_reason
+                        or ("result_limit_reached" if len(posts) >= query.results_wanted else None)
+                    ),
+                    completeness=search_result.completeness,
+                )
+            )
+            await _emit(
+                status="running",
+                message=f"Finished {source_name}",
+                fetched=fetched,
+                inserted=inserted,
+                updated=updated,
+                embedded=embedded,
+                source_results=[item.model_dump() for item in source_results],
+            )
+
         if user_id is not None:
             await self._repo.link_user_jobs(
                 user_id, list(linked_job_ids), preference_id=preference_id
@@ -197,12 +306,21 @@ class JobService:
             updated=updated,
             embedded=embedded,
         )
+        successful = {"success", "empty"}
+        success_count = sum(item.status in successful for item in source_results)
+        outcome = (
+            "success"
+            if success_count == len(source_results)
+            else "partial_success" if success_count else "failed"
+        )
         return IngestResponse(
             fetched=fetched,
             inserted=inserted,
             updated=updated,
             embedded=embedded,
-            sources=sorted(used_sources),
+            sources=[item.source for item in source_results],
+            outcome=outcome,
+            source_results=source_results,
             embedded_job_ids=embedded_job_ids,
         )
 

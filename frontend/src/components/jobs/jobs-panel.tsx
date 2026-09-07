@@ -7,6 +7,9 @@ import { Archive, Bookmark, Briefcase, Link2, Loader2, Search } from "lucide-rea
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
 import { ApiError, applicationsApi, jobsApi, listAllApplications } from "@/lib/api";
+import { useJobsTask } from "@/context/jobs-task-context";
+import { SourceRunSummary } from "@/components/jobs/source-run-summary";
+import { Unit1AQaControls } from "@/components/jobs/unit-1a-qa-controls";
 import type { Job } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +55,7 @@ function useDebounce<T>(value: T, delay: number): [T, (v: T) => void] {
   return [debounced, flush];
 }
 export function JobsPanel() {
+  const { sourceResults } = useJobsTask();
   const queryClient = useQueryClient();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -329,6 +333,8 @@ export function JobsPanel() {
 
   return (
     <div className="flex flex-col gap-6">
+      <Unit1AQaControls />
+      <SourceRunSummary results={sourceResults} />
       <section className="flex flex-col gap-3">
         {/* ── Full-width search bar ─────────────────────────── */}
         <div className="flex gap-2 py-3 border-y border-border">

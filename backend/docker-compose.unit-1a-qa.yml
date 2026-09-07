@@ -1,0 +1,68 @@
+# Standalone local Browser-QA topology.  Do not merge this file with
+# docker-compose.yml: that file declares the normal job_app services.
+name: unit1a_qa
+
+services:
+  db_test:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: job_app_test
+    volumes:
+      - unit_1a_qa_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d job_app_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qa-redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qa-api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_test:5432/job_app_test
+      REDIS_URL: redis://qa-redis:6379/0
+      ENVIRONMENT: test
+      QA_UNIT_1A_BROWSER_ENABLED: "true"
+      ENABLED_JOB_SOURCES: '["qa-unit-1a-success","qa-unit-1a-failure","qa-unit-1a-uncertain-empty","qa-unit-1a-total-failure-a","qa-unit-1a-total-failure-b"]'
+      JOB_SEARCH_COUNTRY: QA
+      JOB_RESULTS_WANTED: "1"
+      EMAIL_DELIVERY_MODE: console
+      ALLOWED_ORIGINS: '["http://localhost:18101"]'
+    ports:
+      - "127.0.0.1:18100:8000"
+    depends_on:
+      db_test:
+        condition: service_healthy
+      qa-redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers"
+
+  qa-web:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile.unit-1a-qa
+      args:
+        NEXT_PUBLIC_UNIT_1A_BROWSER_QA: "true"
+    environment:
+      BACKEND_INTERNAL_URL: http://qa-api:8000
+      NEXT_PUBLIC_UNIT_1A_BROWSER_QA: "true"
+      PORT: "3000"
+    ports:
+      - "127.0.0.1:18101:3000"
+    depends_on:
+      qa-api:
+        condition: service_started
+
+volumes:
+  unit_1a_qa_pgdata:

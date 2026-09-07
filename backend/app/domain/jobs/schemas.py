@@ -23,7 +23,7 @@ class IngestRequest(BaseModel):
     # the caller explicitly opts in to a broader window.
     hours_old: int | None = Field(default=504, ge=1, le=720)
     results_wanted: int | None = Field(default=None, ge=1, le=200)
-    sources: list[JobSourceName] | None = None
+    sources: list[JobSourceName] | None = Field(default=None, min_length=1)
     # Optional override for the Google Jobs search term. When omitted the
     # backend auto-builds one from search_term + location.
     google_search_term: str | None = Field(default=None, max_length=512)
@@ -37,8 +37,35 @@ class IngestResponse(BaseModel):
     updated: int
     embedded: int
     sources: list[str]
+    outcome: str
+    source_results: list[SourceRunResult] = Field(default_factory=list)
     # Worker-only handoff; deliberately omitted from public ingestion responses.
     embedded_job_ids: list[int] = Field(default_factory=list, exclude=True)
+
+
+class SourceRunResult(BaseModel):
+    source: str
+    status: str
+    reason_code: str | None = None
+    duration_ms: int | None = None
+    fetched: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    truncated: bool = False
+    truncation_reason: str | None = None
+    completeness: str = "unknown"
+
+
+class SourceCapabilityResponse(BaseModel):
+    source: str
+    supported_query_fields: list[str]
+    country_coverage: list[str] | None = None
+    detail_supported: bool
+    pagination_mode: str
+    availability_evidence_supported: bool
+    configuration_available: bool
+    passive_health: str
+    max_results_per_search: int | None = None
 
 
 class EmployerSummary(BaseModel):

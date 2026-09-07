@@ -13,12 +13,19 @@ for LinkedIn, and never redistribute scraped data.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
 from app.core.logging import get_logger
-from app.infrastructure.job_sources.base import JobQuery, RawJobPost
+from app.infrastructure.job_sources.base import (
+    JobQuery,
+    RawJobPost,
+    SourceCapabilities,
+    SourceDetailResult,
+    SourceSearchResult,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -98,16 +105,35 @@ class JobSpySource:
 
     def __init__(self, sites: list[str], proxies: list[str] | None = None) -> None:
         self._sites = [s for s in sites if s in _SUPPORTED_SITES]
+        self.name = self._sites[0] if self._sites else "jobspy"
         self._proxies = proxies or None
+
+    @property
+    def capabilities(self) -> SourceCapabilities:
+        return SourceCapabilities(
+            source=self._sites[0] if self._sites else self.name,
+            supported_query_fields=(
+                "search_term", "location", "country", "is_remote", "hours_old",
+                "results_wanted", "google_search_term",
+            ),
+            # JobSpy's provider coverage is not a stable, complete country contract.
+            country_coverage=None,
+            pagination_mode="internal",
+            availability_evidence_supported=False,
+            max_results_per_search=200,
+        )
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential_jitter(initial=2, max=30),
         reraise=True,
     )
-    def fetch(self, query: JobQuery) -> list[RawJobPost]:
+    def search(self, query: JobQuery) -> SourceSearchResult:
+        started = perf_counter()
         if not self._sites:
-            return []
+            return SourceSearchResult(
+                source=self.name, status="unsupported", reason_code="unknown_source"
+            )
         try:
             from jobspy import scrape_jobs  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover - exercised only without extra
@@ -149,7 +175,26 @@ class JobSpySource:
         df: pd.DataFrame = scrape_jobs(**kwargs)
         posts = [self._row_to_post(row) for _, row in df.iterrows()]
         logger.info("jobspy.fetch.done", count=len(posts))
-        return posts
+        return SourceSearchResult(
+            source=self._sites[0],
+            status="success" if posts else "empty",
+            posts=posts,
+            duration_ms=int((perf_counter() - started) * 1000),
+            fetched=len(posts),
+            # JobSpy can internally absorb provider failures, so an empty response
+            # cannot honestly prove an exhaustive search.
+            completeness="unknown",
+        )
+
+    def fetch(self, query: JobQuery) -> list[RawJobPost]:
+        """Compatibility wrapper retained while callers migrate to search()."""
+        return self.search(query).posts
+
+    def get_detail(self, source_url: str) -> SourceDetailResult:
+        return SourceDetailResult(
+            source=self._sites[0] if self._sites else self.name,
+            status="unsupported",
+        )
 
     @staticmethod
     def _row_to_post(row: pd.Series) -> RawJobPost:

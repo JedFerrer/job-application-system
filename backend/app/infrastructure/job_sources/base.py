@@ -9,7 +9,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from time import perf_counter
+from typing import Literal, Protocol, runtime_checkable
+
+SourceStatus = Literal[
+    "queued", "running", "success", "empty", "unsupported", "unavailable", "failed", "skipped_fresh"
+]
+ReasonCode = Literal[
+    "unsupported_country", "unsupported_filter", "unknown_source", "dependency_missing",
+    "rate_limited", "timeout", "parse_error", "provider_error", "fresh_cache",
+]
+Completeness = Literal["known_complete", "unknown"]
 
 
 @dataclass(slots=True)
@@ -45,12 +55,86 @@ class JobQuery:
     google_search_term: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SourceCapabilities:
+    """Static, safe-to-publish behaviour advertised by one source adapter."""
+
+    source: str
+    supported_query_fields: tuple[str, ...]
+    country_coverage: tuple[str, ...] | None = None
+    detail_supported: bool = False
+    pagination_mode: Literal["internal", "none"] = "none"
+    availability_evidence_supported: bool = False
+    configuration_available: bool = True
+    passive_health: Literal["available", "unknown"] = "unknown"
+    max_results_per_search: int | None = None
+
+
+@dataclass(slots=True)
+class SourceSearchResult:
+    """One source's normalized search outcome; provider payloads never escape it."""
+
+    source: str
+    status: SourceStatus
+    posts: list[RawJobPost] = field(default_factory=list)
+    reason_code: ReasonCode | None = None
+    duration_ms: int | None = None
+    fetched: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    truncated: bool = False
+    truncation_reason: str | None = None
+    completeness: Completeness = "unknown"
+
+    @classmethod
+    def unsupported(
+        cls, source: str, reason_code: ReasonCode = "unknown_source"
+    ) -> SourceSearchResult:
+        return cls(source=source, status="unsupported", reason_code=reason_code)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDetailResult:
+    """Detail lookup contract. Current adapters deliberately return unsupported."""
+
+    source: str
+    status: Literal["success", "unsupported", "unavailable", "failed"]
+    reason_code: ReasonCode | None = None
+    post: RawJobPost | None = None
+
+
 @runtime_checkable
 class JobSource(Protocol):
     """The contract every concrete source adapter implements."""
 
     name: str
 
-    def fetch(self, query: JobQuery) -> list[RawJobPost]:
-        """Return normalized postings for ``query`` (may be empty)."""
+    @property
+    def capabilities(self) -> SourceCapabilities: ...
+
+    def search(self, query: JobQuery) -> SourceSearchResult:
+        """Return posts and source-level metadata for one query."""
         ...
+
+    def fetch(self, query: JobQuery) -> list[RawJobPost]:
+        """Compatibility wrapper returning only normalized postings."""
+        ...
+
+    def get_detail(self, source_url: str) -> SourceDetailResult:
+        """Return a normalized detail result when the adapter supports it."""
+        ...
+
+
+def fetch_compat_result(source: JobSource, query: JobQuery) -> SourceSearchResult:
+    """Adapt legacy fetch-only test/third-party adapters during this transition."""
+    started = perf_counter()
+    posts = source.fetch(query)
+    elapsed = int((perf_counter() - started) * 1000)
+    return SourceSearchResult(
+        source=source.name,
+        status="success" if posts else "empty",
+        posts=posts,
+        duration_ms=elapsed,
+        fetched=len(posts),
+        completeness="unknown",
+    )
