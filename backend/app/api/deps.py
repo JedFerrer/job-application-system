@@ -47,6 +47,7 @@ from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.service import ResumeService
 from app.infrastructure.database import get_db
 from app.infrastructure.email_service import EmailProvider, get_email_provider
+from app.infrastructure.job_sources.execution import SourceAdmissionController
 from app.infrastructure.redis_client import get_redis
 from app.infrastructure.task_store import TaskStore
 from app.models.user import User
@@ -259,6 +260,8 @@ def get_job_service(db: DbSession) -> JobService:
         embedding_coordinator=(
             None if qa_browser_isolated else JobEmbeddingCoordinator(job_repository, get_redis())
         ),
+        source_admission_controller=SourceAdmissionController(get_redis()),
+        source_fetch_concurrency=settings.job_source_fetch_concurrency,
         external_enrichment_enabled=not qa_browser_isolated,
     )
 
@@ -296,10 +299,17 @@ ReadinessPreferenceServiceDep = Annotated[
 def get_preference_service(db: DbSession) -> PreferenceService:
     settings = get_settings()
     from app.domain.scraping.repository import ScrapeQueryRepository, SubscriptionRepository
+    from app.infrastructure.job_sources.qa_browser_fixtures import QA_PREFERENCE_ALIASES
+
+    allowed_sources = settings.enabled_job_sources
+    if settings.qa_unit_1a_browser_fixtures_enabled:
+        # The isolated Browser-QA aliases are accepted only after Settings has
+        # confirmed its explicit test flag and job_app_test database guard.
+        allowed_sources = [*allowed_sources, *QA_PREFERENCE_ALIASES]
 
     return PreferenceService(
         PreferenceRepository(db),
-        allowed_sources=settings.enabled_job_sources,
+        allowed_sources=allowed_sources,
         refresh_cooldown_minutes=settings.job_refresh_cooldown_minutes,
         default_results=settings.job_results_wanted,
         query_repository=ScrapeQueryRepository(db),

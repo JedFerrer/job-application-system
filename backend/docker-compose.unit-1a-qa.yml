@@ -35,6 +35,9 @@ services:
       ENABLED_JOB_SOURCES: '["qa-unit-1a-success","qa-unit-1a-failure","qa-unit-1a-uncertain-empty","qa-unit-1a-total-failure-a","qa-unit-1a-total-failure-b"]'
       JOB_SEARCH_COUNTRY: QA
       JOB_RESULTS_WANTED: "1"
+      # This isolated QA contract must not inherit the copied local .env's
+      # developer-oriented one-minute cooldown.
+      JOB_REFRESH_COOLDOWN_MINUTES: "60"
       EMAIL_DELIVERY_MODE: console
       ALLOWED_ORIGINS: '["http://localhost:18101"]'
     ports:

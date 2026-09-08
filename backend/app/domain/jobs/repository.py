@@ -96,6 +96,10 @@ class JobRepository:
         """Persist a coordinated embedding before its Redis lock is released."""
         await self._session.commit()
 
+    async def rollback(self) -> None:
+        """Discard an uncommitted source after a persistence failure."""
+        await self._session.rollback()
+
     async def upsert_job(self, values: dict[str, object]) -> tuple[int, bool]:
         """Insert a job or refresh an existing scoped stable identity.
 
@@ -181,18 +185,20 @@ class JobRepository:
         )
         await self._session.execute(stmt)
 
-    async def link_recent_jobs_batch(self, *, user_ids: list[int], since: datetime) -> int:
-        """Link every user in *user_ids* to every job fetched since *since*.
+    async def link_public_jobs_batch(self, *, user_ids: list[int], job_ids: list[int]) -> int:
+        """Idempotently link explicit, still-public jobs to subscribers.
 
-        Used after a shared scrape ingest so all subscribers see the results.
-        Returns the number of ``user_jobs`` rows inserted.
+        The visibility predicate is intentionally part of the insert selection:
+        callers cannot accidentally link a private import merely by retaining
+        its numeric ID while another ingestion is running.
         """
-        if not user_ids:
+        if not user_ids or not job_ids:
             return 0
-
-        result = await self._session.execute(select(Job.id).where(Job.fetched_at >= since))
-        job_ids = [row for row in result.scalars().all()]
-        if not job_ids:
+        result = await self._session.execute(
+            select(Job.id).where(Job.id.in_(job_ids), Job.visibility == "public")
+        )
+        public_ids = [int(row) for row in result.scalars().all()]
+        if not public_ids:
             return 0
 
         total = 0
@@ -204,7 +210,7 @@ class JobRepository:
                     "relationship_source": "match",
                     "status": "new",
                 }
-                for jid in job_ids
+                for jid in public_ids
             ]
             stmt = (
                 pg_insert(UserJob)

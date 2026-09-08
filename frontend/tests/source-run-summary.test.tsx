@@ -22,7 +22,8 @@ describe("SourceRunSummary", () => {
     await act(async () => {
       root.render(
         <SourceRunSummary results={[{
-          source: "indeed", status: "empty", fetched: 0, accepted: 0, rejected: 0,
+          source: "indeed", status: "empty", fetched: 0, inserted: 0, updated: 0,
+          embedded: 0, accepted: 0, rejected: 0,
           truncated: false, completeness: "unknown",
         }]} />,
       );
@@ -30,5 +31,26 @@ describe("SourceRunSummary", () => {
 
     expect(container.textContent).toContain("No results returned");
     expect(container.textContent).toContain("completeness unknown");
+  });
+
+  it("shows both executed and already-fresh sources", async () => {
+    await act(async () => {
+      root.render(
+        <SourceRunSummary results={[
+          {
+            source: "indeed", status: "success", fetched: 3, inserted: 2, updated: 1,
+            embedded: 0, accepted: 3, rejected: 0, truncated: false, completeness: "known_complete",
+          },
+          {
+            source: "linkedin", status: "skipped_fresh", fetched: 0, inserted: 0, updated: 0,
+            embedded: 0, accepted: 0, rejected: 0, truncated: false, completeness: "known_complete",
+          },
+        ]} />,
+      );
+    });
+
+    expect(container.textContent).toContain("indeed");
+    expect(container.textContent).toContain("linkedin");
+    expect(container.textContent).toContain("Already fresh");
   });
 });

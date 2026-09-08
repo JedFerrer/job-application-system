@@ -17,7 +17,7 @@ SourceStatus = Literal[
 ]
 ReasonCode = Literal[
     "unsupported_country", "unsupported_filter", "unknown_source", "dependency_missing",
-    "rate_limited", "timeout", "parse_error", "provider_error", "fresh_cache",
+    "rate_limited", "timeout", "parse_error", "provider_error", "fresh_cache", "source_busy",
 ]
 Completeness = Literal["known_complete", "unknown"]
 
@@ -70,6 +70,9 @@ class SourceCapabilities:
     configuration_available: bool = True
     passive_health: Literal["available", "unknown"] = "unknown"
     max_results_per_search: int | None = None
+    # A thread timeout does not cancel a blocking provider call.  Only adapters
+    # which can prove their own finite request bound may be fetched in parallel.
+    bounded_execution: bool = False
 
 
 @dataclass(slots=True)

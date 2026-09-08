@@ -21,6 +21,14 @@ QA_UNCERTAIN_EMPTY = "qa-unit-1a-uncertain-empty"
 QA_TOTAL_FAILURE_A = "qa-unit-1a-total-failure-a"
 QA_TOTAL_FAILURE_B = "qa-unit-1a-total-failure-b"
 
+# These aliases exist only behind the existing Unit 1A Browser-QA registry
+# guard.  They let the unchanged preferences form exercise its real
+# Indeed/LinkedIn request shape against deterministic local adapters.
+QA_PREFERENCE_ALIASES = {
+    "indeed": QA_MIXED_SUCCESS,
+    "linkedin": QA_MIXED_FAILURE,
+}
+
 QA_SOURCE_NAMES = frozenset(
     {
         QA_MIXED_SUCCESS,
@@ -35,20 +43,34 @@ QA_SOURCE_NAMES = frozenset(
 class Unit1ABrowserFixtureSource:
     """A fixed source outcome used solely by the local QA Compose profile."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        scenario: str | None = None,
+        accepts_preference_query: bool = False,
+    ) -> None:
         self.name = name
+        self._scenario = scenario or name
+        self._accepts_preference_query = accepts_preference_query
 
     @property
     def capabilities(self) -> SourceCapabilities:
+        supported_query_fields: tuple[str, ...] = (
+            "search_term",
+            "country",
+            "hours_old",
+            "results_wanted",
+        )
+        if self._accepts_preference_query:
+            supported_query_fields += ("location", "is_remote")
         return SourceCapabilities(
             source=self.name,
-            supported_query_fields=(
-                "search_term",
-                "country",
-                "hours_old",
-                "results_wanted",
-            ),
-            country_coverage=("QA",),
+            supported_query_fields=supported_query_fields,
+            # The normal preferences flow has no country field.  The guarded
+            # aliases therefore accept its normal default country, while the
+            # reserved Unit 1A IDs retain their QA-only capability contract.
+            country_coverage=None if self._accepts_preference_query else ("QA",),
             detail_supported=False,
             pagination_mode="none",
             availability_evidence_supported=False,
@@ -59,11 +81,11 @@ class Unit1ABrowserFixtureSource:
 
     def search(self, query: JobQuery) -> SourceSearchResult:
         del query
-        if self.name in {QA_MIXED_FAILURE, QA_TOTAL_FAILURE_A, QA_TOTAL_FAILURE_B}:
+        if self._scenario in {QA_MIXED_FAILURE, QA_TOTAL_FAILURE_A, QA_TOTAL_FAILURE_B}:
             return SourceSearchResult(
                 source=self.name, status="failed", reason_code="provider_error"
             )
-        if self.name == QA_UNCERTAIN_EMPTY:
+        if self._scenario == QA_UNCERTAIN_EMPTY:
             return SourceSearchResult(
                 source=self.name, status="empty", completeness="unknown"
             )
@@ -106,4 +128,13 @@ class Unit1ABrowserFixtureSource:
 
 
 def build_qa_fixture_source(name: str) -> Unit1ABrowserFixtureSource | None:
-    return Unit1ABrowserFixtureSource(name) if name in QA_SOURCE_NAMES else None
+    if name in QA_SOURCE_NAMES:
+        return Unit1ABrowserFixtureSource(name)
+    scenario = QA_PREFERENCE_ALIASES.get(name)
+    if scenario is not None:
+        return Unit1ABrowserFixtureSource(
+            name,
+            scenario=scenario,
+            accepts_preference_query=True,
+        )
+    return None

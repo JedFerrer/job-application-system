@@ -10,11 +10,9 @@ without changes.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Any
 
 import html2text
-from anyio import to_thread
 
 from app.core.logging import get_logger
 from app.domain.jobs.dedup import job_fingerprint
@@ -41,9 +39,8 @@ from app.domain.jobs.shift_detector import ShiftDetector, classify_shift_llm
 from app.infrastructure.job_sources.base import (
     JobQuery,
     RawJobPost,
-    SourceSearchResult,
-    fetch_compat_result,
 )
+from app.infrastructure.job_sources.execution import SourceAdmissionController, execute_sources
 from app.infrastructure.job_sources.registry import build_sources
 
 logger = get_logger(__name__)
@@ -88,12 +85,16 @@ class JobService:
         repository: JobRepository,
         user_timezone: str = "Asia/Manila",
         embedding_coordinator: JobEmbeddingCoordinator | None = None,
+        source_admission_controller: SourceAdmissionController | None = None,
+        source_fetch_concurrency: int = 2,
         *,
         external_enrichment_enabled: bool = True,
     ) -> None:
         self._repo = repository
         self._shift = ShiftDetector(user_timezone)
         self._embedding_coordinator = embedding_coordinator
+        self._source_admission_controller = source_admission_controller
+        self._source_fetch_concurrency = source_fetch_concurrency
         # The isolated Browser QA fixture must not make provider calls.  This
         # is explicit at the composition boundary; normal runtime behavior
         # remains enabled by default.
@@ -111,6 +112,7 @@ class JobService:
         progress: ProgressFn | None = None,
         user_id: int | None = None,
         preference_id: int | None = None,
+        subscriber_user_ids: list[int] | None = None,
     ) -> IngestResponse:
         async def _emit(**kw: Any) -> None:
             if progress is not None:
@@ -140,8 +142,16 @@ class JobService:
         # so it appears in their scoped feed.
         linked_job_ids: set[int] = set()
         embedded_job_ids: list[int] = []
+        subscriber_links = 0
 
-        for source in sources:
+        fetched_results = await execute_sources(
+            sources,
+            query,
+            controller=self._source_admission_controller,
+            concurrency=self._source_fetch_concurrency,
+        )
+
+        for source, search_result in zip(sources, fetched_results, strict=True):
             source_name = source.name
 
             await _emit(
@@ -196,69 +206,75 @@ class JobService:
                     source_results=[item.model_dump() for item in source_results],
                 )
                 continue
-            try:
-                search = getattr(source, "search", None)
-                search_result: SourceSearchResult
-                if callable(search):
-                    search_result = await to_thread.run_sync(search, query)
-                else:
-                    search_result = await to_thread.run_sync(fetch_compat_result, source, query)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "jobs.ingest.source_failed",
-                    source=source_name,
-                    exc_info=True,
-                )
-                reason_code = (
-                    "dependency_missing"
-                    if exc.__class__.__name__ == "JobSpyUnavailableError"
-                    else "provider_error"
-                )
-                source_results.append(
-                    SourceRunResult(
-                        source=source_name,
-                        status="unavailable" if reason_code == "dependency_missing" else "failed",
-                        reason_code=reason_code,
-                    )
-                )
-                await _emit(
-                    status="running",
-                    message=f"Finished {source_name}",
-                    fetched=fetched,
-                    inserted=inserted,
-                    updated=updated,
-                    embedded=embedded,
-                    source_results=[item.model_dump() for item in source_results],
-                )
-                continue
-
             posts = search_result.posts
             fetched += search_result.fetched
             # Separate upsert pass so we can batch-emit progress before embedding.
             to_embed: list[tuple[int, str, bool]] = []
+            source_job_ids: set[int] = set()
             # LLM shift fallback: new jobs where regex found no shift keyword.
             to_classify: list[tuple[int, str, str]] = []
             accepted = 0
             rejected = 0
-            for post in posts:
-                if not post.title or not post.source_url:
-                    rejected += 1
-                    continue
-                accepted += 1
-                used_sources.add(post.source)
-                shift_type = self._shift.detect_regex(post.title, post.description)
-                job_id, was_inserted, description_changed = await self._upsert(
-                    post, shift_type=shift_type
+            source_inserted = 0
+            source_updated = 0
+            source_subscriber_links = 0
+            source_embedded = 0
+            try:
+                for post in posts:
+                    if not post.title or not post.source_url:
+                        rejected += 1
+                        continue
+                    accepted += 1
+                    used_sources.add(post.source)
+                    shift_type = self._shift.detect_regex(post.title, post.description)
+                    job_id, was_inserted, description_changed = await self._upsert(
+                        post, shift_type=shift_type
+                    )
+                    source_job_ids.add(job_id)
+                    if was_inserted:
+                        source_inserted += 1
+                    else:
+                        source_updated += 1
+                    if (was_inserted or description_changed) and post.description:
+                        to_embed.append((job_id, post.description, description_changed))
+                        if was_inserted and shift_type is None:
+                            to_classify.append((job_id, post.title, post.description))
+
+                # Persist each source's accepted public identity state before any
+                # enrichment. A later provider/embedding error cannot roll this
+                # committed work back or make its counters fictitious.
+                if user_id is not None and source_job_ids:
+                    await self._repo.link_user_jobs(
+                        user_id, list(source_job_ids), preference_id=preference_id
+                    )
+                if subscriber_user_ids and source_job_ids:
+                    # Shared discovery must make each source's durable public jobs
+                    # visible to every current subscriber before enrichment starts.
+                    source_subscriber_links = await self._repo.link_public_jobs_batch(
+                        user_ids=subscriber_user_ids, job_ids=list(source_job_ids)
+                    )
+                if to_embed or accepted:
+                    await self._repo.commit()
+            except Exception:  # noqa: BLE001 - one source must not erase prior commits
+                await self._repo.rollback()
+                logger.warning(
+                    "jobs.ingest.source_persistence_failed", source=source_name, exc_info=True
                 )
-                linked_job_ids.add(job_id)
-                if was_inserted:
-                    inserted += 1
-                else:
-                    updated += 1
-                if (was_inserted or description_changed) and post.description:
-                    to_embed.append((job_id, post.description, description_changed))
-                    if was_inserted and shift_type is None:
-                        to_classify.append((job_id, post.title, post.description))
+                source_results.append(
+                    SourceRunResult(
+                        source=source_name,
+                        status="failed",
+                        reason_code="persistence_error",
+                        fetched=search_result.fetched,
+                        completeness="unknown",
+                    )
+                )
+                continue
+
+            inserted += source_inserted
+            updated += source_updated
+            subscriber_links += source_subscriber_links
+            linked_job_ids.update(source_job_ids)
 
             if to_embed:
                 await _emit(
@@ -271,6 +287,7 @@ class JobService:
                 for job_id, description, force_reembed in to_embed:
                     if await self._embed_job(job_id, description, force=force_reembed):
                         embedded += 1
+                        source_embedded += 1
                         embedded_job_ids.append(job_id)
 
             # LLM shift classification for new jobs where regex returned None.
@@ -288,6 +305,9 @@ class JobService:
                     reason_code=search_result.reason_code,
                     duration_ms=search_result.duration_ms,
                     fetched=search_result.fetched,
+                    inserted=source_inserted,
+                    updated=source_updated,
+                    embedded=source_embedded,
                     accepted=accepted,
                     rejected=rejected,
                     truncated=search_result.truncated or len(posts) >= query.results_wanted,
@@ -306,11 +326,6 @@ class JobService:
                 updated=updated,
                 embedded=embedded,
                 source_results=[item.model_dump() for item in source_results],
-            )
-
-        if user_id is not None:
-            await self._repo.link_user_jobs(
-                user_id, list(linked_job_ids), preference_id=preference_id
             )
 
         logger.info(
@@ -336,14 +351,13 @@ class JobService:
             outcome=outcome,
             source_results=source_results,
             embedded_job_ids=embedded_job_ids,
+            touched_job_ids=sorted(linked_job_ids),
+            subscriber_links=subscriber_links,
         )
 
-    async def link_recent_jobs_batch(self, *, user_ids: list[int], since: datetime) -> int:
-        """Link all *user_ids* to jobs fetched since *since*.
-
-        Used after a shared scrape so every subscriber sees the results.
-        """
-        return await self._repo.link_recent_jobs_batch(user_ids=user_ids, since=since)
+    async def link_public_jobs_batch(self, *, user_ids: list[int], job_ids: list[int]) -> int:
+        """Link explicit committed public IDs; never use a global time window."""
+        return await self._repo.link_public_jobs_batch(user_ids=user_ids, job_ids=job_ids)
 
     async def _upsert(
         self, post: RawJobPost, shift_type: str | None = None

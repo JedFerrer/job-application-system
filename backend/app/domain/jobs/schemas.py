@@ -41,6 +41,12 @@ class IngestResponse(BaseModel):
     source_results: list[SourceRunResult] = Field(default_factory=list)
     # Worker-only handoff; deliberately omitted from public ingestion responses.
     embedded_job_ids: list[int] = Field(default_factory=list, exclude=True)
+    # Internal handoff for shared discovery.  This is deliberately excluded
+    # from API responses and may contain only committed public job IDs.
+    touched_job_ids: list[int] = Field(default_factory=list, exclude=True)
+    # Internal count of subscriber relationships committed during shared
+    # discovery.  It is not part of the public ingestion contract.
+    subscriber_links: int = Field(default=0, exclude=True)
 
 
 class SourceRunResult(BaseModel):
@@ -49,6 +55,11 @@ class SourceRunResult(BaseModel):
     reason_code: str | None = None
     duration_ms: int | None = None
     fetched: int = 0
+    # Committed per-source work. These stay zero until that source's
+    # persistence/link transaction has succeeded.
+    inserted: int = 0
+    updated: int = 0
+    embedded: int = 0
     accepted: int = 0
     rejected: int = 0
     truncated: bool = False

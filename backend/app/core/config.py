@@ -122,6 +122,7 @@ class Settings(BaseSettings):
     job_search_country: str = "USA"
     job_results_wanted: int = 50
     proxy_list: list[str] = Field(default_factory=list)
+    job_source_fetch_concurrency: int = Field(default=2, ge=1, le=4)
 
     # --- Preference-driven scraping & maintenance (Phase 2) ---
     # Minimum gap between on-demand "refresh" scrapes for one user. The

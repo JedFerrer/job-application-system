@@ -80,6 +80,16 @@ async def test_user_can_poll_own_resume_task() -> None:
     assert task["type"] == "resume_parse"
 
 
+async def test_preference_refresh_parent_keeps_existing_owner_scope() -> None:
+    """Preference refresh parents use the same task-polling authorization boundary."""
+    store = FakeTaskStore()
+    task_id = await store.create("preference_refresh", user_id=1)
+
+    task = await store.get(task_id)
+    assert _task_visible(task, user_id=1) is True
+    assert _task_visible(task, user_id=2) is False
+
+
 async def test_user_cannot_poll_another_users_task() -> None:
     """User B polling user A's task returns invisible (→ 404)."""
     store = FakeTaskStore()

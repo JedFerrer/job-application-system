@@ -14,6 +14,7 @@ from app.models.job import Job
 from app.models.job_source_link import JobSourceLink
 from app.models.resume import CandidateProfile, Resume, TailoredResumeDraft
 from app.models.scrape_query import ScrapeQuery
+from app.models.scrape_query_source_state import ScrapeQuerySourceState
 from app.models.user import User
 from app.models.user_job import UserJob
 from app.models.user_job_import import UserJobImport
@@ -38,6 +39,7 @@ __all__ = [
     "Resume",
     "TailoredResumeDraft",
     "ScrapeQuery",
+    "ScrapeQuerySourceState",
     "User",
     "UserJob",
     "UserJobImport",

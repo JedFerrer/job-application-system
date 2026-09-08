@@ -83,12 +83,10 @@ class PreferenceService:
         return PreferenceResponse.model_validate(preference)
 
     async def prepare_refresh(self, user_id: int) -> UserJobPreference:
-        """Gate an on-demand refresh behind the cooldown and stamp the run time.
+        """Atomically admit an on-demand refresh and begin its cooldown.
 
-        Returns the preference row when a scrape may proceed. The caller is
-        responsible for actually dispatching the Celery task. We stamp
-        ``last_scraped_at`` *before* dispatch so concurrent requests within the
-        cooldown window are rejected (optimistic single-flight).
+        The conditional database update is the sole admission operation.  A
+        read-then-write check would allow simultaneous requests to both pass.
         """
         preference = await self._repo.get_for_user(user_id)
         if preference is None:
@@ -99,16 +97,31 @@ class PreferenceService:
             )
 
         now = datetime.now(UTC)
-        last = preference.last_scraped_at
-        if last is not None:
-            # Stored timestamps are timezone-aware (DateTime(timezone=True)).
-            elapsed = now - last
-            if elapsed < self._cooldown:
-                retry_after = int((self._cooldown - elapsed).total_seconds())
-                raise RefreshCooldownError(retry_after_seconds=max(retry_after, 1))
+        claimed_at = await self._repo.claim_refresh_cooldown(
+            user_id,
+            accepted_at=now,
+            cooldown_cutoff=now - self._cooldown,
+        )
+        if claimed_at is not None:
+            return preference
 
-        await self._repo.mark_scraped(user_id, scraped_at=now)
-        return preference
+        state = await self._repo.get_refresh_cooldown_state(user_id)
+        if state is None:
+            raise PreferenceNotFoundError(user_id)
+        is_active, last = state
+        if not is_active:
+            raise PreferenceValidationError(
+                "Preferences are inactive; enable them before refreshing"
+            )
+        if last is None:
+            # The row changed between the failed conditional update and this
+            # explanatory read. Retry through a new request rather than
+            # fabricating a cooldown interval.
+            raise PreferenceValidationError("Preferences changed; retry refresh")
+
+        elapsed = now - last
+        retry_after = int((self._cooldown - elapsed).total_seconds())
+        raise RefreshCooldownError(retry_after_seconds=max(retry_after, 1))
 
     async def _sync_subscriptions(self, preference: UserJobPreference) -> None:
         """Keep ``user_scrape_query_subscriptions`` in sync with the preference.

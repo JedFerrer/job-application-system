@@ -231,3 +231,60 @@ async def test_changed_description_is_forced_into_incremental_embedding_handoff(
         )
 
     assert result.embedded_job_ids == [9]
+
+
+@pytest.mark.asyncio
+async def test_later_source_persistence_failure_preserves_prior_committed_result() -> None:
+    """A failed source cannot erase counters or IDs committed by an earlier one."""
+    posts = [
+        RawJobPost(
+            source=source,
+            source_url=f"https://example.test/{source}/1",
+            title=f"{source} engineer",
+            company="Acme",
+        )
+        for source in ("first", "second")
+    ]
+
+    class Source:
+        def __init__(self, post: RawJobPost) -> None:
+            self.name = post.source
+            self._post = post
+
+        def fetch(self, query: object) -> list[RawJobPost]:
+            return [self._post]
+
+    repository = AsyncMock()
+    repository.link_public_jobs_batch.return_value = 2
+    service = JobService(repository, external_enrichment_enabled=False)
+
+    sources = [Source(post) for post in posts]
+    with (
+        patch("app.domain.jobs.service.build_sources", return_value=sources),
+        patch.object(
+            service,
+            "_upsert",
+            new=AsyncMock(side_effect=[(101, True, False), RuntimeError("database down")]),
+        ),
+    ):
+        result = await service.ingest(
+            IngestRequest(search_term="Engineer"),
+            default_sources=["first", "second"],
+            default_country="USA",
+            default_results=10,
+            proxies=None,
+            subscriber_user_ids=[1, 2],
+        )
+
+    assert result.inserted == 1
+    assert result.updated == 0
+    assert result.touched_job_ids == [101]
+    assert result.subscriber_links == 2
+    assert [item.status for item in result.source_results] == ["success", "failed"]
+    assert [
+        (item.inserted, item.updated, item.embedded)
+        for item in result.source_results
+    ] == [(1, 0, 0), (0, 0, 0)]
+    repository.commit.assert_awaited_once()
+    repository.rollback.assert_awaited_once()
+    repository.link_public_jobs_batch.assert_awaited_once_with(user_ids=[1, 2], job_ids=[101])

@@ -96,13 +96,13 @@ export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
   // Fire toast from any page when the task settles.
   useEffect(() => {
     const data = taskQuery.data;
-    if (!data || (data.status !== "done" && data.status !== "failed")) return;
+    if (!data || (data.status !== "done" && data.status !== "failed" && data.status !== "incomplete")) return;
     clearTask();
 
     const result = data.result as IngestResponse | undefined;
     setLastSourceResults(data.source_results ?? result?.source_results ?? []);
-    if (data.status === "failed") {
-      toast.error(result?.source_results?.length ? "No requested source completed successfully." : (data.error || "Ingestion failed"), {
+    if (data.status === "failed" || data.status === "incomplete") {
+      toast.warning(data.status === "incomplete" ? "Job refresh completed with incomplete sources." : (result?.source_results?.length ? "No requested source completed successfully." : (data.error || "Ingestion failed")), {
         action: { label: "View jobs", onClick: () => router.push("/dashboard/jobs") },
         duration: 8000,
       });
@@ -135,7 +135,7 @@ export function JobsTaskProvider({ children }: { children: React.ReactNode }) {
   const isRunning =
     !!taskId &&
     (!taskQuery.data ||
-      (taskQuery.data.status !== "done" && taskQuery.data.status !== "failed"));
+      (taskQuery.data.status !== "done" && taskQuery.data.status !== "failed" && taskQuery.data.status !== "incomplete"));
 
   const progressMsg =
     taskId && taskQuery.data

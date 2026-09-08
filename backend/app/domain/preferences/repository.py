@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_job_preference import UserJobPreference
@@ -56,10 +56,45 @@ class PreferenceRepository:
         await self._session.refresh(preference)
         return preference
 
-    async def mark_scraped(self, user_id: int, *, scraped_at: datetime) -> None:
-        """Stamp ``last_scraped_at`` without loading the row (used by workers)."""
-        await self._session.execute(
+    async def claim_refresh_cooldown(
+        self,
+        user_id: int,
+        *,
+        accepted_at: datetime,
+        cooldown_cutoff: datetime,
+    ) -> datetime | None:
+        """Atomically claim a user's active preference-refresh cooldown.
+
+        PostgreSQL serializes concurrent updates of the same preference row and
+        re-evaluates the predicate after waiting.  Exactly one request can
+        therefore advance ``last_scraped_at`` inside a cooldown window.
+        """
+        result = await self._session.execute(
             update(UserJobPreference)
-            .where(UserJobPreference.user_id == user_id)
-            .values(last_scraped_at=scraped_at)
+            .where(
+                UserJobPreference.user_id == user_id,
+                UserJobPreference.is_active.is_(True),
+                or_(
+                    UserJobPreference.last_scraped_at.is_(None),
+                    UserJobPreference.last_scraped_at <= cooldown_cutoff,
+                ),
+            )
+            .values(last_scraped_at=accepted_at)
+            .returning(UserJobPreference.last_scraped_at)
         )
+        return result.scalar_one_or_none()
+
+    async def get_refresh_cooldown_state(
+        self, user_id: int
+    ) -> tuple[bool, datetime | None] | None:
+        """Read the durable state needed to explain a failed atomic claim."""
+        result = await self._session.execute(
+            select(
+                UserJobPreference.is_active,
+                UserJobPreference.last_scraped_at,
+            ).where(UserJobPreference.user_id == user_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return bool(row[0]), row[1]

@@ -20,6 +20,7 @@ from app.domain.jobs.schemas import (
     SourceCapabilityResponse,
 )
 from app.infrastructure.database import async_session_factory
+from app.infrastructure.job_sources.execution import SourceAdmissionController
 from app.infrastructure.job_sources.registry import build_sources
 from app.infrastructure.redis_client import get_redis
 from app.infrastructure.task_store import TaskStore
@@ -60,6 +61,8 @@ async def _run_ingest_bg(task_id: str, request: IngestRequest, user_id: int) -> 
                         else JobEmbeddingCoordinator(repository, get_redis())
                     ),
                     external_enrichment_enabled=not qa_browser_isolated,
+                    source_admission_controller=SourceAdmissionController(get_redis()),
+                    source_fetch_concurrency=settings.job_source_fetch_concurrency,
                 )
                 result = await service.ingest(
                     request,

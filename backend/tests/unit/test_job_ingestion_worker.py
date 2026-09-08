@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
-from app.domain.jobs.schemas import IngestRequest
+from app.domain.jobs.schemas import IngestRequest, SourceRunResult
 from app.models.scrape_query import ScrapeQuery
-from app.workers.job_ingestion import _request_from_query
+from app.workers.job_ingestion import _request_from_query, _scrape_single_query_async
 
 pytestmark = pytest.mark.unit
 
@@ -86,3 +89,117 @@ def test_request_from_query_multiple_sources() -> None:
     req = _request_from_query(query)
 
     assert req.sources == ["indeed", "linkedin", "glassdoor"]
+
+
+@pytest.mark.asyncio
+async def test_all_fresh_sources_skip_job_service_and_report_unchanged() -> None:
+    """A fresh state is authoritative; it must prevent any provider execution."""
+    query = _query()
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: query)
+
+    class SessionContext:
+        async def __aenter__(self) -> AsyncMock:
+            return db
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    repo = AsyncMock()
+    repo.due_sources.return_value = []
+    repo.get_source_states.return_value = {
+        "indeed": SimpleNamespace(completeness="known_complete"),
+        "linkedin": SimpleNamespace(completeness="known_complete"),
+    }
+    redis = AsyncMock()
+
+    with (
+        patch("app.workers.job_ingestion._get_worker_session_factory", return_value=SessionContext),
+        patch("app.workers.job_ingestion.ScrapeQueryRepository", return_value=repo),
+        patch("app.workers.job_ingestion.aioredis.from_url", return_value=redis),
+        patch("app.workers.job_ingestion.JobService") as service,
+    ):
+        result = await _scrape_single_query_async(query.id)
+
+    assert result["outcome"] == "unchanged"
+    assert [item["source"] for item in result["source_results"]] == [
+        "indeed", "linkedin"
+    ]
+    assert all(item["status"] == "skipped_fresh" for item in result["source_results"])
+    assert all(
+        item["inserted"] == item["updated"] == item["embedded"] == 0
+        for item in result["source_results"]
+    )
+    service.assert_not_called()
+    db.commit.assert_awaited_once()
+    redis.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mixed_due_and_fresh_sources_preserve_requested_result_order() -> None:
+    """Fresh siblings are reported but never passed to provider execution."""
+    query = _query(sources=["indeed", "linkedin", "glassdoor"], next_scrape_at=None)
+    db = AsyncMock()
+    db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: query)
+
+    class SessionContext:
+        async def __aenter__(self) -> AsyncMock:
+            return db
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    repo = AsyncMock()
+    repo.due_sources.return_value = ["indeed", "glassdoor"]
+    repo.get_source_states.return_value = {
+        "indeed": SimpleNamespace(completeness="known_complete"),
+        "linkedin": SimpleNamespace(completeness="known_complete"),
+        "glassdoor": SimpleNamespace(completeness="known_complete"),
+    }
+    subscriptions = AsyncMock()
+    subscriptions.get_subscribers.return_value = []
+    redis = AsyncMock()
+    response = SimpleNamespace(
+        inserted=0,
+        updated=0,
+        subscriber_links=0,
+        embedded_job_ids=[],
+        source_results=[
+            SourceRunResult(
+                source="indeed",
+                status="success",
+                fetched=3,
+                accepted=3,
+                inserted=2,
+                updated=1,
+            ),
+            SourceRunResult(source="glassdoor", status="empty", completeness="known_complete"),
+        ],
+    )
+    service = AsyncMock()
+    service.ingest.return_value = response
+
+    with (
+        patch("app.workers.job_ingestion._get_worker_session_factory", return_value=SessionContext),
+        patch("app.workers.job_ingestion.ScrapeQueryRepository", return_value=repo),
+        patch("app.workers.job_ingestion.SubscriptionRepository", return_value=subscriptions),
+        patch("app.workers.job_ingestion.aioredis.from_url", return_value=redis),
+        patch("app.workers.job_ingestion.JobService", return_value=service),
+    ):
+        result = await _scrape_single_query_async(query.id)
+
+    request = service.ingest.await_args.args[0]
+    assert request.sources == ["indeed", "glassdoor"]
+    assert "linkedin" not in request.sources
+    assert [item["source"] for item in result["source_results"]] == [
+        "indeed", "linkedin", "glassdoor"
+    ]
+    fresh = result["source_results"][1]
+    assert fresh["status"] == "skipped_fresh"
+    assert all(
+        fresh[key] == 0
+        for key in ("fetched", "accepted", "rejected", "inserted", "updated", "embedded")
+    )
+    assert [call.kwargs["source"] for call in repo.record_source_result.await_args_list] == [
+        "indeed", "glassdoor"
+    ]

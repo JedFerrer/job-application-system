@@ -7,15 +7,19 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.api import deps as api_deps
 from app.api.v1 import jobs as jobs_api
 from app.core.config import Settings
 from app.domain.jobs.schemas import IngestRequest, IngestResponse
 from app.domain.jobs.service import JobService
 from app.infrastructure.job_sources.base import JobQuery
+from app.infrastructure.job_sources.jobspy_source import JobSpySource
 from app.infrastructure.job_sources.qa_browser_fixtures import (
     QA_MIXED_FAILURE,
     QA_MIXED_SUCCESS,
+    QA_PREFERENCE_ALIASES,
     QA_UNCERTAIN_EMPTY,
+    Unit1ABrowserFixtureSource,
 )
 from app.infrastructure.job_sources.registry import build_sources
 
@@ -42,6 +46,77 @@ def test_qa_fixture_sources_are_unavailable_without_the_guard() -> None:
     source = build_sources([QA_MIXED_SUCCESS])[0]
 
     assert source.search(JobQuery(search_term="Unit 1A QA")).reason_code == "unknown_source"
+
+
+def test_preference_aliases_remain_normal_providers_without_the_qa_guard() -> None:
+    sources = build_sources(["indeed", "linkedin"])
+
+    assert all(isinstance(source, JobSpySource) for source in sources)
+    assert [source.name for source in sources] == ["indeed", "linkedin"]
+
+
+def test_guarded_preference_aliases_are_local_and_preserve_requested_names() -> None:
+    """The real preferences payload must never instantiate a live adapter in QA."""
+    normal_preference_query = JobQuery(
+        search_term="Backend Engineer",
+        location="Manila",
+        country="Philippines",
+        is_remote=True,
+        hours_old=24,
+        results_wanted=50,
+    )
+
+    with patch(
+        "app.infrastructure.job_sources.registry.JobSpySource",
+        side_effect=AssertionError("a guarded QA alias attempted to build JobSpy"),
+    ):
+        sources = build_sources(["indeed", "linkedin"], qa_unit_1a_browser=True)
+
+    outcomes = [source.search(normal_preference_query) for source in sources]
+
+    assert QA_PREFERENCE_ALIASES == {
+        "indeed": QA_MIXED_SUCCESS,
+        "linkedin": QA_MIXED_FAILURE,
+    }
+    assert all(isinstance(source, Unit1ABrowserFixtureSource) for source in sources)
+    assert [source.name for source in sources] == ["indeed", "linkedin"]
+    assert [outcome.source for outcome in outcomes] == ["indeed", "linkedin"]
+    assert [outcome.status for outcome in outcomes] == ["success", "failed"]
+    assert outcomes[0].posts[0].source == "indeed"
+    assert outcomes[1].reason_code == "provider_error"
+    assert all(source.capabilities.country_coverage is None for source in sources)
+    assert all(
+        {"search_term", "location", "country", "is_remote", "hours_old", "results_wanted"}
+        .issubset(source.capabilities.supported_query_fields)
+        for source in sources
+    )
+
+
+def test_preference_service_allows_aliases_only_with_the_strict_qa_guard() -> None:
+    reserved_sources = [QA_MIXED_SUCCESS]
+    unguarded = Settings(
+        environment="development",
+        database_url="postgresql+asyncpg://postgres:postgres@localhost:5432/job_app_test",
+        enabled_job_sources=reserved_sources,
+        qa_unit_1a_browser_enabled=True,
+    )
+    guarded = Settings(
+        environment="test",
+        database_url="postgresql+asyncpg://postgres:postgres@localhost:5432/job_app_test",
+        enabled_job_sources=reserved_sources,
+        qa_unit_1a_browser_enabled=True,
+    )
+
+    with patch("app.api.deps.get_settings", return_value=unguarded):
+        unguarded_service = api_deps.get_preference_service(AsyncMock())
+    with patch("app.api.deps.get_settings", return_value=guarded):
+        guarded_service = api_deps.get_preference_service(AsyncMock())
+
+    assert unguarded_service._allowed_sources == reserved_sources
+    assert guarded_service._allowed_sources == [
+        *reserved_sources,
+        *QA_PREFERENCE_ALIASES,
+    ]
 
 
 def test_qa_fixture_sources_have_deterministic_mixed_and_empty_outcomes() -> None:
@@ -162,6 +237,7 @@ async def test_background_ingest_uses_guarded_qa_service_without_a_coordinator(
             enabled_job_sources=[QA_MIXED_SUCCESS],
             job_search_country="QA",
             job_results_wanted=1,
+            job_source_fetch_concurrency=2,
             proxy_list=[],
             qa_unit_1a_browser_fixtures_enabled=True,
         ),

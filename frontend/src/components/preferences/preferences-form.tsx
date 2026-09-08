@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw, Save } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, preferencesApi, resumeApi } from "@/lib/api";
+import { useJobsTask } from "@/context/jobs-task-context";
 import type { PreferenceResponse, PreferenceUpdate } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
@@ -61,6 +62,7 @@ export function PreferencesForm() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [seededFromProfile, setSeededFromProfile] = useState(false);
+  const { setTask } = useJobsTask();
 
   const prefQuery = useQuery({
     queryKey: ["preferences"],
@@ -106,7 +108,10 @@ export function PreferencesForm() {
 
   const refreshMutation = useMutation({
     mutationFn: preferencesApi.refresh,
-    onSuccess: () => toast.success("Scrape queued — new jobs arriving shortly"),
+    onSuccess: (response) => {
+      setTask(response.task_id, []);
+      toast.success("Refresh started — tracking source progress");
+    },
     onError: (error) => {
       if (error instanceof ApiError && error.status === 429) {
         toast.error(error.message || "Please wait before refreshing again");

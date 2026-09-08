@@ -51,7 +51,7 @@ class FakePreferenceRepository:
         self.preference = preference
         self.created: dict[str, object] | None = None
         self.updated: dict[str, object] | None = None
-        self.scraped_at: datetime | None = None
+        self.claimed_at: datetime | None = None
 
     async def get_for_user(self, user_id: int) -> UserJobPreference | None:
         return self.preference
@@ -71,8 +71,28 @@ class FakePreferenceRepository:
             setattr(preference, key, value)
         return preference
 
-    async def mark_scraped(self, user_id: int, *, scraped_at: datetime) -> None:
-        self.scraped_at = scraped_at
+    async def claim_refresh_cooldown(
+        self,
+        user_id: int,
+        *,
+        accepted_at: datetime,
+        cooldown_cutoff: datetime,
+    ) -> datetime | None:
+        if self.preference is None or not self.preference.is_active:
+            return None
+        last = self.preference.last_scraped_at
+        if last is not None and last > cooldown_cutoff:
+            return None
+        self.preference.last_scraped_at = accepted_at
+        self.claimed_at = accepted_at
+        return accepted_at
+
+    async def get_refresh_cooldown_state(
+        self, user_id: int
+    ) -> tuple[bool, datetime | None] | None:
+        if self.preference is None:
+            return None
+        return self.preference.is_active, self.preference.last_scraped_at
 
 
 def _service(repo: FakePreferenceRepository, *, cooldown: int = 120) -> PreferenceService:
@@ -163,7 +183,8 @@ async def test_prepare_refresh_stamps_and_allows_first_run() -> None:
     pref = await service.prepare_refresh(7)
 
     assert pref.user_id == 7
-    assert repo.scraped_at is not None
+    assert repo.claimed_at is not None
+    assert pref.last_scraped_at == repo.claimed_at
 
 
 @pytest.mark.asyncio
@@ -176,7 +197,7 @@ async def test_prepare_refresh_blocks_within_cooldown() -> None:
         await service.prepare_refresh(7)
 
     assert exc.value.retry_after_seconds > 0
-    assert repo.scraped_at is None  # not stamped when rejected
+    assert repo.claimed_at is None  # not stamped when rejected
 
 
 @pytest.mark.asyncio
@@ -188,7 +209,7 @@ async def test_prepare_refresh_allows_after_cooldown() -> None:
     pref = await service.prepare_refresh(7)
 
     assert pref is not None
-    assert repo.scraped_at is not None
+    assert repo.claimed_at is not None
 
 
 @pytest.mark.asyncio
@@ -198,3 +219,19 @@ async def test_prepare_refresh_rejects_inactive() -> None:
 
     with pytest.raises(PreferenceValidationError):
         await service.prepare_refresh(7)
+
+
+@pytest.mark.asyncio
+async def test_upsert_does_not_clear_an_active_cooldown_marker() -> None:
+    claimed_at = datetime.now(UTC)
+    repo = FakePreferenceRepository(_preference(last_scraped_at=claimed_at))
+    service = _service(repo)
+    payload = PreferenceCreate.model_validate(
+        {"job_titles": ["Platform Engineer"], "enabled_sources": ["indeed"]}
+    )
+
+    result = await service.upsert_preferences(7, payload)
+
+    assert result.last_scraped_at == claimed_at
+    assert repo.preference is not None
+    assert repo.preference.last_scraped_at == claimed_at

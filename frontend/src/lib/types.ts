@@ -24,7 +24,7 @@ export interface TaskQueued {
 
 export interface TaskStatus {
   type: string;
-  status: "queued" | "running" | "done" | "failed" | "skipped";
+  status: "queued" | "running" | "done" | "failed" | "incomplete" | "skipped";
   message: string;
   // Ingest-specific counters (updated incrementally)
   fetched?: number;
@@ -331,6 +331,9 @@ export interface SourceRunResult {
   reason_code?: string | null;
   duration_ms?: number | null;
   fetched: number;
+  inserted: number;
+  updated: number;
+  embedded: number;
   accepted: number;
   rejected: number;
   truncated: boolean;
