@@ -227,7 +227,9 @@ class FakeJobRepository:
         self.aliases: dict[tuple[str, str], int] = {}
         self._next_id = 1
 
-    async def upsert_job(self, values: dict[str, object]) -> tuple[int, bool]:
+    async def upsert_job(
+        self, values: dict[str, object], *, observed_at: datetime | None = None
+    ) -> tuple[int, bool]:
         identity_key = values.get("identity_key", "")
         # Stable identity, never fingerprint, controls merge behaviour.
         for jid, job in self.jobs.items():
@@ -248,7 +250,7 @@ class FakeJobRepository:
 
         jid = self._next_id
         self._next_id += 1
-        self.jobs[jid] = {**values, "id": jid}
+        self.jobs[jid] = {**values, "id": jid, "last_seen_at": observed_at}
         return jid, True
 
     async def link_user_jobs(

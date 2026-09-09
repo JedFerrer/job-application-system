@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 
 from app.core.logging import get_logger
 from app.domain.applications.exceptions import (
+    ApplicationJobNotActionableError,
     ApplicationNotFoundError,
     InvalidApplicationStatusTransitionError,
 )
@@ -55,6 +56,7 @@ class ApplicationService:
         job = await self._jobs.get_visible_by_id(user_id=user_id, job_id=job_id)
         if job is None:
             raise JobNotFoundError(job_id)
+        self._require_actionable_job(job)
         application = await self._repo.create_or_get(user_id=user_id, job_id=job_id)
         logger.info("application.created", user_id=user_id, job_id=job_id)
         return ApplicationResponse.model_validate(application)
@@ -67,6 +69,7 @@ class ApplicationService:
         )
         if application is None:
             raise ApplicationNotFoundError(application_id)
+        await self._require_actionable_application_job(application.job_id)
 
         previous_next_action = _next_action_snapshot(application)
         fields_set = payload.model_fields_set
@@ -115,12 +118,24 @@ class ApplicationService:
         )
         if application is None:
             raise ApplicationNotFoundError(application_id)
+        await self._require_actionable_application_job(application.job_id)
         if application.status != "saved":
             raise InvalidApplicationStatusTransitionError(
                 current_status=application.status,
                 requested_status="unsaved",
             )
         await self._repo.delete(application=application)
+
+    @staticmethod
+    def _require_actionable_job(job: object) -> None:
+        if getattr(job, "status", None) != "active":
+            raise ApplicationJobNotActionableError
+
+    async def _require_actionable_application_job(self, job_id: int) -> None:
+        job = await self._jobs.get_by_id(job_id)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        self._require_actionable_job(job)
 
     async def list_activity(
         self, *, user_id: int, application_id: int, limit: int = 10

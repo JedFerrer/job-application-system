@@ -13,6 +13,13 @@ class ApplicationNotFoundError(ApplicationError):
         super().__init__(f"Application {application_id} not found")
 
 
+class ApplicationJobNotActionableError(ApplicationError):
+    """Raised when a visible job cannot be mutated through an application."""
+
+    def __init__(self) -> None:
+        super().__init__("Job is no longer actionable")
+
+
 class InvalidApplicationStatusTransitionError(ApplicationError):
     """Raised when a CRM status would move backwards in the pipeline."""
 

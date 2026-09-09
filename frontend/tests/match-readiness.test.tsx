@@ -357,6 +357,11 @@ describe("JobDetailView readiness", () => {
       company_logo: null,
       visibility: "public",
       ingest_source: "scraper",
+      status: "active",
+      first_seen_at: "2026-07-13T00:00:00Z",
+      last_seen_at: "2026-07-14T00:00:00Z",
+      expired_at: null,
+      not_recently_seen: false,
       created_by_user_id: null,
       imported_at: null,
       match_score: null,
@@ -430,6 +435,11 @@ describe("JobDetailView readiness", () => {
         company_logo: null,
         visibility: "public",
         ingest_source: "scraper",
+        status: "active",
+        first_seen_at: "2026-07-13T00:00:00Z",
+        last_seen_at: "2026-07-14T00:00:00Z",
+        expired_at: null,
+        not_recently_seen: false,
         created_by_user_id: null,
         imported_at: null,
         match_score: null,
@@ -554,6 +564,59 @@ describe("JobDetailView readiness", () => {
         (button) => button.textContent?.includes("Save Job"),
       ),
     ).toHaveLength(1);
+  });
+
+  it("keeps an expired job factual and does not start match work", async () => {
+    const expiredJob = {
+      id: 501,
+      title: "Expired Backend Engineer",
+      company: "Acme",
+      location: "Remote",
+      is_remote: true,
+      job_type: "fulltime",
+      description: "Historical role",
+      salary_min: null,
+      salary_max: null,
+      salary_currency: null,
+      source: "test",
+      source_url: "https://example.com/job/501",
+      posted_at: "2026-06-01T00:00:00Z",
+      fetched_at: "2026-07-14T00:00:00Z",
+      shift_type: null,
+      company_logo: null,
+      visibility: "public",
+      ingest_source: "scraper",
+      status: "expired" as const,
+      first_seen_at: "2026-06-02T00:00:00Z",
+      last_seen_at: "2026-06-10T00:00:00Z",
+      expired_at: "2026-07-01T00:00:00Z",
+      not_recently_seen: true,
+      created_by_user_id: null,
+      imported_at: null,
+      match_score: null,
+      match_reason: null,
+    };
+    apiMocks.jobsApi.get.mockResolvedValue(expiredJob);
+    queryClient.setQueryData(["job", 501], expiredJob);
+    apiMocks.matchesApi.summary.mockClear();
+    apiMocks.matchesApi.skills.mockClear();
+
+    await renderJob(501);
+
+    expect(container.textContent).toContain("Outside search age window");
+    expect(container.textContent).toContain("First found");
+    expect(container.textContent).toContain("Last observed");
+    expect(container.textContent).toContain("Open Original Job");
+    expect(container.textContent).not.toContain("Profile relevance");
+    expect(container.textContent).not.toContain("Analyze Match");
+    expect(container.textContent).not.toContain("Retry loading match");
+    expect(container.textContent).not.toContain("Get AI fit review");
+    expect(container.textContent).not.toContain("View AI fit review");
+    expect(container.textContent).not.toContain("Save Job");
+    expect(container.textContent).not.toContain("Mark as Applied");
+    expect(container.textContent).not.toContain("More actions");
+    expect(apiMocks.matchesApi.summary).not.toHaveBeenCalled();
+    expect(apiMocks.matchesApi.skills).not.toHaveBeenCalled();
   });
 
   it("shows the More jobs card only when the job includes an employer summary", async () => {

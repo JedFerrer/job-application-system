@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.rate_limit import RateLimitBackendUnavailableError, RateLimitExceededError
 from app.domain.applications.exceptions import (
+    ApplicationJobNotActionableError,
     ApplicationNotFoundError,
     InvalidApplicationStatusTransitionError,
 )
@@ -219,6 +220,12 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=404,
             content={"detail": f"Application {exc.application_id} not found"},
         )
+
+    @app.exception_handler(ApplicationJobNotActionableError)
+    async def _application_job_not_actionable(
+        request: Request, exc: ApplicationJobNotActionableError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(InvalidApplicationStatusTransitionError)
     async def _invalid_application_status_transition(

@@ -19,7 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.domain.applications.exceptions import ApplicationJobNotActionableError
 from app.domain.applications.repository import ApplicationRepository
+from app.domain.applications.schemas import ApplicationUpdate
 from app.domain.applications.service import ApplicationService
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.exceptions import JobNotFoundError
@@ -27,6 +29,7 @@ from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.repository import JobRepository
 from app.domain.jobs.service import JobService
 from app.models.application import Application
+from app.models.application_event import ApplicationEvent
 from app.models.job import Job
 from app.models.user import User
 from app.models.user_job import UserJob
@@ -394,6 +397,38 @@ async def test_archived_list_and_restore_are_user_scoped_and_preserve_applicatio
         } == {110}
 
 
+async def test_age_expired_filter_reuses_visibility_and_archive_predicates(engine) -> None:  # noqa: ANN001
+    """The expired view is not a separate path around user visibility rules."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="expired-owner@test.com", name="Owner")
+        await _create_user(db, user_id=2, email="expired-other@test.com", name="Other")
+        await _create_job(db, job_id=120, status="expired", title="Public expired")
+        await _create_job(
+            db,
+            job_id=121,
+            status="expired",
+            visibility="private",
+            created_by_user_id=1,
+            title="Owner expired",
+        )
+        await _create_job(db, job_id=122, status="active", title="Current public")
+        await db.commit()
+
+    async with sf() as db:
+        service = JobService(JobRepository(db))
+        assert {job.id for job in (await service.list_jobs(user_id=1)).items} == {122}
+        assert {
+            job.id for job in (await service.list_jobs(user_id=1, lifecycle="expired")).items
+        } == {120, 121}
+        assert {
+            job.id for job in (await service.list_jobs(user_id=2, lifecycle="expired")).items
+        } == {120}
+        assert (await service.get_job(user_id=1, job_id=121)).status == "expired"
+        with pytest.raises(JobNotFoundError):
+            await service.get_job(user_id=2, job_id=121)
+
+
 @pytest.mark.parametrize("job_id", [99999, 112, 113, 114])
 async def test_restore_rejects_non_archived_or_invisible_jobs(engine, job_id: int) -> None:  # noqa: ANN001
     """Restore uses the same non-disclosing contract as archive and detail."""
@@ -570,3 +605,60 @@ async def test_application_creation_succeeds_for_public_job(engine) -> None:  # 
         result = await svc.create(user_id=1, job_id=301)
         assert result.job_id == 301
         assert result.status == "saved"
+
+
+async def test_application_mutations_reject_an_expired_linked_job(engine) -> None:  # noqa: ANN001
+    """An owned application remains intact when its job is no longer actionable."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="expired-app@test.com", name="User")
+        await _create_job(db, job_id=302)
+        service = ApplicationService(
+            repository=ApplicationRepository(db), job_repository=JobRepository(db)
+        )
+        application = await service.create(user_id=1, job_id=302)
+        job = await JobRepository(db).get_by_id(302)
+        assert job is not None
+        job.status = "expired"
+        await db.commit()
+
+    async with sf() as db:
+        service = ApplicationService(
+            repository=ApplicationRepository(db), job_repository=JobRepository(db)
+        )
+        with pytest.raises(ApplicationJobNotActionableError):
+            await service.update(
+                user_id=1,
+                application_id=application.id,
+                payload=ApplicationUpdate(
+                    status="applied",
+                    next_action_type="follow_up",
+                    next_action_note="Do not write an event",
+                ),
+            )
+        with pytest.raises(ApplicationJobNotActionableError):
+            await service.delete(user_id=1, application_id=application.id)
+
+        stored = await db.execute(select(Application).where(Application.id == application.id))
+        assert stored.scalar_one().status == "saved"
+        events = await db.execute(
+            select(ApplicationEvent).where(ApplicationEvent.application_id == application.id)
+        )
+        assert events.scalars().all() == []
+
+
+async def test_application_creation_rejects_an_expired_visible_job(engine) -> None:  # noqa: ANN001
+    """Visible expired jobs are readable but cannot enter the application workflow."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="expired-create@test.com", name="User")
+        await _create_job(db, job_id=303, status="expired")
+
+        service = ApplicationService(
+            repository=ApplicationRepository(db), job_repository=JobRepository(db)
+        )
+        with pytest.raises(ApplicationJobNotActionableError):
+            await service.create(user_id=1, job_id=303)
+
+        result = await db.execute(select(Application).where(Application.job_id == 303))
+        assert result.scalar_one_or_none() is None

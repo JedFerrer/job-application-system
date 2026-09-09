@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.domain.matching.exceptions import MatchNotFoundError
 from app.domain.matching.readiness import build_match_readiness
 from app.domain.matching.service import MatchingService
 
@@ -219,11 +220,22 @@ async def test_explain_match_returns_cached_readiness() -> None:
         missing_keywords=["kubernetes", "graphql"],
     )
 
+    calls: list[str] = []
+
     class FakeRepo:
+        async def get_visible_job(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            calls.append("visible")
+            assert (user_id, job_id) == (1, 202)
+            return SimpleNamespace(description="Python role")
+
         async def get_match(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            calls.append("match")
             assert user_id == 1
             assert job_id == 202
             return match
+
+        async def get_active_profile(self, user_id: int):  # noqa: ANN001
+            raise AssertionError("cached explanation must not load a profile or call an LLM")
 
     service = _service(FakeRepo())
 
@@ -232,6 +244,21 @@ async def test_explain_match_returns_cached_readiness() -> None:
     assert explanation.readiness.decision == "save"
     assert explanation.readiness.reasons[0] == "Strong match score"
     assert "Known gaps: kubernetes, graphql" in explanation.readiness.reasons
+    assert calls == ["visible", "match"]
+
+
+@pytest.mark.asyncio
+async def test_cached_explanation_rejects_before_cache_lookup_when_job_is_invisible() -> None:
+    class FakeRepo:
+        async def get_visible_job(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            assert (user_id, job_id) == (1, 202)
+            return None
+
+        async def get_match(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            raise AssertionError("invisible jobs must not read cached explanations")
+
+    with pytest.raises(MatchNotFoundError):
+        await _service(FakeRepo()).explain_match(user_id=1, job_id=202)
 
 
 @pytest.mark.asyncio
@@ -300,3 +327,50 @@ async def test_analyze_skills_computes_and_persists_without_llm() -> None:
     assert analysis.matched_skills == ["python", "fastapi"]
     assert analysis.missing_keywords == ["kubernetes"]
     assert saved["deterministic_match"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_skills_returns_cached_data_after_visibility_check() -> None:
+    match = _match(
+        job_id=303,
+        matched_skills=["python"],
+        missing_keywords=["kubernetes"],
+        deterministic_match={"version": 1},
+    )
+    calls: list[str] = []
+
+    class FakeRepo:
+        async def get_visible_job(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            calls.append("visible")
+            assert (user_id, job_id) == (1, 303)
+            return SimpleNamespace(description="Python role")
+
+        async def get_match(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            calls.append("match")
+            return match
+
+        async def get_active_profile(self, user_id: int):  # noqa: ANN001
+            raise AssertionError("cached skills must not recompute")
+
+        async def save_deterministic_match(self, **kwargs: object):  # noqa: ANN003
+            raise AssertionError("cached skills must not be rewritten")
+
+    analysis = await _service(FakeRepo()).analyze_skills(user_id=1, job_id=303)
+
+    assert analysis.matched_skills == ["python"]
+    assert analysis.missing_keywords == ["kubernetes"]
+    assert calls == ["visible", "match"]
+
+
+@pytest.mark.asyncio
+async def test_cached_skills_reject_before_cache_lookup_when_job_is_invisible() -> None:
+    class FakeRepo:
+        async def get_visible_job(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            assert (user_id, job_id) == (1, 303)
+            return None
+
+        async def get_match(self, *, user_id: int, job_id: int):  # noqa: ANN001
+            raise AssertionError("invisible jobs must not read cached skills")
+
+    with pytest.raises(MatchNotFoundError):
+        await _service(FakeRepo()).analyze_skills(user_id=1, job_id=303)

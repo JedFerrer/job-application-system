@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { stripMarkdown } from "@/lib/utils";
 import { formatSkillLabel } from "@/lib/skill-display";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
+import { getJobLifecyclePresentation } from "@/lib/job-lifecycle";
 import type { MatchReadiness } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,11 @@ export interface JobCardData {
   postedAt: string | null;
   importedAt: string | null;
   companyLogo: string | null;
+  status?: "active" | "expired" | "unknown" | "closed";
+  firstSeenAt?: string | null;
+  lastSeenAt?: string | null;
+  expiredAt?: string | null;
+  notRecentlySeen?: boolean | null;
 }
 
 export interface JobCardMatch {
@@ -329,6 +335,13 @@ export function JobCard({
   highlightOnHover = false,
   children,
 }: JobCardProps) {
+  const lifecycle = getJobLifecyclePresentation({
+    status: job.status,
+    first_seen_at: job.firstSeenAt,
+    last_seen_at: job.lastSeenAt,
+    expired_at: job.expiredAt,
+    not_recently_seen: job.notRecentlySeen,
+  });
   const [logoError, setLogoError] = useState(false);
   const postedLabel = job.postedAt ? formatRelativeDate(job.postedAt) : null;
   const importedLabel = job.importedAt
@@ -422,6 +435,11 @@ export function JobCard({
                     Archived
                   </Badge>
                 )}
+                {lifecycle.statusLabel && (
+                  <Badge variant="outline" className="rounded-full font-normal text-[11px] border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/35 dark:bg-amber-500/10 dark:text-amber-200">
+                    {lifecycle.statusLabel}
+                  </Badge>
+                )}
               </div>
 
               {/* Description + matched skills */}
@@ -478,6 +496,9 @@ export function JobCard({
               {importedLabel && (
                 <p className="text-xs text-muted-foreground/50 mt-1">{importedLabel}</p>
               )}
+              <p className="mt-2 text-xs text-muted-foreground">
+                First found: {lifecycle.firstFound} · Last observed: {lifecycle.lastObserved}
+              </p>
             </div>
           </div>
 

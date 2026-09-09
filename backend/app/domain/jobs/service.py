@@ -10,6 +10,7 @@ without changes.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import html2text
@@ -42,6 +43,7 @@ from app.infrastructure.job_sources.base import (
 )
 from app.infrastructure.job_sources.execution import SourceAdmissionController, execute_sources
 from app.infrastructure.job_sources.registry import build_sources
+from app.models.job import Job
 
 logger = get_logger(__name__)
 
@@ -206,6 +208,23 @@ class JobService:
                     source_results=[item.model_dump() for item in source_results],
                 )
                 continue
+            if search_result.status not in {"success", "empty"}:
+                # A failed, unavailable, or otherwise incomplete source result
+                # is not an observation. Even a malformed adapter must not turn
+                # an error payload into freshness/lifecycle evidence.
+                source_results.append(
+                    SourceRunResult(
+                        source=search_result.source,
+                        status=search_result.status,
+                        reason_code=search_result.reason_code,
+                        duration_ms=search_result.duration_ms,
+                        fetched=search_result.fetched,
+                        truncated=search_result.truncated,
+                        truncation_reason=search_result.truncation_reason,
+                        completeness=search_result.completeness,
+                    )
+                )
+                continue
             posts = search_result.posts
             fetched += search_result.fetched
             # Separate upsert pass so we can batch-emit progress before embedding.
@@ -219,6 +238,7 @@ class JobService:
             source_updated = 0
             source_subscriber_links = 0
             source_embedded = 0
+            observed_at = datetime.now(UTC)
             try:
                 for post in posts:
                     if not post.title or not post.source_url:
@@ -228,7 +248,7 @@ class JobService:
                     used_sources.add(post.source)
                     shift_type = self._shift.detect_regex(post.title, post.description)
                     job_id, was_inserted, description_changed = await self._upsert(
-                        post, shift_type=shift_type
+                        post, shift_type=shift_type, observed_at=observed_at
                     )
                     source_job_ids.add(job_id)
                     if was_inserted:
@@ -360,7 +380,7 @@ class JobService:
         return await self._repo.link_public_jobs_batch(user_ids=user_ids, job_ids=job_ids)
 
     async def _upsert(
-        self, post: RawJobPost, shift_type: str | None = None
+        self, post: RawJobPost, shift_type: str | None = None, *, observed_at: datetime
     ) -> tuple[int, bool, bool]:
         identity = resolve_source_identity(post.source_url, source_hint=post.source)
         if identity is None:
@@ -403,7 +423,9 @@ class JobService:
             "company_logo": post.company_logo,
             "raw_response": post.raw,
         }
-        job_id, was_inserted = await self._repo.upsert_job(values)
+        values["first_seen_at"] = observed_at
+        values["last_seen_at"] = observed_at
+        job_id, was_inserted = await self._repo.upsert_job(values, observed_at=observed_at)
         await self._repo.attach_source_link(
             job_id=job_id,
             scope_key=scope,
@@ -414,6 +436,7 @@ class JobService:
             source_url=post.source_url,
             canonical_url=identity.canonical_url,
             external_apply_url=apply_url,
+            observed_at=observed_at,
         )
         description_changed = (
             exists and description is not None and description != previous_description
@@ -456,6 +479,7 @@ class JobService:
         source_type: str | None = None,
         imported_only: bool = False,
         archive_state: str = "active",
+        lifecycle: str = "active",
         cursor: str | None = None,
         limit: int = 50,
     ) -> JobListResponse:
@@ -473,11 +497,12 @@ class JobService:
             source_type=source_type,
             imported_only=imported_only,
             archive_state=archive_state,
+            lifecycle=lifecycle,
             cursor=cursor,
             limit=limit,
         )
         return JobListResponse(
-            items=[JobResponse.model_validate(row) for row in rows],
+            items=[self._job_response(row) for row in rows],
             total=total,
             limit=limit,
             next_cursor=next_cursor,
@@ -499,7 +524,7 @@ class JobService:
         items: list[JobResponse] = []
         for row in rows:
             job, match_score, match_reason = row[0], row[1], row[2]
-            resp = JobResponse.model_validate(job)
+            resp = self._job_response(job)
             resp.match_score = float(match_score) if match_score is not None else None
             resp.match_reason = match_reason if isinstance(match_reason, dict) else None
             items.append(resp)
@@ -539,7 +564,7 @@ class JobService:
         job = await self._repo.get_visible_by_id(user_id=user_id, job_id=job_id)
         if job is None:
             raise JobNotFoundError(job_id)
-        response = JobResponse.model_validate(job)
+        response = self._job_response(job)
         # Keep the label and URL human-readable while the repository performs
         # the case-insensitive normalized comparison.
         company = " ".join((job.company or "").split())
@@ -560,6 +585,16 @@ class JobService:
                 company_logo=job.company_logo,
                 job_count=job_count,
             )
+        return response
+
+    @staticmethod
+    def _job_response(job: Job, *, now: datetime | None = None) -> JobResponse:
+        response = JobResponse.model_validate(job)
+        if job.last_seen_at is None:
+            response.not_recently_seen = None
+        else:
+            cutoff = (now or datetime.now(UTC)) - timedelta(days=7)
+            response.not_recently_seen = job.last_seen_at < cutoff
         return response
 
     async def list_job_sources(
@@ -590,6 +625,7 @@ class JobService:
         identity = resolve_source_identity(payload.url, source_hint="manual")
         if identity is None:
             raise ValueError("job URL is not a valid HTTP(S) URL")
+        observed_at = datetime.now(UTC)
         public_scope = scope_for(visibility="public")
         link_key = scoped_key(public_scope, identity.stable_token)
         public_job = await self._repo.find_by_alias_identity(
@@ -618,7 +654,9 @@ class JobService:
                 "source_url": payload.url,
                 "raw_response": {"imported_from": payload.url},
             }
-            job_id, was_inserted = await self._repo.upsert_job(values)
+            values["first_seen_at"] = observed_at
+            values["last_seen_at"] = observed_at
+            job_id, was_inserted = await self._repo.upsert_job(values, observed_at=observed_at)
 
         # If this is a brand-new job, mark it as private to the importing user.
         if was_inserted:
@@ -647,6 +685,7 @@ class JobService:
             source_tenant=identity.source_tenant,
             source_url=payload.url,
             canonical_url=identity.canonical_url,
+            observed_at=observed_at,
         )
 
         # Link user to the job (or re-link if already linked via different source)

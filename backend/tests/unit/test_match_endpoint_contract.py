@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user, get_match_service, get_task_store
 from app.api.v1 import matches as matches_module
 from app.core.lifespan import register_exception_handlers
+from app.domain.matching.exceptions import MatchNotFoundError
 from app.models.user import User
 
 pytestmark = pytest.mark.unit
@@ -89,6 +90,16 @@ class _AnalyzeMatchService:
                 "decision_basis": "score",
             },
         }
+
+
+class _InvisibleCachedMatchService:
+    async def explain_match(self, *, user_id: int, job_id: int) -> object:
+        del user_id
+        raise MatchNotFoundError(job_id)
+
+    async def analyze_skills(self, *, user_id: int, job_id: int) -> object:
+        del user_id
+        raise MatchNotFoundError(job_id)
 
 
 def test_invalid_cursor_returns_400() -> None:
@@ -195,6 +206,19 @@ def test_analyze_match_is_posted_for_the_current_user_only() -> None:
     assert response.status_code == 200
     assert response.json()["job_id"] == 501
     assert service.calls == [(42, 501)]
+
+
+def test_explain_and_skills_hide_invisible_cached_match_data() -> None:
+    user = User(id=42, email="scoped@test.com", name="Scoped", is_active=True)
+    app = _build_app_with_overrides(
+        current_user=user, match_service=_InvisibleCachedMatchService()
+    )
+    client = TestClient(app)
+
+    for path in ("/matches/501/explain", "/matches/501/skills"):
+        response = client.get(path)
+        assert response.status_code == 404
+        assert response.json() == {"detail": "No match found for job 501"}
 
 
 class _RankingTaskStore:

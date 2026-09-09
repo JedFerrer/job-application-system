@@ -35,6 +35,7 @@ import type {
 } from "@/lib/types";
 import { useEffect, useState } from "react";
 import { formatSalary, formatRelativeDate } from "@/lib/format";
+import { getJobLifecyclePresentation } from "@/lib/job-lifecycle";
 import { getAiFitLabel, getQuickMatchConfidence } from "@/lib/match-display";
 import { formatJobDescription, stripMarkdown } from "@/lib/utils";
 import { formatSkillLabel } from "@/lib/skill-display";
@@ -275,10 +276,15 @@ export function JobDetailView({ jobId }: { jobId: number }) {
     return null;
   })();
 
+  // An expired lifecycle record remains visible as historical information, but
+  // it must not start or retry match-related work from the detail page.
+  const lifecyclePresentation = getJobLifecyclePresentation(jobQuery.data ?? {});
+  const matchToolsEnabled = jobQuery.isSuccess && !lifecyclePresentation.isReadOnly;
+
   const persistedMatchQuery = useQuery({
     queryKey: ["match-summary", jobId],
     queryFn: () => matchesApi.summary(jobId),
-    enabled: jobQuery.isSuccess,
+    enabled: matchToolsEnabled,
     // A saved summary is read-only. Surface a real server failure immediately
     // so the user can retry explicitly instead of remaining in a loading state.
     retry: false,
@@ -298,7 +304,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const skillQuery = useQuery({
     queryKey: ["match-skills", jobId],
     queryFn: () => matchesApi.skills(jobId),
-    enabled: Boolean(cachedMatchSummary),
+    enabled: matchToolsEnabled && Boolean(cachedMatchSummary),
     staleTime: 5 * 60_000,
   });
   const skillData = skillQuery.data ?? null;
@@ -454,6 +460,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
   const isApplied = existingApp?.status === "applied" || existingApp?.status === "interview" || existingApp?.status === "offer";
 
   const postedLabel = job.posted_at ? formatRelativeDate(job.posted_at) : null;
+  const lifecycle = lifecyclePresentation;
   const salary = formatSalary(job.salary_min, job.salary_max, job.salary_currency);
   const profileRelevanceScore = match?.vector_score ?? 0;
   const profileRelevanceConfidence = match
@@ -589,7 +596,18 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 {postedLabel}
               </Badge>
             )}
+            {lifecycle.statusLabel && (
+              <Badge variant="secondary" className={BASE_PILL}>
+                {lifecycle.statusLabel}
+              </Badge>
+            )}
           </div>
+
+          {lifecycle.isReadOnly && (
+            <p className="text-sm text-muted-foreground">
+              This job is read-only because it is {lifecycle.statusLabel?.toLowerCase() ?? "not active"}.
+            </p>
+          )}
 
           {/* ── Primary action row ───────────────────────────── */}
           <div className="flex items-center gap-3 flex-wrap">
@@ -601,6 +619,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 </a>
               </Button>
             )}
+            {!lifecycle.isReadOnly && <>
             {/* Mark as Applied */}
             <Button
               id="crm-mark-applied-action"
@@ -687,6 +706,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
               </DropdownMenuContent>
             </DropdownMenu>
             </div>
+            </>}
           </div>
 
           {sourceLinksQuery.isSuccess && <JobSourceLinks links={sourceLinksQuery.data} />}
@@ -715,7 +735,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
         <div className="flex flex-col gap-6 lg:sticky lg:top-6 lg:self-start">
 
           {/* ── Match Score ──────────────────────────────────── */}
-          <Card>
+          {!lifecycle.isReadOnly && <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium">
                 Profile relevance
@@ -981,7 +1001,7 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 </div>
               )}
             </CardContent>
-          </Card>
+          </Card>}
 
           {/* ── Quick Facts ──────────────────────────────────── */}
           <Card>
@@ -1005,6 +1025,24 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                   <span className="font-medium">{postedLabel}</span>
                 </div>
               )}
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground">First found</span>
+                <span className="text-right font-medium">{lifecycle.firstFound}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground">Last observed</span>
+                <span className="text-right font-medium">{lifecycle.lastObserved}</span>
+              </div>
+              {lifecycle.statusLabel && (
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">Lifecycle</span>
+                  <span className="text-right font-medium">{lifecycle.statusLabel}</span>
+                </div>
+              )}
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground">Closure</span>
+                <span className="text-right font-medium">{lifecycle.closureLabel}</span>
+              </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Work Model</span>
                 <span className="font-medium">{job.is_remote ? "Remote" : "On-site"}</span>

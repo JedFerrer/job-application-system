@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -386,6 +388,95 @@ async def test_match_summary_rejects_private_and_archived_jobs(engine) -> None: 
             await service.get_match_summary(user_id=1, job_id=451)
         with pytest.raises(MatchNotFoundError):
             await service.get_match_summary(user_id=2, job_id=451)
+
+
+async def test_cached_match_data_requires_current_active_visibility(engine) -> None:  # noqa: ANN001
+    """Expired jobs cannot expose explanation or skills cached while active."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="cached-owner@test.com", name="Owner")
+        await _create_job(
+            db,
+            job_id=452,
+            title="Cached public role",
+            company="Open Corp",
+            visibility="public",
+            created_by_user_id=None,
+            ingest_source="scraper",
+        )
+        await db.execute(
+            insert(UserJobMatch).values(
+                user_id=1,
+                job_id=452,
+                vector_score=91.0,
+                confidence="strong",
+                llm_explanation="Cached explanation",
+                llm_analyzed_at=datetime.now(UTC),
+                matched_skills=["python"],
+                missing_keywords=["kubernetes"],
+                deterministic_match={"version": 1},
+            )
+        )
+        await db.commit()
+
+    async with sf() as db:
+        service = MatchingService(MatchingRepository(db))
+        explanation = await service.explain_match(user_id=1, job_id=452)
+        assert explanation.explanation == "Cached explanation"
+        assert (await service.analyze_skills(user_id=1, job_id=452)).matched_skills == ["python"]
+
+        job = await db.get(Job, 452)
+        assert job is not None
+        job.status = "expired"
+        await db.commit()
+
+    async with sf() as db:
+        service = MatchingService(MatchingRepository(db))
+        with pytest.raises(MatchNotFoundError):
+            await service.explain_match(user_id=1, job_id=452)
+        with pytest.raises(MatchNotFoundError):
+            await service.analyze_skills(user_id=1, job_id=452)
+
+
+async def test_cached_private_match_data_does_not_leak_to_another_user(engine) -> None:  # noqa: ANN001
+    """Visibility is checked before a foreign user's cached row can be inspected."""
+    sf = _session_factory(engine)
+    async with sf() as db:
+        await _create_user(db, user_id=1, email="private-owner@test.com", name="Owner")
+        await _create_user(db, user_id=2, email="private-viewer@test.com", name="Viewer")
+        await _create_job(
+            db,
+            job_id=453,
+            title="Cached private role",
+            company="Hidden Corp",
+            visibility="private",
+            created_by_user_id=1,
+            ingest_source="manual",
+        )
+        await db.execute(
+            insert(UserJobMatch),
+            [
+                {
+                    "user_id": user_id,
+                    "job_id": 453,
+                    "vector_score": 88.0,
+                    "llm_explanation": "Private cached explanation",
+                    "llm_analyzed_at": datetime.now(UTC),
+                    "matched_skills": ["python"],
+                    "missing_keywords": ["kubernetes"],
+                    "deterministic_match": {"version": 1},
+                }
+                for user_id in (1, 2)
+            ],
+        )
+        await db.commit()
+
+    async with sf() as db:
+        service = MatchingService(MatchingRepository(db))
+        with pytest.raises(MatchNotFoundError):
+            await service.explain_match(user_id=2, job_id=453)
+        with pytest.raises(MatchNotFoundError):
+            await service.analyze_skills(user_id=2, job_id=453)
 
 
 async def test_archiving_public_match_without_user_job_excludes_only_that_user(engine) -> None:  # noqa: ANN001

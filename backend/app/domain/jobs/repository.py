@@ -100,7 +100,9 @@ class JobRepository:
         """Discard an uncommitted source after a persistence failure."""
         await self._session.rollback()
 
-    async def upsert_job(self, values: dict[str, object]) -> tuple[int, bool]:
+    async def upsert_job(
+        self, values: dict[str, object], *, observed_at: datetime | None = None
+    ) -> tuple[int, bool]:
         """Insert a job or refresh an existing scoped stable identity.
 
         Returns ``(job_id, inserted)`` where ``inserted`` is ``True`` for a new
@@ -110,9 +112,11 @@ class JobRepository:
         """
         if not values.get("identity_key"):
             raise ValueError("job upserts require an explicit scoped identity key")
+        observed_at = observed_at or datetime.now(UTC)
         stmt = pg_insert(Job).values(**values)
         update_cols: dict[str, object] = {
-            "fetched_at": datetime.now(UTC),
+            "fetched_at": observed_at,
+            "last_seen_at": observed_at,
             "title": stmt.excluded.title,
             "raw_response": stmt.excluded.raw_response,
         }
@@ -126,11 +130,11 @@ class JobRepository:
             "salary_min",
             "salary_max",
             "salary_currency",
-            "posted_at",
             "shift_type",
             "company_logo",
         ):
             update_cols[col] = func.coalesce(stmt.excluded[col], getattr(Job, col))
+        update_cols["posted_at"] = func.coalesce(Job.posted_at, stmt.excluded.posted_at)
         upsert: Any = stmt.on_conflict_do_update(
             index_elements=[Job.identity_key],
             set_=update_cols,
@@ -264,7 +268,6 @@ class JobRepository:
             .where(Job.id == job_id)
             .values(
                 description_embedding=embedding,
-                status="active",
                 raw_response=func.coalesce(Job.raw_response, literal({}, type_=JSONB)).op("-")(
                     "embed_error"
                 ),
@@ -277,7 +280,6 @@ class JobRepository:
             update(Job)
             .where(Job.id == job_id)
             .values(
-                status="unknown",
                 raw_response=func.jsonb_set(
                     func.coalesce(Job.raw_response, literal({}, type_=JSONB)),
                     array(["embed_error"], type_=String),
@@ -464,7 +466,9 @@ class JobRepository:
         - ``visibility = 'public'`` → visible to all authenticated users.
         - ``visibility = 'private'`` → visible ONLY to ``created_by_user_id``.
         - Per-user archived jobs are excluded.
-        - Only active jobs are returned.
+        - Lifecycle values remain visible only through the same visibility and
+          archive predicate. Non-active details are read-only at the API/UI
+          boundary.
         """
         visibility_filter = or_(
             Job.visibility == "public",
@@ -481,7 +485,7 @@ class JobRepository:
         result = await self._session.execute(
             select(Job).where(
                 Job.id == job_id,
-                Job.status == "active",
+                Job.status.in_(("active", "expired", "unknown", "closed")),
                 visibility_filter,
                 Job.id.not_in(archived_subq),
             )
@@ -574,8 +578,10 @@ class JobRepository:
         source_url: str,
         canonical_url: str,
         external_apply_url: str | None = None,
+        observed_at: datetime | None = None,
     ) -> None:
         """Attach or refresh one alias without ever reassigning a conflict."""
+        observed_at = observed_at or datetime.now(UTC)
         job_scope = await self._session.scalar(
             select(Job.identity_scope).where(Job.id == job_id).with_for_update()
         )
@@ -591,12 +597,14 @@ class JobRepository:
             source_url=source_url,
             canonical_url=canonical_url,
             external_apply_url=external_apply_url,
+            first_seen_at=observed_at,
+            last_seen_at=observed_at,
         )
         result = await self._session.execute(
             stmt.on_conflict_do_update(
                 constraint="uq_job_source_link_identity",
                 set_={
-                    "last_seen_at": datetime.now(UTC),
+                    "last_seen_at": observed_at,
                     "external_apply_url": func.coalesce(
                         stmt.excluded.external_apply_url,
                         JobSourceLink.external_apply_url,
@@ -629,7 +637,7 @@ class JobRepository:
             .join(JobSourceLink, JobSourceLink.job_id == Job.id)
             .where(
                 JobSourceLink.canonical_url == canonical_url,
-                Job.status == "active",
+                Job.status.in_(("active", "expired")),
                 or_(Job.visibility == "public", Job.created_by_user_id == user_id),
             )
             .limit(1)
@@ -652,6 +660,7 @@ class JobRepository:
         source_type: str | None = None,
         imported_only: bool = False,
         archive_state: str = "active",
+        lifecycle: str = "active",
         cursor: str | None = None,
         limit: int = 50,
     ) -> tuple[list[Job], int, str | None]:
@@ -671,7 +680,7 @@ class JobRepository:
             Job.visibility == "public",
             Job.created_by_user_id == user_id,
         )
-        filters: list[Any] = [Job.status == "active", visibility_filter]
+        filters: list[Any] = [Job.status == lifecycle, visibility_filter]
 
         if q:
             like = f"%{q}%"

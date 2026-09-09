@@ -6,8 +6,8 @@ import { JobsPanel } from "@/components/jobs/jobs-panel";
 import type { Job } from "@/lib/types";
 
 const apiMocks = vi.hoisted(() => ({
-  jobsApi: { list: vi.fn(), restore: vi.fn(), importJob: vi.fn() },
-  applicationsApi: { create: vi.fn() },
+  jobsApi: { list: vi.fn(), archive: vi.fn(), restore: vi.fn(), importJob: vi.fn() },
+  applicationsApi: { create: vi.fn(), delete: vi.fn() },
   listAllApplications: vi.fn(),
   ApiError: class ApiError extends Error {},
 }));
@@ -58,6 +58,17 @@ const archivedJob: Job = {
 };
 
 const emptyPage = { items: [], total: 0, limit: 25, next_cursor: null };
+
+const expiredJob: Job = {
+  ...archivedJob,
+  id: 702,
+  title: "Expired engineer",
+  status: "expired",
+  first_seen_at: "2026-01-01T00:00:00Z",
+  last_seen_at: "2026-01-02T00:00:00Z",
+  expired_at: "2026-02-01T00:00:00Z",
+  not_recently_seen: true,
+};
 
 async function flush() {
   await act(async () => {
@@ -125,6 +136,35 @@ describe("JobsPanel archived view", () => {
     );
     act(() => archivedToggle?.click());
     expect(navigationMocks.replace).toHaveBeenCalledWith("/dashboard/jobs?archive_state=archived");
+  });
+
+  it("keeps lifecycle selection in the query state and uses responsive layout wrappers", async () => {
+    apiMocks.jobsApi.list.mockResolvedValue({ ...emptyPage, items: [archivedJob], total: 1 });
+    renderPanel();
+    await waitForText(container, "Archived engineer");
+
+    expect(apiMocks.jobsApi.list).toHaveBeenCalledWith(expect.objectContaining({ lifecycle: "active" }));
+    const filters = container.querySelector("aside");
+    expect(filters?.className).toContain("w-full");
+    expect(filters?.className).toContain("lg:w-72");
+    const lifecycleGroup = container.querySelector('[role="group"][aria-label="Job lifecycle state"]');
+    expect(lifecycleGroup?.parentElement?.className).toContain("flex-wrap");
+
+    const expiredToggle = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Outside age window",
+    );
+    act(() => expiredToggle?.click());
+    expect(navigationMocks.replace).toHaveBeenCalledWith("/dashboard/jobs?lifecycle=expired");
+
+    navigationMocks.search = "lifecycle=expired";
+    renderPanel();
+    await waitForText(container, "Archived engineer");
+    expect(apiMocks.jobsApi.list).toHaveBeenCalledWith(expect.objectContaining({ lifecycle: "expired" }));
+    const currentToggle = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Current",
+    );
+    act(() => currentToggle?.click());
+    expect(navigationMocks.replace).toHaveBeenCalledWith("/dashboard/jobs");
   });
 
   it("honors an exact-company link and clears it when the company filter is edited", async () => {
@@ -218,6 +258,37 @@ describe("JobsPanel archived view", () => {
     expect([...container.querySelectorAll("button")].some(
       (button) => button.getAttribute("aria-label") === "Save job",
     )).toBe(false);
+  });
+
+  it("keeps expired cards navigable and factual while omitting all mutation controls", async () => {
+    navigationMocks.search = "archive_state=active&lifecycle=expired";
+    apiMocks.jobsApi.list.mockResolvedValue({ ...emptyPage, items: [expiredJob], total: 1 });
+    renderPanel();
+    await waitForText(container, "Expired engineer");
+
+    expect(container.textContent).toContain("Outside search age window");
+    expect(container.textContent).toContain("First found:");
+    expect(container.textContent).toContain("Last observed:");
+    expect(container.querySelector('[aria-label="Save job"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Unsave job"]')).toBeNull();
+    expect(container.textContent).not.toContain("Archive job");
+    expect(container.textContent).not.toContain("Restore job");
+
+    const title = [...container.querySelectorAll("h3")].find(
+      (heading) => heading.textContent === "Expired engineer",
+    );
+    act(() => title?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(navigationMocks.push).toHaveBeenCalledWith("/jobs/702");
+  });
+
+  it("omits Restore for an expired archived card", async () => {
+    navigationMocks.search = "archive_state=archived&lifecycle=expired";
+    apiMocks.jobsApi.list.mockResolvedValue({ ...emptyPage, items: [expiredJob], total: 1 });
+    renderPanel();
+    await waitForText(container, "Expired engineer");
+
+    expect(container.textContent).toContain("Outside search age window");
+    expect(container.textContent).not.toContain("Restore job");
   });
 
   it("does not show Save for active CRM application statuses", async () => {

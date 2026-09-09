@@ -12,6 +12,8 @@ Key responsibilities:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.domain.extension.repository import ExtensionRepository
@@ -56,6 +58,7 @@ class ExtensionJobImportService:
         )
         if identity is None:
             raise ValueError("job URL is not a valid HTTP(S) URL")
+        observed_at = datetime.now(UTC)
         public_scope = scope_for(visibility="public")
         public_job = await self._jobs.find_by_alias_identity(
             scope_key=public_scope,
@@ -85,7 +88,9 @@ class ExtensionJobImportService:
                 "source_url": request.source_url,
                 "raw_response": {},
             }
-            job_id, was_inserted = await self._jobs.upsert_job(values)
+            values["first_seen_at"] = observed_at
+            values["last_seen_at"] = observed_at
+            job_id, was_inserted = await self._jobs.upsert_job(values, observed_at=observed_at)
 
         # ── Privacy: mark new jobs as private ──────────────────────────
         if was_inserted:
@@ -103,6 +108,7 @@ class ExtensionJobImportService:
             source_url=request.source_url,
             canonical_url=identity.canonical_url,
             external_apply_url=request.external_apply_url,
+            observed_at=observed_at,
         )
 
         # ── Link user → job ────────────────────────────────────────────

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Source identifiers the ingestion endpoint accepts.
 JobSourceName = str
@@ -123,10 +123,21 @@ class JobResponse(BaseModel):
     ingest_source: str
     created_by_user_id: int | None
     imported_at: datetime | None
+    status: str
+    first_seen_at: datetime | None
+    last_seen_at: datetime | None
+    expired_at: datetime | None
+    not_recently_seen: bool | None = None
     # Match data (populated for /imported endpoint)
     match_score: float | None = None
     match_reason: dict[str, object] | None = None
     employer_summary: EmployerSummary | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _default_missing_legacy_status(cls, value: object) -> str:
+        """Keep pre-persistence ORM test doubles compatible with the active default."""
+        return "active" if value is None else str(value)
 
 
 class JobListResponse(BaseModel):

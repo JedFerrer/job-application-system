@@ -24,6 +24,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { JobCard, type JobCardData } from "@/components/jobs/job-card";
+import { getJobLifecyclePresentation } from "@/lib/job-lifecycle";
 
 const PAGE_SIZE = 25;
 const MAX_JOBS = 500; // UX cap — stop infinite scroll after this many loaded
@@ -60,6 +61,7 @@ export function JobsPanel() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const archiveState = searchParams.get("archive_state") === "archived" ? "archived" : "active";
+  const lifecycle = searchParams.get("lifecycle") === "expired" ? "expired" : "active";
   const companyExact = searchParams.get("company_exact")?.trim() || "";
   const [filterSource, setFilterSource] = useState("");
   const [filterJobType, setFilterJobType] = useState("");
@@ -117,7 +119,7 @@ export function JobsPanel() {
   }, [companyExact]);
 
   const jobsQuery = useInfiniteQuery({
-    queryKey: ["jobs", archiveState, filterSearch, filterSource, filterJobType, filterLocation, filterCompany, companyExact, filterSourceType, filterShiftType, filterRemote],
+    queryKey: ["jobs", archiveState, lifecycle, filterSearch, filterSource, filterJobType, filterLocation, filterCompany, companyExact, filterSourceType, filterShiftType, filterRemote],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       jobsApi.list({
@@ -133,6 +135,7 @@ export function JobsPanel() {
         shiftType: filterShiftType || undefined,
         isRemote: filterRemote || undefined,
         archiveState,
+        lifecycle,
       }),
     getNextPageParam: (lastPage, allPages) => {
       const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
@@ -259,6 +262,14 @@ export function JobsPanel() {
     router.replace(query ? `/dashboard/jobs?${query}` : "/dashboard/jobs");
   };
 
+  const setLifecycle = (state: "active" | "expired") => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (state === "expired") params.set("lifecycle", "expired");
+    else params.delete("lifecycle");
+    const query = params.toString();
+    router.replace(query ? `/dashboard/jobs?${query}` : "/dashboard/jobs");
+  };
+
   const [showImport, setShowImport] = useState(false);
   const [importUrl, setImportUrl] = useState("");
   const [importTitle, setImportTitle] = useState("");
@@ -363,9 +374,9 @@ export function JobsPanel() {
           )}
         </div>
 
-        <div className="flex gap-6">
+        <div className="flex flex-col gap-6 lg:flex-row">
           {/* ── Filter sidebar ──────────────────────────────── */}
-          <aside className="w-72 shrink-0 self-start rounded-lg border bg-card p-4 flex flex-col gap-3">
+          <aside className="w-full shrink-0 self-start rounded-lg border bg-card p-4 flex flex-col gap-3 lg:w-72">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-medium">Filters</h3>
               {(filterSource || filterJobType || filterLocationInput || filterCompanyInput || filterSourceType || filterShiftType || filterRemote || filterSearch || searchValue) && (
@@ -486,25 +497,31 @@ export function JobsPanel() {
 
           {/* ── Job list ─────────────────────────────────────── */}
           <div className="flex-1 min-w-0 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
               <h2 className="text-lg font-semibold">
                 Jobs{" "}
                 {jobsQuery.data ? (
                   <span className="text-muted-foreground">({total})</span>
                 ) : null}
               </h2>
-              <div className="flex items-center gap-1 rounded-md border bg-muted p-1" role="group" aria-label="Job archive state">
-                  <Button size="sm" title="Show active jobs" variant={archiveState === "active" ? "default" : "ghost"} onClick={() => setArchiveState("active")}>Active</Button>
-                  <Button size="sm" title="Show archived jobs" variant={archiveState === "archived" ? "default" : "ghost"} onClick={() => setArchiveState("archived")}>Archived</Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1 rounded-md border bg-muted p-1" role="group" aria-label="Job archive state">
+                    <Button size="sm" title="Show active jobs" variant={archiveState === "active" ? "default" : "ghost"} onClick={() => setArchiveState("active")}>Active</Button>
+                    <Button size="sm" title="Show archived jobs" variant={archiveState === "archived" ? "default" : "ghost"} onClick={() => setArchiveState("archived")}>Archived</Button>
+                </div>
+                <div className="flex items-center gap-1 rounded-md border bg-muted p-1" role="group" aria-label="Job lifecycle state">
+                    <Button size="sm" title="Show jobs in the current search age window" variant={lifecycle === "active" ? "default" : "ghost"} onClick={() => setLifecycle("active")}>Current</Button>
+                    <Button size="sm" title="Show jobs outside the search age window" variant={lifecycle === "expired" ? "default" : "ghost"} onClick={() => setLifecycle("expired")}>Outside age window</Button>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowImport(true)}
+                >
+                  <Link2 className="h-4 w-4" />
+                  Import job
+                </Button>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setShowImport(true)}
-              >
-                <Link2 className="h-4 w-4" />
-                Import job
-              </Button>
             </div>
         {jobsQuery.isLoading && (
           <p className="text-sm text-muted-foreground">Loading jobs…</p>
@@ -564,6 +581,13 @@ export function JobsPanel() {
                             const jc = jobCards[vi.index]!;
                             const application = applicationsByJobId.get(jc.card.jobId);
                             const canSave = !application || application.status === "closed";
+                            const isReadOnly = getJobLifecyclePresentation({
+                              status: jc.card.status,
+                              first_seen_at: jc.card.firstSeenAt,
+                              last_seen_at: jc.card.lastSeenAt,
+                              expired_at: jc.card.expiredAt,
+                              not_recently_seen: jc.card.notRecentlySeen,
+                            }).isReadOnly;
                             return (
                               <JobCard
                                 job={jc.card}
@@ -588,7 +612,7 @@ export function JobsPanel() {
                                   );
                                   router.push(`/jobs/${jc.card.jobId}`);
                                 }}
-                                topRightAction={
+                                topRightAction={isReadOnly ? undefined : (
                                   archiveState === "archived" ? (
                                     <Button
                                       size="sm"
@@ -646,7 +670,7 @@ export function JobsPanel() {
                                     </Button>
                                     </div>
                                   )
-                                }
+                                )}
                               />
                             );
                           })()}
@@ -773,5 +797,10 @@ function toJobCardData(job: Job): JobCardData {
     postedAt: job.posted_at,
     importedAt: job.imported_at,
     companyLogo: job.company_logo,
+    status: job.status,
+    firstSeenAt: job.first_seen_at,
+    lastSeenAt: job.last_seen_at,
+    expiredAt: job.expired_at,
+    notRecentlySeen: job.not_recently_seen,
   };
 }

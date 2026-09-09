@@ -5,6 +5,7 @@ Requires a running PostgreSQL instance (docker-compose up db test).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +22,7 @@ from app.domain.jobs.service import JobService
 from app.infrastructure.job_sources.base import RawJobPost, SourceSearchResult
 from app.models.job import Job
 from app.models.job_source_link import JobSourceLink
+from app.models.user_job import UserJob
 
 pytestmark = pytest.mark.integration
 
@@ -367,6 +369,162 @@ async def test_scraper_creates_public_jobs(engine) -> None:  # noqa: ANN001
         assert job.ingest_source == "scraper"
         assert job.status == "active"
         assert job.created_by_user_id is None
+    finally:
+        await db.close()
+
+
+async def test_repeat_observation_preserves_first_seen_and_posting_date(engine) -> None:  # noqa: ANN001
+    """Rediscovery advances observation once without making the posting look new."""
+    _, db = await _make_service(engine)
+    try:
+        repository = JobRepository(db)
+        first_observed = datetime(2026, 8, 1, 12, tzinfo=UTC)
+        rediscovered_at = first_observed + timedelta(days=8)
+        original_posted_at = first_observed - timedelta(days=20)
+        values = {
+            "fingerprint": job_fingerprint("Acme", "Engineer", "Remote"),
+            "identity_scope": "public",
+            "identity_key": scoped_key("public", "lifecycle:acme-engineer"),
+            "title": "Engineer",
+            "company": "Acme",
+            "location": "Remote",
+            "source": "indeed",
+            "source_url": "https://example.test/jobs/acme-engineer",
+            "posted_at": original_posted_at,
+            "first_seen_at": first_observed,
+            "last_seen_at": first_observed,
+            "raw_response": {},
+        }
+        job_id, inserted = await repository.upsert_job(values, observed_at=first_observed)
+        assert inserted is True
+        await db.commit()
+
+        refreshed = {**values, "posted_at": rediscovered_at, "title": "Engineer II"}
+        refreshed_id, inserted = await repository.upsert_job(
+            refreshed, observed_at=rediscovered_at
+        )
+        assert refreshed_id == job_id
+        assert inserted is False
+        await db.commit()
+
+        job = await repository.get_by_id(job_id)
+        assert job is not None
+        assert job.first_seen_at == first_observed
+        assert job.last_seen_at == rediscovered_at
+        assert job.fetched_at == rediscovered_at
+        assert job.posted_at == original_posted_at
+    finally:
+        await db.close()
+
+
+async def test_job_and_source_link_share_each_supplied_observation_time(engine) -> None:  # noqa: ANN001
+    """Job and alias evidence use one UTC time for each accepted source run."""
+    _, db = await _make_service(engine)
+    try:
+        repository = JobRepository(db)
+        first = datetime(2026, 8, 1, 12, tzinfo=UTC)
+        later = first + timedelta(days=1)
+        identity_key = scoped_key("public", "lifecycle:shared-observation")
+        values = {
+            "fingerprint": job_fingerprint("Acme", "Engineer", "Remote"),
+            "identity_scope": "public",
+            "identity_key": identity_key,
+            "title": "Engineer",
+            "company": "Acme",
+            "location": "Remote",
+            "source": "indeed",
+            "source_url": "https://example.test/jobs/shared-observation",
+            "first_seen_at": first,
+            "last_seen_at": first,
+            "raw_response": {},
+        }
+        job_id, _ = await repository.upsert_job(values, observed_at=first)
+        await repository.attach_source_link(
+            job_id=job_id,
+            scope_key="public",
+            identity_key=identity_key,
+            source="indeed",
+            source_job_id="shared-observation",
+            source_tenant=None,
+            source_url="https://example.test/jobs/shared-observation",
+            canonical_url="https://example.test/jobs/shared-observation",
+            observed_at=first,
+        )
+        await db.commit()
+
+        await repository.upsert_job(values, observed_at=later)
+        await repository.attach_source_link(
+            job_id=job_id,
+            scope_key="public",
+            identity_key=identity_key,
+            source="indeed",
+            source_job_id="shared-observation",
+            source_tenant=None,
+            source_url="https://example.test/jobs/shared-observation",
+            canonical_url="https://example.test/jobs/shared-observation",
+            observed_at=later,
+        )
+        await db.commit()
+
+        job = await repository.get_by_id(job_id)
+        link = await db.scalar(select(JobSourceLink).where(JobSourceLink.job_id == job_id))
+        assert job is not None
+        assert link is not None
+        assert (job.first_seen_at, link.first_seen_at) == (first, first)
+        assert (job.last_seen_at, link.last_seen_at) == (later, later)
+    finally:
+        await db.close()
+
+
+async def test_rediscovery_does_not_change_any_user_archive_state(engine) -> None:  # noqa: ANN001
+    """A global sighting changes job observation data, never user-specific state."""
+    _, db = await _make_service(engine)
+    try:
+        job_id = await _create_job_and_get_id(db)
+        db.add(UserJob(user_id=1, job_id=job_id, relationship_source="match", status="archived"))
+        db.add(UserJob(user_id=2, job_id=job_id, relationship_source="match", status="new"))
+        await db.commit()
+
+        repository = JobRepository(db)
+        job = await repository.get_by_id(job_id)
+        assert job is not None
+        observed_at = datetime(2026, 9, 8, tzinfo=UTC)
+        await repository.upsert_job(
+            {
+                "fingerprint": job.fingerprint,
+                "identity_scope": job.identity_scope,
+                "identity_key": job.identity_key,
+                "title": job.title,
+                "company": job.company,
+                "location": job.location,
+                "source": job.source,
+                "source_url": job.source_url,
+                "raw_response": {},
+                "first_seen_at": observed_at,
+                "last_seen_at": observed_at,
+            },
+            observed_at=observed_at,
+        )
+        await db.commit()
+
+        state_rows = await db.execute(
+            select(UserJob.user_id, UserJob.status).where(UserJob.job_id == job_id)
+        )
+        states: dict[int, str] = {user_id: status for user_id, status in state_rows.tuples()}
+        assert states == {1: "archived", 2: "new"}
+    finally:
+        await db.close()
+
+
+async def test_age_expired_job_remains_visible_but_not_archivable(engine) -> None:  # noqa: ANN001
+    """Age expiry changes lifecycle presentation, not the ownership predicate."""
+    _, db = await _make_service(engine)
+    try:
+        job_id = await _create_job_and_get_id(db, status="expired")
+        repository = JobRepository(db)
+
+        assert await repository.get_visible_by_id(user_id=1, job_id=job_id) is not None
+        assert await repository.get_archivable_by_id(user_id=1, job_id=job_id) is None
     finally:
         await db.close()
 

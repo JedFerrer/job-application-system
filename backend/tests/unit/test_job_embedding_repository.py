@@ -50,7 +50,7 @@ async def create_job(db: AsyncSession, *, raw_response: dict[str, object]) -> Jo
         source="test",
         source_url="https://example.com/embedding-repository-test",
         raw_response=raw_response,
-        status="unknown",
+        status="expired",
     )
     db.add(job)
     await db.flush()
@@ -78,7 +78,7 @@ async def test_set_embedding_persists_vector_clears_only_embed_error_and_does_no
 
         assert stored is not None
         assert stored.description_embedding == embedding
-        assert stored.status == "active"
+        assert stored.status == "expired"
         assert stored.raw_response == {"source": {"id": "abc"}}
         await db.rollback()
 
@@ -86,7 +86,7 @@ async def test_set_embedding_persists_vector_clears_only_embed_error_and_does_no
         rolled_back = await db.get(Job, job_id)
         assert rolled_back is not None
         assert rolled_back.description_embedding is None
-        assert rolled_back.status == "unknown"
+        assert rolled_back.status == "expired"
         assert rolled_back.raw_response["embed_error"] == "old failure"
 
 
@@ -107,7 +107,7 @@ async def test_set_embed_error_persists_special_characters_and_preserves_metadat
         stored = await db.scalar(select(Job).where(Job.id == job_id))
 
         assert stored is not None
-        assert stored.status == "unknown"
+        assert stored.status == "expired"
         assert stored.raw_response == {
             "source": {"id": "abc"},
             "attempt": 3,

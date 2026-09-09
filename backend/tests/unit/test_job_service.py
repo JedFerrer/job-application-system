@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -11,7 +12,7 @@ from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.schemas import IngestRequest, JobResponse
 from app.domain.jobs.service import JobService
-from app.infrastructure.job_sources.base import RawJobPost
+from app.infrastructure.job_sources.base import RawJobPost, SourceSearchResult
 
 pytestmark = pytest.mark.unit
 
@@ -288,3 +289,235 @@ async def test_later_source_persistence_failure_preserves_prior_committed_result
     repository.commit.assert_awaited_once()
     repository.rollback.assert_awaited_once()
     repository.link_public_jobs_batch.assert_awaited_once_with(user_ids=[1, 2], job_ids=[101])
+
+
+@pytest.mark.asyncio
+async def test_accepted_posts_from_one_source_share_one_observation_time() -> None:
+    """One accepted source result gives all of its sightings one observation time."""
+    posts = [
+        RawJobPost(
+            source="indeed",
+            source_url=f"https://example.test/jobs/{index}",
+            title="Engineer",
+        )
+        for index in (1, 2)
+    ]
+
+    class Source:
+        name = "indeed"
+
+        def fetch(self, query: object) -> list[RawJobPost]:
+            return posts
+
+    repository = AsyncMock()
+    service = JobService(repository, external_enrichment_enabled=False)
+    upsert = AsyncMock(side_effect=[(1, True, False), (2, True, False)])
+    with (
+        patch("app.domain.jobs.service.build_sources", return_value=[Source()]),
+        patch.object(service, "_upsert", new=upsert),
+    ):
+        await service.ingest(
+            IngestRequest(search_term="Engineer"),
+            default_sources=["indeed"],
+            default_country="USA",
+            default_results=10,
+            proxies=None,
+        )
+
+    observations = [call.kwargs["observed_at"] for call in upsert.await_args_list]
+    assert len(observations) == 2
+    assert observations[0] == observations[1]
+    assert observations[0].tzinfo is UTC
+
+
+@pytest.mark.asyncio
+async def test_failed_source_does_not_create_or_refresh_an_observation() -> None:
+    """A provider failure has no accepted sighting to update lifecycle data."""
+
+    class Source:
+        name = "indeed"
+
+        def fetch(self, query: object) -> list[RawJobPost]:
+            raise TimeoutError("fixture timeout")
+
+    repository = AsyncMock()
+    service = JobService(repository, external_enrichment_enabled=False)
+    upsert = AsyncMock()
+    with (
+        patch("app.domain.jobs.service.build_sources", return_value=[Source()]),
+        patch.object(service, "_upsert", new=upsert),
+    ):
+        result = await service.ingest(
+            IngestRequest(search_term="Engineer"),
+            default_sources=["indeed"],
+            default_country="USA",
+            default_results=10,
+            proxies=None,
+        )
+
+    upsert.assert_not_awaited()
+    assert result.source_results[0].status == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "reason_code"),
+    [("failed", "timeout"), ("unavailable", "provider_error")],
+)
+async def test_non_success_result_never_persists_malformed_posts(
+    status: str, reason_code: str
+) -> None:
+    """Only accepted source results may become observation evidence."""
+
+    class Source:
+        name = "indeed"
+
+    repository = AsyncMock()
+    service = JobService(repository, external_enrichment_enabled=False)
+    upsert = AsyncMock()
+    malformed_post = RawJobPost(
+        source="indeed",
+        source_url="https://example.test/jobs/should-not-persist",
+        title="Should not persist",
+    )
+    with (
+        patch("app.domain.jobs.service.build_sources", return_value=[Source()]),
+        patch(
+            "app.domain.jobs.service.execute_sources",
+            new=AsyncMock(
+                return_value=[
+                    SourceSearchResult(
+                        source="indeed",
+                        status=status,  # type: ignore[arg-type]
+                        reason_code=reason_code,  # type: ignore[arg-type]
+                        posts=[malformed_post],
+                        fetched=1,
+                    )
+                ]
+            ),
+        ),
+        patch.object(service, "_upsert", new=upsert),
+    ):
+        result = await service.ingest(
+            IngestRequest(search_term="Engineer"),
+            default_sources=["indeed"],
+            default_country="USA",
+            default_results=10,
+            proxies=None,
+        )
+
+    upsert.assert_not_awaited()
+    assert result.source_results[0].status == status
+    assert result.source_results[0].accepted == 0
+
+
+@pytest.mark.asyncio
+async def test_unknown_completeness_empty_result_does_not_create_an_observation() -> None:
+    class Source:
+        name = "indeed"
+
+    service = JobService(AsyncMock(), external_enrichment_enabled=False)
+    upsert = AsyncMock()
+    with (
+        patch("app.domain.jobs.service.build_sources", return_value=[Source()]),
+        patch(
+            "app.domain.jobs.service.execute_sources",
+            new=AsyncMock(
+                return_value=[
+                    SourceSearchResult(
+                        source="indeed", status="empty", completeness="unknown"
+                    )
+                ]
+            ),
+        ),
+        patch.object(service, "_upsert", new=upsert),
+    ):
+        result = await service.ingest(
+            IngestRequest(search_term="Engineer"),
+            default_sources=["indeed"],
+            default_country="USA",
+            default_results=10,
+            proxies=None,
+        )
+
+    upsert.assert_not_awaited()
+    assert result.source_results[0].completeness == "unknown"
+
+
+def test_job_response_derives_observation_freshness_without_changing_lifecycle() -> None:
+    now = datetime(2026, 9, 8, tzinfo=UTC)
+    job = SimpleNamespace(
+        id=1,
+        title="Engineer",
+        company="Acme",
+        location=None,
+        is_remote=None,
+        job_type=None,
+        description=None,
+        salary_min=None,
+        salary_max=None,
+        salary_currency=None,
+        source="indeed",
+        source_url="https://example.test/jobs/1",
+        posted_at=now - timedelta(days=31),
+        fetched_at=now - timedelta(days=8),
+        shift_type=None,
+        company_logo=None,
+        visibility="public",
+        ingest_source="scraper",
+        created_by_user_id=None,
+        imported_at=None,
+        status="expired",
+        first_seen_at=now - timedelta(days=20),
+        last_seen_at=now - timedelta(days=8),
+        expired_at=now - timedelta(days=1),
+    )
+
+    response = JobService._job_response(job, now=now)  # type: ignore[arg-type]
+
+    assert response.status == "expired"
+    assert response.not_recently_seen is True
+    assert response.first_seen_at == now - timedelta(days=20)
+    assert response.last_seen_at == now - timedelta(days=8)
+
+
+@pytest.mark.parametrize(
+    ("last_seen_at", "expected"),
+    [
+        (datetime(2026, 9, 1, tzinfo=UTC), False),
+        (datetime(2026, 9, 1, 0, 0, 1, tzinfo=UTC), False),
+        (None, None),
+    ],
+)
+def test_not_recently_seen_uses_a_strict_seven_day_threshold(
+    last_seen_at: datetime | None, expected: bool | None
+) -> None:
+    now = datetime(2026, 9, 8, tzinfo=UTC)
+    job = SimpleNamespace(
+        id=2,
+        title="Engineer",
+        company="Acme",
+        location=None,
+        is_remote=None,
+        job_type=None,
+        description=None,
+        salary_min=None,
+        salary_max=None,
+        salary_currency=None,
+        source="indeed",
+        source_url="https://example.test/jobs/2",
+        posted_at=None,
+        fetched_at=now,
+        shift_type=None,
+        company_logo=None,
+        visibility="public",
+        ingest_source="scraper",
+        created_by_user_id=None,
+        imported_at=None,
+        status="active",
+        first_seen_at=now - timedelta(days=8),
+        last_seen_at=last_seen_at,
+        expired_at=None,
+    )
+
+    assert JobService._job_response(job, now=now).not_recently_seen == expected  # type: ignore[arg-type]

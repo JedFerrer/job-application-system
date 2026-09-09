@@ -375,6 +375,11 @@ export interface Job {
   ingest_source: "scraper" | "manual" | "extension";
   created_by_user_id: number | null;
   imported_at: string | null;
+  status?: "active" | "expired" | "unknown" | "closed";
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  expired_at?: string | null;
+  not_recently_seen?: boolean | null;
   match_score?: number | null;
   match_reason?: Record<string, unknown> | null;
   employer_summary?: EmployerSummary | null;

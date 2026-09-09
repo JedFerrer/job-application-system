@@ -194,6 +194,7 @@ async def list_jobs(
     ),
     imported_only: bool = False,
     archive_state: Literal["active", "archived"] = "active",
+    lifecycle: Literal["active", "expired", "unknown", "closed"] = "active",
     cursor: str | None = Query(default=None, description="Cursor for next page"),
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> JobListResponse:
@@ -211,6 +212,7 @@ async def list_jobs(
         source_type=source_type,
         imported_only=imported_only,
         archive_state=archive_state,
+        lifecycle=lifecycle,
         cursor=cursor,
         limit=limit,
     )

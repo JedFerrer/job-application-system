@@ -571,3 +571,20 @@ class TestCrossUserJobDenial:
         mock_svc.create.assert_awaited_once_with(
             user_id=user_b.id, job_id=99
         )
+
+    def test_create_application_for_non_actionable_job_returns_409(
+        self, user_a: User
+    ) -> None:
+        """A visible non-active job is a state conflict, not an authorization leak."""
+        from app.domain.applications.exceptions import ApplicationJobNotActionableError
+
+        mock_svc = MagicMock()
+        mock_svc.create = AsyncMock(side_effect=ApplicationJobNotActionableError())
+        app = _make_app_with_mocked_services(
+            user=user_a, application_service_mock=mock_svc
+        )
+        client = TestClient(app)
+
+        resp = client.post("/applications", json={"job_id": 99})
+        assert resp.status_code == 409
+        assert resp.json() == {"detail": "Job is no longer actionable"}

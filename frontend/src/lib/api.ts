@@ -278,6 +278,7 @@ export const jobsApi = {
       shiftType?: string;
       importedOnly?: boolean;
       archiveState?: "active" | "archived";
+      lifecycle?: "active" | "expired";
       cursor?: string;
       limit?: number;
     } = {},
@@ -295,6 +296,7 @@ export const jobsApi = {
     if (opts.shiftType) qs.set("shift_type", opts.shiftType);
     if (opts.importedOnly) qs.set("imported_only", "true");
     if (opts.archiveState) qs.set("archive_state", opts.archiveState);
+    if (opts.lifecycle) qs.set("lifecycle", opts.lifecycle);
     if (opts.cursor) qs.set("cursor", opts.cursor);
     qs.set("limit", String(opts.limit ?? 50));
     return apiRequest<JobListResponse>(`/jobs?${qs.toString()}`);

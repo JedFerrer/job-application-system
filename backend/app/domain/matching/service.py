@@ -322,17 +322,20 @@ class MatchingService:
         )
 
     async def explain_match(self, *, user_id: int, job_id: int) -> MatchExplanation:
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
+        if job is None:
+            raise MatchNotFoundError(job_id)
+
         match = await self._repo.get_match(user_id=user_id, job_id=job_id)
         if match is None:
             raise MatchNotFoundError(job_id)
 
         # Cache hit: return the stored explanation, no LLM cost.
         if getattr(match, "llm_analyzed_at", None) is not None or match.llm_explanation is not None:
-            return await self._to_explanation(match, user_id)
+            return await self._to_explanation(match, user_id, job)
 
-        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         profile = await self._repo.get_active_profile(user_id)
-        if job is None or profile is None:
+        if profile is None:
             raise MatchNotFoundError(job_id)
 
         # Layer 2: deterministic skill recall (free, reproducible).
@@ -367,10 +370,14 @@ class MatchingService:
             deterministic_match=report_dict,
             confidence=conf_band,
         )
-        return await self._to_explanation(match, user_id)
+        return await self._to_explanation(match, user_id, job)
 
     async def analyze_skills(self, *, user_id: int, job_id: int) -> MatchSkillAnalysis:
         """Return cached or freshly computed deterministic skill evidence."""
+        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
+        if job is None:
+            raise MatchNotFoundError(job_id)
+
         match = await self._repo.get_match(user_id=user_id, job_id=job_id)
         if match is None:
             raise MatchNotFoundError(job_id)
@@ -380,11 +387,10 @@ class MatchingService:
             and match.matched_skills is not None
             and match.missing_keywords is not None
         ):
-            return await self._to_skill_analysis(match, user_id)
+            return await self._to_skill_analysis(match, user_id, job)
 
-        job = await self._repo.get_visible_job(user_id=user_id, job_id=job_id)
         profile = await self._repo.get_active_profile(user_id)
-        if job is None or profile is None:
+        if profile is None:
             raise MatchNotFoundError(job_id)
 
         report = compute_skill_match(
@@ -397,7 +403,7 @@ class MatchingService:
             missing_keywords=report.missing_skills,
             deterministic_match=report_to_dict(report),
         )
-        return await self._to_skill_analysis(match, user_id)
+        return await self._to_skill_analysis(match, user_id, job)
 
     async def _explain_with_llm(
         self,
@@ -470,14 +476,16 @@ class MatchingService:
 
         return llm_score, llm_confidence, missing, explanation_str, conf_band, None
 
-    async def _to_explanation(self, match: object, user_id: int) -> MatchExplanation:
+    async def _to_explanation(
+        self, match: object, user_id: int, job: object | None = None
+    ) -> MatchExplanation:
         # ``match`` is a UserJobMatch; typed loosely to avoid a circular import.
-        job = None
         prefs = None
         if self._readiness_repo is not None:
-            job = await self._repo.get_visible_job(
-                user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
-            )
+            if job is None:
+                job = await self._repo.get_visible_job(
+                    user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
+                )
             prefs = await self._readiness_repo.get_for_user(user_id)
         readiness = self._build_readiness(match, job, prefs)
         return MatchExplanation(
@@ -498,13 +506,15 @@ class MatchingService:
             readiness=readiness,
         )
 
-    async def _to_skill_analysis(self, match: object, user_id: int) -> MatchSkillAnalysis:
-        job = None
+    async def _to_skill_analysis(
+        self, match: object, user_id: int, job: object | None = None
+    ) -> MatchSkillAnalysis:
         prefs = None
         if self._readiness_repo is not None:
-            job = await self._repo.get_visible_job(
-                user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
-            )
+            if job is None:
+                job = await self._repo.get_visible_job(
+                    user_id=user_id, job_id=match.job_id  # type: ignore[attr-defined]
+                )
             prefs = await self._readiness_repo.get_for_user(user_id)
         return MatchSkillAnalysis(
             job_id=match.job_id,  # type: ignore[attr-defined]

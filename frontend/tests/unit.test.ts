@@ -395,6 +395,12 @@ describe("jobsApi archive state", () => {
     expect(lastUrl(fm).pathname).toBe("/api/backend/jobs/42/restore");
     expect(fm.mock.lastCall?.[1]).toMatchObject({ method: "PATCH" });
   });
+
+  it("sends the explicit age-expired lifecycle filter", async () => {
+    const fm = mockFetch({ items: [], total: 0, limit: 25, next_cursor: null });
+    await jobsApi.list({ lifecycle: "expired", limit: 25 });
+    expect(lastUrl(fm).searchParams.get("lifecycle")).toBe("expired");
+  });
 });
 
 
