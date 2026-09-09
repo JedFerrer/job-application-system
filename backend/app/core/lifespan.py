@@ -15,6 +15,11 @@ from app.domain.applications.exceptions import (
     ApplicationJobNotActionableError,
     ApplicationNotFoundError,
     InvalidApplicationStatusTransitionError,
+    PackageApprovalConflictError,
+    PackageIdempotencyConflictError,
+    PreparationDiscardConfirmationRequiredError,
+    PreparationSelectionInvalidError,
+    PreparationVersionConflictError,
 )
 from app.domain.auth.exceptions import (
     EmailAlreadyRegisteredError,
@@ -70,9 +75,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RateLimitExceededError)
-    async def _auth_rate_limited(
-        request: Request, exc: RateLimitExceededError
-    ) -> JSONResponse:
+    async def _auth_rate_limited(request: Request, exc: RateLimitExceededError) -> JSONResponse:
         return JSONResponse(
             status_code=429,
             content={"detail": "Too many authentication attempts. Please try again later."},
@@ -100,9 +103,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(ProfileNotFoundError)
-    async def _profile_not_found(
-        request: Request, exc: ProfileNotFoundError
-    ) -> JSONResponse:
+    async def _profile_not_found(request: Request, exc: ProfileNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": "No resume profile found"})
 
     @app.exception_handler(ResumeImportDraftNotFoundError)
@@ -133,52 +134,36 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=422, content={"detail": exc.detail})
 
     @app.exception_handler(ResumeParseError)
-    async def _parse_error(
-        request: Request, exc: ResumeParseError
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=502, content={"detail": "Failed to parse resume with AI"}
-        )
+    async def _parse_error(request: Request, exc: ResumeParseError) -> JSONResponse:
+        return JSONResponse(status_code=502, content={"detail": "Failed to parse resume with AI"})
 
     @app.exception_handler(JobNotFoundError)
-    async def _job_not_found(
-        request: Request, exc: JobNotFoundError
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=404, content={"detail": f"Job {exc.job_id} not found"}
-        )
+    async def _job_not_found(request: Request, exc: JobNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": f"Job {exc.job_id} not found"})
 
     @app.exception_handler(NoActiveProfileError)
-    async def _no_active_profile(
-        request: Request, exc: NoActiveProfileError
-    ) -> JSONResponse:
+    async def _no_active_profile(request: Request, exc: NoActiveProfileError) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content={"detail": "No active resume profile to match against"},
         )
 
     @app.exception_handler(MatchNotFoundError)
-    async def _match_not_found(
-        request: Request, exc: MatchNotFoundError
-    ) -> JSONResponse:
+    async def _match_not_found(request: Request, exc: MatchNotFoundError) -> JSONResponse:
         return JSONResponse(
             status_code=404,
             content={"detail": f"No match found for job {exc.job_id}"},
         )
 
     @app.exception_handler(MatchNotReadyError)
-    async def _match_not_ready(
-        request: Request, exc: MatchNotReadyError
-    ) -> JSONResponse:
+    async def _match_not_ready(request: Request, exc: MatchNotReadyError) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content={"detail": "Job is still being prepared for matching"},
         )
 
     @app.exception_handler(MatchPreparingError)
-    async def _match_preparing(
-        request: Request, exc: MatchPreparingError
-    ) -> JSONResponse:
+    async def _match_preparing(request: Request, exc: MatchPreparingError) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content={"detail": "Preparing this job for matching. Please retry shortly."},
@@ -186,9 +171,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(MatchUnavailableError)
-    async def _match_unavailable(
-        request: Request, exc: MatchUnavailableError
-    ) -> JSONResponse:
+    async def _match_unavailable(request: Request, exc: MatchUnavailableError) -> JSONResponse:
         return JSONResponse(
             status_code=422,
             content={"detail": "This job has no description available for matching"},
@@ -233,24 +216,29 @@ def register_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
-    @app.exception_handler(PreferenceNotFoundError)
-    async def _preference_not_found(
-        request: Request, exc: PreferenceNotFoundError
+    @app.exception_handler(PreparationSelectionInvalidError)
+    async def _preparation_selection_invalid(
+        request: Request, exc: PreparationSelectionInvalidError
     ) -> JSONResponse:
-        return JSONResponse(
-            status_code=404, content={"detail": "No job preferences saved"}
-        )
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @app.exception_handler(PreparationVersionConflictError)
+    @app.exception_handler(PackageIdempotencyConflictError)
+    @app.exception_handler(PackageApprovalConflictError)
+    @app.exception_handler(PreparationDiscardConfirmationRequiredError)
+    async def _preparation_conflict(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(PreferenceNotFoundError)
+    async def _preference_not_found(request: Request, exc: PreferenceNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": "No job preferences saved"})
 
     @app.exception_handler(PreferenceValidationError)
-    async def _preference_invalid(
-        request: Request, exc: PreferenceValidationError
-    ) -> JSONResponse:
+    async def _preference_invalid(request: Request, exc: PreferenceValidationError) -> JSONResponse:
         return JSONResponse(status_code=422, content={"detail": exc.message})
 
     @app.exception_handler(RefreshCooldownError)
-    async def _refresh_cooldown(
-        request: Request, exc: RefreshCooldownError
-    ) -> JSONResponse:
+    async def _refresh_cooldown(request: Request, exc: RefreshCooldownError) -> JSONResponse:
         return JSONResponse(
             status_code=429,
             content={
@@ -270,9 +258,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(InvalidTokenError)
-    async def _invalid_token(
-        request: Request, exc: InvalidTokenError
-    ) -> JSONResponse:
+    async def _invalid_token(request: Request, exc: InvalidTokenError) -> JSONResponse:
         return JSONResponse(
             status_code=401,
             content={"detail": "Not authenticated"},
@@ -280,54 +266,36 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(InvalidCredentialsError)
-    async def _invalid_credentials(
-        request: Request, exc: InvalidCredentialsError
-    ) -> JSONResponse:
+    async def _invalid_credentials(request: Request, exc: InvalidCredentialsError) -> JSONResponse:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
 
     @app.exception_handler(InactiveUserError)
-    async def _inactive_user(
-        request: Request, exc: InactiveUserError
-    ) -> JSONResponse:
+    async def _inactive_user(request: Request, exc: InactiveUserError) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
 
     @app.exception_handler(EmailAlreadyRegisteredError)
-    async def _email_taken(
-        request: Request, exc: EmailAlreadyRegisteredError
-    ) -> JSONResponse:
+    async def _email_taken(request: Request, exc: EmailAlreadyRegisteredError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(GoogleAuthError)
-    async def _google_auth_failed(
-        request: Request, exc: GoogleAuthError
-    ) -> JSONResponse:
+    async def _google_auth_failed(request: Request, exc: GoogleAuthError) -> JSONResponse:
         return JSONResponse(status_code=401, content={"detail": exc.detail})
 
     # ── Extension exception handlers ─────────────────────────────────────
 
     @app.exception_handler(PairingCodeInvalidError)
-    async def _pairing_code_invalid(
-        request: Request, exc: PairingCodeInvalidError
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=401, content={"detail": "Invalid pairing code"}
-        )
+    async def _pairing_code_invalid(request: Request, exc: PairingCodeInvalidError) -> JSONResponse:
+        return JSONResponse(status_code=401, content={"detail": "Invalid pairing code"})
 
     @app.exception_handler(PairingCodeExpiredError)
-    async def _pairing_code_expired(
-        request: Request, exc: PairingCodeExpiredError
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=410, content={"detail": "Pairing code has expired"}
-        )
+    async def _pairing_code_expired(request: Request, exc: PairingCodeExpiredError) -> JSONResponse:
+        return JSONResponse(status_code=410, content={"detail": "Pairing code has expired"})
 
     @app.exception_handler(ExtensionSessionNotFoundError)
     async def _extension_session_not_found(
         request: Request, exc: ExtensionSessionNotFoundError
     ) -> JSONResponse:
-        return JSONResponse(
-            status_code=404, content={"detail": "Extension session not found"}
-        )
+        return JSONResponse(status_code=404, content={"detail": "Extension session not found"})
 
     @app.exception_handler(ExtensionSessionRevokedError)
     async def _extension_session_revoked(

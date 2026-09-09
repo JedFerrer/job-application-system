@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.security import TokenError, decode_token, decode_token_payload
+from app.domain.applications.preparation import ApplicationPreparationService
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.service import ApplicationService
 from app.domain.auth.exceptions import InvalidTokenError
@@ -108,9 +109,7 @@ async def get_current_user(request: Request, db: DbSession) -> User:
     token = _extract_bearer_token(request)
     settings = get_settings()
     try:
-        user_id = decode_token(
-            settings=settings, token=token, expected_type="access"
-        )
+        user_id = decode_token(settings=settings, token=token, expected_type="access")
     except TokenError as exc:
         raise InvalidTokenError from exc
 
@@ -128,9 +127,7 @@ async def get_current_web_user(request: Request, db: DbSession) -> User:
     token = _extract_bearer_token(request)
     settings = get_settings()
     try:
-        payload = decode_token_payload(
-            settings=settings, token=token, expected_type="access"
-        )
+        payload = decode_token_payload(settings=settings, token=token, expected_type="access")
     except TokenError as exc:
         raise InvalidTokenError from exc
 
@@ -176,9 +173,7 @@ async def get_current_extension_user(request: Request, db: DbSession) -> User:
     token = _extract_bearer_token(request)
     settings = get_settings()
     try:
-        payload = decode_token_payload(
-            settings=settings, token=token, expected_type="access"
-        )
+        payload = decode_token_payload(settings=settings, token=token, expected_type="access")
     except TokenError as exc:
         raise InvalidTokenError from exc
 
@@ -217,9 +212,7 @@ async def get_current_extension_principal(
     token = _extract_bearer_token(request)
     settings = get_settings()
     try:
-        payload = decode_token_payload(
-            settings=settings, token=token, expected_type="access"
-        )
+        payload = decode_token_payload(settings=settings, token=token, expected_type="access")
     except TokenError as exc:
         raise InvalidTokenError from exc
 
@@ -317,9 +310,7 @@ def get_preference_service(db: DbSession) -> PreferenceService:
     )
 
 
-PreferenceServiceDep = Annotated[
-    PreferenceService, Depends(get_preference_service)
-]
+PreferenceServiceDep = Annotated[PreferenceService, Depends(get_preference_service)]
 
 
 def get_interview_service(db: DbSession) -> InterviewService:
@@ -337,20 +328,26 @@ def get_cover_letter_service(db: DbSession) -> CoverLetterService:
     )
 
 
-CoverLetterServiceDep = Annotated[
-    CoverLetterService, Depends(get_cover_letter_service)
-]
+CoverLetterServiceDep = Annotated[CoverLetterService, Depends(get_cover_letter_service)]
 
 
 def get_application_service(db: DbSession) -> ApplicationService:
     return ApplicationService(
         repository=ApplicationRepository(db),
         job_repository=JobRepository(db),
+        preparation_service=ApplicationPreparationService(session=db),
     )
 
 
-ApplicationServiceDep = Annotated[
-    ApplicationService, Depends(get_application_service)
+ApplicationServiceDep = Annotated[ApplicationService, Depends(get_application_service)]
+
+
+def get_application_preparation_service(db: DbSession) -> ApplicationPreparationService:
+    return ApplicationPreparationService(session=db)
+
+
+ApplicationPreparationServiceDep = Annotated[
+    ApplicationPreparationService, Depends(get_application_preparation_service)
 ]
 
 
@@ -369,9 +366,7 @@ def get_extension_auth_service(db: DbSession) -> ExtensionAuthService:
     )
 
 
-ExtensionAuthServiceDep = Annotated[
-    ExtensionAuthService, Depends(get_extension_auth_service)
-]
+ExtensionAuthServiceDep = Annotated[ExtensionAuthService, Depends(get_extension_auth_service)]
 
 
 def get_extension_job_import_service(db: DbSession) -> ExtensionJobImportService:
@@ -406,6 +401,4 @@ def get_autofill_profile_service(db: DbSession) -> AutofillProfileService:
     )
 
 
-AutofillProfileServiceDep = Annotated[
-    AutofillProfileService, Depends(get_autofill_profile_service)
-]
+AutofillProfileServiceDep = Annotated[AutofillProfileService, Depends(get_autofill_profile_service)]

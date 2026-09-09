@@ -6,6 +6,8 @@ from app.models.application import Application
 from app.models.application_event import ApplicationEvent
 from app.models.application_form_field import ApplicationFormField
 from app.models.application_form_session import ApplicationFormSession
+from app.models.application_package import ApplicationPackage
+from app.models.application_preparation import ApplicationPreparation
 from app.models.cover_letter import CoverLetter
 from app.models.extension_refresh_token import ExtensionRefreshToken
 from app.models.extension_session import ExtensionSession
@@ -27,6 +29,8 @@ from app.models.web_refresh_session import WebRefreshSession
 __all__ = [
     "Application",
     "ApplicationEvent",
+    "ApplicationPackage",
+    "ApplicationPreparation",
     "ApplicationFormField",
     "ApplicationFormSession",
     "CandidateProfile",

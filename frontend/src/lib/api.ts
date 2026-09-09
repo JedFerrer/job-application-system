@@ -1,5 +1,8 @@
 import type {
   Application,
+  ApplicationPackage,
+  ApplicationPreparation,
+  ApplicationPreparationPatch,
   ApplicationActivityResponse,
   ApplicationActionCenterResponse,
   ApplicationDashboardSummary,
@@ -474,9 +477,31 @@ export const applicationsApi = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
-  delete: (id: number) =>
-    apiRequest<void>(`/applications/${id}`, {
+  delete: (id: number, opts: { confirmDiscardPreparation?: boolean } = {}) => {
+    const qs = opts.confirmDiscardPreparation ? "?confirm_discard_preparation=true" : "";
+    return apiRequest<void>(`/applications/${id}${qs}`, {
       method: "DELETE",
+    });
+  },
+  getPreparation: (id: number) =>
+    apiRequest<ApplicationPreparation>(`/applications/${id}/preparation`),
+  patchPreparation: (id: number, payload: ApplicationPreparationPatch) =>
+    apiRequest<ApplicationPreparation>(`/applications/${id}/preparation`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  createPackage: (id: number, expectedVersion: number, idempotencyKey: string) =>
+    apiRequest<ApplicationPackage>(`/applications/${id}/packages`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ expected_version: expectedVersion }),
+    }),
+  getPackage: (applicationId: number, packageId: number) =>
+    apiRequest<ApplicationPackage>(`/applications/${applicationId}/packages/${packageId}`),
+  approvePreparation: (id: number, expectedVersion: number, packageId: number, contentSha256: string) =>
+    apiRequest<ApplicationPreparation>(`/applications/${id}/preparation/approve`, {
+      method: "POST",
+      body: JSON.stringify({ expected_version: expectedVersion, package_id: packageId, content_sha256: contentSha256 }),
     }),
 };
 

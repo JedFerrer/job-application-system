@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ApplicationStatus = Literal[
-    "saved", "applied", "interview", "offer", "rejected", "closed"
-]
+ApplicationStatus = Literal["saved", "applied", "interview", "offer", "rejected", "closed"]
 ApplicationNextActionType = Literal[
     "apply",
     "follow_up",
@@ -178,3 +177,69 @@ class ApplicationActivityEvent(BaseModel):
 class ApplicationActivityResponse(BaseModel):
     application_id: int
     events: list[ApplicationActivityEvent]
+
+
+PreparationState = Literal["not_started", "in_progress", "needs_review", "ready"]
+CoverLetterMode = Literal["unset", "selected", "not_needed"]
+
+
+class ManualQuestion(BaseModel):
+    id: UUID | None = None
+    question: str = Field(max_length=500)
+    answer: str = Field(max_length=4_000)
+    acknowledged: bool = False
+
+
+class PreparationPatch(BaseModel):
+    expected_version: int = Field(ge=0)
+    fit_acknowledged: bool | None = None
+    resume_draft_id: int | None = None
+    cover_letter_mode: CoverLetterMode | None = None
+    cover_letter_id: int | None = None
+    manual_questions: list[ManualQuestion] | None = None
+
+    @model_validator(mode="after")
+    def selected_letter_requires_id(self) -> PreparationPatch:
+        if self.cover_letter_mode == "selected" and self.cover_letter_id is None:
+            raise ValueError("cover_letter_id is required when cover_letter_mode is selected")
+        if self.cover_letter_mode == "not_needed" and self.cover_letter_id is not None:
+            raise ValueError("cover_letter_id must be null when cover_letter_mode is not_needed")
+        if self.manual_questions is not None and len(self.manual_questions) > 20:
+            raise ValueError("at most 20 manual questions are allowed")
+        return self
+
+
+class PreparationResponse(BaseModel):
+    application_id: int
+    version: int
+    state: PreparationState
+    fit_acknowledged: bool
+    fit_context_available: bool
+    resume_draft_id: int | None
+    resume_current: bool
+    cover_letter_mode: CoverLetterMode
+    cover_letter_id: int | None
+    cover_letter_current: bool
+    manual_questions: list[ManualQuestion]
+    approved_package_id: int | None
+    approval_current: bool
+
+
+class CreatePackageRequest(BaseModel):
+    expected_version: int = Field(ge=0)
+
+
+class ApplicationPackageResponse(BaseModel):
+    id: int
+    application_id: int
+    revision: int
+    content: dict[str, object]
+    content_sha256: str
+    schema_version: str
+    created_at: datetime
+
+
+class ApprovePreparationRequest(BaseModel):
+    expected_version: int = Field(ge=0)
+    package_id: int = Field(gt=0)
+    content_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]

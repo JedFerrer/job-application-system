@@ -25,9 +25,7 @@ class ApplicationRepository:
         Uses ON CONFLICT so re-saving the same job returns the existing row
         instead of raising a unique-violation (never SELECT-then-INSERT).
         """
-        stmt = pg_insert(Application).values(
-            user_id=user_id, job_id=job_id, status="saved"
-        )
+        stmt = pg_insert(Application).values(user_id=user_id, job_id=job_id, status="saved")
         upsert: Any = stmt.on_conflict_do_update(
             index_elements=[Application.user_id, Application.job_id],
             set_={
@@ -51,10 +49,19 @@ class ApplicationRepository:
         )
         return result.scalar_one_or_none()
 
-    async def delete(self, *, application: Application) -> None:
-        await self._session.execute(
-            delete(Application).where(Application.id == application.id)
+    async def get_for_update(self, *, user_id: int, application_id: int) -> Application | None:
+        result = await self._session.execute(
+            select(Application)
+            .where(
+                Application.id == application_id,
+                Application.user_id == user_id,
+            )
+            .with_for_update()
         )
+        return result.scalar_one_or_none()
+
+    async def delete(self, *, application: Application) -> None:
+        await self._session.execute(delete(Application).where(Application.id == application.id))
         await self._session.flush()
 
     async def create_event(
@@ -157,9 +164,7 @@ class ApplicationRepository:
         if cursor:
             cursor_ts, cursor_id = _decode_app_cursor(cursor)
             filters.append(
-                __import__("sqlalchemy").tuple_(
-                    Application.updated_at, Application.id
-                )
+                __import__("sqlalchemy").tuple_(Application.updated_at, Application.id)
                 < (cursor_ts, cursor_id)
             )
 
@@ -192,8 +197,7 @@ class ApplicationRepository:
             func.count(Application.id).filter(Application.status.in_(statuses))
         ]
         aggregates.extend(
-            func.sum(case((Application.status == status, 1), else_=0))
-            for status in statuses
+            func.sum(case((Application.status == status, 1), else_=0)) for status in statuses
         )
         result = await self._session.execute(
             select(*aggregates).where(Application.user_id == user_id)
@@ -201,10 +205,7 @@ class ApplicationRepository:
         values = result.one()
         return {
             "total": int(values[0] or 0),
-            **{
-                status: int(values[index + 1] or 0)
-                for index, status in enumerate(statuses)
-            },
+            **{status: int(values[index + 1] or 0) for index, status in enumerate(statuses)},
         }
 
     async def list_due_next_actions(
@@ -220,9 +221,7 @@ class ApplicationRepository:
         count = int(
             (
                 await self._session.execute(
-                    select(func.count())
-                    .select_from(Application)
-                    .where(*filters)
+                    select(func.count()).select_from(Application).where(*filters)
                 )
             ).scalar_one()
         )
@@ -252,9 +251,7 @@ class ApplicationRepository:
             Application.next_action_completed_at.is_(None),
         ]
         rows_raw = await self._session.execute(
-            select(Application, Job)
-            .join(Job, Job.id == Application.job_id)
-            .where(*filters)
+            select(Application, Job).join(Job, Job.id == Application.job_id).where(*filters)
         )
         return [(row[0], row[1]) for row in rows_raw.all()]
 
@@ -284,8 +281,10 @@ class ApplicationRepository:
 
 # ── Cursor helpers (same pattern as job listing) ──────────────────────────
 
+
 def _encode_app_cursor(updated_at: datetime, app_id: int) -> str:
     import base64
+
     raw = f"{updated_at.isoformat()}|{app_id}"
     return base64.urlsafe_b64encode(raw.encode()).decode()
 
@@ -293,6 +292,7 @@ def _encode_app_cursor(updated_at: datetime, app_id: int) -> str:
 def _decode_app_cursor(cursor: str) -> tuple[datetime, int]:
     import base64
     from datetime import UTC, datetime
+
     raw = base64.urlsafe_b64decode(cursor.encode()).decode()
     ts_str, id_str = raw.rsplit("|", 1)
     return datetime.fromisoformat(ts_str).replace(tzinfo=UTC), int(id_str)

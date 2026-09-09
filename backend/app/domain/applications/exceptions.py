@@ -29,3 +29,37 @@ class InvalidApplicationStatusTransitionError(ApplicationError):
         super().__init__(
             f"Cannot transition application from {current_status} to {requested_status}"
         )
+
+
+class PreparationVersionConflictError(ApplicationError):
+    """Raised when a preparation write is based on an obsolete version."""
+
+    def __init__(self) -> None:
+        super().__init__("Preparation has changed; reload and try again")
+
+
+class PreparationSelectionInvalidError(ApplicationError):
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+class PackageIdempotencyConflictError(ApplicationError):
+    """Raised when an idempotency key is reused for different material."""
+
+    def __init__(self) -> None:
+        super().__init__("Idempotency key was already used for different package content")
+
+
+class PackageApprovalConflictError(ApplicationError):
+    """Raised when a package no longer represents current preparation."""
+
+    def __init__(self) -> None:
+        super().__init__("Package no longer matches the current preparation")
+
+
+class PreparationDiscardConfirmationRequiredError(ApplicationError):
+    """Raised before deleting application preparation/history without confirmation."""
+
+    def __init__(self) -> None:
+        super().__init__("Confirm discarding preparation and package history before unsaving")

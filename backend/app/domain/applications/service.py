@@ -9,7 +9,9 @@ from app.domain.applications.exceptions import (
     ApplicationJobNotActionableError,
     ApplicationNotFoundError,
     InvalidApplicationStatusTransitionError,
+    PreparationDiscardConfirmationRequiredError,
 )
+from app.domain.applications.preparation import ApplicationPreparationService
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.schemas import (
     MANUAL_NEXT_ACTION_EVENT_CLEARED,
@@ -48,9 +50,11 @@ class ApplicationService:
         *,
         repository: ApplicationRepository,
         job_repository: JobRepository,
+        preparation_service: ApplicationPreparationService | None = None,
     ) -> None:
         self._repo = repository
         self._jobs = job_repository
+        self._preparation_service = preparation_service
 
     async def create(self, *, user_id: int, job_id: int) -> ApplicationResponse:
         job = await self._jobs.get_visible_by_id(user_id=user_id, job_id=job_id)
@@ -64,7 +68,7 @@ class ApplicationService:
     async def update(
         self, *, user_id: int, application_id: int, payload: ApplicationUpdate
     ) -> ApplicationResponse:
-        application = await self._repo.get(
+        application = await self._repo.get_for_update(
             user_id=user_id, application_id=application_id
         )
         if application is None:
@@ -87,8 +91,7 @@ class ApplicationService:
             update_next_action_type="next_action_type" in fields_set,
             update_next_action_note="next_action_note" in fields_set,
             update_next_action_due_date="next_action_due_date" in fields_set,
-            update_next_action_completed_at="next_action_completed_at"
-            in fields_set,
+            update_next_action_completed_at="next_action_completed_at" in fields_set,
         )
 
         if any(field in fields_set for field in NEXT_ACTION_FIELDS):
@@ -112,8 +115,10 @@ class ApplicationService:
                 )
         return ApplicationResponse.model_validate(updated)
 
-    async def delete(self, *, user_id: int, application_id: int) -> None:
-        application = await self._repo.get(
+    async def delete(
+        self, *, user_id: int, application_id: int, confirm_discard_preparation: bool = False
+    ) -> None:
+        application = await self._repo.get_for_update(
             user_id=user_id, application_id=application_id
         )
         if application is None:
@@ -124,6 +129,12 @@ class ApplicationService:
                 current_status=application.status,
                 requested_status="unsaved",
             )
+        if (
+            self._preparation_service is not None
+            and not confirm_discard_preparation
+            and await self._preparation_service.has_history(application_id=application.id)
+        ):
+            raise PreparationDiscardConfirmationRequiredError()
         await self._repo.delete(application=application)
 
     @staticmethod
@@ -140,9 +151,7 @@ class ApplicationService:
     async def list_activity(
         self, *, user_id: int, application_id: int, limit: int = 10
     ) -> ApplicationActivityResponse:
-        application = await self._repo.get(
-            user_id=user_id, application_id=application_id
-        )
+        application = await self._repo.get(user_id=user_id, application_id=application_id)
         if application is None:
             raise ApplicationNotFoundError(application_id)
 
@@ -214,12 +223,8 @@ class ApplicationService:
             offer_rate_percent=round(100 * offer_count / total) if total else 0,
         )
 
-    async def list_due_next_actions(
-        self, *, user_id: int, due_by: date
-    ) -> ApplicationListResponse:
-        rows, total = await self._repo.list_due_next_actions(
-            user_id=user_id, due_by=due_by
-        )
+    async def list_due_next_actions(self, *, user_id: int, due_by: date) -> ApplicationListResponse:
+        rows, total = await self._repo.list_due_next_actions(user_id=user_id, due_by=due_by)
         items = [
             ApplicationListItem(
                 id=app.id,
@@ -241,19 +246,13 @@ class ApplicationService:
             )
             for app, job in rows
         ]
-        return ApplicationListResponse(
-            items=items, total=total, limit=total, next_cursor=None
-        )
+        return ApplicationListResponse(items=items, total=total, limit=total, next_cursor=None)
 
-    async def action_center(
-        self, *, user_id: int, today: date
-    ) -> ApplicationActionCenterResponse:
+    async def action_center(self, *, user_id: int, today: date) -> ApplicationActionCenterResponse:
         dated_rows = await self._repo.list_action_center_dated(
             user_id=user_id, end_date=today + timedelta(days=7)
         )
-        missing_rows = await self._repo.list_action_center_needs_next_action(
-            user_id=user_id
-        )
+        missing_rows = await self._repo.list_action_center_needs_next_action(user_id=user_id)
 
         dated_items = [
             ApplicationActionCenterDatedItem(
@@ -334,8 +333,7 @@ def _next_action_snapshot(
 
 def _has_next_action(snapshot: dict[str, object | None]) -> bool:
     return any(
-        snapshot[field] is not None
-        for field in ("type", "note", "due_date", "completed_at")
+        snapshot[field] is not None for field in ("type", "note", "due_date", "completed_at")
     )
 
 
@@ -348,8 +346,7 @@ def _classify_manual_next_action_event(
     changed_fields = [
         field
         for field in NEXT_ACTION_FIELDS
-        if previous_next_action[_snapshot_key(field)]
-        != current_next_action[_snapshot_key(field)]
+        if previous_next_action[_snapshot_key(field)] != current_next_action[_snapshot_key(field)]
     ]
     if not changed_fields:
         return None, []

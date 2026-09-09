@@ -707,6 +707,51 @@ export interface ApplicationActivityResponse {
   events: ApplicationActivityEvent[];
 }
 
+export type PreparationState = "not_started" | "in_progress" | "needs_review" | "ready";
+export type CoverLetterMode = "unset" | "selected" | "not_needed";
+
+export interface ManualPreparationQuestion {
+  id?: string | null;
+  question: string;
+  answer: string;
+  acknowledged: boolean;
+}
+
+export interface ApplicationPreparation {
+  application_id: number;
+  version: number;
+  state: PreparationState;
+  fit_acknowledged: boolean;
+  fit_context_available: boolean;
+  resume_draft_id: number | null;
+  resume_current: boolean;
+  cover_letter_mode: CoverLetterMode;
+  cover_letter_id: number | null;
+  cover_letter_current: boolean;
+  manual_questions: ManualPreparationQuestion[];
+  approved_package_id: number | null;
+  approval_current: boolean;
+}
+
+export interface ApplicationPreparationPatch {
+  expected_version: number;
+  fit_acknowledged?: boolean | null;
+  resume_draft_id?: number | null;
+  cover_letter_mode?: CoverLetterMode | null;
+  cover_letter_id?: number | null;
+  manual_questions?: ManualPreparationQuestion[] | null;
+}
+
+export interface ApplicationPackage {
+  id: number;
+  application_id: number;
+  revision: number;
+  content: Record<string, unknown>;
+  content_sha256: string;
+  schema_version: string;
+  created_at: string;
+}
+
 // ---- Job preferences (Phase 2) ----------------------------------------------
 export type RemotePreference = "remote" | "onsite" | "hybrid" | "any";
 
