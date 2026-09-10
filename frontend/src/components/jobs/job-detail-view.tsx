@@ -345,6 +345,15 @@ export function JobDetailView({ jobId }: { jobId: number }) {
       toast.error(err instanceof ApiError ? err.message : "Save failed"),
   });
 
+  const prepareMutation = useMutation({
+    mutationFn: () => existingApp ? Promise.resolve(existingApp) : applicationsApi.create(jobId),
+    onSuccess: (application) => {
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+      router.push(`/applications/${application.id}`);
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : "Could not open preparation."),
+  });
+
   const unsaveMutation = useMutation({
     mutationFn: async () => {
       if (existingApp) {
@@ -675,6 +684,12 @@ export function JobDetailView({ jobId }: { jobId: number }) {
                 Save Job
               </Button>
             ) : null}
+            {(existingApp || canSave) && (
+              <Button variant="outline" size="sm" onClick={() => prepareMutation.mutate()} disabled={prepareMutation.isPending}>
+                {prepareMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <FilePenLine className="h-4 w-4 mr-1.5" />}
+                {existingApp ? "Prepare application" : "Save & prepare"}
+              </Button>
+            )}
 
             {/* More actions dropdown — push to the right */}
             <div className="ml-auto">

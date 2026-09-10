@@ -28,12 +28,19 @@ from app.domain.applications.schemas import (
     ApplicationDashboardSummary,
     ApplicationListItem,
     ApplicationListResponse,
+    ApplicationPackageHistoryItem,
+    ApplicationPackageResponse,
     ApplicationResponse,
     ApplicationStatusCounts,
     ApplicationUpdate,
+    ApplicationWorkspaceResponse,
+    WorkspaceDocumentMetadata,
+    WorkspaceJobContext,
+    WorkspaceMatchSummary,
 )
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
+from app.models.application_package import ApplicationPackage
 
 logger = get_logger("application_service")
 NEXT_ACTION_FIELDS = (
@@ -171,6 +178,71 @@ class ApplicationService:
                 )
                 for event in events
             ],
+        )
+
+    async def workspace(self, *, user_id: int, application_id: int) -> ApplicationWorkspaceResponse:
+        """Return the owned, read-only application workspace aggregate."""
+        rows = await self._repo.workspace_rows(user_id=user_id, application_id=application_id)
+        if rows is None:
+            raise ApplicationNotFoundError(application_id)
+        application, job, _stored, match, resume, letter, approved, history = rows
+        if self._preparation_service is None:
+            raise RuntimeError("preparation service is required for workspace")
+        preparation = await self._preparation_service.get(
+            user_id=user_id, application_id=application.id
+        )
+        activity = await self.list_activity(
+            user_id=user_id, application_id=application.id, limit=10
+        )
+        live = job is not None and job.status == "active"
+        job_context = WorkspaceJobContext(
+            id=application.job_id,
+            title=job.title if job is not None else "Job context unavailable",
+            company=job.company if job is not None else None,
+            location=job.location if job is not None else None,
+            source_url=job.source_url if job is not None and live else None,
+            description=job.description if job is not None else None,
+            status=job.status if job is not None else None,
+            live_context_available=live,
+            open_job_available=live,
+        )
+        return ApplicationWorkspaceResponse(
+            application=ApplicationResponse.model_validate(application),
+            job=job_context,
+            match_summary=(
+                WorkspaceMatchSummary(
+                    vector_score=match.vector_score, llm_score=match.llm_score,
+                    confidence=match.confidence, matched_skills=match.matched_skills or [],
+                    missing_keywords=match.missing_keywords or [],
+                ) if match is not None else None
+            ),
+            preparation=preparation,
+            selected_resume=(
+                WorkspaceDocumentMetadata(id=resume.id, label=resume.job_title,
+                    updated_at=resume.updated_at, current=preparation.resume_current)
+                if resume is not None else None
+            ),
+            selected_cover_letter=(
+                WorkspaceDocumentMetadata(id=letter.id, label=letter.tone,
+                    updated_at=letter.updated_at, is_edited=letter.is_edited,
+                    current=preparation.cover_letter_current)
+                if letter is not None else None
+            ),
+            approved_package=self._package_response(approved) if approved is not None else None,
+            package_history=[ApplicationPackageHistoryItem(
+                id=package.id, revision=package.revision, content_sha256=package.content_sha256,
+                created_at=package.created_at,
+                is_approved=package.id == preparation.approved_package_id,
+            ) for package in history],
+            activity=activity,
+        )
+
+    @staticmethod
+    def _package_response(package: ApplicationPackage) -> ApplicationPackageResponse:
+        return ApplicationPackageResponse(
+            id=package.id, application_id=package.application_id, revision=package.revision,
+            content=package.content, content_sha256=package.content_sha256,
+            schema_version=package.schema_version, created_at=package.created_at,
         )
 
     async def list(

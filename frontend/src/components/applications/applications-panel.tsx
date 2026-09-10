@@ -28,6 +28,7 @@ import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import {
   APPLICATION_STATUSES,
   APPLICATION_NEXT_ACTION_LABELS,
@@ -191,6 +192,13 @@ export function ApplicationsPanel({
   } | null>(null);
   const [filterStatus, setFilterStatus] = useState<ApplicationStatus | null>(null);
   const [expandedApplicationId, setExpandedApplicationId] = useState<number | null>(null);
+  const [discardPreparationId, setDiscardPreparationId] = useState<number | null>(null);
+  const refreshApplicationSurfaces = () => {
+    void queryClient.invalidateQueries({ queryKey: ["applications"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboard-recommendations"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
+  };
 
   const hasNextPageRef = useRef(false);
   const isFetchingNextPageRef = useRef(false);
@@ -352,18 +360,19 @@ export function ApplicationsPanel({
       );
       return { prev };
     },
-    onSuccess: () => toast.success("Removed from saved"),
+    onSuccess: () => {
+      toast.success("Removed from saved");
+      refreshApplicationSurfaces();
+    },
     onError: (err, _id, context) => {
       if (context?.prev) {
         queryClient.setQueryData(["applications", "infinite"], context.prev);
       }
-      toast.error(err instanceof ApiError ? err.message : "Unsave failed");
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["applications"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard-action-center"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard-recommendations"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
+      if (err instanceof ApiError && err.status === 409 && err.message.includes("discarding preparation")) {
+        setDiscardPreparationId(_id);
+      } else {
+        toast.error(err instanceof ApiError ? err.message : "Unsave failed");
+      }
     },
   });
 
@@ -599,6 +608,9 @@ export function ApplicationsPanel({
           if (!open) setTailorResumeJob(null);
         }}
       />
+      <AlertDialog open={discardPreparationId != null} onOpenChange={(open) => { if (!open) setDiscardPreparationId(null); }}>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Discard preparation history?</AlertDialogTitle><AlertDialogDescription>Unsaving this application will remove its preparation choices and immutable package history. This cannot be undone.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep application</AlertDialogCancel><AlertDialogAction onClick={() => { if (discardPreparationId != null) applicationsApi.delete(discardPreparationId, { confirmDiscardPreparation: true }).then(() => { setDiscardPreparationId(null); toast.success("Removed from saved"); refreshApplicationSurfaces(); }, (error) => toast.error(error instanceof ApiError ? error.message : "Unsave failed")); }}>Discard and unsave</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
@@ -798,6 +810,9 @@ function ApplicationRow({
             <div className="min-w-0">
               <Link href={`/jobs/${app.job_id}`} className="font-medium hover:underline">
                 {app.job_title}
+              </Link>
+              <Link href={`/applications/${app.id}`} className="mt-1 inline-block text-xs font-medium text-primary hover:underline">
+                {app.status === "saved" ? "Prepare application" : "View application"}
               </Link>
               <p className="mt-1 text-xs text-muted-foreground">
                 {app.company ?? "Company not listed"}

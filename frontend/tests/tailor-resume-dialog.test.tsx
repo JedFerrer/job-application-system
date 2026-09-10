@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, type ReactNode } from "react";
+import { act, createContext, useContext, useRef, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { displaySections, legacyDisplaySections, TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
@@ -24,6 +24,7 @@ const exportMocks = vi.hoisted(() => ({
   downloadResumePdf: vi.fn(),
   downloadResumeDocx: vi.fn(),
 }));
+const lifecycle = vi.hoisted(() => ({ dialogClose: undefined as undefined | ((event: { preventDefault: () => void }) => void), alertClose: undefined as undefined | ((event: { preventDefault: () => void }) => void) }));
 
 vi.mock("@/lib/api", () => ({
   resumeApi: apiMocks,
@@ -35,10 +36,13 @@ vi.mock("@/lib/cover-letter-export", async (importOriginal) => ({
 }));
 
 vi.mock("@/components/ui/dialog", () => {
-  const Dialog = ({ children }: { children: ReactNode }) => <>{children}</>;
-  const DialogContent = ({ children, className, "data-testid": testId }: { children: ReactNode; className?: string; "data-testid"?: string }) => (
-    <div role="dialog" className={className} data-testid={testId}>{children}</div>
-  );
+  const Dialog = ({ children, open, onOpenChange }: { children: ReactNode; open: boolean; onOpenChange: (open: boolean) => void }) => open ? <><button onClick={() => onOpenChange(false)}>Close dialog</button>{children}</> : null;
+  const DialogContent = ({ children, className, "data-testid": testId, onCloseAutoFocus, onFocusCapture }: { children: ReactNode; className?: string; "data-testid"?: string; onCloseAutoFocus?: (event: { preventDefault: () => void }) => void; onFocusCapture?: (event: React.FocusEvent) => void }) => {
+    lifecycle.dialogClose = onCloseAutoFocus;
+    return (
+    <div role="dialog" className={className} data-testid={testId} onFocusCapture={onFocusCapture}>{children}</div>
+    );
+  };
   const DialogHeader = ({ children, className }: { children: ReactNode; className?: string }) => <div className={className}>{children}</div>;
   const DialogTitle = ({ children }: { children: ReactNode }) => <h2>{children}</h2>;
   const DialogDescription = ({ children }: { children: ReactNode }) => <p>{children}</p>;
@@ -51,6 +55,18 @@ vi.mock("@/components/ui/dialog", () => {
     DialogDescription,
   };
 });
+
+const AlertContext = createContext<((open: boolean) => void) | null>(null);
+vi.mock("@/components/ui/alert-dialog", () => ({
+  AlertDialog: ({ open, children, onOpenChange }: { open: boolean; children: ReactNode; onOpenChange: (open: boolean) => void }) => open ? <AlertContext.Provider value={onOpenChange}><div>{children}</div></AlertContext.Provider> : null,
+  AlertDialogContent: ({ children, onCloseAutoFocus }: { children: ReactNode; onCloseAutoFocus?: (event: { preventDefault: () => void }) => void }) => { lifecycle.alertClose = onCloseAutoFocus; return <div>{children}</div>; },
+  AlertDialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  AlertDialogTitle: ({ children }: { children: ReactNode }) => <h3>{children}</h3>,
+  AlertDialogDescription: ({ children }: { children: ReactNode }) => <p>{children}</p>,
+  AlertDialogFooter: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  AlertDialogAction: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => { const setOpen = useContext(AlertContext); return <button onClick={() => { onClick?.(); setOpen?.(false); queueMicrotask(() => lifecycle.alertClose?.({ preventDefault: () => undefined })); if (children === "Discard") queueMicrotask(() => lifecycle.dialogClose?.({ preventDefault: () => undefined })); }}>{children}</button>; },
+  AlertDialogCancel: ({ children }: { children: ReactNode }) => { const setOpen = useContext(AlertContext); return <button onClick={() => { setOpen?.(false); lifecycle.alertClose?.({ preventDefault: () => undefined }); }}>{children}</button>; },
+}));
 
 const tailoredResume = {
   job_id: 101,
@@ -119,6 +135,49 @@ describe("TailorResumeDialog", () => {
   });
 
   const renderedText = () => container.textContent ?? "";
+
+  it("restores resume-local focus on Cancel and the opener on Discard", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      const openerRef = useRef<HTMLButtonElement>(null);
+      return <><button ref={openerRef}>Resume workspace opener</button><TailorResumeDialog jobId={101} open={open} onOpenChange={setOpen} initialData={tailoredResume} returnFocusRef={openerRef} /></>;
+    }
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Harness key="success" /></QueryClientProvider>); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Keep original"));
+    const editorControl = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Keep original")!;
+    editorControl.focus();
+    await act(async () => { editorControl.click(); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Use suggestion"));
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close dialog")?.click(); });
+    expect(renderedText()).toContain("Save or discard unsaved edits?");
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Cancel")?.click(); await Promise.resolve(); });
+    expect(document.activeElement?.textContent).toContain("Save resume");
+    await vi.waitFor(() => expect(document.activeElement?.textContent).toContain("Save resume"));
+    expect(document.activeElement).not.toBe(document.body);
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close dialog")?.click(); });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Discard")?.click(); await Promise.resolve(); });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement?.textContent).toBe("Resume workspace opener");
+  });
+
+  it("returns to the opener after a successful guarded Save", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      const openerRef = useRef<HTMLButtonElement>(null);
+      return <><button ref={openerRef}>Resume save opener</button><TailorResumeDialog jobId={101} open={open} onOpenChange={setOpen} initialData={tailoredResume} returnFocusRef={openerRef} /></>;
+    }
+    apiMocks.createDraft.mockResolvedValueOnce({ id: 9, content: tailoredResume });
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Harness key="success" /></QueryClientProvider>); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Keep original"));
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Keep original")?.click(); });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close dialog")?.click(); });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save")?.click(); });
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalled());
+    await act(async () => { lifecycle.dialogClose?.({ preventDefault: () => undefined }); });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement?.textContent).toBe("Resume save opener");
+
+  });
 
   it("keeps legacy display items separate from canonical provenance", () => {
     const legacyItems = legacyDisplaySections(tailoredResume).flatMap((section) => section.items);

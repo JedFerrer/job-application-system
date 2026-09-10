@@ -239,6 +239,54 @@ class ApplicationPackageResponse(BaseModel):
     created_at: datetime
 
 
+class WorkspaceJobContext(BaseModel):
+    id: int
+    title: str
+    company: str | None
+    location: str | None
+    source_url: str | None
+    description: str | None
+    status: str | None
+    live_context_available: bool
+    open_job_available: bool
+
+
+class WorkspaceDocumentMetadata(BaseModel):
+    id: int
+    label: str | None = None
+    updated_at: datetime | None = None
+    is_edited: bool | None = None
+    current: bool
+
+
+class ApplicationPackageHistoryItem(BaseModel):
+    id: int
+    revision: int
+    content_sha256: str
+    created_at: datetime
+    is_approved: bool
+
+
+class WorkspaceMatchSummary(BaseModel):
+    vector_score: float | None
+    llm_score: float | None
+    confidence: str | None
+    matched_skills: list[str]
+    missing_keywords: list[str]
+
+
+class ApplicationWorkspaceResponse(BaseModel):
+    application: ApplicationResponse
+    job: WorkspaceJobContext
+    match_summary: WorkspaceMatchSummary | None
+    preparation: PreparationResponse
+    selected_resume: WorkspaceDocumentMetadata | None
+    selected_cover_letter: WorkspaceDocumentMetadata | None
+    approved_package: ApplicationPackageResponse | None
+    package_history: list[ApplicationPackageHistoryItem]
+    activity: ApplicationActivityResponse
+
+
 class ApprovePreparationRequest(BaseModel):
     expected_version: int = Field(ge=0)
     package_id: int = Field(gt=0)

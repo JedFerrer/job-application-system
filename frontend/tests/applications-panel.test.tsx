@@ -757,4 +757,73 @@ describe("ApplicationsPanel CRM polish", () => {
 
     expect(container.textContent).toContain("Activity could not be loaded.");
   });
+
+  it("refreshes every affected application surface after a successful unsave", async () => {
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    let resolveDelete: (() => void) | undefined;
+    apiMocks.applicationsApi.delete.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveDelete = () => { applications = applications.filter((app) => app.id !== 42); resolve(); }; }));
+    await renderPanel();
+
+    await act(async () => {
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Unsave");
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.delete).toHaveBeenCalledWith(42);
+    expect((queryClient.getQueryData<{ pages: Array<{ items: ApplicationItem[] }> }>(["applications", "infinite"])?.pages.flatMap((page) => page.items) ?? []).some((application) => application.id === 42)).toBe(false);
+    await act(async () => { resolveDelete?.(); await Promise.resolve(); await Promise.resolve(); });
+    for (const queryKey of [["applications"], ["dashboard-action-center"], ["dashboard-recommendations"], ["dashboard-summary"]]) {
+      expect(invalidateSpy.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKey))).toHaveLength(1);
+    }
+  });
+
+  it("restores on preparation-history confirmation and refreshes only after confirmed discard succeeds", async () => {
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    apiMocks.applicationsApi.delete.mockRejectedValueOnce(new apiMocks.ApiError("Confirm before discarding preparation", 409, {}));
+    await renderPanel();
+
+    await act(async () => {
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Unsave");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Discard preparation history?"));
+    expect(container.textContent).toContain("Platform Engineer");
+    expect(apiMocks.applicationsApi.delete).toHaveBeenCalledTimes(1);
+    expect(invalidateSpy.mock.calls).toHaveLength(0);
+
+    await act(async () => {
+      findButton(document.body, "Discard and unsave").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.applicationsApi.delete).toHaveBeenLastCalledWith(42, { confirmDiscardPreparation: true });
+    for (const queryKey of [["applications"], ["dashboard-action-center"], ["dashboard-recommendations"], ["dashboard-summary"]]) {
+      expect(invalidateSpy.mock.calls.filter(([arg]) => JSON.stringify((arg as { queryKey?: unknown }).queryKey) === JSON.stringify(queryKey))).toHaveLength(1);
+    }
+  });
+
+  it("cancels preparation-history discard without retrying or applying success refreshes", async () => {
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    apiMocks.applicationsApi.delete.mockRejectedValueOnce(new apiMocks.ApiError("Confirm before discarding preparation", 409, {}));
+    await renderPanel();
+
+    await act(async () => {
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Unsave");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Discard preparation history?"));
+    await act(async () => {
+      findButton(document.body, "Keep application").click();
+      await Promise.resolve();
+    });
+    expect(apiMocks.applicationsApi.delete).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Platform Engineer");
+    expect(invalidateSpy.mock.calls).toHaveLength(0);
+  });
 });

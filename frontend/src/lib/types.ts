@@ -752,6 +752,54 @@ export interface ApplicationPackage {
   created_at: string;
 }
 
+export interface WorkspaceDocumentMetadata {
+  id: number;
+  label: string | null;
+  updated_at: string | null;
+  is_edited?: boolean | null;
+  current: boolean;
+}
+
+export interface WorkspaceJobContext {
+  id: number;
+  title: string;
+  company: string | null;
+  location: string | null;
+  source_url: string | null;
+  description: string | null;
+  status: string | null;
+  live_context_available: boolean;
+  open_job_available: boolean;
+}
+
+export interface WorkspaceMatchSummary {
+  vector_score: number | null;
+  llm_score: number | null;
+  confidence: string | null;
+  matched_skills: string[];
+  missing_keywords: string[];
+}
+
+export interface ApplicationPackageHistoryItem {
+  id: number;
+  revision: number;
+  content_sha256: string;
+  created_at: string;
+  is_approved: boolean;
+}
+
+export interface ApplicationWorkspace {
+  application: Application;
+  job: WorkspaceJobContext;
+  match_summary: WorkspaceMatchSummary | null;
+  preparation: ApplicationPreparation;
+  selected_resume: WorkspaceDocumentMetadata | null;
+  selected_cover_letter: WorkspaceDocumentMetadata | null;
+  approved_package: ApplicationPackage | null;
+  package_history: ApplicationPackageHistoryItem[];
+  activity: ApplicationActivityResponse;
+}
+
 // ---- Job preferences (Phase 2) ----------------------------------------------
 export type RemotePreference = "remote" | "onsite" | "hybrid" | "any";
 

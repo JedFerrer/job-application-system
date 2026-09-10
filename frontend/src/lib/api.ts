@@ -9,6 +9,7 @@ import type {
   ApplicationListItem,
   ApplicationListResponse,
   ApplicationUpdate,
+  ApplicationWorkspace,
   AuthUser,
   CoverLetter,
   IngestRequest,
@@ -485,6 +486,8 @@ export const applicationsApi = {
   },
   getPreparation: (id: number) =>
     apiRequest<ApplicationPreparation>(`/applications/${id}/preparation`),
+  getWorkspace: (id: number) =>
+    apiRequest<ApplicationWorkspace>(`/applications/${id}/workspace`),
   patchPreparation: (id: number, payload: ApplicationPreparationPatch) =>
     apiRequest<ApplicationPreparation>(`/applications/${id}/preparation`, {
       method: "PATCH",

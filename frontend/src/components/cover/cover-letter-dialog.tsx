@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { FileDown, FileText, Loader2, Save, Sparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -16,12 +16,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import type { CoverLetter } from "@/lib/types";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 interface CoverLetterDialogProps {
   jobId: number | null;
   jobTitle?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  onSaved?: (saved: CoverLetter) => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 export function CoverLetterDialog({
@@ -29,9 +34,20 @@ export function CoverLetterDialog({
   jobTitle,
   open,
   onOpenChange,
+  onDirtyChange,
+  onSaved,
+  returnFocusRef,
 }: CoverLetterDialogProps) {
   const [coverLetterId, setCoverLetterId] = useState<number | null>(null);
   const [content, setContent] = useState("");
+  const [savedContent, setSavedContent] = useState("");
+  const [closeGuard, setCloseGuard] = useState(false);
+  const closeAfterSave = useRef(false);
+  const dialogContentRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastEditorFocusRef = useRef<HTMLElement | null>(null);
+  const returnFocusTargetRef = useRef<HTMLElement | null>(null);
+  const guardRestoresEditorRef = useRef(true);
 
   // Fetch existing cover letter for this job when dialog opens.
   // staleTime: 0 ensures it refetches each time the dialog is reopened.
@@ -49,15 +65,17 @@ export function CoverLetterDialog({
     if (!open) return;
     setCoverLetterId(null);
     setContent("");
+    setSavedContent("");
   }, [open, jobId]);
 
   // Populate state when an existing cover letter is returned.
   // Include `open` in deps so this re-fires on reopen even if data reference
   // is unchanged (server returned the same object).
   useEffect(() => {
-    if (!open || !existingQuery.data) return;
+    if (!open || !existingQuery.data || (coverLetterId != null && content !== savedContent)) return;
     setCoverLetterId(existingQuery.data.id);
     setContent(existingQuery.data.content);
+    setSavedContent(existingQuery.data.content);
   }, [existingQuery.data, open]);
 
   const generateMutation = useMutation({
@@ -68,6 +86,7 @@ export function CoverLetterDialog({
     onSuccess: (cl) => {
       setCoverLetterId(cl.id);
       setContent(cl.content);
+      setSavedContent(cl.content);
       toast.success("Cover letter generated");
     },
     onError: (err) =>
@@ -79,9 +98,8 @@ export function CoverLetterDialog({
       if (coverLetterId == null) throw new Error("Nothing to save");
       return coverLettersApi.update(coverLetterId, content);
     },
-    onSuccess: () => toast.success("Edits saved"),
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : "Save failed"),
+    onSuccess: (saved) => { setSavedContent(saved.content); onSaved?.(saved); toast.success("Edits saved"); if (closeAfterSave.current) { closeAfterSave.current = false; onOpenChange(false); } },
+    onError: (err) => { toast.error(err instanceof ApiError ? err.message : "Save failed"); queueMicrotask(focusEditor); },
   });
 
   const filenameStem = jobTitle
@@ -103,10 +121,28 @@ export function CoverLetterDialog({
   }
 
   const isLoading = existingQuery.isFetching;
+  const dirty = Boolean(open && coverLetterId != null && content !== savedContent);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  const isFocusable = (target: HTMLElement | null) => Boolean(target && target.isConnected && !target.matches(":disabled, [hidden], [aria-hidden='true'], [inert]") && !target.closest("[inert]"));
+  const focusEditor = () => {
+    const fallback = textareaRef.current ?? dialogContentRef.current?.querySelector<HTMLElement>("textarea, button:not(:disabled)") ?? null;
+    const target = isFocusable(lastEditorFocusRef.current) ? lastEditorFocusRef.current : fallback;
+    if (target && isFocusable(target)) target.focus();
+  };
+  const focusOpener = () => {
+    const target = returnFocusTargetRef.current;
+    if (target && isFocusable(target)) target.focus();
+  };
+  const rememberEditorFocus = (target: EventTarget | null) => {
+    if (target instanceof HTMLElement && dialogContentRef.current?.contains(target)) lastEditorFocusRef.current = target;
+  };
+  const requestOpenChange = (nextOpen: boolean) => { if (!nextOpen && dirty) { rememberEditorFocus(document.activeElement); guardRestoresEditorRef.current = true; setCloseGuard(true); return; } onOpenChange(nextOpen); };
+  const discardAndClose = () => { guardRestoresEditorRef.current = false; setContent(savedContent); setCloseGuard(false); onOpenChange(false); };
+  const saveAndClose = () => { if (coverLetterId == null) return; guardRestoresEditorRef.current = true; closeAfterSave.current = true; saveMutation.mutate(); };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+    <Dialog open={open} onOpenChange={requestOpenChange}>
+      <DialogContent ref={dialogContentRef} className="max-w-2xl" onOpenAutoFocus={() => { returnFocusTargetRef.current = returnFocusRef?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null); }} onCloseAutoFocus={(event) => { event.preventDefault(); focusOpener(); }} onFocusCapture={(event) => rememberEditorFocus(event.target)}>
         <DialogHeader>
           <DialogTitle>Cover letter</DialogTitle>
           <DialogDescription>
@@ -139,6 +175,7 @@ export function CoverLetterDialog({
           </div>
         ) : (
           <Textarea
+            ref={textareaRef}
             value={content}
             onChange={(e) => setContent(e.target.value)}
             rows={16}
@@ -200,6 +237,7 @@ export function CoverLetterDialog({
           </DialogFooter>
         )}
       </DialogContent>
+      <AlertDialog open={closeGuard} onOpenChange={setCloseGuard}><AlertDialogContent onCloseAutoFocus={(event) => { event.preventDefault(); if (guardRestoresEditorRef.current) queueMicrotask(focusEditor); }}><AlertDialogHeader><AlertDialogTitle>Save or discard unsaved edits?</AlertDialogTitle><AlertDialogDescription>Your changes are only included after you save them.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={discardAndClose}>Discard</AlertDialogAction><AlertDialogAction disabled={saveMutation.isPending} onClick={saveAndClose}>{saveMutation.isPending ? "Saving…" : "Save"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </Dialog>
   );
 }

@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.applications.schemas import MANUAL_NEXT_ACTION_EVENT_TYPES
 from app.models.application import Application
 from app.models.application_event import ApplicationEvent
+from app.models.application_package import ApplicationPackage
+from app.models.application_preparation import ApplicationPreparation
+from app.models.cover_letter import CoverLetter
 from app.models.job import Job
+from app.models.resume import TailoredResumeDraft
+from app.models.user_job_match import UserJobMatch
 
 
 class ApplicationRepository:
@@ -59,6 +64,66 @@ class ApplicationRepository:
             .with_for_update()
         )
         return result.scalar_one_or_none()
+
+    async def workspace_rows(
+        self, *, user_id: int, application_id: int, history_limit: int = 10
+    ) -> tuple[Application, Job | None, ApplicationPreparation | None, UserJobMatch | None,
+               TailoredResumeDraft | None, CoverLetter | None, ApplicationPackage | None,
+               list[ApplicationPackage]] | None:
+        """Load bounded owned workspace records without feed-visibility filtering."""
+        row = (
+            await self._session.execute(
+                select(Application, Job, ApplicationPreparation, UserJobMatch)
+                .outerjoin(Job, Job.id == Application.job_id)
+                .outerjoin(
+                    ApplicationPreparation,
+                    ApplicationPreparation.application_id == Application.id,
+                )
+                .outerjoin(
+                    UserJobMatch,
+                    and_(
+                        UserJobMatch.user_id == user_id,
+                        UserJobMatch.job_id == Application.job_id,
+                    ),
+                )
+                .where(Application.id == application_id, Application.user_id == user_id)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        application, job, preparation, match = row
+        resume = letter = approved = None
+        if preparation is not None:
+            if preparation.resume_draft_id is not None:
+                resume = await self._session.scalar(
+                    select(TailoredResumeDraft).where(
+                        TailoredResumeDraft.id == preparation.resume_draft_id,
+                        TailoredResumeDraft.user_id == user_id,
+                    )
+                )
+            if preparation.cover_letter_id is not None:
+                letter = await self._session.scalar(
+                    select(CoverLetter).where(
+                        CoverLetter.id == preparation.cover_letter_id,
+                        CoverLetter.user_id == user_id,
+                    )
+                )
+            if preparation.approved_package_id is not None:
+                approved = await self._session.scalar(
+                    select(ApplicationPackage).where(
+                        ApplicationPackage.id == preparation.approved_package_id,
+                        ApplicationPackage.application_id == application.id,
+                    )
+                )
+        history = list(
+            (await self._session.execute(
+                select(ApplicationPackage)
+                .where(ApplicationPackage.application_id == application.id)
+                .order_by(ApplicationPackage.created_at.desc(), ApplicationPackage.id.desc())
+                .limit(history_limit)
+            )).scalars().all()
+        )
+        return application, job, preparation, match, resume, letter, approved, history
 
     async def delete(self, *, application: Application) -> None:
         await self._session.execute(delete(Application).where(Application.id == application.id))

@@ -16,6 +16,7 @@ from app.domain.applications.schemas import (
     ApplicationPackageResponse,
     ApplicationResponse,
     ApplicationUpdate,
+    ApplicationWorkspaceResponse,
     ApprovePreparationRequest,
     CreatePackageRequest,
     PreparationPatch,
@@ -75,6 +76,13 @@ async def get_preparation(
     application_id: int, current_user: CurrentUser, service: ApplicationPreparationServiceDep
 ) -> PreparationResponse:
     return await service.get(user_id=current_user.id, application_id=application_id)
+
+
+@router.get("/{application_id}/workspace", response_model=ApplicationWorkspaceResponse)
+async def get_application_workspace(
+    application_id: int, current_user: CurrentUser, service: ApplicationServiceDep
+) -> ApplicationWorkspaceResponse:
+    return await service.workspace(user_id=current_user.id, application_id=application_id)
 
 
 @router.patch("/{application_id}/preparation", response_model=PreparationResponse)
