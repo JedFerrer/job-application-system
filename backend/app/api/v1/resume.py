@@ -28,6 +28,7 @@ from app.domain.resume.schemas import (
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
     TailoredResumeDraftResponse,
+    TailoredResumeTailorResponse,
 )
 from app.infrastructure.database import async_session_factory
 from app.infrastructure.redis_client import get_redis
@@ -333,13 +334,13 @@ async def update_profile(
     return response
 
 
-@router.get("/tailor/{job_id}", response_model=TailoredResume)
+@router.get("/tailor/{job_id}", response_model=TailoredResumeTailorResponse)
 async def tailor_resume(
     job_id: int,
     current_user: CurrentUser,
     service: ResumeServiceDep,
     job_repo: JobRepositoryDep,
-) -> TailoredResume:
+) -> TailoredResumeTailorResponse:
     """Tailor the user's work history for a specific job posting.
 
     Rewrites highlights to emphasize JD-relevant experience. Never invents

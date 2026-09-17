@@ -37,6 +37,37 @@ export function mappingIsValid(role: TailoredWorkItem): boolean {
   ) && new Set(mapping).size === mapping.length;
 }
 
+/**
+ * A source-backed snapshot is persisted only when its review state still has
+ * the provenance the API verifies. Display fallbacks must never be mistaken
+ * for saveable snapshots.
+ */
+export function sourceBackedSnapshotIsSaveable(data: TailoredResume): boolean {
+  if (
+    data.tailoring_snapshot_version !== "lossless-complete-v2"
+    && data.tailoring_snapshot_version !== "full-context-v1"
+  ) return false;
+  if (
+    data.source_schema_version !== "source-resume-v4"
+    && data.source_schema_version !== "source-resume-v5"
+  ) return false;
+  if (data.source_resume_id == null || data.source_resume_content_id == null || !data.source_revision_sha256) return false;
+  const canonicalSummary = sourceSummary(data);
+  if (
+    !data.summary_evidence_ids?.length
+    && (canonicalSummary === undefined || data.professional_summary !== canonicalSummary)
+  ) return false;
+  return data.work_history.every((role) => {
+    if (!mappingIsValid(role) || role.selection_decisions == null || role.selection_decisions.length !== role.original_highlights.length) return false;
+    const decisionsByIndex = new Map(role.selection_decisions.map((decision) => [decision.source_index, decision]));
+    if (decisionsByIndex.size !== role.original_highlights.length) return false;
+    if (role.selection_decisions.some((decision) => !decision.source_id || decision.source_index < 0 || decision.source_index >= role.original_highlights.length)) return false;
+    const included = role.tailored_highlight_source_indices ?? [];
+    return included.every((sourceIndex) => decisionsByIndex.get(sourceIndex)?.final_included === true)
+      && role.selection_decisions.filter((decision) => decision.final_included).every((decision) => included.includes(decision.source_index));
+  });
+}
+
 export function reviewItems(data: TailoredResume): ReviewItem[][] | null {
   if (!data.work_history.every(mappingIsValid)) return null;
   return data.work_history.map((role, roleIndex) =>
@@ -108,15 +139,9 @@ export function reviewStateIsDirty(state: ReviewState): boolean {
   );
 }
 
-function sourceSummary(data: TailoredResume): string | null {
-  const items = data.canonical_sections?.find((section) => section.section === "summary")?.items;
-  if (!items?.length) return null;
-  return items.reduce((joined, item) => {
-    const next = item.text.trim();
-    if (!next) return joined;
-    if (!joined) return next;
-    return joined.endsWith("-") ? `${joined}${next}` : `${joined} ${next}`;
-  }, "") || null;
+function sourceSummary(data: TailoredResume): string | null | undefined {
+  if (!Object.hasOwn(data, "canonical_source_summary")) return undefined;
+  return data.canonical_source_summary ?? null;
 }
 
 export function summaryReview(data: TailoredResume): { original: string; suggestion: string; changed: boolean } | null {
@@ -222,7 +247,7 @@ export function reviewedResume(state: ReviewState): TailoredResume {
   const sourceSkills = state.skillsSourceOrder ? sourceSkillOrder(state.source) : null;
   return {
     ...state.source,
-    professional_summary: state.summaryRejected ? sourceSummary(state.source) : state.source.professional_summary,
+    professional_summary: state.summaryRejected ? sourceSummary(state.source) ?? null : state.source.professional_summary,
     summary_evidence_ids: state.summaryRejected ? [] : state.source.summary_evidence_ids,
     summary_evidence: state.summaryRejected ? [] : state.source.summary_evidence,
     skills: sourceSkills?.texts ?? state.source.skills,

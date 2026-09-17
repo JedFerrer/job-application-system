@@ -8,15 +8,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 
-from app.domain.resume.exceptions import TailoredResumeSnapshotInvalidError
+from app.domain.resume.exceptions import (
+    TailoredResumeSnapshotInvalidError,
+    TailoredResumeValidationReason,
+)
 from app.domain.resume.schemas import (
     ParsedProfile,
     SourceResumeDocument,
+    TailoredEvidenceReference,
     TailoredResume,
     TailoredResumeDraftCreate,
 )
@@ -235,6 +239,66 @@ def test_unsafe_source_id_mapping_fails_closed() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (
+            lambda content: setattr(content, "canonical_sections", []),
+            TailoredResumeValidationReason.CANONICAL_SECTIONS_MISMATCH,
+        ),
+        (
+            lambda content: setattr(content.work_history[0], "source_role_id", uuid4()),
+            TailoredResumeValidationReason.ROLE_IDENTITY_MISMATCH,
+        ),
+        (
+            lambda content: setattr(
+                content.work_history[0].selection_decisions[0], "original_text", "mismatch"
+            ),
+            TailoredResumeValidationReason.DECISION_MAPPING_MISMATCH,
+        ),
+        (
+            lambda content: setattr(
+                content.work_history[0].selection_decisions[0], "output_rank", 99
+            ),
+            TailoredResumeValidationReason.OUTPUT_RANK_MISMATCH,
+        ),
+        (
+            lambda content: _add_mismatched_evidence(content),
+            TailoredResumeValidationReason.EVIDENCE_MISMATCH,
+        ),
+    ],
+)
+def test_validator_returns_distinct_internal_reason_codes(
+    mutate: object, reason: TailoredResumeValidationReason
+) -> None:
+    source, _source_row, content = _source_and_content()
+    invalid = content.model_copy(deep=True)
+    assert callable(mutate)
+    mutate(invalid)
+
+    with pytest.raises(TailoredResumeSnapshotInvalidError) as exc_info:
+        _validate_source_backed_snapshot(
+            invalid,
+            source_document=source,
+            profile=_PROFILE,
+            job_description=_JOB_DESCRIPTION,
+        )
+
+    assert exc_info.value.reason is reason
+
+
+def _add_mismatched_evidence(content: TailoredResume) -> None:
+    content.review_evidence_version = "review-evidence-v1"
+    content.work_history[0].selection_decisions[0].evidence.append(
+        TailoredEvidenceReference(
+            evidence_id="r0:b0",
+            excerpt="safe fixture",
+            section="Work history",
+            relevance_label="Verified source evidence",
+        )
+    )
+
+
 def test_legacy_non_full_context_draft_is_not_rehydrated() -> None:
     _, source = materialize_wrap_source_document()
     legacy = TailoredResume.model_validate(
@@ -306,6 +370,50 @@ async def test_save_and_reload_preserve_review_choices(
     assert role.selection_decisions[1].final_included is False
     assert role.tailored_highlights == stored.work_history[0].tailored_highlights
     assert reloaded.content.requires_regeneration is False
+
+
+@pytest.mark.asyncio
+async def test_save_reports_internal_source_revision_mismatch_without_persisting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, source = materialize_wrap_source_document()
+    repository = AsyncMock()
+    source_row = configure_v5_active_source(repository, source)
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description=_JOB_DESCRIPTION
+    )
+    monkeypatch.setattr(
+        "app.domain.resume.service.materialize_source_document_v4", lambda _: source
+    )
+    log = Mock()
+    monkeypatch.setattr("app.domain.resume.service.logger", Mock(warning=log))
+    stale = source_backed_wrap_content(source, source_row).model_copy(deep=True)
+    stale.source_revision_sha256 = "stale-revision"
+
+    with pytest.raises(TailoredResumeSnapshotInvalidError) as exc_info:
+        await ResumeService(repository).create_tailored_draft(
+            user_id=7,
+            payload=TailoredResumeDraftCreate(job_id=11, content=stale),
+            job_repository=jobs,
+        )
+
+    assert exc_info.value.reason is TailoredResumeValidationReason.SOURCE_REVISION_MISMATCH
+    repository.create_tailored_draft.assert_not_awaited()
+    assert log.call_args.args == ("resume.tailored_snapshot_rejected",)
+    assert log.call_args.kwargs == {
+        "validation_reason": "source_revision_mismatch",
+        "user_id": 7,
+        "job_id": 11,
+        "source_resume_id": 13,
+        "source_resume_content_id": 12,
+        "snapshot_version": "full-context-v1",
+        "source_schema_version": "source-resume-v5",
+        "submitted_role_count": 2,
+        "submitted_decision_count": 4,
+        "submitted_summary_evidence_count": 0,
+        "submitted_skill_evidence_count": 0,
+    }
 
 
 @pytest.mark.asyncio

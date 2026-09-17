@@ -30,6 +30,7 @@ from app.domain.resume.exceptions import (
     ResumeTextTooLongError,
     TailoredResumeDraftNotFoundError,
     TailoredResumeSnapshotInvalidError,
+    TailoredResumeValidationReason,
     UnsupportedResumeFormatError,
 )
 from app.domain.resume.lifecycle import ResumeLifecycleStatus
@@ -67,6 +68,7 @@ from app.domain.resume.schemas import (
     TailoredResumeDraftCreate,
     TailoredResumeDraftListItem,
     TailoredResumeDraftResponse,
+    TailoredResumeTailorResponse,
     TailoredWorkItem,
 )
 from app.domain.resume.selection import (
@@ -109,6 +111,13 @@ def _join_wrapped_source(items: list[Any]) -> str | None:
     for value in values[1:]:
         joined += value if joined.endswith("-") else f" {value}"
     return joined
+
+
+def _canonical_source_summary(source_document: SourceResumeDocument | None) -> str | None:
+    """Match the source-summary contract used by draft validation exactly."""
+    if source_document is None or source_document.summary is None:
+        return None
+    return _join_wrapped_source([source_document.summary, *source_document.summary_lines])
 
 
 def _upgrade_verified_v3_source(
@@ -426,6 +435,62 @@ SOURCE_BACKED_SNAPSHOT_VERSIONS = frozenset(
 )
 
 
+def _log_tailored_snapshot_rejection(
+    *,
+    reason: TailoredResumeValidationReason,
+    user_id: int,
+    payload: TailoredResumeDraftCreate,
+    source_row: Any | None,
+    diagnostics: dict[str, bool | int | str | None] | None = None,
+) -> None:
+    """Log identifiers and shape metadata only; never serialize résumé content."""
+    content = payload.content
+    logger.warning(
+        "resume.tailored_snapshot_rejected",
+        validation_reason=reason.value,
+        user_id=user_id,
+        job_id=payload.job_id,
+        source_resume_id=getattr(source_row, "resume_id", None),
+        source_resume_content_id=getattr(source_row, "id", None),
+        snapshot_version=content.tailoring_snapshot_version,
+        source_schema_version=content.source_schema_version,
+        submitted_role_count=len(content.work_history),
+        submitted_decision_count=sum(
+            len(role.selection_decisions) for role in content.work_history
+        ),
+        submitted_summary_evidence_count=len(content.summary_evidence_ids),
+        submitted_skill_evidence_count=len(content.skill_order_source_ids),
+        **(diagnostics or {}),
+    )
+
+
+def _log_tailored_decision(
+    *,
+    job_id: int,
+    role_index: int,
+    decision_index: int,
+    decision: TailoredBulletDecision,
+    rewrite_eligible: bool,
+    suggestion_matches_deterministic_resanitization: bool,
+) -> None:
+    """Log structural generation provenance without logging résumé prose."""
+    logger.info(
+        "resume.tailored_decision",
+        job_id=job_id,
+        role_index=role_index,
+        role_source_id=str(decision.source_id),
+        decision_index=decision_index,
+        source_index=decision.source_index,
+        recommended=decision.recommended_included,
+        rewrite_eligible=rewrite_eligible,
+        evidence_count=len(decision.evidence),
+        suggestion_present=bool(decision.suggested_text),
+        suggestion_matches_deterministic_resanitization=(
+            suggestion_matches_deterministic_resanitization
+        ),
+    )
+
+
 def _source_item_text(item: Any) -> str | None:
     return item.text if item is not None else None
 
@@ -491,22 +556,29 @@ def _rehydrate_source_backed_snapshot(
     *,
     profile: ParsedProfile,
     job_description: str | None = None,
+    diagnostics: list[TailoredResumeValidationReason] | None = None,
 ) -> TailoredResume | None:
     """Rebuild source-controlled snapshot fields from Phase 1 structure.
 
     Review decisions are remapped only by stable source IDs. Text similarity is
     never used as identity. Returns None when the mapping cannot be proven.
     """
+    def invalid(reason: TailoredResumeValidationReason) -> None:
+        if diagnostics is not None:
+            diagnostics.append(reason)
+
     if resume.tailoring_snapshot_version not in SOURCE_BACKED_SNAPSHOT_VERSIONS:
         return resume
     overlaid = _overlay_source_controlled_fields(resume, source_document)
     if overlaid is None:
+        invalid(TailoredResumeValidationReason.REHYDRATION_ROLE_IDENTITY_MISMATCH)
         return None
 
     highlight_owner: dict[Any, tuple[int, int, Any]] = {}
     for role_index, source_role in enumerate(source_document.work_history):
         for source_index, bullet in enumerate(source_role.highlights):
             if bullet.source_id in highlight_owner:
+                invalid(TailoredResumeValidationReason.REHYDRATION_DECISION_MAPPING_MISMATCH)
                 return None
             highlight_owner[bullet.source_id] = (role_index, source_index, bullet)
 
@@ -516,6 +588,7 @@ def _rehydrate_source_backed_snapshot(
     if full_context:
         _, full_evidence, skill_aliases = _full_resume_context(source_document, profile)
         if any(item not in full_evidence for item in resume.summary_evidence_ids):
+            invalid(TailoredResumeValidationReason.REHYDRATION_EVIDENCE_MISMATCH)
             return None
         if resume.skill_order_source_ids:
             if (
@@ -523,6 +596,7 @@ def _rehydrate_source_backed_snapshot(
                 or len(set(resume.skill_order_source_ids)) != len(skill_aliases)
                 or set(resume.skill_order_source_ids) != set(skill_aliases)
             ):
+                invalid(TailoredResumeValidationReason.REHYDRATION_EVIDENCE_MISMATCH)
                 return None
 
     selection = (
@@ -550,35 +624,42 @@ def _rehydrate_source_backed_snapshot(
     ):
         persisted = submitted.selection_decisions
         if len(persisted) != len(source_role.highlights):
+            invalid(TailoredResumeValidationReason.REHYDRATION_DECISION_MAPPING_MISMATCH)
             return None
         seen_ids: set[Any] = set()
         by_source_id: dict[Any, TailoredBulletDecision] = {}
         by_source_index: dict[int, TailoredBulletDecision] = {}
         for decision in persisted:
             if decision.source_id in seen_ids or decision.source_index in by_source_index:
+                invalid(TailoredResumeValidationReason.REHYDRATION_DECISION_MAPPING_MISMATCH)
                 return None
             owner = highlight_owner.get(decision.source_id)
             if owner is None:
+                invalid(TailoredResumeValidationReason.REHYDRATION_DECISION_MAPPING_MISMATCH)
                 return None
             owner_role, _, _ = owner
             if owner_role != role_index:
+                invalid(TailoredResumeValidationReason.REHYDRATION_DECISION_MAPPING_MISMATCH)
                 return None
             seen_ids.add(decision.source_id)
             by_source_id[decision.source_id] = decision
             by_source_index[decision.source_index] = decision
         if any(bullet.source_id not in by_source_id for bullet in source_role.highlights):
+            invalid(TailoredResumeValidationReason.REHYDRATION_DECISION_MAPPING_MISMATCH)
             return None
 
         included_ids: list[Any] = []
         for source_index in submitted.tailored_highlight_source_indices:
             included_decision = by_source_index.get(source_index)
             if included_decision is None or not included_decision.final_included:
+                invalid(TailoredResumeValidationReason.REHYDRATION_OUTPUT_ORDER_MISMATCH)
                 return None
             included_ids.append(included_decision.source_id)
         flagged_included = {
             decision.source_id for decision in persisted if decision.final_included
         }
         if set(included_ids) != flagged_included:
+            invalid(TailoredResumeValidationReason.REHYDRATION_OUTPUT_ORDER_MISMATCH)
             return None
 
         recommended_ids = (
@@ -601,6 +682,7 @@ def _rehydrate_source_backed_snapshot(
             final_text = original_text if restored else persisted_decision.final_text
             evidence_ids = [item.evidence_id for item in persisted_decision.evidence]
             if full_context and any(item not in full_evidence for item in evidence_ids):
+                invalid(TailoredResumeValidationReason.REHYDRATION_EVIDENCE_MISMATCH)
                 return None
             evidence = (
                 _review_evidence(
@@ -648,6 +730,7 @@ def _rehydrate_source_backed_snapshot(
         if selection is not None and included_indices != _required_included_indices(
             rebuilt_decisions
         ):
+            invalid(TailoredResumeValidationReason.REHYDRATION_OUTPUT_ORDER_MISMATCH)
             return None
         output_ranks = {index: rank for rank, index in enumerate(included_indices)}
         rebuilt_decisions = [
@@ -716,11 +799,15 @@ def _validate_source_backed_snapshot(
     applicant's final inclusion, wording, and ordering choices are preserved.
     """
 
-    def invalid() -> None:
-        raise TailoredResumeSnapshotInvalidError()
+    def invalid(
+        reason: TailoredResumeValidationReason,
+        *,
+        diagnostics: dict[str, bool | int | str | None] | None = None,
+    ) -> None:
+        raise TailoredResumeSnapshotInvalidError(reason, diagnostics=diagnostics)
 
     if resume.canonical_sections != _canonical_sections(source_document):
-        invalid()
+        invalid(TailoredResumeValidationReason.CANONICAL_SECTIONS_MISMATCH)
     expected_summary = (
         _join_wrapped_source([source_document.summary, *source_document.summary_lines])
         if source_document.summary is not None
@@ -746,7 +833,7 @@ def _validate_source_backed_snapshot(
         _, full_evidence, skill_aliases = _full_resume_context(source_document, profile)
         if resume.summary_evidence_ids:
             if any(item not in full_evidence for item in resume.summary_evidence_ids):
-                invalid()
+                invalid(TailoredResumeValidationReason.SUMMARY_EVIDENCE_MISMATCH)
             if not _safe_full_context_text(
                 resume.professional_summary,
                 " ".join(full_evidence[item] for item in resume.summary_evidence_ids),
@@ -754,15 +841,15 @@ def _validate_source_backed_snapshot(
                 resume.summary_evidence_ids,
                 set(missing_skills),
             ):
-                invalid()
+                invalid(TailoredResumeValidationReason.SUMMARY_TEXT_MISMATCH)
         elif resume.professional_summary != expected_summary:
-            invalid()
+            invalid(TailoredResumeValidationReason.SUMMARY_TEXT_MISMATCH)
     elif resume.professional_summary != expected_summary:
-        invalid()
+        invalid(TailoredResumeValidationReason.SUMMARY_TEXT_MISMATCH)
     if resume.full_name is not None or resume.email is not None or resume.phone is not None:
-        invalid()
+        invalid(TailoredResumeValidationReason.CONTACT_FIELDS_MISMATCH)
     if resume.headline is not None or resume.links.model_dump(exclude_none=True):
-        invalid()
+        invalid(TailoredResumeValidationReason.HEADLINE_OR_LINKS_MISMATCH)
     expected_skills = [item.text for item in source_document.skills]
     if full_context and resume.skill_order_source_ids:
         if (
@@ -770,16 +857,16 @@ def _validate_source_backed_snapshot(
             or len(set(resume.skill_order_source_ids)) != len(skill_aliases)
             or set(resume.skill_order_source_ids) != set(skill_aliases)
         ):
-            invalid()
+            invalid(TailoredResumeValidationReason.SKILL_ORDER_MISMATCH)
         submitted_by_alias = {
             alias: full_evidence[alias]
             for alias in resume.skill_order_source_ids
             if alias in full_evidence
         }
         if list(submitted_by_alias.values()) != resume.skills:
-            invalid()
+            invalid(TailoredResumeValidationReason.SKILLS_MISMATCH)
     elif resume.skills != expected_skills:
-        invalid()
+        invalid(TailoredResumeValidationReason.SKILLS_MISMATCH)
     if (
         resume.projects
         or resume.languages
@@ -787,16 +874,16 @@ def _validate_source_backed_snapshot(
         or resume.education
         or resume.certifications
     ):
-        invalid()
+        invalid(TailoredResumeValidationReason.NON_CANONICAL_SECTION_MISMATCH)
 
     roles = source_document.work_history
     if len(resume.work_history) != len(roles):
-        invalid()
+        invalid(TailoredResumeValidationReason.ROLE_COUNT_MISMATCH)
 
     selection = select_source_bullets(roles, job_description or "")
     legacy = resume.tailoring_snapshot_version is None
     if resume.tailoring_snapshot_version not in {None, FULL_RESUME_SNAPSHOT_VERSION, "lossless-complete-v2", FULL_CONTEXT_SNAPSHOT_VERSION}:
-        invalid()
+        invalid(TailoredResumeValidationReason.SNAPSHOT_VERSION_UNSUPPORTED)
     if legacy:
         recommended_ids = select_legacy_source_bullets(roles, job_description or "")
         rewrite_ids = recommended_ids
@@ -811,13 +898,13 @@ def _validate_source_backed_snapshot(
     relevance = selection.scores
 
     if resume.review_evidence_version is not None and not full_context:
-        invalid()
+        invalid(TailoredResumeValidationReason.REVIEW_EVIDENCE_VERSION_MISMATCH)
     if full_context:
         if (
             len(set(resume.summary_evidence_ids)) != len(resume.summary_evidence_ids)
             or len(set(resume.skill_order_source_ids)) != len(resume.skill_order_source_ids)
         ):
-            invalid()
+            invalid(TailoredResumeValidationReason.REVIEW_EVIDENCE_MISMATCH)
         expected_summary_evidence = _review_evidence(
             resume.summary_evidence_ids,
             full_evidence,
@@ -828,7 +915,7 @@ def _validate_source_backed_snapshot(
         )
         if resume.review_evidence_version == "review-evidence-v1":
             if resume.summary_evidence != expected_summary_evidence:
-                invalid()
+                invalid(TailoredResumeValidationReason.REVIEW_EVIDENCE_MISMATCH)
             expected_skill_evidence = _review_evidence(
                 resume.skill_order_source_ids,
                 full_evidence,
@@ -838,37 +925,37 @@ def _validate_source_backed_snapshot(
                 selection,
             )
             if resume.skill_evidence != expected_skill_evidence:
-                invalid()
+                invalid(TailoredResumeValidationReason.REVIEW_EVIDENCE_MISMATCH)
         elif resume.summary_evidence or resume.skill_evidence:
-            invalid()
+            invalid(TailoredResumeValidationReason.REVIEW_EVIDENCE_MISMATCH)
 
     for role_index, (submitted, source_role) in enumerate(
         zip(resume.work_history, roles, strict=True)
     ):
         if submitted.source_role_id != source_role.source_id:
-            invalid()
+            invalid(TailoredResumeValidationReason.ROLE_IDENTITY_MISMATCH)
         for field in ("company", "title", "start", "end"):
             source_item = getattr(source_role, field)
             expected = source_item.text if source_item is not None else None
             if getattr(submitted, field) != expected:
-                invalid()
+                invalid(TailoredResumeValidationReason.ROLE_SOURCE_FIELD_MISMATCH)
         if submitted.source_header != (source_role.company.text if source_role.company else None):
-            invalid()
+            invalid(TailoredResumeValidationReason.ROLE_SOURCE_FIELD_MISMATCH)
         if submitted.role_context != [item.text for item in source_role.context_items]:
-            invalid()
+            invalid(TailoredResumeValidationReason.ROLE_CONTEXT_MISMATCH)
         expected_responsibilities_heading = (
             source_role.responsibilities_heading.text
             if source_role.responsibilities_heading is not None
             else None
         )
         if submitted.responsibilities_heading != expected_responsibilities_heading:
-            invalid()
+            invalid(TailoredResumeValidationReason.ROLE_CONTEXT_MISMATCH)
         source_texts = [item.text for item in source_role.highlights]
         if submitted.original_highlights != source_texts:
-            invalid()
+            invalid(TailoredResumeValidationReason.ORIGINAL_BULLETS_MISMATCH)
         decisions = submitted.selection_decisions
         if len(decisions) != len(source_role.highlights):
-            invalid()
+            invalid(TailoredResumeValidationReason.DECISION_COUNT_MISMATCH)
 
         recommended_for_role = set(recommended_ids[role_index])
         suggestion_by_index: dict[int, str] = {}
@@ -888,10 +975,24 @@ def _validate_source_backed_snapshot(
                 or decision.recommended_included != (source_id in recommended_for_role)
                 or decision.recommendation_rank != expected_rank
             ):
-                invalid()
+                invalid(TailoredResumeValidationReason.DECISION_MAPPING_MISMATCH)
             if decision.suggested_text != source_item.text:
                 if source_id not in set(rewrite_ids[role_index]):
-                    invalid()
+                    invalid(
+                        TailoredResumeValidationReason.SUGGESTION_MISMATCH,
+                        diagnostics={
+                            "role_index": role_index,
+                            "role_source_id": str(source_role.source_id),
+                            "decision_index": source_index,
+                            "source_index": source_index,
+                            "recommended": decision.recommended_included,
+                            "rewrite_eligible": False,
+                            "evidence_count": len(decision.evidence),
+                            "submitted_suggestion_present": bool(decision.suggested_text),
+                            "expected_suggestion_present": False,
+                            "submitted_matches_expected": False,
+                        },
+                    )
                 sanitized = sanitize_tailoring_output(
                     profile,
                     {
@@ -915,12 +1016,26 @@ def _validate_source_backed_snapshot(
                     output_orders[role_index].index(source_id)
                 ]
                 if expected_suggestion != decision.suggested_text:
-                    invalid()
+                    invalid(
+                        TailoredResumeValidationReason.SUGGESTION_MISMATCH,
+                        diagnostics={
+                            "role_index": role_index,
+                            "role_source_id": str(source_role.source_id),
+                            "decision_index": source_index,
+                            "source_index": source_index,
+                            "recommended": decision.recommended_included,
+                            "rewrite_eligible": True,
+                            "evidence_count": len(decision.evidence),
+                            "submitted_suggestion_present": bool(decision.suggested_text),
+                            "expected_suggestion_present": bool(expected_suggestion),
+                            "submitted_matches_expected": False,
+                        },
+                    )
             if decision.final_text not in {decision.original_text, decision.suggested_text}:
-                invalid()
+                invalid(TailoredResumeValidationReason.FINAL_TEXT_MISMATCH)
             evidence_ids = [item.evidence_id for item in decision.evidence]
             if len(set(evidence_ids)) != len(evidence_ids):
-                invalid()
+                invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
             if full_context and resume.review_evidence_version == "review-evidence-v1":
                 expected_evidence = _review_evidence(
                     evidence_ids,
@@ -931,14 +1046,14 @@ def _validate_source_backed_snapshot(
                     selection,
                 )
                 if decision.evidence != expected_evidence:
-                    invalid()
+                    invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
                 if any(ref.role_index != role_index for ref in decision.evidence):
-                    invalid()
+                    invalid(TailoredResumeValidationReason.EVIDENCE_OWNERSHIP_MISMATCH)
                 if decision.suggested_text == decision.original_text:
                     if decision.evidence:
-                        invalid()
+                        invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
                 elif not evidence_ids or f"r{role_index}:b{source_index}" not in evidence_ids:
-                    invalid()
+                    invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
                 elif not _safe_full_context_text(
                     decision.suggested_text,
                     " ".join(full_evidence[item] for item in evidence_ids if item in full_evidence),
@@ -946,7 +1061,7 @@ def _validate_source_backed_snapshot(
                     evidence_ids,
                     set(missing_skills),
                 ):
-                    invalid()
+                    invalid(TailoredResumeValidationReason.EVIDENCE_TEXT_MISMATCH)
             suggestion_by_index[source_index] = decision.final_text
 
         included_indices = [
@@ -961,17 +1076,17 @@ def _validate_source_backed_snapshot(
             )
         )
         if submitted.tailored_highlight_source_indices != included_indices:
-            invalid()
+            invalid(TailoredResumeValidationReason.INCLUDED_OUTPUT_MISMATCH)
         if submitted.tailored_highlights != [
             suggestion_by_index[index] for index in included_indices
         ]:
-            invalid()
+            invalid(TailoredResumeValidationReason.INCLUDED_OUTPUT_MISMATCH)
         output_ranks = {
             index: rank for rank, index in enumerate(included_indices)
         }
         for index, decision in enumerate(decisions):
             if decision.output_rank != output_ranks.get(index):
-                invalid()
+                invalid(TailoredResumeValidationReason.OUTPUT_RANK_MISMATCH)
 
 
 def build_summary_text(profile: ParsedProfile) -> str:
@@ -1011,7 +1126,7 @@ def _untailored_fallback(
     source_resume_content_id: int | None = None,
     source_revision: str | None = None,
     source_schema_version: str | None = None,
-) -> TailoredResume:
+) -> TailoredResumeTailorResponse:
     """Return the profile as-is when LLM tailoring is unavailable."""
     matched_set = set(report.matched_skills)
     other_skills = [s for s in profile.skills if normalize_skill(s) not in matched_set]
@@ -1050,12 +1165,8 @@ def _untailored_fallback(
         if source_document is not None
         else list(profile.skills)
     )
-    source_summary = (
-        _join_wrapped_source([source_document.summary, *source_document.summary_lines])
-        if source_document is not None
-        else None
-    )
-    resume = TailoredResume(
+    source_summary = _canonical_source_summary(source_document)
+    resume = TailoredResumeTailorResponse(
         job_id=job_id,
         professional_summary=source_summary if source_backed else (profile.headline or None),
         full_name=None if source_backed else profile.full_name,
@@ -1131,6 +1242,7 @@ def _untailored_fallback(
         source_resume_content_id=source_resume_content_id if source_backed else None,
         source_schema_version=source_schema_version if source_backed else None,
         source_revision_sha256=source_revision if source_backed else None,
+        canonical_source_summary=source_summary,
     )
     resume.requirement_classifications = classify_resume_coverage(
         resume.requirement_classifications, resume
@@ -1574,13 +1686,18 @@ class ResumeService:
         if job is None:
             raise JobNotFoundError(payload.job_id)
 
+        source_row: Any | None = None
         try:
             source_pair = await self._repository.get_active_tailoring_source(user_id)
             if not isinstance(source_pair, tuple) or len(source_pair) != 2:
-                raise ValueError
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.ACTIVE_SOURCE_UNAVAILABLE
+                )
             profile, source_row = source_pair
             if source_row.content.get("schema_version") not in {"source-resume-v4", "source-resume-v5"}:
-                raise ValueError
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.SOURCE_SCHEMA_UNSUPPORTED
+                )
             source_payload = (
                 SourceResumeContentPayloadV5.model_validate(source_row.content)
                 if source_row.content.get("schema_version") == "source-resume-v5"
@@ -1591,36 +1708,75 @@ class ResumeService:
                 or source_payload.layout_validation_status != "verified"
                 or source_payload.document.layout is None
             ):
-                raise ValueError
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.SOURCE_STATE_INVALID
+                )
             source_document = materialize_source_document_v4(source_payload.document)
             if source_document is None:
-                raise ValueError
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.SOURCE_DOCUMENT_UNAVAILABLE
+                )
             profile_model = ParsedProfile.model_validate(profile.parsed)
+            rehydration_diagnostics: list[TailoredResumeValidationReason] = []
             submitted = _rehydrate_source_backed_snapshot(
                 payload.content,
                 source_document,
                 profile=profile_model,
                 job_description=getattr(job, "description", None),
+                diagnostics=rehydration_diagnostics,
             )
             if submitted is None:
-                raise TailoredResumeSnapshotInvalidError()
+                raise TailoredResumeSnapshotInvalidError(
+                    rehydration_diagnostics[-1]
+                    if rehydration_diagnostics
+                    else TailoredResumeValidationReason.SOURCE_PAYLOAD_INVALID
+                )
             _validate_source_backed_snapshot(
                 submitted,
                 source_document=source_document,
                 profile=profile_model,
                 job_description=getattr(job, "description", None),
             )
-            if (
-                submitted.tailoring_snapshot_version
-                not in SOURCE_BACKED_SNAPSHOT_VERSIONS
-                or submitted.source_resume_id != source_row.resume_id
-                or submitted.source_resume_content_id != source_row.id
-                or submitted.source_schema_version not in {"source-resume-v4", "source-resume-v5"}
-                or submitted.source_revision_sha256 != source_revision_sha256(source_row.content)
-            ):
-                raise ValueError
+            if submitted.tailoring_snapshot_version not in SOURCE_BACKED_SNAPSHOT_VERSIONS:
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.SNAPSHOT_VERSION_UNSUPPORTED
+                )
+            if submitted.source_resume_id != source_row.resume_id:
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.SOURCE_RESUME_ID_MISMATCH
+                )
+            if submitted.source_resume_content_id != source_row.id:
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.SOURCE_CONTENT_ID_MISMATCH
+                )
+            if submitted.source_schema_version not in {"source-resume-v4", "source-resume-v5"}:
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.SOURCE_SCHEMA_MISMATCH
+                )
+            if submitted.source_revision_sha256 != source_revision_sha256(source_row.content):
+                raise TailoredResumeSnapshotInvalidError(
+                    TailoredResumeValidationReason.SOURCE_REVISION_MISMATCH
+                )
+        except TailoredResumeSnapshotInvalidError as exc:
+            _log_tailored_snapshot_rejection(
+                reason=exc.reason,
+                user_id=user_id,
+                payload=payload,
+                source_row=source_row,
+                diagnostics=exc.diagnostics,
+            )
+            raise
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
-            raise TailoredResumeSnapshotInvalidError() from exc
+            rejection = TailoredResumeSnapshotInvalidError(
+                TailoredResumeValidationReason.SOURCE_PAYLOAD_INVALID
+            )
+            _log_tailored_snapshot_rejection(
+                reason=rejection.reason,
+                user_id=user_id,
+                payload=payload,
+                source_row=source_row,
+            )
+            raise rejection from exc
 
         profile_model = ParsedProfile.model_validate(profile.parsed)
         classifications = classify_requirements(
@@ -1810,7 +1966,7 @@ class ResumeService:
         user_id: int,
         job_id: int,
         job_repository: JobRepository,
-    ) -> TailoredResume:
+    ) -> TailoredResumeTailorResponse:
         """Selectively tailor source bullets for a specific job."""
         source_document = None
         source_pair = (
@@ -1998,11 +2154,7 @@ class ResumeService:
                 output_orders=output_orders,
                 full_context_evidence=full_evidence,
                 source_skill_ids=source_skill_ids,
-                default_summary=(
-                    _join_wrapped_source([source_document.summary, *source_document.summary_lines])
-                    if source_document is not None
-                    else None
-                ),
+                default_summary=_canonical_source_summary(source_document),
             )
         except Exception:
             logger.warning(
@@ -2151,14 +2303,19 @@ class ResumeService:
             if source_document is not None
             else list(profile.skills)
         )
-        tailored_summary = sanitized.professional_summary if source_backed else sanitized.professional_summary
+        canonical_summary = _canonical_source_summary(source_document)
+        tailored_summary = (
+            canonical_summary
+            if source_backed and not sanitized.summary_evidence_ids
+            else sanitized.professional_summary
+        )
         tailored_skill_ids = sanitized.skill_order_source_ids
         tailored_skills = (
             [full_evidence[item] for item in tailored_skill_ids if item in full_evidence]
             if source_backed and tailored_skill_ids
             else source_skills
         )
-        resume = TailoredResume(
+        resume = TailoredResumeTailorResponse(
             job_id=job_id,
             professional_summary=(
                 tailored_summary if source_backed else sanitized.professional_summary
@@ -2217,8 +2374,31 @@ class ResumeService:
                 if source_backed
                 else []
             ),
+            canonical_source_summary=canonical_summary,
         )
         resume.requirement_classifications = classify_resume_coverage(
             resume.requirement_classifications, resume
         )
+        if source_backed:
+            assert selection is not None
+            for role_index, role in enumerate(resume.work_history):
+                for decision_index, decision in enumerate(role.selection_decisions):
+                    _log_tailored_decision(
+                        job_id=job_id,
+                        role_index=role_index,
+                        decision_index=decision_index,
+                        decision=decision,
+                        rewrite_eligible=(
+                            str(decision.source_id)
+                            in set(selection.rewrite_candidate_ids[role_index])
+                        ),
+                        # The decision is built directly from `sanitized`, the
+                        # same deterministic sanitizer used by draft validation.
+                        suggestion_matches_deterministic_resanitization=(
+                            decision.suggested_text
+                            == sanitized.tailored_highlights[role_index][
+                                rendered_orders[role_index].index(str(decision.source_id))
+                            ]
+                        ),
+                    )
         return resume

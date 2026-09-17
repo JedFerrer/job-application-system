@@ -1708,3 +1708,56 @@ async def test_source_backed_invalid_model_output_keeps_repaired_fallback(
     assert leftover not in result.work_history[0].role_context
     assert result.work_history[0].tailored_highlights == ["Built Python APIs."]
     assert result.tailoring_snapshot_version == "lossless-complete-v2"
+
+
+@pytest.mark.asyncio
+async def test_full_context_generation_uses_null_canonical_summary_when_only_wrapped_lines_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A display-only wrapped line must not become an unsupported summary."""
+    payload, _ = _malformed_v5_payload()
+    wrapped_line = _line_candidate("Synthetic wrapped display line.", 5)
+    assert payload.document.layout is not None
+    payload = payload.model_copy(
+        update={
+            "document": payload.document.model_copy(
+                update={
+                    "candidates": [*payload.document.candidates, wrapped_line],
+                    "layout": payload.document.layout.model_copy(
+                        update={"summary_lines": [wrapped_line.source_id]}
+                    ),
+                }
+            )
+        }
+    )
+    repository = AsyncMock()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(parsed=_profile().model_dump()),
+        SimpleNamespace(
+            id=12,
+            resume_id=13,
+            validation_status="verified",
+            content=payload.model_dump(mode="json"),
+        ),
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(description="Build Python APIs")
+    monkeypatch.setattr(
+        resume_service,
+        "llm_chat_completion",
+        AsyncMock(return_value=(
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"rewrites": []}'))]
+            ),
+            "test-model",
+        )),
+    )
+
+    result = await ResumeService(repository).tailor_for_job(
+        user_id=7, job_id=11, job_repository=jobs
+    )
+
+    assert result.professional_summary is None
+    assert result.canonical_source_summary is None
+    assert result.summary_evidence_ids == []
+    assert any(section.section == "summary" for section in result.canonical_sections)

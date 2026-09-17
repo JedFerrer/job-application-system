@@ -823,6 +823,18 @@ class TailoredResume(BaseModel):
     )
 
 
+class TailoredResumeTailorResponse(TailoredResume):
+    """Fresh-tailoring response with the server's canonical summary reference.
+
+    This is intentionally response-only: draft creation still accepts
+    ``TailoredResume`` and recomputes all canonical fields from the active
+    source. The explicit value lets the client apply the same empty-evidence
+    summary rule without inferring semantics from display sections.
+    """
+
+    canonical_source_summary: str | None = None
+
+
 class TailoredResumeDraftCreate(BaseModel):
     job_id: int
     content: TailoredResume

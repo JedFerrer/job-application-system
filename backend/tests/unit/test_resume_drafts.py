@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -19,6 +19,7 @@ from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.resume.exceptions import (
     TailoredResumeDraftNotFoundError,
     TailoredResumeSnapshotInvalidError,
+    TailoredResumeValidationReason,
 )
 from app.domain.resume.schemas import (
     ParsedProfile,
@@ -38,6 +39,7 @@ from app.domain.resume.service import (
     ResumeService,
     _canonical_sections,
     _full_resume_context,
+    _log_tailored_decision,
     _rehydrate_source_backed_snapshot,
     _validate_source_backed_snapshot,
 )
@@ -348,6 +350,116 @@ def test_fresh_source_backed_snapshot_preserves_valid_review_choices() -> None:
         profile=ParsedProfile.model_validate({"skills": ["Python", "Kubernetes"]}),
         job_description="Python backend engineer",
     )
+
+
+def test_generation_decision_diagnostic_uses_only_safe_structural_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_document()
+    decision = _source_backed_content(source).work_history[0].selection_decisions[0]
+    log = Mock()
+    monkeypatch.setattr("app.domain.resume.service.logger", Mock(info=log))
+
+    _log_tailored_decision(
+        job_id=11,
+        role_index=0,
+        decision_index=0,
+        decision=decision,
+        rewrite_eligible=True,
+        suggestion_matches_deterministic_resanitization=True,
+    )
+
+    assert log.call_args.args == ("resume.tailored_decision",)
+    assert log.call_args.kwargs == {
+        "job_id": 11,
+        "role_index": 0,
+        "role_source_id": str(decision.source_id),
+        "decision_index": 0,
+        "source_index": 0,
+        "recommended": True,
+        "rewrite_eligible": True,
+        "evidence_count": 0,
+        "suggestion_present": True,
+        "suggestion_matches_deterministic_resanitization": True,
+    }
+    logged = repr(log.call_args)
+    assert decision.suggested_text not in logged
+    assert decision.final_text not in logged
+    assert decision.original_text not in logged
+
+
+@pytest.mark.asyncio
+async def test_suggestion_mismatch_logs_the_failing_decision_without_prose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_document()
+    repository = AsyncMock()
+    source_row = _configure_v5_active_source(repository, source)
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description="Python backend engineer"
+    )
+    monkeypatch.setattr(
+        "app.domain.resume.service.materialize_source_document_v4", lambda _: source
+    )
+    log = Mock()
+    monkeypatch.setattr("app.domain.resume.service.logger", Mock(warning=log))
+    submitted = _source_backed_content(source).model_copy(deep=True)
+    submitted.tailoring_snapshot_version = "full-context-v1"
+    submitted.source_resume_id = source_row.resume_id
+    submitted.source_resume_content_id = source_row.id
+    submitted.source_schema_version = "source-resume-v5"
+    submitted.source_revision_sha256 = source_revision_sha256(source_row.content)
+    submitted.work_history[0].selection_decisions[0].suggested_text = "forged suggestion"
+
+    with pytest.raises(TailoredResumeSnapshotInvalidError) as exc_info:
+        await ResumeService(repository).create_tailored_draft(
+            user_id=7,
+            payload=TailoredResumeDraftCreate(job_id=11, content=submitted),
+            job_repository=jobs,
+        )
+
+    assert exc_info.value.reason is TailoredResumeValidationReason.SUGGESTION_MISMATCH
+    assert exc_info.value.diagnostics == {
+        "role_index": 0,
+        "role_source_id": str(source.work_history[0].source_id),
+        "decision_index": 0,
+        "source_index": 0,
+        "recommended": True,
+        "rewrite_eligible": True,
+        "evidence_count": 0,
+        "submitted_suggestion_present": True,
+        "expected_suggestion_present": True,
+        "submitted_matches_expected": False,
+    }
+    assert log.call_args.args == ("resume.tailored_snapshot_rejected",)
+    assert log.call_args.kwargs["validation_reason"] == "suggestion_mismatch"
+    assert log.call_args.kwargs["decision_index"] == 0
+    assert log.call_args.kwargs["source_index"] == 0
+    logged = repr(log.call_args)
+    assert "forged suggestion" not in logged
+    assert submitted.work_history[0].selection_decisions[0].final_text not in logged
+    assert source.work_history[0].highlights[0].text not in logged
+    repository.create_tailored_draft.assert_not_awaited()
+
+
+def test_full_context_rejects_changed_summary_without_source_evidence() -> None:
+    """The live save shape remains fail-closed until it has summary provenance."""
+    source = _source_document()
+    content = _source_backed_content(source)
+    content.tailoring_snapshot_version = "full-context-v1"
+    content.summary_evidence_ids = []
+    content.professional_summary = "Unsupported Strategic Consultant summary"
+
+    with pytest.raises(TailoredResumeSnapshotInvalidError) as exc_info:
+        _validate_source_backed_snapshot(
+            content,
+            source_document=source,
+            profile=ParsedProfile.model_validate({"skills": ["Python", "Kubernetes"]}),
+            job_description="Strategic Consultant",
+        )
+
+    assert exc_info.value.reason is TailoredResumeValidationReason.SUMMARY_TEXT_MISMATCH
 
 
 def test_v5_wrapped_summary_preserves_joining_contract() -> None:
@@ -1071,7 +1183,9 @@ class TestDraftRouteContract:
 
     def test_invalid_snapshot_error_is_privacy_safe(self) -> None:
         service = AsyncMock(spec=ResumeService)
-        service.create_tailored_draft.side_effect = TailoredResumeSnapshotInvalidError()
+        service.create_tailored_draft.side_effect = TailoredResumeSnapshotInvalidError(
+            TailoredResumeValidationReason.SOURCE_REVISION_MISMATCH
+        )
         response = TestClient(
             _build_route_app(service=service, job_repository=AsyncMock())
         ).post("/resume/drafts", json=_payload())

@@ -210,6 +210,41 @@ def materialize_wrap_source_document(
     return ledger, document
 
 
+def source_backed_wrap_source_payload() -> tuple[dict[str, object], SourceResumeDocument]:
+    """Return a verified v5 source payload with its matching materialized document."""
+    text = load_wrap_resume_text()
+    expected = load_expected_semantic()
+    ledger = build_source_candidate_ledger(text)
+    headers = [str(item) for item in expected["role_headers"]]
+    layout = canonicalize_source_layout_v5(
+        _empty_v5_layout(*(_alias_for(ledger, header) for header in headers)),
+        ledger,
+    )
+    resolved = resolve_source_layout_v4(layout, ledger, classify_source_artifacts(ledger))
+    if resolved.status != "verified" or resolved.layout is None:
+        raise AssertionError(f"source layout resolve failed: {resolved.status} {resolved.errors}")
+    document = SourceResumeContentDocumentV4(
+        candidates=ledger.candidates,
+        layout=cast(SourceResumeLayoutReferencesV4, resolved.layout),
+    )
+    payload: dict[str, object] = {
+        "schema_version": "source-resume-v5",
+        "document": document.model_dump(mode="json"),
+        "layout_validation_status": "verified",
+        "layout_validation_errors": [],
+    }
+    materialized = materialize_source_document_v4(document)
+    if materialized is None:
+        raise AssertionError("source fixture materialization failed")
+    return payload, materialized
+
+
+def source_backed_wrap_source_content() -> dict[str, object]:
+    """Return a verified v5 source payload that the production service rehydrates."""
+    payload, _ = source_backed_wrap_source_payload()
+    return payload
+
+
 def v5_source_row() -> SimpleNamespace:
     content = {
         "schema_version": "source-resume-v5",
@@ -242,7 +277,7 @@ def configure_v5_active_source(
 
 def source_backed_wrap_content(
     source: SourceResumeDocument,
-    source_row: SimpleNamespace,
+    source_row: Any,
     *,
     job_description: str = "Python backend platform engineer",
     suggested_first_bullet: str | None = None,

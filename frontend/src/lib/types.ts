@@ -271,6 +271,9 @@ export interface TailoredResume {
   source_schema_version?: "source-resume-v3" | "source-resume-v4" | "source-resume-v5" | null;
   source_revision_sha256?: string | null;
   source_section_order?: string[];
+  // Fresh tailoring responses provide the server-computed value required
+  // when summary evidence is absent. It is not persisted with drafts.
+  canonical_source_summary?: string | null;
   // Additive Phase 2 flag: true on GET when a readable draft cannot safely
   // reconcile to its immutable source. Omitted/false for compatible drafts.
   requires_regeneration?: boolean;
@@ -798,6 +801,28 @@ export interface ApplicationWorkspace {
   approved_package: ApplicationPackage | null;
   package_history: ApplicationPackageHistoryItem[];
   activity: ApplicationActivityResponse;
+}
+
+export interface ApplicationAttempt {
+  attempt_id: string;
+  expires_at: string;
+  external_url: string;
+}
+
+export interface ApplicationTimelineEvent {
+  id: string;
+  type: string;
+  occurred_at: string;
+  source: string;
+  summary: string;
+  counts: Record<string, number> | null;
+  progress: string | null;
+}
+
+export interface ApplicationTimelinePage {
+  application_id: number;
+  items: ApplicationTimelineEvent[];
+  next_cursor: string | null;
 }
 
 // ---- Job preferences (Phase 2) ----------------------------------------------

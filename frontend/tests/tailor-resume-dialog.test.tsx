@@ -3,7 +3,8 @@ import { act, createContext, useContext, useRef, useState, type ReactNode } from
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { displaySections, legacyDisplaySections, TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
-import { createReviewState, reviewedResume, sourceSkillOrder, summaryReview } from "@/lib/tailoring-review";
+import { createReviewState, reviewedResume, sourceBackedSnapshotIsSaveable, sourceSkillOrder, summaryReview } from "@/lib/tailoring-review";
+import type { TailoredResume } from "@/lib/types";
 
 const apiMocks = vi.hoisted(() => ({
   tailorResume: vi.fn(),
@@ -64,7 +65,7 @@ vi.mock("@/components/ui/alert-dialog", () => ({
   AlertDialogTitle: ({ children }: { children: ReactNode }) => <h3>{children}</h3>,
   AlertDialogDescription: ({ children }: { children: ReactNode }) => <p>{children}</p>,
   AlertDialogFooter: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  AlertDialogAction: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => { const setOpen = useContext(AlertContext); return <button onClick={() => { onClick?.(); setOpen?.(false); queueMicrotask(() => lifecycle.alertClose?.({ preventDefault: () => undefined })); if (children === "Discard") queueMicrotask(() => lifecycle.dialogClose?.({ preventDefault: () => undefined })); }}>{children}</button>; },
+  AlertDialogAction: ({ children, disabled, onClick }: { children: ReactNode; disabled?: boolean; onClick?: () => void }) => { const setOpen = useContext(AlertContext); return <button disabled={disabled} onClick={() => { onClick?.(); setOpen?.(false); queueMicrotask(() => lifecycle.alertClose?.({ preventDefault: () => undefined })); if (children === "Discard") queueMicrotask(() => lifecycle.dialogClose?.({ preventDefault: () => undefined })); }}>{children}</button>; },
   AlertDialogCancel: ({ children }: { children: ReactNode }) => { const setOpen = useContext(AlertContext); return <button onClick={() => { setOpen?.(false); lifecycle.alertClose?.({ preventDefault: () => undefined }); }}>{children}</button>; },
 }));
 
@@ -99,6 +100,61 @@ const tailoredResume = {
   other_skills: [],
   missing_keywords: [],
 };
+
+const supportedSourceBackedDraft = (
+  version: "lossless-complete-v2" | "full-context-v1" = "full-context-v1",
+  sourceSchemaVersion: "source-resume-v4" | "source-resume-v5" = "source-resume-v5",
+): TailoredResume => ({
+  ...tailoredResume,
+  full_name: null,
+  email: null,
+  headline: null,
+  links: { linkedin: null, github: null, portfolio: null, website: null },
+  projects: [],
+  languages: [],
+  licenses: [],
+  tailoring_snapshot_version: version,
+  source_resume_id: 10,
+  source_resume_content_id: 20,
+  source_schema_version: sourceSchemaVersion,
+  source_revision_sha256: "revision",
+  canonical_source_summary: "Backend Engineer with supported experience",
+  canonical_sections: [{
+    section: "summary",
+    canonical_order: 0,
+    items: [{
+      source_id: "00000000-0000-0000-0000-000000000010",
+      text: "Backend Engineer with supported experience",
+      canonical_order: 0,
+    }],
+  }],
+  work_history: [{
+    company: "Acme",
+    title: "Engineer",
+    start: "2020-01",
+    end: "2022-01",
+    source_role_id: "00000000-0000-0000-0000-000000000099",
+    source_header: "Acme",
+    role_context: ["Owned API delivery across the platform.", "Partnered with product."],
+    responsibilities_heading: "Selected responsibilities",
+    original_highlights: ["Built APIs"],
+    tailored_highlights: ["Built Python APIs"],
+    tailored_highlight_source_indices: [0],
+    selection_decisions: [{
+      source_id: "00000000-0000-0000-0000-000000000001",
+      source_index: 0,
+      canonical_order: 0,
+      original_text: "Built APIs",
+      suggested_text: "Built Python APIs",
+      final_text: "Built Python APIs",
+      recommended_included: true,
+      final_included: true,
+      recommendation_rank: 0,
+      output_rank: 0,
+      evidence: [{ evidence_id: "role:0", excerpt: "Built APIs", section: "work_history", relevance_label: "Direct evidence", source_id: "00000000-0000-0000-0000-000000000001", role_index: 0 }],
+    }],
+  }],
+});
 
 describe("TailorResumeDialog", () => {
   let container: HTMLDivElement;
@@ -135,12 +191,90 @@ describe("TailorResumeDialog", () => {
   });
 
   const renderedText = () => container.textContent ?? "";
+  const renderGeneratedDraft = async (draft: TailoredResume) => {
+    apiMocks.tailorResume.mockResolvedValue(draft);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(renderedText()).toContain("Save resume"));
+  };
+  const saveResumeButton = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"));
+  const clickButton = async (label: string) => {
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent === label)?.click();
+      await Promise.resolve();
+    });
+  };
+
+  it("clears dirty state after Save even when the persisted echo is normalized", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      return <TailorResumeDialog jobId={101} open={open} onOpenChange={setOpen} initialData={supportedSourceBackedDraft()} />;
+    }
+    apiMocks.createDraft.mockResolvedValue({ id: 9, content: { ...supportedSourceBackedDraft(), professional_summary: "Normalized server echo" } });
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Harness /></QueryClientProvider>); });
+    await vi.waitFor(() => expect(renderedText()).toContain("Keep original"));
+    await clickButton("Keep original");
+    await clickButton("Save resume");
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalledTimes(1));
+    await clickButton("Close dialog");
+    expect(renderedText()).not.toContain("Save or discard unsaved edits?");
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("tracks a new review edit as dirty after Save", async () => {
+    apiMocks.createDraft.mockResolvedValue({ id: 9, content: { ...supportedSourceBackedDraft(), professional_summary: "Normalized server echo" } });
+    await renderGeneratedDraft(supportedSourceBackedDraft());
+    await clickButton("Keep original");
+    await clickButton("Save resume");
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalledTimes(1));
+    await clickButton("Use suggestion");
+    await clickButton("Close dialog");
+    expect(renderedText()).toContain("Save or discard unsaved edits?");
+  });
+
+  it("keeps edits dirty when Save fails", async () => {
+    apiMocks.createDraft.mockRejectedValue(new Error("save failed"));
+    await renderGeneratedDraft(supportedSourceBackedDraft());
+    await clickButton("Keep original");
+    await clickButton("Save resume");
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalledTimes(1));
+    await clickButton("Close dialog");
+    expect(renderedText()).toContain("Save or discard unsaved edits?");
+  });
+
+  it("keeps an unsaved review edit dirty", async () => {
+    await renderGeneratedDraft(supportedSourceBackedDraft());
+    await clickButton("Keep original");
+    await clickButton("Close dialog");
+    expect(renderedText()).toContain("Save or discard unsaved edits?");
+  });
+
+  it("keeps an edit made while Save is in flight dirty after it succeeds", async () => {
+    let resolveSave: ((value: { id: number; content: TailoredResume }) => void) | undefined;
+    apiMocks.createDraft.mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; }));
+    await renderGeneratedDraft(supportedSourceBackedDraft());
+    await clickButton("Keep original");
+    await clickButton("Save resume");
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalledTimes(1));
+    await clickButton("Use suggestion");
+    await act(async () => {
+      resolveSave?.({ id: 9, content: { ...supportedSourceBackedDraft(), professional_summary: "Normalized server echo" } });
+      await Promise.resolve();
+    });
+    await clickButton("Close dialog");
+    expect(renderedText()).toContain("Save or discard unsaved edits?");
+  });
 
   it("restores resume-local focus on Cancel and the opener on Discard", async () => {
     function Harness() {
       const [open, setOpen] = useState(true);
       const openerRef = useRef<HTMLButtonElement>(null);
-      return <><button ref={openerRef}>Resume workspace opener</button><TailorResumeDialog jobId={101} open={open} onOpenChange={setOpen} initialData={tailoredResume} returnFocusRef={openerRef} /></>;
+      return <><button ref={openerRef}>Resume workspace opener</button><TailorResumeDialog jobId={101} open={open} onOpenChange={setOpen} initialData={supportedSourceBackedDraft()} returnFocusRef={openerRef} /></>;
     }
     await act(async () => { root.render(<QueryClientProvider client={queryClient}><Harness key="success" /></QueryClientProvider>); });
     await vi.waitFor(() => expect(renderedText()).toContain("Keep original"));
@@ -164,7 +298,7 @@ describe("TailorResumeDialog", () => {
     function Harness() {
       const [open, setOpen] = useState(true);
       const openerRef = useRef<HTMLButtonElement>(null);
-      return <><button ref={openerRef}>Resume save opener</button><TailorResumeDialog jobId={101} open={open} onOpenChange={setOpen} initialData={tailoredResume} returnFocusRef={openerRef} /></>;
+      return <><button ref={openerRef}>Resume save opener</button><TailorResumeDialog jobId={101} open={open} onOpenChange={setOpen} initialData={supportedSourceBackedDraft()} returnFocusRef={openerRef} /></>;
     }
     apiMocks.createDraft.mockResolvedValueOnce({ id: 9, content: tailoredResume });
     await act(async () => { root.render(<QueryClientProvider client={queryClient}><Harness key="success" /></QueryClientProvider>); });
@@ -172,7 +306,26 @@ describe("TailorResumeDialog", () => {
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Keep original")?.click(); });
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close dialog")?.click(); });
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save")?.click(); });
-    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalled());
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalledWith({
+      job_id: 101,
+      content: expect.objectContaining({
+        source_resume_id: 10,
+        source_resume_content_id: 20,
+        source_revision_sha256: "revision",
+        source_schema_version: "source-resume-v5",
+        tailoring_snapshot_version: "full-context-v1",
+        work_history: [expect.objectContaining({
+          source_role_id: "00000000-0000-0000-0000-000000000099",
+          tailored_highlight_source_indices: [0],
+          selection_decisions: [expect.objectContaining({
+            final_text: "Built APIs",
+            final_included: true,
+            output_rank: 0,
+            evidence: [expect.objectContaining({ evidence_id: "role:0" })],
+          })],
+        })],
+      }),
+    }));
     await act(async () => { lifecycle.dialogClose?.({ preventDefault: () => undefined }); });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement?.textContent).toBe("Resume save opener");
@@ -201,6 +354,7 @@ describe("TailorResumeDialog", () => {
       ...tailoredResume,
       tailoring_snapshot_version: "full-context-v1" as const,
       professional_summary: "Tailored summary for the job",
+      canonical_source_summary: "Original develop-ment summary",
       summary_evidence_ids: ["summary:0"],
       skills: ["FastAPI", "Python"],
       skill_order_source_ids: ["skill:1", "skill:0"],
@@ -233,8 +387,20 @@ describe("TailorResumeDialog", () => {
   it("exposes reversible summary and skill controls in the review dialog", async () => {
     const fullContext = {
       ...tailoredResume,
+      full_name: null,
+      email: null,
+      headline: null,
+      links: { linkedin: null, github: null, portfolio: null, website: null },
+      projects: [],
+      languages: [],
+      licenses: [],
       tailoring_snapshot_version: "full-context-v1" as const,
+      source_resume_id: 10,
+      source_resume_content_id: 20,
+      source_schema_version: "source-resume-v5" as const,
+      source_revision_sha256: "revision",
       professional_summary: "Tailored summary for the job",
+      canonical_source_summary: "Original develop-ment summary",
       summary_evidence_ids: ["summary:0"],
       skills: ["FastAPI", "Python"],
       skill_order_source_ids: ["skill:1", "skill:0"],
@@ -242,6 +408,11 @@ describe("TailorResumeDialog", () => {
         { section: "summary" as const, heading: "Summary", canonical_order: 0, items: [{ source_id: "summary-0", text: "Original develop-", canonical_order: 0 }, { source_id: "summary-1", text: "ment summary", canonical_order: 1 }] },
         { section: "skills" as const, heading: "Skills", canonical_order: 1, items: [{ source_id: "skill-0", text: "Python", canonical_order: 1 }, { source_id: "skill-1", text: "FastAPI", canonical_order: 2 }] },
       ],
+      work_history: [{
+        ...tailoredResume.work_history[0],
+        source_role_id: "00000000-0000-0000-0000-000000000099",
+        selection_decisions: [{ source_id: "00000000-0000-0000-0000-000000000001", source_index: 0, canonical_order: 0, original_text: "Built APIs", suggested_text: "Built Python APIs", final_text: "Built Python APIs", recommended_included: true, final_included: true, recommendation_rank: 0, output_rank: 0 }],
+      }],
     };
     apiMocks.tailorResume.mockResolvedValue(fullContext);
     apiMocks.createDraft.mockResolvedValue({ content: fullContext });
@@ -395,6 +566,7 @@ describe("TailorResumeDialog", () => {
     const longSkillSource = "Long source skill prose that should stay out of badge presentation.";
     apiMocks.tailorResume.mockResolvedValue({
       ...tailoredResume,
+      canonical_source_summary: "Backend engineer with API design and automation experience.",
       canonical_sections: [
         { section: "contact" as const, canonical_order: 0, items: [
           { source_id: "name", text: "Ada Lovelace", canonical_order: 0 },
@@ -493,14 +665,15 @@ describe("TailorResumeDialog", () => {
   });
 
   it("saves the displayed tailored snapshot with its job id", async () => {
-    apiMocks.tailorResume.mockResolvedValue(tailoredResume);
+    const sourceBacked = supportedSourceBackedDraft();
+    apiMocks.tailorResume.mockResolvedValue(sourceBacked);
     apiMocks.createDraft.mockResolvedValue({
       id: 1,
       job_id: 101,
       source_profile_id: 8,
       job_title: "Backend Engineer",
       job_company: "Acme",
-      content: tailoredResume,
+      content: sourceBacked,
       created_at: "2026-07-14T00:00:00Z",
       updated_at: "2026-07-14T00:00:00Z",
     });
@@ -539,7 +712,7 @@ describe("TailorResumeDialog", () => {
 
     expect(apiMocks.createDraft).toHaveBeenCalledWith({
       job_id: 101,
-      content: tailoredResume,
+      content: sourceBacked,
     });
     expect(queryClient.getQueryData(["resume-draft", 1])).toBeUndefined();
   });
@@ -594,8 +767,9 @@ describe("TailorResumeDialog", () => {
   });
 
   it("uses the reviewed original for save and every export path", async () => {
-    apiMocks.tailorResume.mockResolvedValue(tailoredResume);
-    apiMocks.createDraft.mockResolvedValue({ content: tailoredResume });
+    const sourceBacked = supportedSourceBackedDraft();
+    apiMocks.tailorResume.mockResolvedValue(sourceBacked);
+    apiMocks.createDraft.mockResolvedValue({ content: sourceBacked });
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -626,13 +800,13 @@ describe("TailorResumeDialog", () => {
       expect(exportMock).toHaveBeenCalledWith(
         expect.objectContaining({
           skills: ["Python", "FastAPI"],
-          projects: [expect.objectContaining({ name: "Analytical Engine" })],
-          links: expect.objectContaining({ linkedin: "https://linkedin.com/in/ada" }),
-          languages: [expect.objectContaining({ language: "Spanish" })],
-          licenses: [expect.objectContaining({ name: "Registered Engineer" })],
+          projects: [],
+          links: expect.objectContaining({ linkedin: null }),
+          languages: [],
+          licenses: [],
           work_history: [expect.objectContaining({ tailored_highlights: ["Built APIs"] })],
         }),
-        "Ada_Lovelace_Resume",
+        "Tailored_Resume",
       );
     }
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Use suggestion"))?.click());
@@ -642,6 +816,11 @@ describe("TailorResumeDialog", () => {
   it("shows source bullets when the mapping is unsafe", async () => {
     apiMocks.tailorResume.mockResolvedValue({
       ...tailoredResume,
+      tailoring_snapshot_version: "full-context-v1" as const,
+      source_resume_id: 10,
+      source_resume_content_id: 20,
+      source_schema_version: "source-resume-v5" as const,
+      source_revision_sha256: "revision",
       work_history: [{ ...tailoredResume.work_history[0], tailored_highlight_source_indices: [1] }],
     });
     apiMocks.createDraft.mockResolvedValue({ content: tailoredResume });
@@ -653,9 +832,247 @@ describe("TailorResumeDialog", () => {
     expect(renderedText()).toContain("Built APIs");
     expect(renderedText()).not.toContain("Built Python APIs");
     expect(container.querySelector('button[aria-label*="Keep original"]')).toBeNull();
+    expect(renderedText()).toContain("This draft no longer has a valid source mapping. Regenerate the draft before saving.");
+    expect(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"))?.disabled).toBe(true);
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"))?.click());
-    expect(apiMocks.createDraft.mock.calls[0]?.[0].content.work_history[0].tailored_highlights).toEqual(["Built APIs"]);
-    expect(apiMocks.createDraft.mock.calls[0]?.[0].content.work_history[0]).not.toHaveProperty("tailored_highlight_source_indices");
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close dialog")?.click());
+    expect(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save")?.disabled).toBe(true);
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Discard")?.click());
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["null snapshot version", { ...tailoredResume, tailoring_snapshot_version: null }],
+    ["omitted snapshot version", { ...tailoredResume }],
+    ["legacy full-resume-v1 snapshot", { ...tailoredResume, tailoring_snapshot_version: "full-resume-v1" as const }],
+    ["unknown snapshot version", { ...tailoredResume, tailoring_snapshot_version: "future-version-v99" as unknown as TailoredResume["tailoring_snapshot_version"] }],
+  ])("blocks Save in the rendered dialog for a %s", async (_label, draft) => {
+    await renderGeneratedDraft(draft);
+    expect(renderedText()).toContain("Regenerate the draft before saving.");
+    expect(saveResumeButton()?.disabled).toBe(true);
+    await act(async () => saveResumeButton()?.click());
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("blocks source-resume-v3 in the rendered dialog and its close confirmation", async () => {
+    await renderGeneratedDraft({ ...supportedSourceBackedDraft(), source_schema_version: "source-resume-v3" });
+    expect(renderedText()).toContain("Regenerate the draft before saving.");
+    expect(saveResumeButton()?.disabled).toBe(true);
+    await act(async () => saveResumeButton()?.click());
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close dialog")?.click());
+    expect(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save")?.disabled).toBe(true);
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a zero-evidence draft omits canonical_source_summary", async () => {
+    const explicitNullSummary = {
+      ...supportedSourceBackedDraft(),
+      professional_summary: null,
+      canonical_source_summary: null,
+      summary_evidence_ids: [],
+      summary_evidence: [],
+    };
+    expect(sourceBackedSnapshotIsSaveable(explicitNullSummary)).toBe(true);
+
+    const { canonical_source_summary: _canonicalSourceSummary, ...missingCanonicalSummary } = explicitNullSummary;
+    expect(Object.hasOwn(missingCanonicalSummary, "canonical_source_summary")).toBe(false);
+
+    await renderGeneratedDraft(missingCanonicalSummary);
+    expect(renderedText()).toContain("Regenerate the draft before saving.");
+    expect(saveResumeButton()?.disabled).toBe(true);
+    await act(async () => saveResumeButton()?.click());
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close dialog")?.click());
+    expect(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save")?.disabled).toBe(true);
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("saves an explicitly-null zero-evidence canonical summary through the rendered dialog", async () => {
+    const explicitNullSummary = {
+      ...supportedSourceBackedDraft(),
+      professional_summary: null,
+      canonical_source_summary: null,
+      summary_evidence_ids: [],
+      summary_evidence: [],
+    };
+    expect(Object.hasOwn(explicitNullSummary, "canonical_source_summary")).toBe(true);
+    expect(explicitNullSummary.canonical_source_summary).toBeNull();
+    expect(sourceBackedSnapshotIsSaveable(explicitNullSummary)).toBe(true);
+
+    const reviewed = reviewedResume(createReviewState(explicitNullSummary));
+    expect(Object.hasOwn(reviewed, "canonical_source_summary")).toBe(true);
+    expect(reviewed.canonical_source_summary).toBeNull();
+    expect(reviewed.professional_summary).toBeNull();
+    expect(reviewed.summary_evidence_ids).toEqual([]);
+
+    apiMocks.createDraft.mockResolvedValue({ id: 11, content: reviewed });
+    await renderGeneratedDraft(explicitNullSummary);
+    expect(renderedText()).not.toContain("Regenerate the draft before saving.");
+    expect(saveResumeButton()?.disabled).toBe(false);
+    await act(async () => saveResumeButton()?.click());
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalledWith({
+      job_id: 101,
+      content: expect.objectContaining({
+        canonical_source_summary: null,
+        professional_summary: null,
+        summary_evidence_ids: [],
+        summary_evidence: [],
+        tailoring_snapshot_version: "full-context-v1",
+        source_schema_version: "source-resume-v5",
+        source_resume_id: 10,
+        source_resume_content_id: 20,
+        source_revision_sha256: "revision",
+        work_history: [expect.objectContaining({
+          source_role_id: "00000000-0000-0000-0000-000000000099",
+          tailored_highlight_source_indices: [0],
+          selection_decisions: [expect.objectContaining({
+            source_id: "00000000-0000-0000-0000-000000000001",
+            final_included: true,
+            final_text: "Built Python APIs",
+            output_rank: 0,
+            evidence: [expect.objectContaining({ evidence_id: "role:0" })],
+          })],
+        })],
+      }),
+    }));
+  });
+
+  it.each([
+    ["unknown", "source-resume-v99" as unknown as TailoredResume["source_schema_version"]],
+    ["empty", "" as unknown as TailoredResume["source_schema_version"]],
+    ["null", null],
+    ["missing", undefined],
+  ])("blocks a %s source schema in the rendered dialog", async (_label, sourceSchemaVersion) => {
+    const draft = { ...supportedSourceBackedDraft(), source_schema_version: sourceSchemaVersion };
+    if (sourceSchemaVersion === undefined) delete draft.source_schema_version;
+    await renderGeneratedDraft(draft);
+    expect(renderedText()).toContain("Regenerate the draft before saving.");
+    expect(saveResumeButton()?.disabled).toBe(true);
+    await act(async () => saveResumeButton()?.click());
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("blocks an empty tailoring snapshot version in the rendered dialog", async () => {
+    await renderGeneratedDraft({ ...supportedSourceBackedDraft(), tailoring_snapshot_version: "" as unknown as TailoredResume["tailoring_snapshot_version"] });
+    expect(renderedText()).toContain("Regenerate the draft before saving.");
+    expect(saveResumeButton()?.disabled).toBe(true);
+    await act(async () => saveResumeButton()?.click());
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["lossless-complete-v2", "source-resume-v4"],
+    ["full-context-v1", "source-resume-v5"],
+  ] as const)("saves a valid %s draft with %s provenance", async (snapshotVersion, sourceSchemaVersion) => {
+    const draft = supportedSourceBackedDraft(snapshotVersion, sourceSchemaVersion);
+    apiMocks.createDraft.mockResolvedValue({ id: 10, content: draft });
+    await renderGeneratedDraft(draft);
+    expect(saveResumeButton()?.disabled).toBe(false);
+    await act(async () => saveResumeButton()?.click());
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalledWith({
+      job_id: 101,
+      content: expect.objectContaining({
+        tailoring_snapshot_version: snapshotVersion,
+        source_resume_id: 10,
+        source_resume_content_id: 20,
+        source_revision_sha256: "revision",
+        source_schema_version: sourceSchemaVersion,
+        work_history: [expect.objectContaining({
+          source_role_id: "00000000-0000-0000-0000-000000000099",
+          tailored_highlight_source_indices: [0],
+          tailored_highlights: ["Built Python APIs"],
+          selection_decisions: [expect.objectContaining({
+            source_id: "00000000-0000-0000-0000-000000000001",
+            source_index: 0,
+            final_included: true,
+            final_text: "Built Python APIs",
+            output_rank: 0,
+            evidence: [expect.objectContaining({ evidence_id: "role:0" })],
+          })],
+        })],
+      }),
+    }));
+  });
+
+  it("disables close-confirmation Save for an unsupported snapshot", async () => {
+    await renderGeneratedDraft({ ...tailoredResume });
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close dialog")?.click());
+    expect(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save")?.disabled).toBe(true);
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Discard")?.click());
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("keeps a valid source-backed reviewed draft saveable with its provenance", async () => {
+    const sourceBacked = supportedSourceBackedDraft();
+    const reviewed = reviewedResume(createReviewState(sourceBacked));
+    expect(sourceBackedSnapshotIsSaveable(reviewed)).toBe(true);
+    expect(reviewed.work_history[0]?.tailored_highlight_source_indices).toEqual([0]);
+    expect(reviewed.work_history[0]?.selection_decisions).toEqual(sourceBacked.work_history[0]?.selection_decisions);
+    apiMocks.tailorResume.mockResolvedValue(sourceBacked);
+    apiMocks.createDraft.mockResolvedValue({ id: 9, content: sourceBacked });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TailorResumeDialog jobId={101} open onOpenChange={vi.fn()} /></QueryClientProvider>);
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate tailored resume"))?.click();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(renderedText()).toContain("Save resume"));
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"))?.click();
+    });
+    await vi.waitFor(() => expect(apiMocks.createDraft).toHaveBeenCalledWith({ job_id: 101, content: expect.objectContaining({ source_resume_id: 10, source_resume_content_id: 20, source_revision_sha256: "revision", work_history: [expect.objectContaining({ tailored_highlight_source_indices: [0], selection_decisions: sourceBacked.work_history[0]?.selection_decisions })] }) }));
+  });
+
+  it("blocks the live summary-mismatch shape before it reaches Save", async () => {
+    const invalid = {
+      ...supportedSourceBackedDraft(),
+      // This mirrors the live v5 shape: display sections contain wrapped text,
+      // but the backend's canonical summary is null because no primary summary
+      // source item exists.
+      canonical_source_summary: null,
+      professional_summary: "Synthetic wrapped display line.",
+      summary_evidence_ids: [],
+      summary_evidence: [],
+      canonical_sections: [{
+        section: "summary" as const,
+        canonical_order: 0,
+        items: [{
+          source_id: "00000000-0000-0000-0000-000000000010",
+          text: "Synthetic wrapped display line.",
+          canonical_order: 0,
+        }],
+      }],
+    };
+
+    expect(sourceBackedSnapshotIsSaveable(invalid)).toBe(false);
+    await renderGeneratedDraft(invalid);
+    expect(saveResumeButton()?.disabled).toBe(true);
+    await act(async () => saveResumeButton()?.click());
+    expect(apiMocks.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("keeps an evidence-backed summary saveable when the API contract permits it", () => {
+    const evidenceBacked = {
+      ...supportedSourceBackedDraft(),
+      professional_summary: "Synthetic supported tailored summary.",
+      summary_evidence_ids: ["summary:0"],
+      summary_evidence: [{
+        evidence_id: "summary:0",
+        excerpt: "Synthetic source summary.",
+        section: "summary",
+        relevance_label: "Direct evidence",
+      }],
+    };
+
+    expect(sourceBackedSnapshotIsSaveable(evidenceBacked)).toBe(true);
+  });
+
+  it("does not submit legacy full-resume snapshots that the source validator cannot persist", () => {
+    expect(sourceBackedSnapshotIsSaveable({ ...tailoredResume, tailoring_snapshot_version: "full-resume-v1" })).toBe(false);
   });
 
   it("shows moved-higher for reorder-only bullets without review controls", async () => {
@@ -838,7 +1255,7 @@ describe("TailorResumeDialog", () => {
 
   it("shows Original kept when a read-only saved draft restored the source bullet", async () => {
     const saved = {
-      ...tailoredResume,
+      ...supportedSourceBackedDraft(),
       work_history: [{
         ...tailoredResume.work_history[0]!,
         tailored_highlights: ["Built APIs"],
@@ -934,7 +1351,7 @@ describe("TailorResumeDialog", () => {
 
   it("preserves saved original wording on editable reopen until the reviewer changes it", async () => {
     const saved = {
-      ...tailoredResume,
+      ...supportedSourceBackedDraft(),
       work_history: [{
         ...tailoredResume.work_history[0]!,
         original_highlights: ["Built APIs", "Shipped dashboards"],
