@@ -6,14 +6,14 @@ import { ApplicationWorkspace } from "@/components/applications/application-work
 import { PackagePreview } from "@/components/applications/package-preview";
 
 const apiMocks = vi.hoisted(() => ({
-  getWorkspace: vi.fn(), getPackage: vi.fn(), patchPreparation: vi.fn(), createPackage: vi.fn(), approvePreparation: vi.fn(),
+  getWorkspace: vi.fn(), getPackage: vi.fn(), patchPreparation: vi.fn(), createPackage: vi.fn(), approvePreparation: vi.fn(), createAttempt: vi.fn(), getTimeline: vi.fn(),
   listDrafts: vi.fn(), getDraft: vi.fn(), getByJobId: vi.fn(), tailorResume: vi.fn(), generate: vi.fn(),
   ApiError: class ApiError extends Error { status: number; constructor(status = 500) { super("API error"); this.status = status; } },
 }));
 
 vi.mock("@/lib/api", () => ({
   ApiError: apiMocks.ApiError,
-  applicationsApi: { getWorkspace: apiMocks.getWorkspace, getPackage: apiMocks.getPackage, patchPreparation: apiMocks.patchPreparation, createPackage: apiMocks.createPackage, approvePreparation: apiMocks.approvePreparation },
+  applicationsApi: { getWorkspace: apiMocks.getWorkspace, getPackage: apiMocks.getPackage, patchPreparation: apiMocks.patchPreparation, createPackage: apiMocks.createPackage, approvePreparation: apiMocks.approvePreparation, createAttempt: apiMocks.createAttempt, getTimeline: apiMocks.getTimeline },
   resumeApi: { listDrafts: apiMocks.listDrafts, getDraft: apiMocks.getDraft, tailorResume: apiMocks.tailorResume },
   coverLettersApi: { getByJobId: apiMocks.getByJobId, generate: apiMocks.generate },
 }));
@@ -68,6 +68,44 @@ describe("ApplicationWorkspace saved-document actions", () => {
   let node: HTMLDivElement | null = null;
 
   afterEach(() => { root?.unmount(); node?.remove(); root = null; node = null; vi.clearAllMocks(); });
+
+  it("creates a fresh approved-package attempt and opens only the server URL", async () => {
+    const approved = { id: 12, application_id: 7, revision: 2, content_sha256: "b".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-02T00:00:00Z", content: {} };
+    apiMocks.getWorkspace.mockResolvedValue(workspace({ job: { ...workspace().job, open_job_available: true }, preparation: preparation({ state: "ready", approval_current: true, approved_package_id: 12 }), approved_package: approved }));
+    apiMocks.getTimeline.mockResolvedValue({ application_id: 7, items: [], next_cursor: null });
+    apiMocks.createAttempt.mockResolvedValue({ attempt_id: "attempt-1", expires_at: "2026-01-03T00:00:00Z", external_url: "https://employer.example.test/apply" });
+    apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404));
+    const handoff = { close: vi.fn(), location: { assign: vi.fn() }, opener: window } as unknown as Window;
+    const open = vi.spyOn(window, "open").mockImplementation(() => handoff);
+    node = document.createElement("div"); document.body.appendChild(node); root = createRoot(node);
+    await act(async () => { root?.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ApplicationWorkspace applicationId={7} /></QueryClientProvider>); });
+    const openButton = () => Array.from(node!.querySelectorAll("button")).find((item) => item.textContent?.includes("Open application"));
+    await vi.waitFor(() => expect(openButton()).toBeTruthy());
+    await act(async () => { openButton()?.click(); });
+    await vi.waitFor(() => expect(apiMocks.createAttempt).toHaveBeenCalledWith(7, 3, 12, "b".repeat(64)));
+    expect(open).toHaveBeenCalledWith("", "_blank");
+    expect(handoff.location.assign).toHaveBeenCalledWith("https://employer.example.test/apply");
+    open.mockRestore();
+  });
+
+  it("does not open an external page when attempt creation fails", async () => {
+    const approved = { id: 12, application_id: 7, revision: 2, content_sha256: "b".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-02T00:00:00Z", content: {} };
+    apiMocks.getWorkspace.mockResolvedValue(workspace({ job: { ...workspace().job, open_job_available: true }, preparation: preparation({ state: "ready", approval_current: true, approved_package_id: 12 }), approved_package: approved }));
+    apiMocks.getTimeline.mockResolvedValue({ application_id: 7, items: [], next_cursor: null });
+    apiMocks.createAttempt.mockRejectedValue(new apiMocks.ApiError(409));
+    apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404));
+    const handoff = { close: vi.fn(), location: { assign: vi.fn() }, opener: window } as unknown as Window;
+    const open = vi.spyOn(window, "open").mockImplementation(() => handoff);
+    node = document.createElement("div"); document.body.appendChild(node); root = createRoot(node);
+    await act(async () => { root?.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ApplicationWorkspace applicationId={7} /></QueryClientProvider>); });
+    const openButton = () => Array.from(node!.querySelectorAll("button")).find((item) => item.textContent?.includes("Open application"));
+    await vi.waitFor(() => expect(openButton()).toBeTruthy());
+    await act(async () => { openButton()?.click(); });
+    await vi.waitFor(() => expect(apiMocks.getWorkspace).toHaveBeenCalledTimes(2));
+    expect(open).toHaveBeenCalledWith("", "_blank");
+    expect(handoff.close).toHaveBeenCalled();
+    open.mockRestore();
+  });
 
   it("lazily views a non-approved historical package and returns to the current preview", async () => {
     const current = { id: 12, application_id: 7, revision: 2, content_sha256: "b".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-02T00:00:00Z", content: { job: { title: "Current role" }, resume: { professional_summary: "Current resume" }, cover_letter: { content: "Current letter" } } };

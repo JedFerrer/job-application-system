@@ -9,6 +9,7 @@ from types import ModuleType
 from app.domain.jobs.identity import (
     canonicalize_job_url,
     resolve_source_identity,
+    safe_employer_navigation_url,
     scoped_key,
     strong_employer_apply_url,
 )
@@ -77,6 +78,47 @@ def test_strong_employer_apply_url_rejects_generic_aggregators_and_malformed() -
     assert strong_employer_apply_url("https://example.test/jobs/9") is None
     assert strong_employer_apply_url("not-a-url") is None
     assert strong_employer_apply_url("") is None
+
+
+def test_safe_employer_navigation_url_projects_only_validated_identity_material() -> None:
+    lever_id = "abc123de-f456-7890-abcd-ef1234567890"
+    cases = (
+        (
+            "https://boards.greenhouse.io/acme/jobs/123?token=secret&utm_source=x#apply",
+            "https://boards.greenhouse.io/acme/jobs/123",
+        ),
+        (
+            f"https://jobs.lever.co/acme/{lever_id}?token=secret#apply",
+            f"https://jobs.lever.co/acme/{lever_id}",
+        ),
+        (
+            "https://acme.myworkdayjobs.com/en-US/job/City/Role_JR12345?token=secret#apply",
+            "https://acme.myworkdayjobs.com/en-US/job/City/Role_JR12345",
+        ),
+        (
+            "https://jobs.ashbyhq.com/acme/aaaaaaaaaaaaaaaaaaaa?token=secret#apply",
+            "https://jobs.ashbyhq.com/acme/aaaaaaaaaaaaaaaaaaaa",
+        ),
+        (
+            "https://www.indeed.com/viewjob?jk=abc123def456&token=secret&utm_source=x#apply",
+            "https://www.indeed.com/viewjob?jk=abc123def456",
+        ),
+        (
+            "https://www.linkedin.com/jobs/view/1234567890?token=secret#apply",
+            "https://www.linkedin.com/jobs/view/1234567890",
+        ),
+        (
+            "https://www.linkedin.com/jobs/search/?currentJobId=1234567890&token=secret#apply",
+            "https://www.linkedin.com/jobs/search/?currentJobId=1234567890",
+        ),
+    )
+    for value, expected in cases:
+        assert safe_employer_navigation_url(value) == expected
+
+    assert (
+        safe_employer_navigation_url("https://careers.example.test/apply/shared?token=secret")
+        is None
+    )
 
 
 def test_malformed_port_is_rejected_without_raising() -> None:

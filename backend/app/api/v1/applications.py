@@ -6,7 +6,12 @@ from datetime import date
 
 from fastapi import APIRouter, Header, Query, Response, status
 
-from app.api.deps import ApplicationPreparationServiceDep, ApplicationServiceDep, CurrentUser
+from app.api.deps import (
+    ApplicationAttemptServiceDep,
+    ApplicationPreparationServiceDep,
+    ApplicationServiceDep,
+    CurrentUser,
+)
 from app.domain.applications.schemas import (
     ApplicationActionCenterResponse,
     ApplicationActivityResponse,
@@ -15,15 +20,47 @@ from app.domain.applications.schemas import (
     ApplicationListResponse,
     ApplicationPackageResponse,
     ApplicationResponse,
+    ApplicationTimelinePage,
     ApplicationUpdate,
     ApplicationWorkspaceResponse,
     ApprovePreparationRequest,
+    AttemptCreateRequest,
+    AttemptResponse,
     CreatePackageRequest,
     PreparationPatch,
     PreparationResponse,
 )
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+
+
+@router.get("/{application_id}/timeline", response_model=ApplicationTimelinePage)
+async def get_application_timeline(
+    application_id: int,
+    current_user: CurrentUser,
+    service: ApplicationServiceDep,
+    cursor: str | None = None,
+    limit: int = Query(default=25, ge=1, le=100),
+) -> ApplicationTimelinePage:
+    return await service.timeline(
+        user_id=current_user.id, application_id=application_id,
+        limit=limit, cursor=cursor,
+    )
+
+
+@router.post(
+    "/{application_id}/attempts", response_model=AttemptResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_application_attempt(
+    application_id: int,
+    payload: AttemptCreateRequest,
+    current_user: CurrentUser,
+    service: ApplicationAttemptServiceDep,
+) -> AttemptResponse:
+    return await service.create(
+        user_id=current_user.id, application_id=application_id, request=payload
+    )
 
 
 @router.post("", response_model=ApplicationResponse, status_code=status.HTTP_201_CREATED)

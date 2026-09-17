@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.application_event import ApplicationEvent
@@ -14,6 +16,46 @@ from app.models.application_form_field import ApplicationFormField
 from app.models.application_form_session import ApplicationFormSession
 from app.models.extension_refresh_token import ExtensionRefreshToken
 from app.models.extension_session import ExtensionSession
+
+
+@dataclass(frozen=True)
+class EventReservation:
+    event: ApplicationEvent
+    created: bool
+
+
+_EVENT_ID_UNIQUE_CONSTRAINT = "uq_application_event_user_event_id"
+_UNIQUE_VIOLATION_SQLSTATE = "23505"
+
+
+def _is_event_id_unique_violation(exc: IntegrityError) -> bool:
+    """Return whether ``exc`` is the event-id uniqueness violation we recover."""
+    pending: list[BaseException] = [exc]
+    visited: set[int] = set()
+    has_unique_sqlstate = False
+    has_event_id_constraint = False
+
+    while pending and len(visited) < 4:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+
+        sqlstate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        has_unique_sqlstate = has_unique_sqlstate or sqlstate == _UNIQUE_VIOLATION_SQLSTATE
+        has_event_id_constraint = has_event_id_constraint or (
+            getattr(current, "constraint_name", None) == _EVENT_ID_UNIQUE_CONSTRAINT
+        )
+
+        for related in (
+            getattr(current, "orig", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(related, BaseException):
+                pending.append(related)
+
+    return has_unique_sqlstate and has_event_id_constraint
 
 
 class ExtensionRepository:
@@ -176,19 +218,55 @@ class ExtensionRepository:
         source_url: str | None = None,
         page_url: str | None = None,
         metadata: dict[str, object] | None = None,
+        attempt_id: str | None = None,
+        event_id: str | None = None,
     ) -> ApplicationEvent:
+        return (await self.reserve_event(
+            user_id=user_id, event_type=event_type, application_id=application_id,
+            job_id=job_id, source_url=source_url, page_url=page_url, metadata=metadata,
+            attempt_id=attempt_id, event_id=event_id,
+        )).event
+
+    async def reserve_event(
+        self,
+        *,
+        user_id: int,
+        event_type: str,
+        application_id: int | None = None,
+        job_id: int | None = None,
+        source_url: str | None = None,
+        page_url: str | None = None,
+        metadata: dict[str, object] | None = None,
+        attempt_id: str | None = None,
+        event_id: str | None = None,
+    ) -> EventReservation:
         event = ApplicationEvent(
-            user_id=user_id,
-            application_id=application_id,
-            job_id=job_id,
-            event_type=event_type,
-            source_url=source_url,
-            page_url=page_url,
-            metadata_=metadata or {},
+            user_id=user_id, application_id=application_id, job_id=job_id,
+            event_type=event_type, source_url=source_url, page_url=page_url,
+            metadata_=metadata or {}, attempt_id=attempt_id, event_id=event_id,
         )
-        self._session.add(event)
-        await self._session.flush()
-        return event
+        if event_id is None:
+            self._session.add(event)
+            await self._session.flush()
+            return EventReservation(event=event, created=True)
+        try:
+            async with self._session.begin_nested():
+                self._session.add(event)
+                await self._session.flush()
+            return EventReservation(event=event, created=True)
+        except IntegrityError as exc:
+            if not _is_event_id_unique_violation(exc):
+                raise
+            existing = await self.get_event_by_id(user_id=user_id, event_id=event_id)
+            if existing is None:
+                raise
+            return EventReservation(event=existing, created=False)
+
+    async def get_event_by_id(self, *, user_id: int, event_id: str) -> ApplicationEvent | None:
+        result = await self._session.execute(select(ApplicationEvent).where(
+            ApplicationEvent.user_id == user_id, ApplicationEvent.event_id == event_id
+        ))
+        return result.scalar_one_or_none()
 
     async def list_events_for_application(
         self, *, application_id: int, user_id: int

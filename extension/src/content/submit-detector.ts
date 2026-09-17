@@ -7,7 +7,21 @@
 import { sendMessage } from "../shared/messages";
 import { SUBMIT_BUTTON_PATTERNS, CONFIRMATION_PATTERNS } from "../shared/constants";
 
-let submitClicked = false;
+const INITIAL_CONFIRMATION_DELAY_MS = 3_000;
+const LATE_CONFIRMATION_WINDOW_MS = 30_000;
+
+type PendingSubmitAttempt = {
+  pageUrl: string;
+  initialTimer: ReturnType<typeof setTimeout>;
+  observer: MutationObserver | null;
+  expiryTimer: ReturnType<typeof setTimeout> | null;
+  unconfirmedEmitted: boolean;
+  confirmationEmitted: boolean;
+  confirmationEventId: string;
+};
+
+let pendingSubmit: PendingSubmitAttempt | null = null;
+let pageLoadConfirmationEmitted = false;
 
 export function initSubmitDetector(): void {
   // Detect submit button clicks
@@ -19,6 +33,9 @@ export function initSubmitDetector(): void {
   } else {
     window.addEventListener("load", checkConfirmation);
   }
+
+  window.addEventListener("pagehide", clearPendingSubmit);
+  window.addEventListener("unload", clearPendingSubmit);
 }
 
 function handleSubmitClick(event: MouseEvent): void {
@@ -31,42 +48,100 @@ function handleSubmitClick(event: MouseEvent): void {
 
   if (!isSubmit) return;
 
-  submitClicked = true;
+  clearPendingSubmit();
+  const attempt: PendingSubmitAttempt = {
+    pageUrl: window.location.href,
+    initialTimer: setTimeout(() => handleInitialConfirmationCheck(attempt), INITIAL_CONFIRMATION_DELAY_MS),
+    observer: null,
+    expiryTimer: null,
+    unconfirmedEmitted: false,
+    confirmationEmitted: false,
+    confirmationEventId: crypto.randomUUID(),
+  };
+  pendingSubmit = attempt;
+}
 
-  // Don't send immediately — wait to see if confirmation appears
-  // (page may navigate or show a success message)
-  setTimeout(() => {
-    if (!submitClicked) return; // Already handled by confirmation detection
+function handleInitialConfirmationCheck(attempt: PendingSubmitAttempt): void {
+  if (!isCurrentAttempt(attempt)) return;
 
-    // Check for confirmation text on the current page
-    const confirmed = scanForConfirmation();
-    if (confirmed) {
-      sendMessage({
-        type: "CONFIRMATION_DETECTED",
-        payload: {
-          pageUrl: window.location.href,
-          confirmationText: confirmed,
-        },
-      }).catch(() => {});
-    } else {
-      // No confirmation detected — ask user
-      sendMessage({
-        type: "SUBMIT_CLICKED",
-        payload: { pageUrl: window.location.href },
-      }).catch(() => {});
-    }
-  }, 3000); // Wait 3 seconds for page to update/redirect
+  const confirmed = scanForConfirmation();
+  if (confirmed) {
+    emitAttemptConfirmation(attempt, confirmed);
+    return;
+  }
+
+  // Observe first, then scan again. This closes the gap where a success node
+  // could be inserted after the initial scan but before observation begins.
+  const observer = new MutationObserver(() => {
+    if (!isCurrentAttempt(attempt)) return;
+    const lateConfirmation = scanForConfirmation();
+    if (lateConfirmation) emitAttemptConfirmation(attempt, lateConfirmation);
+  });
+  observer.observe(document, { childList: true, subtree: true });
+  attempt.observer = observer;
+
+  const confirmationAfterObserve = scanForConfirmation();
+  if (confirmationAfterObserve) {
+    emitAttemptConfirmation(attempt, confirmationAfterObserve);
+    return;
+  }
+
+  if (!attempt.unconfirmedEmitted) {
+    attempt.unconfirmedEmitted = true;
+    sendMessage({
+      type: "SUBMIT_CLICKED",
+      payload: { pageUrl: attempt.pageUrl },
+    }).catch(() => {});
+  }
+  attempt.expiryTimer = setTimeout(() => {
+    if (pendingSubmit === attempt) clearPendingSubmit();
+  }, LATE_CONFIRMATION_WINDOW_MS);
+}
+
+function isCurrentAttempt(attempt: PendingSubmitAttempt): boolean {
+  if (pendingSubmit !== attempt) return false;
+  if (window.location.href === attempt.pageUrl) return true;
+  clearPendingSubmit();
+  return false;
+}
+
+function emitAttemptConfirmation(attempt: PendingSubmitAttempt, confirmationText: string): void {
+  if (!isCurrentAttempt(attempt) || attempt.confirmationEmitted) return;
+  attempt.confirmationEmitted = true;
+  sendMessage({
+    type: "CONFIRMATION_DETECTED",
+    payload: {
+      pageUrl: attempt.pageUrl,
+      confirmationText,
+      eventId: attempt.confirmationEventId,
+    },
+  }).catch(() => {});
+  clearPendingSubmit();
+}
+
+function clearPendingSubmit(): void {
+  if (!pendingSubmit) return;
+  clearTimeout(pendingSubmit.initialTimer);
+  if (pendingSubmit.expiryTimer) clearTimeout(pendingSubmit.expiryTimer);
+  pendingSubmit.observer?.disconnect();
+  pendingSubmit = null;
 }
 
 function checkConfirmation(): void {
   const confirmed = scanForConfirmation();
-  if (confirmed) {
-    submitClicked = false; // Cancel pending submit prompt
+  if (!confirmed) return;
+  if (pendingSubmit && isCurrentAttempt(pendingSubmit)) {
+    emitAttemptConfirmation(pendingSubmit, confirmed);
+    return;
+  }
+  if (!pageLoadConfirmationEmitted) {
+    pageLoadConfirmationEmitted = true;
     sendMessage({
       type: "CONFIRMATION_DETECTED",
       payload: {
         pageUrl: window.location.href,
         confirmationText: confirmed,
+        eventId: crypto.randomUUID(),
       },
     }).catch(() => {});
   }
@@ -93,7 +168,7 @@ export function scanForConfirmation(): string | null {
   }
 
   // Also check the full page body for confirmation (when page content is minimal)
-  const bodyText = document.body.innerText.slice(0, 1000);
+  const bodyText = (document.body.innerText ?? document.body.textContent ?? "").slice(0, 1000);
   for (const pattern of CONFIRMATION_PATTERNS) {
     const match = bodyText.match(pattern);
     if (match) {

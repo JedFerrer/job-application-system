@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.models.application import Application
+from app.models.application_attempt import ApplicationAttempt
 from app.models.application_event import ApplicationEvent
 from app.models.application_form_field import ApplicationFormField
 from app.models.application_form_session import ApplicationFormSession
@@ -28,6 +29,7 @@ from app.models.web_refresh_session import WebRefreshSession
 
 __all__ = [
     "Application",
+    "ApplicationAttempt",
     "ApplicationEvent",
     "ApplicationPackage",
     "ApplicationPreparation",

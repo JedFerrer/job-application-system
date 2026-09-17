@@ -71,6 +71,19 @@ export default function ConnectedAppsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="mb-6 flex flex-col gap-3 rounded-md border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Connect or reconnect Chrome</p>
+              <p className="text-sm text-muted-foreground">
+                Generate a new pairing code to connect a new extension or reconnect
+                one that was revoked.
+              </p>
+            </div>
+            <Button asChild className="shrink-0">
+              <a href="/extension/connect">Pair Chrome extension</a>
+            </Button>
+          </div>
+
           {isLoading && (
             <p className="text-sm text-muted-foreground">Loading sessions…</p>
           )}
@@ -126,6 +139,11 @@ export default function ConnectedAppsPage() {
                       {session.last_used_at &&
                         ` · Last used ${new Date(session.last_used_at).toLocaleDateString()}`}
                     </p>
+                    {session.revoked && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        This session was revoked. Pair the extension again to reconnect it.
+                      </p>
+                    )}
                   </div>
                   {!session.revoked && (
                     <Button

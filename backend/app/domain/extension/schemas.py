@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ── Auth ────────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,9 @@ EventType = Literal[
     "submit_clicked",
     "confirmation_detected",
     "user_marked_applied",
+    "opened",
+    "submission_unconfirmed",
+    "cancelled",
 ]
 
 
@@ -100,6 +104,8 @@ class ApplicationEventRequest(BaseModel):
     event_type: EventType
     page_url: str | None = Field(default=None, max_length=2048)
     metadata: dict[str, object] = Field(default_factory=dict)
+    attempt_id: UUID | None = None
+    event_id: UUID | None = None
 
 
 class ApplicationEventResponse(BaseModel):
@@ -107,12 +113,15 @@ class ApplicationEventResponse(BaseModel):
     job_id: int
     status: str
     event_recorded: bool
+    idempotent: bool = False
 
 
 class MarkAppliedRequest(BaseModel):
     job_url: str = Field(..., max_length=2048)
     confirmation_source: Literal["confirmation_detected", "user_marked_applied"]
-    confirmation_text: str | None = Field(default=None, max_length=1000)
+    confirmation_text: str | None = Field(default=None, max_length=300)
+    attempt_id: UUID | None = None
+    event_id: UUID | None = None
 
 
 class MarkAppliedResponse(BaseModel):
@@ -120,6 +129,20 @@ class MarkAppliedResponse(BaseModel):
     job_id: int
     status: str
     marked_applied: bool
+    idempotent: bool = False
+
+
+class AttemptCandidate(BaseModel):
+    attempt_id: str
+    application_id: int
+    role: str
+    company: str | None
+    expires_at: datetime
+    progress: str
+
+
+class AttemptResolutionResponse(BaseModel):
+    candidates: list[AttemptCandidate]
 
 
 class ApplicationTimelineResponse(BaseModel):
@@ -166,11 +189,36 @@ class FieldMappingResponse(BaseModel):
     mappings: list[FieldMappingItem]
 
 
+class FillExecutionResult(BaseModel):
+    attempted: int = Field(ge=0)
+    filled: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+    failed: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_totals(self) -> FillExecutionResult:
+        if self.attempted != self.filled + self.failed:
+            raise ValueError("attempted must equal filled plus failed")
+        return self
+
+
 class FormFillLogRequest(BaseModel):
     fields: list[dict[str, object]]  # DetectedField serialized
     mappings: list[dict[str, object]]  # FieldMapping serialized
     domain: str | None = None
     ats_type: str | None = None
+    attempt_id: UUID | None = None
+    event_id: UUID | None = None
+    execution: FillExecutionResult | None = None
+
+    @model_validator(mode="after")
+    def validate_execution_bounds(self) -> FormFillLogRequest:
+        if (
+            self.execution is not None
+            and self.execution.attempted + self.execution.skipped != len(self.mappings)
+        ):
+            raise ValueError("execution counts must account for every mapping")
+        return self
 
 
 class FormFillLogResponse(BaseModel):

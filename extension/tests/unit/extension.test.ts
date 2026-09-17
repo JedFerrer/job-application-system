@@ -16,6 +16,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { fillFields } from "../../src/content/form-filler";
+import { scanForm } from "../../src/content/form-scanner";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -32,7 +34,7 @@ function setupDOM(html: string): { container: HTMLElement } {
  * Creates a mock chrome.runtime.sendMessage for testing.
  */
 function mockSendMessage() {
-  const sendMessage = vi.fn();
+  const sendMessage = vi.fn().mockResolvedValue(undefined);
   (globalThis as any).chrome = {
     runtime: {
       sendMessage,
@@ -150,6 +152,23 @@ describe("Apply Click Detection", () => {
 // ── Form Scanning Tests ────────────────────────────────────────────────
 
 describe("Form Scanning", () => {
+  it("keeps semantically duplicate fields with distinct DOM ids and preserves u2c-failed", () => {
+    setupDOM(`
+      <label for="real-first">First Name</label><input id="real-first" type="text" />
+      <label for="u2c-first">First Name</label><input id="u2c-first" type="text" />
+      <label for="u2c-failed">Forced failed fill</label><select id="u2c-failed" autocomplete="given-name"><option value=""></option><option value="qa-a">qa-a</option></select>
+    `);
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = () => ({ width: 1, height: 1 } as DOMRect);
+    try {
+      const fields = scanForm();
+      expect(fields.map((item) => item.elementId)).toEqual(expect.arrayContaining(["real-first", "u2c-first", "u2c-failed"]));
+      expect(fields.find((item) => item.elementId === "u2c-failed")).toMatchObject({ autocomplete: "given-name", inputType: "select", options: ["qa-a"] });
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalRect;
+    }
+  });
+
   it("scans visible form fields", () => {
     mockSendMessage();
     setupDOM(`
@@ -284,6 +303,132 @@ describe("Sensitive Field Detection", () => {
   });
 });
 
+describe("Live fill-time label protection", () => {
+  it("skips a sensitive conventional associated label", () => {
+    setupDOM(`<label for="citizenship">Citizenship status</label><input id="citizenship" />`);
+    const result = fillFields([{ elementId: "citizenship", profilePath: "personal.first_name", action: "fill", value: "yes", selectorPath: "#citizenship" }]);
+    expect((document.getElementById("citizenship") as HTMLInputElement).value).toBe("");
+    expect(result).toEqual({ attempted: 0, filled: 0, skipped: 1, failed: 0 });
+  });
+
+  it("skips sensitive wording supplied by a wrapping label", () => {
+    setupDOM(`<label>Are you legally authorized to work in this country?<input id="auth-field" /></label>`);
+    const result = fillFields([{ elementId: "auth-field", profilePath: "personal.first_name", action: "fill", value: "yes", selectorPath: "#auth-field" }]);
+    expect((document.getElementById("auth-field") as HTMLInputElement).value).toBe("");
+    expect(result).toEqual({ attempted: 0, filled: 0, skipped: 1, failed: 0 });
+  });
+
+  it("skips sensitive wording supplied by aria-labelledby", () => {
+    setupDOM(`<span id="authorization-label">Are you legally authorized to work in this country?</span><input id="auth-field" aria-labelledby="authorization-label" />`);
+    const result = fillFields([{ elementId: "auth-field", profilePath: "personal.first_name", action: "fill", value: "yes", selectorPath: "#auth-field" }]);
+    expect((document.getElementById("auth-field") as HTMLInputElement).value).toBe("");
+    expect(result).toEqual({ attempted: 0, filled: 0, skipped: 1, failed: 0 });
+  });
+
+  it("fills an ordinary associated label without submitting the form", () => {
+    setupDOM(`<form><label for="name">Preferred name</label><input id="name" /><button type="submit">Submit</button></form>`);
+    const form = document.querySelector("form")!;
+    const submit = vi.spyOn(form, "submit");
+    const requestSubmit = vi.spyOn(form, "requestSubmit");
+    const click = vi.spyOn(document.querySelector("button")!, "click");
+    const result = fillFields([{ elementId: "name", profilePath: "personal.first_name", action: "fill", value: "Jane", selectorPath: "#name" }]);
+    expect(result).toEqual({ attempted: 1, filled: 1, skipped: 0, failed: 0 });
+    expect(submit).not.toHaveBeenCalled(); expect(requestSubmit).not.toHaveBeenCalled(); expect(click).not.toHaveBeenCalled();
+  });
+});
+
+describe("Service-worker production handlers", () => {
+  it("clears only the navigated bound tab for an unsupported destination", async () => {
+    const storage: Record<string, unknown> = {};
+    const listener = { addListener: vi.fn() };
+    (globalThis as any).chrome = {
+      runtime: { onInstalled: listener, onStartup: listener, onMessage: listener, sendMessage: vi.fn().mockResolvedValue(undefined) },
+      tabs: {
+        onUpdated: listener, onRemoved: listener,
+        query: vi.fn().mockResolvedValue([]), get: vi.fn(), sendMessage: vi.fn(),
+      },
+      storage: { session: {
+        get: vi.fn(async (keys: string | string[] | null) => {
+          if (keys === null) return { ...storage };
+          const list = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(list.filter((key) => key in storage).map((key) => [key, storage[key]]));
+        }),
+        set: vi.fn(async (value: Record<string, unknown>) => Object.assign(storage, value)),
+        remove: vi.fn(async (keys: string | string[]) => { for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key]; }),
+      } },
+    };
+    vi.resetModules();
+    const tabContext = await import("../../src/background/tab-context");
+    const worker = await import("../../src/background/service-worker");
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    await tabContext.setAttemptContext(1, { attemptId: "attempt-a", applicationId: 1, jobId: 1, expiresAt, host: "jobs.example.test", bindingState: "bound" });
+    await tabContext.setDetectedFields(1, [{ elementId: "a" }]);
+    await tabContext.setAttemptContext(2, { attemptId: "attempt-b", applicationId: 2, jobId: 2, expiresAt, host: "jobs.example.test", bindingState: "bound" });
+    await worker.handleTabUpdated(1, { url: "chrome://newtab/" });
+    expect(await tabContext.getAttemptContext(1)).toBeNull();
+    expect(await tabContext.getDetectedFields(1)).toBeUndefined();
+    expect((await tabContext.getAttemptContext(2))?.attemptId).toBe("attempt-b");
+  });
+});
+
+describe("Content-script dynamic form detection", () => {
+  it("detects ordinary mutations and mutations after document.body is replaced", async () => {
+    vi.useFakeTimers();
+    const { sendMessage } = mockSendMessage();
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const innerTextDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText");
+    HTMLElement.prototype.getBoundingClientRect = () => ({ width: 1, height: 1 } as DOMRect);
+    Object.defineProperty(HTMLElement.prototype, "innerText", {
+      configurable: true,
+      get() { return this.textContent ?? ""; },
+    });
+
+    try {
+      vi.resetModules();
+      await import("../../src/content/index");
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+
+      const ordinaryField = document.createElement("input");
+      ordinaryField.id = "u2c-normal-mutation-probe";
+      ordinaryField.autocomplete = "given-name";
+      document.body.appendChild(ordinaryField);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        type: "FORM_DETECTED",
+        payload: expect.objectContaining({
+          fields: expect.arrayContaining([expect.objectContaining({ elementId: "u2c-normal-mutation-probe" })]),
+        }),
+      }));
+
+      sendMessage.mockClear();
+      const replacementBody = document.createElement("body");
+      document.documentElement.replaceChild(replacementBody, document.body);
+      await Promise.resolve();
+
+      const replacementField = document.createElement("input");
+      replacementField.id = "u2c-body-replacement-probe";
+      replacementField.autocomplete = "given-name";
+      replacementBody.appendChild(replacementField);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        type: "FORM_DETECTED",
+        payload: expect.objectContaining({
+          fields: expect.arrayContaining([expect.objectContaining({ elementId: "u2c-body-replacement-probe" })]),
+        }),
+      }));
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalRect;
+      if (innerTextDescriptor) Object.defineProperty(HTMLElement.prototype, "innerText", innerTextDescriptor);
+      else delete (HTMLElement.prototype as { innerText?: string }).innerText;
+      vi.useRealTimers();
+    }
+  });
+});
+
 // ── Field Mapping Tiers ────────────────────────────────────────────────
 
 describe("Field Mapping Tiers", () => {
@@ -315,6 +460,65 @@ describe("Field Mapping Tiers", () => {
 // ── Form Fill Event Dispatching ─────────────────────────────────────────
 
 describe("Form Fill Event Dispatching", () => {
+  it("continues after an unmapped select fails and preserves actual accounting", () => {
+    setupDOM(`
+      <input id="before" type="text" />
+      <select id="unmatched"><option value="">Choose one</option><option value="other">Other</option></select>
+      <input id="after" type="text" />
+    `);
+
+    const result = fillFields([
+      { elementId: "before", profilePath: "personal.first_name", action: "fill", value: "First", selectorPath: "#before" },
+      { elementId: "unmatched", profilePath: "personal.first_name", action: "fill", value: "No such option", selectorPath: "#unmatched" },
+      { elementId: "after", profilePath: "personal.first_name", action: "fill", value: "Last", selectorPath: "#after" },
+    ] as any);
+
+    expect((document.getElementById("before") as HTMLInputElement).value).toBe("First");
+    expect((document.getElementById("unmatched") as HTMLSelectElement).value).not.toBe("No such option");
+    expect((document.getElementById("after") as HTMLInputElement).value).toBe("Last");
+    expect(result).toEqual({ attempted: 3, filled: 2, failed: 1, skipped: 0 });
+    expect(result.attempted).toBe(result.filled + result.failed);
+    expect(result.attempted + result.skipped).toBe(3);
+  });
+
+  it("does not mutate review or skip mappings and counts both as skipped", () => {
+    setupDOM(`<input id="safe" /><input id="review" /><input id="skip" />`);
+    const result = fillFields([
+      { elementId: "safe", profilePath: "personal.first_name", action: "fill", value: "Owner", selectorPath: "#safe" },
+      { elementId: "review", action: "review", value: "Review me", selectorPath: "#review" },
+      { elementId: "skip", action: "skip", value: "Skip me", selectorPath: "#skip" },
+    ] as any);
+
+    expect((document.getElementById("safe") as HTMLInputElement).value).toBe("Owner");
+    expect((document.getElementById("review") as HTMLInputElement).value).toBe("");
+    expect((document.getElementById("skip") as HTMLInputElement).value).toBe("");
+    expect(result).toEqual({ attempted: 1, filled: 1, failed: 0, skipped: 2 });
+  });
+
+  it("reports actual execution counts rather than proposed mappings", () => {
+    setupDOM(`<input id="first" type="text" /><input id="protected" type="file" />`);
+    const result = fillFields([
+      { elementId: "first", profilePath: "personal.first_name", action: "fill", value: "Jane", selectorPath: "#first" },
+      { elementId: "protected", profilePath: "personal.first_name", action: "fill", value: "ignored", selectorPath: "#protected" },
+      { elementId: "missing", action: "skip", selectorPath: "#missing" },
+    ] as any);
+
+    expect(result).toEqual({ attempted: 1, filled: 1, skipped: 2, failed: 0 });
+    expect((document.getElementById("first") as HTMLInputElement).value).toBe("Jane");
+    expect((document.getElementById("protected") as HTMLInputElement).value).toBe("");
+  });
+
+  it("does not execute a fill mapping outside the authoritative safe path set", () => {
+    setupDOM(`<input id="experience" type="text" /><input id="first" type="text" />`);
+    const result = fillFields([
+      { elementId: "experience", profilePath: "work.years_experience", action: "fill", value: "0", selectorPath: "#experience" },
+      { elementId: "first", profilePath: "personal.first_name", action: "fill", value: "QA", selectorPath: "#first" },
+    ] as any);
+    expect((document.getElementById("experience") as HTMLInputElement).value).toBe("");
+    expect((document.getElementById("first") as HTMLInputElement).value).toBe("QA");
+    expect(result).toEqual({ attempted: 1, filled: 1, skipped: 1, failed: 0 });
+  });
+
   it("dispatches input and change events when filling a field", () => {
     setupDOM(`<input type="text" id="name" value="" />`);
 

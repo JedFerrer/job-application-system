@@ -1,7 +1,7 @@
 // ── Extension Auth Manager ─────────────────────────────────────────────────
 // Handles pairing code exchange, token storage, session state, and logout.
 
-import { apiRequest, storeTokens, clearTokens, loadTokens, isAuthenticated } from "./api-client";
+import { apiRequest, storeTokens, clearExtensionSession, loadTokens, isAuthenticated } from "./api-client";
 import { STORAGE_KEYS } from "../shared/constants";
 
 export interface SessionState {
@@ -54,6 +54,6 @@ export async function logout(): Promise<void> {
   } catch {
     // Best-effort: revoke may fail if token is already expired
   } finally {
-    await clearTokens();
+    await clearExtensionSession();
   }
 }

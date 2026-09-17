@@ -33,6 +33,7 @@ from app.domain.cover_letters.exceptions import (
     CoverLetterNotFoundError,
 )
 from app.domain.extension.exceptions import (
+    EventIdConflictError,
     ExtensionSessionNotFoundError,
     ExtensionSessionRevokedError,
     PairingCodeExpiredError,
@@ -227,6 +228,12 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(PackageApprovalConflictError)
     @app.exception_handler(PreparationDiscardConfirmationRequiredError)
     async def _preparation_conflict(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(EventIdConflictError)
+    async def _extension_event_conflict(
+        request: Request, exc: EventIdConflictError
+    ) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(PreferenceNotFoundError)

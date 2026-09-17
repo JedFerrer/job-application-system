@@ -5,6 +5,7 @@
 
 import type { DetectedField, FieldMapping } from "../shared/types";
 import { NEVER_FILL_INPUT_TYPES, SENSITIVE_LABEL_PATTERNS } from "../shared/constants";
+import { EXECUTABLE_SAFE_PROFILE_PATHS } from "../shared/autofill-policy";
 
 /**
  * Fill a single field with a value, dispatching native events.
@@ -46,27 +47,34 @@ export function fillField(
 /**
  * Fill multiple fields from mappings.
  */
-export function fillFields(mappings: FieldMapping[]): { filled: number; skipped: number } {
+export function fillFields(mappings: FieldMapping[]): { attempted: number; filled: number; skipped: number; failed: number } {
+  let attempted = 0;
   let filled = 0;
   let skipped = 0;
+  let failed = 0;
 
   for (const mapping of mappings) {
-    if (mapping.action !== "fill" || !mapping.value) {
+    if (mapping.action !== "fill" || !mapping.value || !mapping.profilePath || !EXECUTABLE_SAFE_PROFILE_PATHS.has(mapping.profilePath)) {
       skipped++;
       continue;
     }
 
+    attempted++;
+
     // Find the field by elementId (need the full DetectedField)
     // We use the selectorPath for reliable re-location
-    const success = fillFieldBySelector(mapping.selectorPath ?? "", mapping.value);
-    if (success) {
+    const outcome = fillFieldBySelector(mapping.selectorPath ?? "", mapping.value);
+    if (outcome === true) {
       filled++;
-    } else {
+    } else if (outcome === null) {
+      attempted--;
       skipped++;
+    } else {
+      failed++;
     }
   }
 
-  return { filled, skipped };
+  return { attempted, filled, skipped, failed };
 }
 
 // ── Internal Helpers ───────────────────────────────────────────────────────
@@ -110,7 +118,7 @@ function resolveElement(field: DetectedField): HTMLElement | null {
   return null;
 }
 
-function fillFieldBySelector(selectorPath: string, value: string): boolean {
+function fillFieldBySelector(selectorPath: string, value: string): boolean | null {
   if (!selectorPath) return false;
   try {
     const el = document.querySelector(selectorPath);
@@ -119,14 +127,11 @@ function fillFieldBySelector(selectorPath: string, value: string): boolean {
     // Safety: never fill password or file inputs (re-check at fill-time)
     if (el instanceof HTMLInputElement) {
       const inputType = (el.type || "text").toLowerCase();
-      if (NEVER_FILL_INPUT_TYPES.has(inputType)) return false;
+      if (NEVER_FILL_INPUT_TYPES.has(inputType)) return null;
     }
 
     // Safety: never fill fields with sensitive labels (re-check at fill-time)
-    const label = (el.getAttribute("aria-label") ?? "").toLowerCase();
-    const placeholder = (el.getAttribute("placeholder") ?? "").toLowerCase();
-    const combined = `${label} ${placeholder}`;
-    if (SENSITIVE_LABEL_PATTERNS.some((p) => p.test(combined))) return false;
+    if (SENSITIVE_LABEL_PATTERNS.some((p) => p.test(liveLabelText(el)))) return null;
 
     if (el instanceof HTMLInputElement) return fillInput(el, value);
     if (el instanceof HTMLTextAreaElement) return fillTextarea(el, value);
@@ -135,6 +140,21 @@ function fillFieldBySelector(selectorPath: string, value: string): boolean {
     return false;
   }
   return false;
+}
+
+function liveLabelText(el: HTMLElement): string {
+  const labels = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
+    ? Array.from(el.labels ?? []).map((label) => label.textContent ?? "") : [];
+  const labelledBy = (el.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent ?? "");
+  const wrapping = el.closest("label")?.textContent ?? "";
+  return [
+    ...labels,
+    ...labelledBy,
+    wrapping,
+    el.getAttribute("aria-label") ?? "",
+    el.getAttribute("placeholder") ?? "",
+  ].join(" ").toLowerCase();
 }
 
 function fillInput(input: HTMLInputElement, value: string): boolean {

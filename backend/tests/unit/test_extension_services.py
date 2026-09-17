@@ -9,10 +9,11 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.security import create_token, decode_token_payload
@@ -20,6 +21,7 @@ from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.extension.application_event_service import ApplicationEventService
 from app.domain.extension.autofill_mapping_service import AutofillProfileService
 from app.domain.extension.exceptions import (
+    EventIdConflictError,
     ExtensionSessionRevokedError,
     PairingCodeExpiredError,
     PairingCodeInvalidError,
@@ -39,6 +41,34 @@ from app.domain.jobs.identity import resolve_source_identity, scoped_key
 from app.models.application import Application
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("execution", "valid"),
+    [
+        (None, True),
+        ({"attempted": 1, "filled": 1, "failed": 0, "skipped": 1}, True),
+        ({"attempted": 1, "filled": 1, "failed": 0, "skipped": 0}, False),
+        ({"attempted": 2, "filled": 1, "failed": 0, "skipped": 0}, False),
+    ],
+)
+def test_fill_log_execution_accounts_for_every_mapping(
+    execution: dict[str, int] | None, valid: bool
+) -> None:
+    kwargs: dict[str, object] = {
+        "fields": [{"elementId": "email"}, {"elementId": "phone"}],
+        "mappings": [{"elementId": "email"}, {"elementId": "phone"}],
+        "execution": execution,
+    }
+    if valid:
+        request = FormFillLogRequest(**kwargs)
+        if execution is None:
+            assert request.execution is None
+        else:
+            assert request.execution is not None
+    else:
+        with pytest.raises(ValidationError):
+            FormFillLogRequest(**kwargs)
 
 
 def _settings() -> Settings:
@@ -181,6 +211,29 @@ class FakeExtensionRepository:
         }
         self.events.append(event)
         return _DictObj(event)
+
+    async def reserve_event(self, **kwargs: Any) -> Any:
+        event_id = kwargs.get("event_id")
+        if event_id:
+            for existing in self.events:
+                if (
+                    existing.get("user_id") == kwargs.get("user_id")
+                    and existing.get("event_id") == event_id
+                ):
+                    return _DictObj({"event": _DictObj(existing), "created": False})
+        event = await self.create_event(**kwargs)
+        return _DictObj({"event": event, "created": True})
+
+    async def get_event_by_id(self, *, user_id: int, event_id: str) -> Any | None:
+        event = next(
+            (
+                item
+                for item in self.events
+                if item.get("user_id") == user_id and item.get("event_id") == event_id
+            ),
+            None,
+        )
+        return _DictObj(event) if event else None
 
     async def list_events_for_application(
         self, *, application_id: int, user_id: int
@@ -771,6 +824,50 @@ class TestApplyClick:
         assert len(app_repo.applications) == 1
         assert len(ext_repo.events) == 2  # Two events, one application
 
+    @pytest.mark.asyncio
+    async def test_reusing_event_id_with_different_event_is_rejected(self) -> None:
+        ext_repo, _, job_repo, svc = self._service()
+        self._import_job(job_repo)
+        event_id = uuid4()
+
+        first = ApplicationEventRequest(
+            job_url="https://linkedin.com/jobs/view/123",
+            event_type="apply_clicked",
+            event_id=event_id,
+        )
+        await svc.record_event(user_id=42, request=first)
+
+        with pytest.raises(EventIdConflictError):
+            await svc.record_event(
+                user_id=42,
+                request=ApplicationEventRequest(
+                    job_url="https://linkedin.com/jobs/view/123",
+                    event_type="form_detected",
+                    event_id=event_id,
+                ),
+            )
+        assert len(ext_repo.events) == 1
+
+    @pytest.mark.asyncio
+    async def test_identical_event_replay_is_idempotent_and_user_scoped(self) -> None:
+        ext_repo, _, job_repo, svc = self._service()
+        self._import_job(job_repo)
+        event_id = uuid4()
+        request = ApplicationEventRequest(
+            job_url="https://linkedin.com/jobs/view/123",
+            event_type="apply_clicked",
+            event_id=event_id,
+        )
+
+        first = await svc.record_event(user_id=42, request=request)
+        replay = await svc.record_event(user_id=42, request=request)
+        other_user = await svc.record_event(user_id=99, request=request)
+
+        assert first.idempotent is False
+        assert replay.idempotent is True
+        assert other_user.idempotent is False
+        assert len(ext_repo.events) == 2
+
 
 class TestMarkApplied:
     def _service(self) -> tuple[
@@ -855,29 +952,20 @@ class TestMarkApplied:
         assert ext_repo.events[0]["event_type"] == "user_marked_applied"
 
     @pytest.mark.asyncio
-    async def test_mark_applied_flushes_an_attached_application_without_committing(
-        self, monkeypatch: pytest.MonkeyPatch
+    async def test_mark_applied_reserves_event_before_setting_attached_application_status(
+        self,
     ) -> None:
-        """The caller-owned synchronous ORM session remains responsible for commit/rollback."""
+        """The outer AsyncSession owns persistence; this service only reserves then assigns."""
         ext_repo = FakeExtensionRepository()
         application = Application(id=1, user_id=42, job_id=1, status="saved")
-        session = Session()
-        session.add(application)
-        flush_calls = 0
-        commit_calls = 0
 
-        def record_flush(self: Session) -> None:
-            nonlocal flush_calls
-            assert self is session
-            flush_calls += 1
+        original_reserve_event = ext_repo.reserve_event
 
-        def record_commit(self: Session) -> None:
-            nonlocal commit_calls
-            assert self is session
-            commit_calls += 1
+        async def reserve_event_before_status_mutation(**kwargs: Any) -> Any:
+            assert application.status == "saved"
+            return await original_reserve_event(**kwargs)
 
-        monkeypatch.setattr(Session, "flush", record_flush)
-        monkeypatch.setattr(Session, "commit", record_commit)
+        ext_repo.reserve_event = reserve_event_before_status_mutation  # type: ignore[method-assign]
 
         class AttachedApplicationRepository:
             async def create_or_get(self, *, user_id: int, job_id: int) -> Application:
@@ -897,21 +985,16 @@ class TestMarkApplied:
             job_repository=AttachedJobRepository(),  # type: ignore[arg-type]
         )
 
-        try:
-            result = await service.mark_applied(
-                user_id=42,
-                request=MarkAppliedRequest(
-                    job_url="https://linkedin.com/jobs/view/123",
-                    confirmation_source="confirmation_detected",
-                ),
-            )
-        finally:
-            session.close()
+        result = await service.mark_applied(
+            user_id=42,
+            request=MarkAppliedRequest(
+                job_url="https://linkedin.com/jobs/view/123",
+                confirmation_source="confirmation_detected",
+            ),
+        )
 
         assert result.status == "applied"
         assert application.status == "applied"
-        assert flush_calls == 1
-        assert commit_calls == 0
         assert ext_repo.events[0]["application_id"] == 1
 
 
@@ -957,6 +1040,7 @@ class TestAutofillProfile:
         return AutofillProfileService(
             resume_repository=resume_repo,  # type: ignore[arg-type]
             extension_repository=ext_repo,  # type: ignore[arg-type]
+            application_event_service=AsyncMock(),
         )
 
     @pytest.mark.asyncio
@@ -1016,7 +1100,9 @@ class TestAutofillProfile:
         assert result.mappings == []
 
     @pytest.mark.asyncio
-    async def test_log_fill_creates_form_session_and_event(self) -> None:
+    async def test_log_fill_legacy_execution_records_form_session_without_completion_event(
+        self,
+    ) -> None:
         svc = self._service({"parsed": {"skills": ["Python"]}})
 
         # Manually get ext_repo to verify side effects
@@ -1053,11 +1139,10 @@ class TestAutofillProfile:
         assert result.session_id != ""
         assert len(ext_repo.form_sessions) == 1
         assert len(ext_repo.form_fields) == 2
-        # Check that autofill_completed event was recorded
-        autofill_events = [e for e in ext_repo.events if e["event_type"] == "autofill_completed"]
-        assert len(autofill_events) == 1
-        assert autofill_events[0]["metadata_"]["filled"] == 2
-        assert autofill_events[0]["metadata_"]["skipped"] == 0
+        assert ext_repo.form_sessions["1"]["filled_count"] == 0
+        assert ext_repo.form_sessions["1"]["skipped_count"] == 2
+        assert not ext_repo.events
+        cast(AsyncMock, svc._events).record_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_log_fill_discards_malformed_dynamic_values_without_serializing_objects(

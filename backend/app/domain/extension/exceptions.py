@@ -30,3 +30,10 @@ class ExtensionSessionRevokedError(ExtensionError):
 
 class DuplicateJobImportError(ExtensionError):
     """Not raised — just logged. Job dedup is handled silently."""
+
+
+class EventIdConflictError(ExtensionError):
+    """Raised when a client reuses an event id for different event material."""
+
+    def __init__(self) -> None:
+        super().__init__("event_id was previously used for a different event")

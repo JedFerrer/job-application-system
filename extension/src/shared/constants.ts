@@ -76,22 +76,9 @@ export const SAFE_CONFIDENCE_THRESHOLD = 0.95;
 // Confidence >= REVIEW_THRESHOLD → show in review list for user approval
 export const REVIEW_CONFIDENCE_THRESHOLD = 0.70;
 
-// Fields that are safe to fill (after user clicks Fill Safe Fields)
-export const SAFE_FIELD_PATHS: Set<string> = new Set([
-  "personal.first_name",
-  "personal.last_name",
-  "personal.email",
-  "personal.phone",
-  "personal.city",
-  "personal.country",
-  "links.linkedin",
-  "links.github",
-  "links.portfolio",
-  "links.website",
-  "work.current_title",
-  "work.years_experience",
-  "skills",
-]);
+// The deterministic autofill policy owns this set. Re-export it for callers
+// that still import the historical constant.
+export { EXECUTABLE_SAFE_PROFILE_PATHS as SAFE_FIELD_PATHS, SENSITIVE_LABEL_PATTERNS } from "./autofill-policy";
 
 // Fields that need review before filling
 export const REVIEW_FIELD_PATHS: Set<string> = new Set([
@@ -101,31 +88,6 @@ export const REVIEW_FIELD_PATHS: Set<string> = new Set([
   "authorization.authorized_to_work",
   "personal.address",
 ]);
-
-// Fields/labels that must NEVER be autofilled
-export const SENSITIVE_LABEL_PATTERNS: RegExp[] = [
-  /race/i,
-  /ethnicity/i,
-  /gender/i,
-  /sex(?!ual)/i,  // "sex" but not "sexual" (sexual orientation handled separately)
-  /disability/i,
-  /veteran/i,
-  /health/i,
-  /criminal/i,
-  /religion/i,
-  /religious/i,
-  /political/i,
-  /eeo/i,
-  /equal opportunity/i,
-  /background check/i,
-  /drug test/i,
-  /citizenship/i,
-  /national origin/i,
-  /sexual orientation/i,
-  /gender identity/i,
-  /marital status/i,
-  /military/i,
-];
 
 // Fields that must NEVER be autofilled (by input type)
 export const NEVER_FILL_INPUT_TYPES: Set<string> = new Set([

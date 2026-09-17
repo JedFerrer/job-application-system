@@ -11,14 +11,17 @@ import { initApplyClickTracker } from "./apply-click-tracker";
 import { scanForm } from "./form-scanner";
 import { initSubmitDetector } from "./submit-detector";
 import { initLinkedInEasyApply } from "./linkedin-easy-apply";
+import { fillFields } from "./form-filler";
 
 let initialized = false;
+let lastDetectedFieldsFingerprint: string | null = null;
 
 function init(): void {
   if (initialized) return;
   initialized = true;
 
   const currentUrl = window.location.href;
+  sendMessage({ type: "PAGE_CONTEXT", payload: { pageUrl: currentUrl } }).catch(() => {});
 
   // 1. Always track Apply button clicks
   initApplyClickTracker();
@@ -44,24 +47,24 @@ function init(): void {
   // 5. If this looks like an application form page, scan it
   // (We check after a short delay for dynamic forms to render)
   setTimeout(() => {
-    const fields = scanForm();
-    if (fields.length > 0) {
-      const atsType = detectAtsType(currentUrl);
-      sendMessage({
-        type: "FORM_DETECTED",
-        payload: {
-          fields,
-          domain: window.location.hostname,
-          atsType,
-          pageUrl: window.location.href,
-        },
-      }).catch(() => {});
-    }
+    reportDetectedFields(scanForm(), true);
   }, 1500);
 
   // 6. Watch for dynamic content changes (SPA navigation, modal forms)
   initMutationObserver();
 }
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "EXECUTE_FILL") {
+    try {
+      sendResponse(fillFields(message.payload?.mappings ?? []));
+    } catch {
+      sendResponse({ attempted: 0, filled: 0, skipped: 0, failed: 1 });
+    }
+    return true;
+  }
+  return false;
+});
 
 function detectAndExtract() {
   try {
@@ -96,35 +99,35 @@ function initMutationObserver(): void {
     // Re-scan form on significant DOM changes (debounced)
     clearTimeout((observer as unknown as { _timer?: ReturnType<typeof setTimeout> })._timer);
     (observer as unknown as { _timer?: ReturnType<typeof setTimeout> })._timer = setTimeout(() => {
-      const fields = scanForm();
-      if (fields.length > 0) {
-        sendMessage({
-          type: "FORM_DETECTED",
-          payload: {
-            fields,
-            domain: window.location.hostname,
-            atsType: detectAtsType(window.location.href),
-          },
-        }).catch(() => {});
-      }
+      reportDetectedFields(scanForm(), false);
     }, 2000);
   });
 
-  observer.observe(document.body, {
+  observer.observe(document, {
     childList: true,
     subtree: true,
     attributes: false,
   });
 
-  // Also persist form fields immediately so popup can show them on reopen
-  const fields = scanForm();
-  if (fields.length > 0) {
-    chrome.storage.session.set({
-      detected_fields: fields,
-      detected_fields_domain: window.location.hostname,
-      detected_fields_ats_type: detectAtsType(window.location.href),
-    }).catch(() => {});
-  }
+  // The worker owns tab-scoped persistence; content scripts must not write
+  // global detected-field keys that can leak state across tabs.
+}
+
+function reportDetectedFields(fields: import("../shared/types").DetectedField[], initial: boolean): void {
+  const fingerprint = JSON.stringify(fields);
+  if (fingerprint === lastDetectedFieldsFingerprint) return;
+  const previouslyDetected = lastDetectedFieldsFingerprint !== null && lastDetectedFieldsFingerprint !== "[]";
+  lastDetectedFieldsFingerprint = fingerprint;
+  if (fields.length === 0 && (initial || !previouslyDetected)) return;
+  sendMessage({
+    type: "FORM_DETECTED",
+    payload: {
+      fields,
+      domain: window.location.hostname,
+      atsType: detectAtsType(window.location.href),
+      pageUrl: window.location.href,
+    },
+  }).catch(() => {});
 }
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────

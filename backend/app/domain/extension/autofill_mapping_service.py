@@ -6,8 +6,10 @@ Also handles LLM-based field mapping for unknown form fields (metadata only).
 from __future__ import annotations
 
 from app.core.logging import get_logger
+from app.domain.extension.application_event_service import ApplicationEventService
 from app.domain.extension.repository import ExtensionRepository
 from app.domain.extension.schemas import (
+    ApplicationEventRequest,
     FieldMappingItem,
     FieldMappingRequest,
     FieldMappingResponse,
@@ -27,9 +29,11 @@ class AutofillProfileService:
         *,
         resume_repository: ResumeRepository,
         extension_repository: ExtensionRepository,
+        application_event_service: ApplicationEventService,
     ) -> None:
         self._resume = resume_repository
         self._ext = extension_repository
+        self._events = application_event_service
 
     async def get_autofill_profile(self, *, user_id: int) -> dict[str, object]:
         """Build an autofill profile from the user's candidate profile.
@@ -207,18 +211,17 @@ class AutofillProfileService:
             field_count=len(fields),
         )
 
-        filled = 0
-        skipped = 0
+        execution = request.execution
+        filled = execution.filled if execution is not None else 0
+        skipped = execution.skipped if execution is not None else len(fields)
 
         for i, field in enumerate(fields):
             field_dict = field if isinstance(field, dict) else {}
             mapping_dict = mappings[i] if i < len(mappings) else {}
             if isinstance(mapping_dict, dict):
-                was_filled = mapping_dict.get("action") == "fill"
-                if was_filled:
-                    filled += 1
-                else:
-                    skipped += 1
+                # A mapping is a proposal. It is never evidence that a DOM
+                # setter actually succeeded.
+                was_filled = False
 
                 field_key = field_dict.get("elementId") or field_dict.get("name")
                 field_label = field_dict.get("label")
@@ -247,16 +250,23 @@ class AutofillProfileService:
             skipped_count=skipped,
         )
 
-        # Record autofill events
-        await self._ext.create_event(
-            user_id=user_id,
-            event_type="autofill_completed",
-            metadata={
-                "session_id": str(session.id),
-                "filled": filled,
-                "skipped": skipped,
-            },
-        )
+        if execution is not None:
+            await self._events.record_event(
+                user_id=user_id,
+                request=ApplicationEventRequest(
+                    event_type="autofill_completed",
+                    attempt_id=request.attempt_id,
+                    event_id=request.event_id,
+                    metadata={
+                        "domain": request.domain or "",
+                        "ats_type": request.ats_type or "",
+                        "attempted": execution.attempted,
+                        "filled": execution.filled,
+                        "skipped": execution.skipped,
+                        "failed": execution.failed,
+                    },
+                ),
+            )
 
         return FormFillLogResponse(
             session_id=str(session.id),

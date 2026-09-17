@@ -2,21 +2,33 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.api.deps import (
+    ApplicationAttemptServiceDep,
     ApplicationEventServiceDep,
     CurrentExtensionUser,
 )
 from app.domain.extension.schemas import (
     ApplicationEventRequest,
     ApplicationEventResponse,
-    ApplicationTimelineResponse,
+    AttemptCandidate,
+    AttemptResolutionResponse,
     MarkAppliedRequest,
     MarkAppliedResponse,
 )
 
 router = APIRouter(prefix="/extension/applications", tags=["extension-applications"])
+
+
+@router.get("/attempts", response_model=AttemptResolutionResponse)
+async def resolve_application_attempts(
+    current_user: CurrentExtensionUser,
+    service: ApplicationAttemptServiceDep,
+    url: str = Query(..., min_length=1, max_length=2048),
+) -> AttemptResolutionResponse:
+    candidates = await service.resolve(user_id=current_user.id, url=url)
+    return AttemptResolutionResponse(candidates=[AttemptCandidate(**item) for item in candidates])
 
 
 @router.post("/events", response_model=ApplicationEventResponse)
@@ -57,17 +69,4 @@ async def mark_application_applied(
     return await service.mark_applied(
         user_id=current_user.id,
         request=payload,
-    )
-
-
-@router.get("/{application_id}/timeline", response_model=ApplicationTimelineResponse)
-async def get_application_timeline(
-    application_id: int,
-    current_user: CurrentExtensionUser,
-    service: ApplicationEventServiceDep,
-) -> ApplicationTimelineResponse:
-    """Get the chronological event timeline for an application."""
-    return await service.get_timeline(
-        application_id=application_id,
-        user_id=current_user.id,
     )

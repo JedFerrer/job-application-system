@@ -3,6 +3,7 @@
 // through the Next.js proxy). Manages access/refresh tokens in chrome.storage.session.
 
 import { API_BASE_URL, STORAGE_KEYS } from "../shared/constants";
+import { clearAllTabContexts } from "./tab-context";
 
 let accessToken: string | null = null;
 let refreshPromise: Promise<boolean> | null = null;
@@ -52,6 +53,12 @@ export async function clearTokens(): Promise<void> {
   ]);
 }
 
+/** Clear credentials and every correlation artifact after session invalidation. */
+export async function clearExtensionSession(): Promise<void> {
+  await clearTokens();
+  await clearAllTabContexts();
+}
+
 async function tryRefreshToken(refreshToken: string): Promise<boolean> {
   if (refreshPromise) return refreshPromise;
 
@@ -63,13 +70,14 @@ async function tryRefreshToken(refreshToken: string): Promise<boolean> {
         body: JSON.stringify({ refresh_token: refreshToken }),
       });
       if (!res.ok) {
-        await clearTokens();
+        await clearExtensionSession();
         return false;
       }
       const data = await res.json();
       await storeTokens(data.access_token, data.refresh_token, data.expires_in);
       return true;
     } catch {
+      await clearExtensionSession();
       return false;
     } finally {
       refreshPromise = null;
@@ -117,7 +125,7 @@ export async function apiRequest<T>(
         return apiRequest<T>(path, { ...options, _retried: true });
       }
     }
-    await clearTokens();
+    await clearExtensionSession();
     throw new ApiError("Authentication expired", 401);
   }
 

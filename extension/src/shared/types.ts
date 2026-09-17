@@ -48,6 +48,38 @@ export interface FieldMapping {
   selectorPath?: string;
 }
 
+export interface FillExecutionResult {
+  attempted: number;
+  filled: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface AttemptCandidate {
+  attemptId: string;
+  applicationId: number;
+  role: string;
+  company?: string;
+  expiresAt: string;
+  progress: string;
+}
+
+export interface AttemptBinding {
+  attemptId: string;
+  applicationId: number;
+  expiresAt: string;
+}
+
+export interface TabAttemptContext {
+  attemptId: string;
+  applicationId: number;
+  jobId: number;
+  expiresAt: string;
+  host: string;
+  bindingState?: "bound" | "reconfirmation_required";
+  boundPageUrl?: string;
+}
+
 // ── Autofill Profile (subset of backend profile) ───────────────────────────
 export interface AutofillProfile {
   personal: {
@@ -139,13 +171,18 @@ export type ExtensionMessage =
   | { type: "FILL_FORM"; payload: { fields: DetectedField[]; mappings: FieldMapping[] } }
   | { type: "MARK_APPLIED"; payload: { jobUrl: string } }
   | { type: "DID_NOT_SUBMIT" }
+  | { type: "GET_TAB_CONTEXT" }
+  | { type: "RESOLVE_ATTEMPTS"; payload: { pageUrl: string } }
+  | { type: "BIND_ATTEMPT"; payload: AttemptBinding }
+  | { type: "CLEAR_TAB_CONTEXT" }
+  | { type: "PAGE_CONTEXT"; payload: { pageUrl: string } }
 
   // Content Script → Service Worker
   | { type: "JOB_DETECTED"; payload: ExtractedJob }
   | { type: "APPLY_CLICKED"; payload: { pageUrl: string; buttonText: string; href: string | null } }
   | { type: "FORM_DETECTED"; payload: { fields: DetectedField[]; domain: string; atsType?: string; pageUrl?: string } }
   | { type: "SUBMIT_CLICKED"; payload: { pageUrl: string } }
-  | { type: "CONFIRMATION_DETECTED"; payload: { pageUrl: string; confirmationText: string } }
+  | { type: "CONFIRMATION_DETECTED"; payload: { pageUrl: string; confirmationText: string; eventId: string } }
 
   // Service Worker → Content Script
   | { type: "FILL_FIELDS"; payload: { mappings: FieldMapping[] } }
@@ -156,7 +193,9 @@ export type ExtensionMessage =
   | { type: "JOB_IMPORTED"; payload: JobImportResponse }
   | { type: "EVENT_RECORDED"; payload: ApplicationEventResponse }
   | { type: "AUTOFILL_PROFILE"; payload: AutofillProfile }
-  | { type: "AUTOFILL_COMPLETE"; payload: { filled: number; skipped: number } }
+  | { type: "AUTOFILL_COMPLETE"; payload: FillExecutionResult }
+  | { type: "ATTEMPT_CANDIDATES"; payload: { candidates: AttemptCandidate[] } }
+  | { type: "TAB_CONTEXT"; payload: { context: TabAttemptContext | null; fields?: DetectedField[] } }
   | { type: "MARK_APPLIED_RESULT"; payload: { success: boolean } }
   | { type: "SHOW_CONFIRMATION_PROMPT"; payload: { pageUrl: string } }
   | { type: "ERROR"; payload: { message: string; code?: string } };

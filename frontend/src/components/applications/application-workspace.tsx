@@ -13,6 +13,7 @@ import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
 import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { PackagePreview } from "./package-preview";
 import { PreparationChecklist } from "./preparation-checklist";
+import { ApplicationTimeline } from "./application-timeline";
 
 function workspaceKey(id: number) { return ["application-workspace", id] as const; }
 function uuid() { return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
@@ -74,6 +75,32 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
     onSuccess: () => { setReviewPackage(null); invalidateApplicationSurfaces(); toast.success("Package approved"); },
     onError: (error) => error instanceof ApiError && error.status === 409 ? conflict() : toast.error(error instanceof ApiError ? error.message : "Could not approve this package."),
   });
+  const openApplication = useMutation({
+    mutationFn: (handoff: Window) => {
+      if (!data?.approved_package) throw new Error("Approve the current package before opening the application.");
+      return applicationsApi.createAttempt(applicationId, data.preparation.version, data.approved_package.id, data.approved_package.content_sha256);
+    },
+    onSuccess: (attempt, handoff) => {
+      // The blank tab was created by the click gesture. Do not expose the
+      // employer URL until the server has created and selected this attempt.
+      try { handoff.opener = null; } catch { /* browser may not allow this */ }
+      handoff.location.assign(attempt.external_url);
+      toast.success("Application opened in a new tab");
+    },
+    onError: (error, handoff) => {
+      handoff.close();
+      if (error instanceof ApiError && error.status === 409) { conflict(); return; }
+      toast.error(error instanceof ApiError ? error.message : "Could not open the application.");
+    },
+  });
+  const beginApplicationHandoff = () => {
+    const handoff = window.open("", "_blank");
+    if (!handoff) {
+      toast.error("Allow popups to open the application.");
+      return;
+    }
+    openApplication.mutate(handoff);
+  };
   const selectResume = (saved: Pick<TailoredResumeDraft, "id">) => data && patch.mutate({ expected_version: data.preparation.version, resume_draft_id: saved.id });
   const selectLetter = (saved: CoverLetter) => data && patch.mutate({ expected_version: data.preparation.version, cover_letter_mode: "selected", cover_letter_id: saved.id });
   const review = () => {
@@ -134,7 +161,7 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
   const rememberEditorOpener = (target: EventTarget | null) => { if (target instanceof HTMLElement) editorOpenerRef.current = target; };
   const openSavedResume = (target: EventTarget | null) => { rememberEditorOpener(target); if (savedResume) setResumeDraftId(savedResume.id); };
   return <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 pb-24">
-    <header className="rounded-lg border bg-card p-5"><Link href="/applications" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" />Applications</Link><div className="mt-3 flex flex-wrap items-start justify-between gap-4"><div><h1 className="text-2xl font-semibold">{job.title}</h1><p className="text-muted-foreground">{[job.company, job.location].filter(Boolean).join(" · ") || "Historical application"}</p><p className="mt-2 text-sm">Outcome: <span className="font-medium capitalize">{application.status}</span></p></div>{job.open_job_available && job.source_url ? <Button asChild variant="outline"><a href={job.source_url} target="_blank" rel="noreferrer">Open job <ExternalLink /></a></Button> : <p className="max-w-sm text-sm text-muted-foreground">Current job context is unavailable. Your owned preparation and package history remain available.</p>}</div></header>
+    <header className="rounded-lg border bg-card p-5"><Link href="/applications" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" />Applications</Link><div className="mt-3 flex flex-wrap items-start justify-between gap-4"><div><h1 className="text-2xl font-semibold">{job.title}</h1><p className="text-muted-foreground">{[job.company, job.location].filter(Boolean).join(" · ") || "Historical application"}</p><p className="mt-2 text-sm">Outcome: <span className="font-medium capitalize">{application.status}</span></p></div>{job.open_job_available && data.approved_package && preparation.state === "ready" ? <Button onClick={beginApplicationHandoff} disabled={openApplication.isPending}>Open application <ExternalLink /></Button> : <p className="max-w-sm text-sm text-muted-foreground">Approve a current package before opening the application.</p>}</div></header>
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(340px,0.8fr)]"><main className="space-y-6">
       <PreparationChecklist preparation={preparation} />
       <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Fit review</h2>{data.match_summary ? <p className="mt-2 text-sm text-muted-foreground">Matched: {data.match_summary.matched_skills.join(", ") || "No skills recorded"}</p> : <p className="mt-2 text-sm text-muted-foreground">No saved match analysis is available.</p>}<Button className="mt-3" size="sm" variant={preparation.fit_acknowledged ? "outline" : "default"} disabled={patch.isPending} onClick={() => patch.mutate({ expected_version: preparation.version, fit_acknowledged: !preparation.fit_acknowledged })}>{preparation.fit_acknowledged ? "Fit acknowledged" : "Acknowledge fit context"}</Button></section>
@@ -148,6 +175,7 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
       </section>
       <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Next action</h2><p className="mt-2 text-sm text-muted-foreground">{application.next_action_type ? `${application.next_action_type.replace("_", " ")}${application.next_action_due_date ? ` · due ${application.next_action_due_date}` : ""}` : "No next action set."}</p></section>
       <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Activity</h2>{data.activity.events.length ? <ul className="mt-2 space-y-2 text-sm">{data.activity.events.map((event) => <li key={event.id}>{event.event_type.replaceAll("_", " ")} · {new Date(event.created_at).toLocaleString()}</li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No activity yet.</p>}</section>
+      <ApplicationTimeline applicationId={applicationId} />
     </main><aside className="space-y-6">
       {selectedHistoricalPackageId != null ? <section className="rounded-lg border bg-card p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium">Viewing historical package revision {data.package_history.find((item) => item.id === selectedHistoricalPackageId)?.revision ?? ""}</p><Button size="sm" variant="outline" onClick={() => setSelectedHistoricalPackageId(null)}>Back to current package</Button></div><div className="mt-4">{historicalPackage.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading package revision…</p> : historicalPackage.isError ? <p className="text-sm text-muted-foreground" role="alert">{historicalPackage.error instanceof ApiError && historicalPackage.error.status === 404 ? "Package revision is unavailable." : "Could not load this package revision."}</p> : historicalPackage.data ? <PackagePreview package={historicalPackage.data} /> : null}</div></section> : reviewPackage ?? data.approved_package ? <PackagePreview package={reviewPackage ?? data.approved_package!} /> : <section className="rounded-lg border p-4 text-sm text-muted-foreground">No approved package yet.</section>}
       <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Package history</h2>{data.package_history.length ? <ul className="mt-2 space-y-2 text-sm">{data.package_history.map((item) => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2"><span>Revision {item.revision}{item.is_approved ? " · approved" : ""} · {new Date(item.created_at).toLocaleString()}</span><Button size="sm" variant="outline" onClick={() => setSelectedHistoricalPackageId(item.id)}>View</Button></li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No package revisions yet.</p>}</section>

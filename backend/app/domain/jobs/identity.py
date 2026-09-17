@@ -176,6 +176,30 @@ def strong_employer_apply_url(value: str) -> str | None:
     return identity.canonical_url
 
 
+def safe_employer_navigation_url(value: str) -> str | None:
+    """Return the minimal validated employer URL safe to hand to a browser.
+
+    Unlike canonical identity representation, this projection deliberately
+    does not preserve arbitrary query material: it is a navigation boundary,
+    not an alias-comparison key.
+    """
+    identity = resolve_source_identity(value)
+    if (
+        identity is None
+        or identity.source_job_id is None
+        or identity.source_tenant is None
+        or identity.source not in _EMPLOYER_ATS_SOURCES | {"indeed", "linkedin"}
+    ):
+        return None
+    parsed = urlsplit(identity.canonical_url)
+    query: list[tuple[str, str]] = []
+    if identity.source == "indeed":
+        query = [("jk", identity.source_job_id)]
+    elif identity.source == "linkedin" and not re.search(r"/jobs/view/\d+", parsed.path):
+        query = [("currentJobId", identity.source_job_id)]
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), ""))
+
+
 def extract_source_id(source_url: str, ats_type: str | None = None) -> tuple[str, str] | None:
     """Compatibility projection for callers that only need native IDs."""
     identity = resolve_source_identity(source_url, ats_type=ats_type)

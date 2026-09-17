@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import date, datetime, timedelta
 
 from app.core.logging import get_logger
@@ -32,14 +33,17 @@ from app.domain.applications.schemas import (
     ApplicationPackageResponse,
     ApplicationResponse,
     ApplicationStatusCounts,
+    ApplicationTimelinePage,
     ApplicationUpdate,
     ApplicationWorkspaceResponse,
+    TimelineEventItem,
     WorkspaceDocumentMetadata,
     WorkspaceJobContext,
     WorkspaceMatchSummary,
 )
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
+from app.models.application_event import ApplicationEvent
 from app.models.application_package import ApplicationPackage
 
 logger = get_logger("application_service")
@@ -49,6 +53,36 @@ NEXT_ACTION_FIELDS = (
     "next_action_due_date",
     "next_action_completed_at",
 )
+
+
+def _timeline_item(event: ApplicationEvent) -> TimelineEventItem:
+    event_type = str(event.event_type)
+    metadata = getattr(event, "metadata_", {}) or {}
+    count_keys = {"attempted", "filled", "skipped", "failed", "field_count"}
+    counts = {
+        key: value for key, value in metadata.items()
+        if key in count_keys and isinstance(value, int)
+    }
+    summary_map = {
+        "opened": "Application page opened",
+        "form_detected": "Application form detected",
+        "autofill_completed": "Autofill completed",
+        "submission_unconfirmed": "Submit click detected; submission is unconfirmed",
+        "confirmation_detected": "Application confirmation detected",
+        "user_marked_applied": "Application marked as applied",
+    }
+    return TimelineEventItem(
+        id=str(event.id), type=event_type, occurred_at=event.created_at,
+        source="extension" if getattr(event, "attempt_id", None) else "application",
+        summary=summary_map.get(event_type, "Application activity recorded"),
+        counts=counts or None,
+        progress=(
+            event_type if event_type in {
+                "opened", "form_detected", "autofill_completed",
+                "submission_unconfirmed", "confirmation_detected", "cancelled",
+            } else None
+        ),
+    )
 
 
 class ApplicationService:
@@ -178,6 +212,38 @@ class ApplicationService:
                 )
                 for event in events
             ],
+        )
+
+    async def timeline(
+        self, *, user_id: int, application_id: int, limit: int = 25,
+        cursor: str | None = None,
+    ) -> ApplicationTimelinePage:
+        application = await self._repo.get(user_id=user_id, application_id=application_id)
+        if application is None:
+            raise ApplicationNotFoundError(application_id)
+        boundary: tuple[datetime, str] | None = None
+        if cursor:
+            try:
+                raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+                timestamp, event_id = raw.rsplit("|", 1)
+                boundary = (datetime.fromisoformat(timestamp), event_id)
+            except (ValueError, UnicodeDecodeError):
+                raise ValueError("Invalid timeline cursor") from None
+        events = await self._repo.list_timeline_events(
+            user_id=user_id, application_id=application_id,
+            limit=limit + 1, cursor=boundary,
+        )
+        has_more = len(events) > limit
+        events = events[:limit]
+        next_cursor = None
+        if has_more and events:
+            last = events[-1]
+            cursor_raw = f"{last.created_at.isoformat()}|{last.id}".encode()
+            next_cursor = base64.urlsafe_b64encode(cursor_raw).decode()
+        return ApplicationTimelinePage(
+            application_id=application_id,
+            items=[_timeline_item(event) for event in events],
+            next_cursor=next_cursor,
         )
 
     async def workspace(self, *, user_id: int, application_id: int) -> ApplicationWorkspaceResponse:

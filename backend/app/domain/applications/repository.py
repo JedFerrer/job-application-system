@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -168,6 +168,25 @@ class ApplicationRepository:
                 ApplicationEvent.id.desc(),
             )
             .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_timeline_events(
+        self, *, user_id: int, application_id: int, limit: int,
+        cursor: tuple[datetime, str] | None = None,
+    ) -> list[ApplicationEvent]:
+        filters: list[Any] = [
+            ApplicationEvent.user_id == user_id,
+            ApplicationEvent.application_id == application_id,
+        ]
+        if cursor is not None:
+            filters.append(
+                tuple_(ApplicationEvent.created_at, ApplicationEvent.id) < cursor
+            )
+        result = await self._session.execute(
+            select(ApplicationEvent).where(*filters).order_by(
+                ApplicationEvent.created_at.desc(), ApplicationEvent.id.desc()
+            ).limit(limit)
         )
         return list(result.scalars().all())
 

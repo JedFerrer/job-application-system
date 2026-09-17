@@ -291,3 +291,31 @@ class ApprovePreparationRequest(BaseModel):
     expected_version: int = Field(ge=0)
     package_id: int = Field(gt=0)
     content_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class AttemptCreateRequest(BaseModel):
+    expected_version: int = Field(ge=0)
+    package_id: int = Field(gt=0)
+    package_hash: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class AttemptResponse(BaseModel):
+    attempt_id: str
+    expires_at: datetime
+    external_url: str
+
+
+class TimelineEventItem(BaseModel):
+    id: str
+    type: str
+    occurred_at: datetime
+    source: str
+    summary: str
+    counts: dict[str, int] | None = None
+    progress: str | None = None
+
+
+class ApplicationTimelinePage(BaseModel):
+    application_id: int
+    items: list[TimelineEventItem]
+    next_cursor: str | None = None

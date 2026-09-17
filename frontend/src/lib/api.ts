@@ -10,6 +10,8 @@ import type {
   ApplicationListResponse,
   ApplicationUpdate,
   ApplicationWorkspace,
+  ApplicationAttempt,
+  ApplicationTimelinePage,
   AuthUser,
   CoverLetter,
   IngestRequest,
@@ -488,6 +490,13 @@ export const applicationsApi = {
     apiRequest<ApplicationPreparation>(`/applications/${id}/preparation`),
   getWorkspace: (id: number) =>
     apiRequest<ApplicationWorkspace>(`/applications/${id}/workspace`),
+  createAttempt: (id: number, expectedVersion: number, packageId: number, packageHash: string) =>
+    apiRequest<ApplicationAttempt>(`/applications/${id}/attempts`, {
+      method: "POST",
+      body: JSON.stringify({ expected_version: expectedVersion, package_id: packageId, package_hash: packageHash }),
+    }),
+  getTimeline: (id: number, cursor?: string) =>
+    apiRequest<ApplicationTimelinePage>(`/applications/${id}/timeline?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
   patchPreparation: (id: number, payload: ApplicationPreparationPatch) =>
     apiRequest<ApplicationPreparation>(`/applications/${id}/preparation`, {
       method: "PATCH",
