@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.domain.matching.skill_matcher import SkillMatchReport
 from app.domain.resume.exceptions import (
     TailoredResumeSnapshotInvalidError,
     TailoredResumeValidationReason,
@@ -24,9 +25,12 @@ from app.domain.resume.schemas import (
     TailoredResume,
     TailoredResumeDraftCreate,
 )
+from app.domain.resume.selection import select_source_bullets
 from app.domain.resume.service import (
     ResumeService,
+    _full_resume_context,
     _rehydrate_source_backed_snapshot,
+    _review_evidence,
     _validate_source_backed_snapshot,
 )
 from tests.unit.resume_qa_support import (
@@ -53,6 +57,34 @@ def _source_and_content() -> tuple[SourceResumeDocument, SimpleNamespace, Tailor
         id=12, resume_id=13, content={"schema_version": "source-resume-v5"}
     )
     return source, source_row, source_backed_wrap_content(source, source_row)
+
+
+def _versioned_wrap_content(
+    source: SourceResumeDocument, source_row: SimpleNamespace
+) -> TailoredResume:
+    content = source_backed_wrap_content(source, source_row)
+    _, evidence, _ = _full_resume_context(source, _PROFILE)
+    selection = select_source_bullets(source.work_history, _JOB_DESCRIPTION)
+    report = SkillMatchReport(matched_skills=["Python", "FastAPI"], missing_skills=[])
+    content.review_evidence_version = "review-evidence-v1"
+    content.summary_evidence = _review_evidence(
+        content.summary_evidence_ids, evidence, source, _PROFILE, report, selection
+    )
+    content.skill_evidence = _review_evidence(
+        content.skill_order_source_ids, evidence, source, _PROFILE, report, selection
+    )
+    for role_index, role in enumerate(content.work_history):
+        for source_index, decision in enumerate(role.selection_decisions):
+            if decision.suggested_text != decision.original_text:
+                decision.evidence = _review_evidence(
+                    [f"r{role_index}:b{source_index}"],
+                    evidence,
+                    source,
+                    _PROFILE,
+                    report,
+                    selection,
+                )
+    return content
 
 
 def test_sanitized_wrap_fixture_has_one_narrative_three_bullets_and_second_role() -> None:
@@ -335,7 +367,7 @@ async def test_save_and_reload_preserve_review_choices(
     repository = AsyncMock()
     source_row = configure_v5_active_source(repository, source)
     reviewed = apply_review_choices(
-        source_backed_wrap_content(source, source_row),
+        _versioned_wrap_content(source, source_row),
         restore_original={0},
         omit={1},
     )
@@ -388,7 +420,7 @@ async def test_save_reports_internal_source_revision_mismatch_without_persisting
     )
     log = Mock()
     monkeypatch.setattr("app.domain.resume.service.logger", Mock(warning=log))
-    stale = source_backed_wrap_content(source, source_row).model_copy(deep=True)
+    stale = _versioned_wrap_content(source, source_row).model_copy(deep=True)
     stale.source_revision_sha256 = "stale-revision"
 
     with pytest.raises(TailoredResumeSnapshotInvalidError) as exc_info:

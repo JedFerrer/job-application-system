@@ -435,6 +435,23 @@ SOURCE_BACKED_SNAPSHOT_VERSIONS = frozenset(
 )
 
 
+def _require_current_review_evidence_contract(resume: TailoredResume) -> None:
+    """Reject unproven submitted snapshots at every write/apply boundary.
+
+    Snapshot contract fields arrive from the client.  A missing marker cannot
+    establish that a payload was generated before review evidence existed, so
+    legacy-shaped content is display-only and must be regenerated before use.
+    """
+    if resume.tailoring_snapshot_version != FULL_CONTEXT_SNAPSHOT_VERSION:
+        raise TailoredResumeSnapshotInvalidError(
+            TailoredResumeValidationReason.SNAPSHOT_VERSION_UNSUPPORTED
+        )
+    if resume.review_evidence_version != "review-evidence-v1":
+        raise TailoredResumeSnapshotInvalidError(
+            TailoredResumeValidationReason.REVIEW_EVIDENCE_VERSION_MISMATCH
+        )
+
+
 def _log_tailored_snapshot_rejection(
     *,
     reason: TailoredResumeValidationReason,
@@ -976,6 +993,29 @@ def _validate_source_backed_snapshot(
                 or decision.recommendation_rank != expected_rank
             ):
                 invalid(TailoredResumeValidationReason.DECISION_MAPPING_MISMATCH)
+            evidence_ids = [item.evidence_id for item in decision.evidence]
+            if len(set(evidence_ids)) != len(evidence_ids):
+                invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
+            sanitizer_evidence_ids = [f"r{role_index}:b{source_index}"]
+            if full_context and resume.review_evidence_version == "review-evidence-v1":
+                expected_evidence = _review_evidence(
+                    evidence_ids,
+                    full_evidence,
+                    source_document,
+                    profile,
+                    review_report,
+                    selection,
+                )
+                if decision.evidence != expected_evidence:
+                    invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
+                if any(ref.role_index != role_index for ref in decision.evidence):
+                    invalid(TailoredResumeValidationReason.EVIDENCE_OWNERSHIP_MISMATCH)
+                if decision.suggested_text == decision.original_text:
+                    if decision.evidence:
+                        invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
+                elif not evidence_ids or f"r{role_index}:b{source_index}" not in evidence_ids:
+                    invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
+                sanitizer_evidence_ids = evidence_ids
             if decision.suggested_text != source_item.text:
                 if source_id not in set(rewrite_ids[role_index]):
                     invalid(
@@ -999,7 +1039,7 @@ def _validate_source_backed_snapshot(
                         "rewrites": [
                             {
                                 "target_alias": f"r{role_index}:b{source_index}",
-                                "evidence_aliases": [f"r{role_index}:b{source_index}"],
+                                "evidence_aliases": sanitizer_evidence_ids,
                                 "rewritten_text": decision.suggested_text,
                             }
                         ]
@@ -1033,28 +1073,8 @@ def _validate_source_backed_snapshot(
                     )
             if decision.final_text not in {decision.original_text, decision.suggested_text}:
                 invalid(TailoredResumeValidationReason.FINAL_TEXT_MISMATCH)
-            evidence_ids = [item.evidence_id for item in decision.evidence]
-            if len(set(evidence_ids)) != len(evidence_ids):
-                invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
             if full_context and resume.review_evidence_version == "review-evidence-v1":
-                expected_evidence = _review_evidence(
-                    evidence_ids,
-                    full_evidence,
-                    source_document,
-                    profile,
-                    review_report,
-                    selection,
-                )
-                if decision.evidence != expected_evidence:
-                    invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
-                if any(ref.role_index != role_index for ref in decision.evidence):
-                    invalid(TailoredResumeValidationReason.EVIDENCE_OWNERSHIP_MISMATCH)
-                if decision.suggested_text == decision.original_text:
-                    if decision.evidence:
-                        invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
-                elif not evidence_ids or f"r{role_index}:b{source_index}" not in evidence_ids:
-                    invalid(TailoredResumeValidationReason.EVIDENCE_MISMATCH)
-                elif not _safe_full_context_text(
+                if decision.suggested_text != decision.original_text and not _safe_full_context_text(
                     decision.suggested_text,
                     " ".join(full_evidence[item] for item in evidence_ids if item in full_evidence),
                     full_evidence,
@@ -1688,6 +1708,7 @@ class ResumeService:
 
         source_row: Any | None = None
         try:
+            _require_current_review_evidence_contract(payload.content)
             source_pair = await self._repository.get_active_tailoring_source(user_id)
             if not isinstance(source_pair, tuple) or len(source_pair) != 2:
                 raise TailoredResumeSnapshotInvalidError(
@@ -1822,6 +1843,9 @@ class ResumeService:
         job_repository: JobRepository,
     ) -> TailoredResume:
         """Return advisory analysis for the submitted reviewed snapshot."""
+        submitted = await self.validate_resume_export(
+            user_id=user_id, resume=resume, job_repository=job_repository
+        )
         profile = await self._repository.get_active_profile(user_id)
         if profile is None:
             raise ProfileNotFoundError(user_id)
@@ -1836,7 +1860,7 @@ class ResumeService:
         return resume.model_copy(
             update={
                 "requirement_classifications": classify_resume_coverage(
-                    classifications, resume
+                    classifications, submitted
                 )
             }
         )
@@ -1849,6 +1873,7 @@ class ResumeService:
         job_repository: JobRepository,
     ) -> TailoredResume:
         """Validate that a reviewed snapshot is still losslessly source-backed."""
+        _require_current_review_evidence_contract(resume)
         source_pair = await self._repository.get_active_tailoring_source(user_id)
         if not isinstance(source_pair, tuple) or len(source_pair) != 2:
             raise TailoredResumeSnapshotInvalidError()

@@ -16,6 +16,7 @@ from app.api.deps import get_current_user, get_job_repository, get_resume_servic
 from app.api.v1 import resume as resume_module
 from app.core.lifespan import register_exception_handlers
 from app.domain.jobs.exceptions import JobNotFoundError
+from app.domain.matching.skill_matcher import SkillMatchReport
 from app.domain.resume.exceptions import (
     TailoredResumeDraftNotFoundError,
     TailoredResumeSnapshotInvalidError,
@@ -41,6 +42,7 @@ from app.domain.resume.service import (
     _full_resume_context,
     _log_tailored_decision,
     _rehydrate_source_backed_snapshot,
+    _review_evidence,
     _validate_source_backed_snapshot,
 )
 from app.domain.resume.source_content import source_revision_sha256
@@ -404,12 +406,7 @@ async def test_suggestion_mismatch_logs_the_failing_decision_without_prose(
     )
     log = Mock()
     monkeypatch.setattr("app.domain.resume.service.logger", Mock(warning=log))
-    submitted = _source_backed_content(source).model_copy(deep=True)
-    submitted.tailoring_snapshot_version = "full-context-v1"
-    submitted.source_resume_id = source_row.resume_id
-    submitted.source_resume_content_id = source_row.id
-    submitted.source_schema_version = "source-resume-v5"
-    submitted.source_revision_sha256 = source_revision_sha256(source_row.content)
+    submitted = _versioned_full_context(source, source_row)
     submitted.work_history[0].selection_decisions[0].suggested_text = "forged suggestion"
 
     with pytest.raises(TailoredResumeSnapshotInvalidError) as exc_info:
@@ -427,7 +424,7 @@ async def test_suggestion_mismatch_logs_the_failing_decision_without_prose(
         "source_index": 0,
         "recommended": True,
         "rewrite_eligible": True,
-        "evidence_count": 0,
+        "evidence_count": 1,
         "submitted_suggestion_present": True,
         "expected_suggestion_present": True,
         "submitted_matches_expected": False,
@@ -513,22 +510,10 @@ async def test_v5_wrapped_summary_saves_and_validates_for_export(
     monkeypatch.setattr(
         "app.domain.resume.service.materialize_source_document_v4", lambda _: source
     )
-    content = _source_backed_content(source)
+    content = _versioned_full_context(source, source_row)
     content.professional_summary = "Backend engineer Builds resilient-platforms for teams."
-    content.tailoring_snapshot_version = "lossless-complete-v2"
-    content.source_resume_id = source_row.resume_id
-    content.source_resume_content_id = source_row.id
-    content.source_schema_version = "source-resume-v5"
-    content.source_revision_sha256 = source_revision_sha256(source_row.content)
-    selection = select_source_bullets(source.work_history, "Python backend engineer")
-    decisions = content.work_history[0].selection_decisions
-    recommended = selection.recommended_ids[0]
-    for decision in decisions:
-        source_id = str(decision.source_id)
-        decision.recommended_included = source_id in recommended
-        decision.recommendation_rank = (
-            recommended.index(source_id) if source_id in recommended else None
-        )
+    content.summary_evidence_ids = []
+    content.summary_evidence = []
     service = ResumeService(repository)
 
     await service.create_tailored_draft(
@@ -557,22 +542,7 @@ async def test_full_context_snapshot_saves_and_validates_for_export(
     monkeypatch.setattr(
         "app.domain.resume.service.materialize_source_document_v4", lambda _: source
     )
-    content = _source_backed_content(source)
-    content.tailoring_snapshot_version = "full-context-v1"
-    content.summary_evidence_ids = ["summary:0"]
-    content.skill_order_source_ids = ["skill:0"]
-    content.source_resume_id = source_row.resume_id
-    content.source_resume_content_id = source_row.id
-    content.source_schema_version = "source-resume-v5"
-    content.source_revision_sha256 = source_revision_sha256(source_row.content)
-    selection = select_source_bullets(source.work_history, "Python backend engineer")
-    recommended = selection.recommended_ids[0]
-    for decision in content.work_history[0].selection_decisions:
-        source_id = str(decision.source_id)
-        decision.recommended_included = source_id in recommended
-        decision.recommendation_rank = (
-            recommended.index(source_id) if source_id in recommended else None
-        )
+    content = _versioned_full_context(source, source_row)
     service = ResumeService(repository)
 
     await service.create_tailored_draft(
@@ -661,7 +631,7 @@ async def test_create_fresh_draft_validates_against_owned_source(
 
 
 @pytest.mark.asyncio
-async def test_legacy_sparse_source_backed_snapshot_resaves_without_expansion(
+async def test_legacy_sparse_source_backed_snapshot_requires_regeneration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _source_document()
@@ -1031,27 +1001,10 @@ async def test_coverage_preview_recomputes_reviewed_snapshot_and_ignores_client_
         ],
     )
 
-    covered = await service.preview_resume_coverage(
-        user_id=7, resume=reviewed, job_repository=jobs
-    )
-    by_requirement = {
-        item.requirement: item for item in covered.requirement_classifications
-    }
-    assert by_requirement["python"].status == "verified"
-    assert by_requirement["python"].resume_coverage_status == "covered"
-    assert by_requirement["kubernetes"].status == "missing"
-    assert by_requirement["kubernetes"].resume_coverage_status == "not_applicable"
-    assert covered.work_history[0].tailored_highlights == ["Built Python services"]
-
-    reviewed.work_history[0].tailored_highlights = ["Supported services"]
-    uncovered = await service.preview_resume_coverage(
-        user_id=7, resume=reviewed, job_repository=jobs
-    )
-    python = next(
-        item for item in uncovered.requirement_classifications if item.requirement == "python"
-    )
-    assert python.resume_coverage_status == "not_represented"
-    assert uncovered.work_history[0].tailored_highlights == ["Supported services"]
+    with pytest.raises(TailoredResumeSnapshotInvalidError):
+        await service.preview_resume_coverage(
+            user_id=7, resume=reviewed, job_repository=jobs
+        )
 
 
 @pytest.mark.asyncio
@@ -1320,6 +1273,185 @@ def _prepare_full_context(
     return content
 
 
+def _versioned_full_context(
+    source: SourceResumeDocument, source_row: SimpleNamespace
+) -> TailoredResume:
+    content = _prepare_full_context(source, source_row)
+    profile = ParsedProfile.model_validate({"skills": ["Python"]})
+    _, evidence, _ = _full_resume_context(source, profile)
+    selection = select_source_bullets(source.work_history, "Python backend engineer")
+    report = SkillMatchReport(matched_skills=["Python"], missing_skills=[])
+    content.review_evidence_version = "review-evidence-v1"
+    content.summary_evidence_ids = [
+        evidence_id for evidence_id in evidence if evidence_id.startswith("summary:")
+    ]
+    content.summary_evidence = _review_evidence(
+        content.summary_evidence_ids, evidence, source, profile, report, selection
+    )
+    content.skill_evidence = _review_evidence(
+        content.skill_order_source_ids, evidence, source, profile, report, selection
+    )
+    for role_index, role in enumerate(content.work_history):
+        for source_index, decision in enumerate(role.selection_decisions):
+            if decision.suggested_text != decision.original_text:
+                decision.evidence = _review_evidence(
+                    [f"r{role_index}:b{source_index}"],
+                    evidence,
+                    source,
+                    profile,
+                    report,
+                    selection,
+                )
+    return content
+
+
+@pytest.mark.asyncio
+async def test_current_contract_is_required_for_save_coverage_and_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_document()
+    repository = AsyncMock()
+    source_row = _configure_v5_active_source(repository, source)
+    repository.create_tailored_draft.return_value = _draft()
+    repository.get_active_profile.return_value = SimpleNamespace(
+        parsed=ParsedProfile.model_validate({"skills": ["Python"]}).model_dump()
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description="Python backend engineer"
+    )
+    monkeypatch.setattr(
+        "app.domain.resume.service.materialize_source_document_v4", lambda _: source
+    )
+    service = ResumeService(repository)
+
+    valid = _versioned_full_context(source, source_row)
+    await service.create_tailored_draft(
+        user_id=7,
+        payload=TailoredResumeDraftCreate(job_id=11, content=valid),
+        job_repository=jobs,
+    )
+    assert await service.validate_resume_export(
+        user_id=7, resume=valid, job_repository=jobs
+    ) == valid
+    covered = await service.preview_resume_coverage(
+        user_id=7, resume=valid, job_repository=jobs
+    )
+    assert covered.requirement_classifications
+
+    for downgrade in (
+        "missing_review_marker",
+        "null_review_marker",
+        "empty_decision_evidence",
+        "missing_marker_and_evidence",
+        "missing_snapshot_version",
+        "older_snapshot_version",
+        "unknown_evidence",
+        "duplicate_evidence",
+    ):
+        submitted = _versioned_full_context(source, source_row)
+        if downgrade in {"missing_review_marker", "missing_marker_and_evidence"}:
+            submitted = TailoredResume.model_validate(
+                submitted.model_dump(exclude={"review_evidence_version"})
+            )
+        if downgrade == "null_review_marker":
+            submitted.review_evidence_version = None
+        if downgrade in {"empty_decision_evidence", "missing_marker_and_evidence"}:
+            submitted.work_history[0].selection_decisions[0].evidence = []
+        if downgrade == "missing_snapshot_version":
+            submitted = TailoredResume.model_validate(
+                submitted.model_dump(exclude={"tailoring_snapshot_version"})
+            )
+        if downgrade == "older_snapshot_version":
+            submitted.tailoring_snapshot_version = "lossless-complete-v2"
+        if downgrade == "unknown_evidence":
+            submitted.work_history[0].selection_decisions[0].evidence[0].evidence_id = "unknown:0"
+        if downgrade == "duplicate_evidence":
+            decision = submitted.work_history[0].selection_decisions[0]
+            decision.evidence.append(decision.evidence[0].model_copy(deep=True))
+
+        with pytest.raises(TailoredResumeSnapshotInvalidError):
+            await service.create_tailored_draft(
+                user_id=7,
+                payload=TailoredResumeDraftCreate(job_id=11, content=submitted),
+                job_repository=jobs,
+            )
+        with pytest.raises(TailoredResumeSnapshotInvalidError):
+            await service.preview_resume_coverage(
+                user_id=7, resume=submitted, job_repository=jobs
+            )
+        with pytest.raises(TailoredResumeSnapshotInvalidError):
+            await service.validate_resume_export(
+                user_id=7, resume=submitted, job_repository=jobs
+            )
+
+
+@pytest.mark.asyncio
+async def test_current_evidence_rejects_cross_role_support_at_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_document()
+    source.work_history.append(_second_role())
+    repository = AsyncMock()
+    source_row = _configure_v5_active_source(repository, source)
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description="Python backend engineer"
+    )
+    monkeypatch.setattr(
+        "app.domain.resume.service.materialize_source_document_v4", lambda _: source
+    )
+    content = _versioned_full_context(source, source_row)
+    profile = ParsedProfile.model_validate({"skills": ["Python"]})
+    _, evidence, _ = _full_resume_context(source, profile)
+    content.work_history[0].selection_decisions[0].evidence = _review_evidence(
+        ["r1:b0"],
+        evidence,
+        source,
+        profile,
+        SkillMatchReport(matched_skills=["Python"], missing_skills=[]),
+        select_source_bullets(source.work_history, "Python backend engineer"),
+    )
+
+    with pytest.raises(TailoredResumeSnapshotInvalidError) as exc_info:
+        await ResumeService(repository).create_tailored_draft(
+            user_id=7,
+            payload=TailoredResumeDraftCreate(job_id=11, content=content),
+            job_repository=jobs,
+        )
+    assert exc_info.value.reason is TailoredResumeValidationReason.EVIDENCE_OWNERSHIP_MISMATCH
+
+
+@pytest.mark.asyncio
+async def test_persisted_legacy_draft_stays_readable_but_resave_requires_regeneration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_document()
+    repository = AsyncMock()
+    source_row = _configure_v5_active_source(repository, source)
+    legacy = _prepare_full_context(source, source_row)
+    draft = _draft()
+    draft.content = legacy.model_dump(mode="json")
+    repository.get_tailored_draft.return_value = draft
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer", company="Acme", description="Python backend engineer"
+    )
+    monkeypatch.setattr(
+        "app.domain.resume.service.materialize_source_document_v4", lambda _: source
+    )
+    service = ResumeService(repository)
+
+    assert (await service.get_tailored_draft(user_id=7, draft_id=4)).content == legacy
+    with pytest.raises(TailoredResumeSnapshotInvalidError):
+        await service.create_tailored_draft(
+            user_id=7,
+            payload=TailoredResumeDraftCreate(job_id=11, content=legacy),
+            job_repository=jobs,
+        )
+    repository.create_tailored_draft.assert_not_awaited()
+
+
 def _source_row() -> SimpleNamespace:
     return SimpleNamespace(
         id=12, resume_id=13, content={"schema_version": "source-resume-v5"}
@@ -1339,7 +1471,7 @@ def _second_role() -> SourceRole:
 def test_clean_full_context_draft_rehydrates_exportably() -> None:
     source = _source_document()
     source_row = _source_row()
-    content = _prepare_full_context(source, source_row)
+    content = _versioned_full_context(source, source_row)
     rehydrated = _rehydrate_source_backed_snapshot(
         content,
         source,
@@ -1519,7 +1651,7 @@ async def test_affected_full_context_draft_saves_after_role_context_repair(
     monkeypatch.setattr(
         "app.domain.resume.service.materialize_source_document_v4", lambda _: source
     )
-    content = _prepare_full_context(source, source_row)
+    content = _versioned_full_context(source, source_row)
     content.work_history[0].role_context = [*content.work_history[0].role_context, leftover]
     service = ResumeService(repository)
 

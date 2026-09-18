@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Literal
 from unittest.mock import AsyncMock
@@ -24,6 +25,7 @@ from app.domain.resume.schemas import (
     SourceResumeLayoutReferencesV4,
     SourceResumeRoleReferencesV3,
     TailoredResume,
+    TailoredResumeDraftCreate,
 )
 from app.domain.resume.service import ResumeService, _full_resume_context
 from app.domain.resume.source_content import (
@@ -1623,6 +1625,115 @@ def _malformed_v5_payload() -> tuple[SourceResumeContentPayloadV5, str]:
         layout_validation_status="verified",
     )
     return payload, leftover.text
+
+
+def _multi_evidence_v5_payload() -> SourceResumeContentPayloadV5:
+    header = _line_candidate("Northwind - Engineer", 0, "heading")
+    target = _line_candidate("Built FastAPI APIs.", 1, "bullet")
+    supporting = _line_candidate("Automated FastAPI internal workflows.", 2, "bullet")
+    return SourceResumeContentPayloadV5(
+        document=SourceResumeContentDocumentV4(
+            candidates=[header, target, supporting],
+            layout=SourceResumeLayoutReferencesV4(
+                work_history=[
+                    SourceResumeRoleReferencesV3(
+                        order=0,
+                        header=header.source_id,
+                        context=[],
+                        responsibilities_heading=None,
+                        highlights=[target.source_id, supporting.source_id],
+                    )
+                ],
+                unclassified=[],
+            ),
+        ),
+        layout_validation_status="verified",
+    )
+
+
+@pytest.mark.parametrize(
+    ("evidence_aliases", "rewritten_text"),
+    [
+        pytest.param(["r0:b0"], "Built FastAPI APIs", id="single-evidence"),
+        pytest.param(
+            ["r0:b0", "r0:b1"],
+            "Built FastAPI APIs; automated FastAPI internal workflows.",
+            id="multi-evidence",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_generated_source_backed_evidence_snapshot_saves_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_aliases: list[str],
+    rewritten_text: str,
+) -> None:
+    source_payload = _multi_evidence_v5_payload()
+    source_row = SimpleNamespace(
+        id=12,
+        resume_id=13,
+        validation_status="verified",
+        content=source_payload.model_dump(mode="json"),
+    )
+    repository = AsyncMock()
+    repository.get_active_tailoring_source.return_value = (
+        SimpleNamespace(id=8, parsed=_profile().model_dump()),
+        source_row,
+    )
+    now = datetime.now(UTC)
+    repository.create_tailored_draft.side_effect = lambda **kwargs: SimpleNamespace(
+        id=4,
+        job_id=kwargs["job_id"],
+        source_profile_id=kwargs["source_profile_id"],
+        job_title=kwargs["job_title"],
+        job_company=kwargs["job_company"],
+        content=kwargs["content"],
+        created_at=now,
+        updated_at=now,
+    )
+    jobs = AsyncMock()
+    jobs.get_visible_by_id.return_value = SimpleNamespace(
+        title="Backend Engineer",
+        company="Acme",
+        description="Built FastAPI APIs. Automated FastAPI internal workflows.",
+    )
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "rewrites": [
+                                {
+                                    "target_alias": "r0:b0",
+                                    "evidence_aliases": evidence_aliases,
+                                    "rewritten_text": rewritten_text,
+                                }
+                            ]
+                        }
+                    )
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        resume_service,
+        "llm_chat_completion",
+        AsyncMock(return_value=(response, "test-model")),
+    )
+    service = ResumeService(repository)
+
+    generated = await service.tailor_for_job(
+        user_id=7, job_id=11, job_repository=jobs
+    )
+    created = await service.create_tailored_draft(
+        user_id=7,
+        payload=TailoredResumeDraftCreate(job_id=11, content=generated),
+        job_repository=jobs,
+    )
+
+    assert created.content.work_history[0].selection_decisions[0].suggested_text == rewritten_text
+    repository.create_tailored_draft.assert_awaited_once()
 
 
 @pytest.mark.asyncio
