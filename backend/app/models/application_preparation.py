@@ -41,6 +41,9 @@ class ApplicationPreparation(Base):
     approved_package_id: Mapped[int | None] = mapped_column(
         ForeignKey("application_packages.id", ondelete="SET NULL"), nullable=True
     )
+    reviewable_package_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_packages.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

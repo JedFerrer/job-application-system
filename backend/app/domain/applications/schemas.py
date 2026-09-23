@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Application API schemas (Phase 4 minimal CRM)."""
 
 from __future__ import annotations
@@ -239,6 +240,175 @@ class ApplicationPackageResponse(BaseModel):
     created_at: datetime
 
 
+ReviewState = Literal["queued", "running", "completed", "failed"]
+ReviewOutcome = Literal["no_findings", "attention_needed", "insufficient_evidence"]
+ReviewDisposition = Literal["keep_wording", "will_revise"]
+
+
+class DocumentReviewFinding(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    document: Literal["resume", "cover_letter"]
+    category: Literal["unsupported_claim", "cross_document_mismatch", "job_document_mismatch", "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing"]
+    severity: Literal["concern", "suggestion"]
+    excerpt: str = Field(min_length=1, max_length=100_000)
+    locator: str = Field(min_length=1, max_length=512)
+    rationale: str = Field(min_length=1, max_length=2_000)
+    evidence: list[DocumentReviewEvidence] = Field(default_factory=list, max_length=50)
+    proposed_action: str = Field(min_length=1, max_length=2_000)
+
+
+class DocumentReviewEvidence(BaseModel):
+    role: Literal["target", "comparison", "requirement"]
+    document: Literal["job", "resume", "cover_letter"]
+    locator: str = Field(min_length=1, max_length=512)
+    excerpt: str = Field(min_length=1, max_length=100_000)
+
+
+class ProviderFindingV6(BaseModel):
+    """Provider-owned review semantics with server-derived evidence roles."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=64)
+    category: Literal["unsupported_claim", "cross_document_mismatch", "job_document_mismatch", "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing"]
+    severity: Literal["concern", "suggestion"]
+    rationale: str = Field(min_length=1, max_length=2_000)
+    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(min_length=1, max_length=2)
+    proposed_action: str = Field(min_length=1, max_length=2_000)
+
+
+class ProviderFindingV7(BaseModel):
+    """Provider-owned review semantics for the v7 ID-only contract."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=64)
+    category: Literal["unsupported_claim", "cross_document_mismatch", "job_document_mismatch", "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing"]
+    severity: Literal["concern", "suggestion"]
+    rationale: str = Field(min_length=1, max_length=2_000)
+    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(min_length=1, max_length=2)
+    proposed_action: str = Field(min_length=1, max_length=2_000)
+
+
+class ProviderDocumentReviewResponseV7(BaseModel):
+    """Strict internal boundary for the v7 provider response.
+
+    ``findings`` deliberately has no default: an omitted top-level field is a
+    schema failure, while an explicit empty list remains a valid no-findings response.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    findings: list[ProviderFindingV7] = Field(..., max_length=20)
+
+
+class ProviderFindingV8(BaseModel):
+    """Provider-owned review semantics for the v8 ID-only contract."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=64)
+    category: Literal["unsupported_claim", "cross_document_mismatch", "job_document_mismatch", "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing"]
+    severity: Literal["concern", "suggestion"]
+    rationale: str = Field(min_length=1, max_length=2_000)
+    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(min_length=1, max_length=2)
+    proposed_action: str = Field(min_length=1, max_length=2_000)
+
+
+class ProviderDocumentReviewResponseV8(BaseModel):
+    """Strict internal boundary for the v8 provider response.
+
+    ``findings`` deliberately has no default: an omitted top-level field is a
+    schema failure, while an explicit empty list remains a valid no-findings response.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    findings: list[ProviderFindingV8] = Field(..., max_length=20)
+
+
+class _ProviderFindingV10Base(BaseModel):
+    """Common provider-owned fields; evidence semantics remain server-owned."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=64)
+    severity: Literal["concern", "suggestion"]
+    rationale: str = Field(min_length=1, max_length=2_000)
+    proposed_action: str = Field(min_length=1, max_length=2_000)
+
+
+class ProviderSingleTargetFindingV10(_ProviderFindingV10Base):
+    category: Literal["unsupported_claim", "repetition", "clarity", "keyword_stuffing"]
+    target_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^(?:resume|cover)-e[0-9]{4,}$")]
+
+
+class ProviderCrossDocumentFindingV10(_ProviderFindingV10Base):
+    category: Literal["cross_document_mismatch"]
+    resume_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^resume-e[0-9]{4,}$")]
+    cover_letter_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^cover-e[0-9]{4,}$")]
+
+
+class ProviderJobTargetFindingV10(_ProviderFindingV10Base):
+    category: Literal["job_document_mismatch", "omitted_verified_evidence"]
+    job_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^job-e[0-9]{4,}$")]
+    target_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^(?:resume|cover)-e[0-9]{4,}$")]
+
+
+type ProviderFindingV10 = Annotated[
+    ProviderSingleTargetFindingV10 | ProviderCrossDocumentFindingV10 | ProviderJobTargetFindingV10,
+    Field(discriminator="category"),
+]
+
+
+class ProviderDocumentReviewResponseV10(BaseModel):
+    """Strict V10 boundary: category-specific, document-qualified selections."""
+
+    model_config = ConfigDict(extra="forbid")
+    findings: list[ProviderFindingV10] = Field(..., max_length=20)
+
+
+class ReviewAcknowledgmentItem(BaseModel):
+    finding_id: str = Field(min_length=1, max_length=64)
+    disposition: ReviewDisposition
+
+
+class ReviewAcknowledgmentRequest(BaseModel):
+    package_content_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    acknowledgments: list[ReviewAcknowledgmentItem] = Field(min_length=1, max_length=20)
+
+
+class DocumentReviewResponse(BaseModel):
+    id: str
+    application_id: int
+    package_id: int
+    package_content_sha256: str
+    review_policy_version: str
+    state: ReviewState
+    outcome: ReviewOutcome | None = None
+    findings: list[DocumentReviewFinding] = Field(default_factory=list)
+    failure_code: str | None = None
+    acknowledgments: list[ReviewAcknowledgmentItem] = Field(default_factory=list)
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class DocumentReviewRequest(BaseModel):
+    rerun: bool = False
+
+
+class DocumentReviewQueuedResponse(BaseModel):
+    task_id: str
+    review_id: str
+    state: Literal["queued", "running"]
+    existing: bool = False
+
+
+class DocumentReviewSummary(BaseModel):
+    id: str
+    task_id: str | None = None
+    package_id: int
+    package_content_sha256: str
+    review_policy_version: str
+    state: ReviewState
+    outcome: ReviewOutcome | None = None
+    failure_code: str | None = None
+
+
 class WorkspaceJobContext(BaseModel):
     id: int
     title: str
@@ -283,8 +453,10 @@ class ApplicationWorkspaceResponse(BaseModel):
     selected_resume: WorkspaceDocumentMetadata | None
     selected_cover_letter: WorkspaceDocumentMetadata | None
     approved_package: ApplicationPackageResponse | None
+    current_reviewable_package: ApplicationPackageResponse | None = None
     package_history: list[ApplicationPackageHistoryItem]
     activity: ApplicationActivityResponse
+    current_document_review: DocumentReviewSummary | None = None
 
 
 class ApprovePreparationRequest(BaseModel):

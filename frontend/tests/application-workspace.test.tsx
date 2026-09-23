@@ -110,7 +110,7 @@ describe("ApplicationWorkspace saved-document actions", () => {
   it("lazily views a non-approved historical package and returns to the current preview", async () => {
     const current = { id: 12, application_id: 7, revision: 2, content_sha256: "b".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-02T00:00:00Z", content: { job: { title: "Current role" }, resume: { professional_summary: "Current resume" }, cover_letter: { content: "Current letter" } } };
     const historical = { id: 11, application_id: 7, revision: 1, content_sha256: "a".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-01T00:00:00Z", content: { job: { title: "Frozen historical role" }, resume: { professional_summary: "Frozen historical resume" }, cover_letter: { content: "Frozen historical letter" } } };
-    apiMocks.getWorkspace.mockResolvedValue(workspace({ approved_package: current, package_history: [{ id: 11, revision: 1, content_sha256: historical.content_sha256, created_at: historical.created_at, is_approved: false }, { id: 12, revision: 2, content_sha256: current.content_sha256, created_at: current.created_at, is_approved: true }] }));
+    apiMocks.getWorkspace.mockResolvedValue(workspace({ approved_package: current, current_reviewable_package: current, package_history: [{ id: 11, revision: 1, content_sha256: historical.content_sha256, created_at: historical.created_at, is_approved: false }, { id: 12, revision: 2, content_sha256: current.content_sha256, created_at: current.created_at, is_approved: true }] }));
     apiMocks.getPackage.mockResolvedValue(historical); apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404));
     node = document.createElement("div"); document.body.appendChild(node); root = createRoot(node);
     await act(async () => { root?.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ApplicationWorkspace applicationId={7} /></QueryClientProvider>); });
@@ -130,7 +130,7 @@ describe("ApplicationWorkspace saved-document actions", () => {
   it("shows explicit loading and handled historical package errors without a mutable fallback", async () => {
     const current = { id: 12, application_id: 7, revision: 2, content_sha256: "b".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-02T00:00:00Z", content: { resume: { professional_summary: "Current resume" } } };
     const history = [{ id: 11, revision: 1, content_sha256: "a".repeat(64), created_at: "2026-01-01T00:00:00Z", is_approved: false }];
-    apiMocks.getWorkspace.mockResolvedValue(workspace({ approved_package: current, package_history: history })); apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404));
+    apiMocks.getWorkspace.mockResolvedValue(workspace({ approved_package: current, current_reviewable_package: current, package_history: history })); apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404));
     apiMocks.getPackage.mockReturnValue(new Promise(() => {}));
     node = document.createElement("div"); document.body.appendChild(node); root = createRoot(node);
     await act(async () => { root?.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ApplicationWorkspace applicationId={7} /></QueryClientProvider>); });
@@ -140,7 +140,7 @@ describe("ApplicationWorkspace saved-document actions", () => {
     expect(node?.textContent).not.toContain("Current resume");
     root?.unmount(); node?.remove(); root = null; node = null; vi.clearAllMocks();
 
-    apiMocks.getWorkspace.mockResolvedValue(workspace({ approved_package: current, package_history: history })); apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404)); apiMocks.getPackage.mockRejectedValueOnce(new apiMocks.ApiError(404));
+    apiMocks.getWorkspace.mockResolvedValue(workspace({ approved_package: current, current_reviewable_package: current, package_history: history })); apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404)); apiMocks.getPackage.mockRejectedValueOnce(new apiMocks.ApiError(404));
     node = document.createElement("div"); document.body.appendChild(node); root = createRoot(node);
     await act(async () => { root?.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ApplicationWorkspace applicationId={7} /></QueryClientProvider>); });
     await vi.waitFor(() => expect(button(node!, "View")).toBeTruthy()); await act(async () => { button(node!, "View")?.click(); });
@@ -148,7 +148,7 @@ describe("ApplicationWorkspace saved-document actions", () => {
     expect(node?.textContent).not.toContain("Current resume");
     root?.unmount(); node?.remove(); root = null; node = null; vi.clearAllMocks();
 
-    apiMocks.getWorkspace.mockResolvedValue(workspace({ approved_package: current, package_history: history })); apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404)); apiMocks.getPackage.mockRejectedValueOnce(new Error("network"));
+    apiMocks.getWorkspace.mockResolvedValue(workspace({ approved_package: current, current_reviewable_package: current, package_history: history })); apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404)); apiMocks.getPackage.mockRejectedValueOnce(new Error("network"));
     node = document.createElement("div"); document.body.appendChild(node); root = createRoot(node);
     await act(async () => { root?.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ApplicationWorkspace applicationId={7} /></QueryClientProvider>); });
     await vi.waitFor(() => expect(button(node!, "View")).toBeTruthy()); await act(async () => { button(node!, "View")?.click(); });

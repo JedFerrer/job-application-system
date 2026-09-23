@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.domain.applications.document_review import DocumentReviewService, ReviewConflictError
 from app.domain.applications.exceptions import (
     ApplicationNotFoundError,
     PackageApprovalConflictError,
@@ -37,6 +38,7 @@ from app.domain.applications.schemas import (
     ApplicationPackageResponse,
     ApprovePreparationRequest,
     CreatePackageRequest,
+    DocumentReviewQueuedResponse,
     PreparationPatch,
     PreparationResponse,
 )
@@ -46,6 +48,8 @@ from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.identity import scoped_key
 from app.domain.jobs.repository import JobRepository
 from app.domain.resume.exceptions import TailoredResumeDraftNotFoundError
+from app.domain.resume.provenance import build_resume_import_provenance
+from app.domain.resume.schemas import ParsedProfile
 from app.models.application import Application
 from app.models.application_event import ApplicationEvent
 from app.models.application_package import ApplicationPackage
@@ -54,8 +58,22 @@ from app.models.cover_letter import CoverLetter
 from app.models.job import Job
 from app.models.resume import CandidateProfile, Resume, SourceResumeContent, TailoredResumeDraft
 from app.models.user import User
+from tests.unit.resume_qa_support import (
+    apply_review_choices,
+    source_backed_wrap_content,
+    source_backed_wrap_source_payload,
+)
 
 pytestmark = pytest.mark.integration
+
+
+class _ReviewTaskStore:
+    async def create(self, task_type: str, user_id: int) -> str:
+        assert (task_type, user_id) == ("document_review", 1)
+        return "real-service-review-task"
+
+    async def update(self, task_id: str, **fields: object) -> None:
+        assert task_id == "real-service-review-task"
 
 
 @pytest.fixture(scope="module")
@@ -540,7 +558,20 @@ async def test_package_snapshot_remains_immutable_after_selected_source_drift(
     async with factory() as db:
         application = await _seed(db)
         draft = await _seed_draft(db, user_id=1, job_id=application.job_id, marker="immutable")
-        draft.content = {"job_id": application.job_id, "professional_summary": "Original resume"}
+        job = await db.get(Job, application.job_id)
+        source = await db.get(SourceResumeContent, draft.source_resume_content_id)
+        profile = await db.get(CandidateProfile, draft.source_profile_id)
+        resume = await db.get(Resume, source.resume_id) if source is not None else None
+        assert job is not None and source is not None and profile is not None and resume is not None
+        job.description = "Python backend platform engineer"
+        source.content, source_document = source_backed_wrap_source_payload()
+        source.schema_version = "source-resume-v5"
+        resume.import_provenance = build_resume_import_provenance(resume.filename, []).model_dump(mode="json")
+        profile.parsed = ParsedProfile.model_validate({"skills": ["Python", "FastAPI"]}).model_dump()
+        original_resume = source_backed_wrap_content(
+            source_document, source, job_description=job.description
+        ).model_copy(update={"job_id": application.job_id})
+        draft.content = original_resume.model_dump(mode="json")
         letter = CoverLetter(
             user_id=1,
             job_id=application.job_id,
@@ -564,12 +595,6 @@ async def test_package_snapshot_remains_immutable_after_selected_source_drift(
         db.add(preparation)
         await db.flush()
 
-        async def validate_export(**kwargs: object) -> object:
-            return kwargs["resume"]
-
-        # Package construction still executes the real snapshot projection;
-        # source-export verification has dedicated resume-domain coverage.
-        service._resume_service.validate_resume_export = AsyncMock(side_effect=validate_export)  # type: ignore[method-assign]
         package, created = await service.create_package(
             user_id=1,
             application_id=application.id,
@@ -577,6 +602,24 @@ async def test_package_snapshot_remains_immutable_after_selected_source_drift(
             idempotency_key=f"immutable-{mutated_source}",
         )
         assert created is True
+        await db.flush()
+        await db.refresh(preparation)
+        persisted = await db.get(
+            ApplicationPreparation, application.id, populate_existing=True
+        )
+        assert package.id is not None
+        assert persisted is not None
+        assert persisted.reviewable_package_id == package.id
+        initial = await service.get(user_id=1, application_id=application.id)
+        assert initial.state == "needs_review"
+        workspace = await ApplicationService(
+            repository=ApplicationRepository(db),
+            job_repository=JobRepository(db),
+            preparation_service=ApplicationPreparationService(session=db),
+        ).workspace(user_id=1, application_id=application.id)
+        assert workspace.current_reviewable_package is not None
+        assert workspace.current_reviewable_package.id == package.id
+        assert any(item.id == package.id for item in workspace.package_history)
         original_content = deepcopy(package.content)
         original_hash = package.content_sha256
         original_revision = package.revision
@@ -585,14 +628,89 @@ async def test_package_snapshot_remains_immutable_after_selected_source_drift(
             draft.content = {"job_id": application.job_id, "professional_summary": "Changed resume"}
         else:
             letter.content = "Changed letter"
+        drifted = await ApplicationPreparationService(session=db).get(
+            user_id=1, application_id=application.id
+        )
+        assert drifted.state == "in_progress"
+        drifted_workspace = await ApplicationService(
+            repository=ApplicationRepository(db),
+            job_repository=JobRepository(db),
+            preparation_service=ApplicationPreparationService(session=db),
+        ).workspace(user_id=1, application_id=application.id)
+        assert drifted_workspace.current_reviewable_package is None
+        assert any(item.id == package.id for item in drifted_workspace.package_history)
+        reviews = DocumentReviewService(db)
+        with pytest.raises(ReviewConflictError):
+            await reviews.start(
+                user_id=1,
+                application_id=application.id,
+                package_id=package.id,
+                idempotency_key=f"stale-{mutated_source}",
+                rerun=False,
+                task_store=_ReviewTaskStore(),  # type: ignore[arg-type]
+            )
+        with pytest.raises(PackageApprovalConflictError):
+            await ApplicationPreparationService(session=db).approve(
+                user_id=1,
+                application_id=application.id,
+                payload=ApprovePreparationRequest(
+                    expected_version=0,
+                    package_id=package.id,
+                    content_sha256=package.content_sha256,
+                ),
+            )
+
+        if mutated_source == "resume":
+            draft.content = apply_review_choices(original_resume, omit={1}).model_dump(mode="json")
+            patch = PreparationPatch(expected_version=0, resume_draft_id=draft.id)
+        else:
+            patch = PreparationPatch(
+                expected_version=0,
+                cover_letter_mode="selected",
+                cover_letter_id=letter.id,
+            )
+        await service.patch(user_id=1, application_id=application.id, payload=patch)
+        newer, newer_created = await service.create_package(
+            user_id=1,
+            application_id=application.id,
+            payload=CreatePackageRequest(expected_version=1),
+            idempotency_key=f"newer-{mutated_source}",
+        )
+        assert newer_created is True
+        refreshed = await db.get(ApplicationPreparation, application.id, populate_existing=True)
+        assert refreshed is not None
+        assert refreshed.reviewable_package_id == newer.id
+        latest_workspace = await ApplicationService(
+            repository=ApplicationRepository(db),
+            job_repository=JobRepository(db),
+            preparation_service=ApplicationPreparationService(session=db),
+        ).workspace(user_id=1, application_id=application.id)
+        assert latest_workspace.current_reviewable_package is not None
+        assert latest_workspace.current_reviewable_package.id == newer.id
+        with pytest.raises(ReviewConflictError):
+            await reviews.start(
+                user_id=1,
+                application_id=application.id,
+                package_id=package.id,
+                idempotency_key=f"stale-{mutated_source}",
+                rerun=False,
+                task_store=_ReviewTaskStore(),  # type: ignore[arg-type]
+            )
+        admitted = await reviews.start(
+            user_id=1,
+            application_id=application.id,
+            package_id=newer.id,
+            idempotency_key=f"current-{mutated_source}",
+            rerun=False,
+            task_store=_ReviewTaskStore(),  # type: ignore[arg-type]
+        )
+        assert isinstance(admitted, DocumentReviewQueuedResponse)
         await db.commit()
 
         current = await service.get(user_id=1, application_id=application.id)
-        assert current.state != "ready"
-        if mutated_source == "resume":
-            assert current.resume_current is False
-        else:
-            assert current.cover_letter_current is False
+        assert current.state == "needs_review"
+        assert current.resume_current is True
+        assert current.cover_letter_current is True
         historical = await service.get_package(
             user_id=1, application_id=application.id, package_id=package.id
         )

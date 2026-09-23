@@ -14,6 +14,7 @@ import { TailorResumeDialog } from "@/components/resume/tailor-resume-dialog";
 import { PackagePreview } from "./package-preview";
 import { PreparationChecklist } from "./preparation-checklist";
 import { ApplicationTimeline } from "./application-timeline";
+import { DocumentReviewPanel } from "./document-review-panel";
 
 function workspaceKey(id: number) { return ["application-workspace", id] as const; }
 function uuid() { return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
@@ -25,7 +26,6 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
   const [resumeDraftId, setResumeDraftId] = useState<number | null>(null);
   const [resumeDirty, setResumeDirty] = useState(false);
   const [letterDirty, setLetterDirty] = useState(false);
-  const [reviewPackage, setReviewPackage] = useState<ApplicationPackage | null>(null);
   const [selectedHistoricalPackageId, setSelectedHistoricalPackageId] = useState<number | null>(null);
   const [newQuestion, setNewQuestion] = useState("");
   const [newAnswer, setNewAnswer] = useState("");
@@ -52,7 +52,7 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
     void client.invalidateQueries({ queryKey: ["dashboard-summary"] });
     void client.invalidateQueries({ queryKey: ["dashboard-action-center"] });
   };
-  const conflict = () => { setReviewPackage(null); invalidateApplicationSurfaces(); toast.error("Preparation changed elsewhere. Review the refreshed details before continuing."); };
+  const conflict = () => { invalidateApplicationSurfaces(); toast.error("Preparation changed elsewhere. Review the refreshed details before continuing."); };
   const patch = useMutation({
     mutationFn: (payload: Parameters<typeof applicationsApi.patchPreparation>[1]) => applicationsApi.patchPreparation(applicationId, payload),
     onSuccess: invalidateApplicationSurfaces,
@@ -64,15 +64,15 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
       packageKey.current ??= uuid();
       return applicationsApi.createPackage(applicationId, data.preparation.version, packageKey.current);
     },
-    onSuccess: (item) => { packageKey.current = null; setReviewPackage(item); invalidateApplicationSurfaces(); },
+    onSuccess: () => { packageKey.current = null; invalidateApplicationSurfaces(); },
     onError: (error) => error instanceof ApiError && error.status === 409 ? conflict() : toast.error(error instanceof ApiError ? error.message : "Could not create the package."),
   });
   const approve = useMutation({
     mutationFn: () => {
-      if (!data || !reviewPackage) throw new Error("No package is being reviewed");
-      return applicationsApi.approvePreparation(applicationId, data.preparation.version, reviewPackage.id, reviewPackage.content_sha256);
+      if (!data?.current_reviewable_package) throw new Error("No package is being reviewed");
+      return applicationsApi.approvePreparation(applicationId, data.preparation.version, data.current_reviewable_package.id, data.current_reviewable_package.content_sha256);
     },
-    onSuccess: () => { setReviewPackage(null); invalidateApplicationSurfaces(); toast.success("Package approved"); },
+    onSuccess: () => { invalidateApplicationSurfaces(); toast.success("Package approved"); },
     onError: (error) => error instanceof ApiError && error.status === 409 ? conflict() : toast.error(error instanceof ApiError ? error.message : "Could not approve this package."),
   });
   const openApplication = useMutation({
@@ -177,10 +177,10 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
       <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Activity</h2>{data.activity.events.length ? <ul className="mt-2 space-y-2 text-sm">{data.activity.events.map((event) => <li key={event.id}>{event.event_type.replaceAll("_", " ")} · {new Date(event.created_at).toLocaleString()}</li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No activity yet.</p>}</section>
       <ApplicationTimeline applicationId={applicationId} />
     </main><aside className="space-y-6">
-      {selectedHistoricalPackageId != null ? <section className="rounded-lg border bg-card p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium">Viewing historical package revision {data.package_history.find((item) => item.id === selectedHistoricalPackageId)?.revision ?? ""}</p><Button size="sm" variant="outline" onClick={() => setSelectedHistoricalPackageId(null)}>Back to current package</Button></div><div className="mt-4">{historicalPackage.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading package revision…</p> : historicalPackage.isError ? <p className="text-sm text-muted-foreground" role="alert">{historicalPackage.error instanceof ApiError && historicalPackage.error.status === 404 ? "Package revision is unavailable." : "Could not load this package revision."}</p> : historicalPackage.data ? <PackagePreview package={historicalPackage.data} /> : null}</div></section> : reviewPackage ?? data.approved_package ? <PackagePreview package={reviewPackage ?? data.approved_package!} /> : <section className="rounded-lg border p-4 text-sm text-muted-foreground">No approved package yet.</section>}
+      {selectedHistoricalPackageId != null ? <section className="rounded-lg border bg-card p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium">Viewing historical package revision {data.package_history.find((item) => item.id === selectedHistoricalPackageId)?.revision ?? ""}</p><Button size="sm" variant="outline" onClick={() => setSelectedHistoricalPackageId(null)}>Back to current package</Button></div><div className="mt-4">{historicalPackage.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading package revision…</p> : historicalPackage.isError ? <p className="text-sm text-muted-foreground" role="alert">{historicalPackage.error instanceof ApiError && historicalPackage.error.status === 404 ? "Package revision is unavailable." : "Could not load this package revision."}</p> : historicalPackage.data ? <PackagePreview package={historicalPackage.data} /> : null}</div></section> : data.current_reviewable_package ? <><PackagePreview package={data.current_reviewable_package} /><DocumentReviewPanel applicationId={applicationId} package={data.current_reviewable_package} initialReview={data.current_document_review ?? null} /></> : <section className="rounded-lg border p-4 text-sm text-muted-foreground">No current package yet.</section>}
       <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Package history</h2>{data.package_history.length ? <ul className="mt-2 space-y-2 text-sm">{data.package_history.map((item) => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2"><span>Revision {item.revision}{item.is_approved ? " · approved" : ""} · {new Date(item.created_at).toLocaleString()}</span><Button size="sm" variant="outline" onClick={() => setSelectedHistoricalPackageId(item.id)}>View</Button></li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No package revisions yet.</p>}</section>
     </aside></div>
-    <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-background/95 p-3 backdrop-blur"><div className="mx-auto flex max-w-7xl flex-col items-end gap-2 sm:flex-row sm:justify-end"><p id="review-package-requirements" className="text-right text-sm text-muted-foreground">{canReviewPackage ? "Review the current package before approval." : "Complete the preparation checklist before reviewing your package."}</p><Button onClick={review} disabled={!canReviewPackage || createPackage.isPending} aria-describedby="review-package-requirements">{createPackage.isPending ? <Loader2 className="animate-spin" /> : null}Review package</Button>{reviewPackage ? <Button onClick={() => approve.mutate()} disabled={approve.isPending}>{approve.isPending ? <Loader2 className="animate-spin" /> : null}Approve package</Button> : null}</div></div>
+    <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-background/95 p-3 backdrop-blur"><div className="mx-auto flex max-w-7xl flex-col items-end gap-2 sm:flex-row sm:justify-end"><p id="review-package-requirements" className="text-right text-sm text-muted-foreground">{canReviewPackage ? "Review the current package before approval." : "Complete the preparation checklist before reviewing your package."}</p><Button onClick={review} disabled={!canReviewPackage || createPackage.isPending} aria-describedby="review-package-requirements">{createPackage.isPending ? <Loader2 className="animate-spin" /> : null}Review package</Button>{data.current_reviewable_package ? <Button onClick={() => approve.mutate()} disabled={approve.isPending}>{approve.isPending ? <Loader2 className="animate-spin" /> : null}Approve package</Button> : null}</div></div>
     {resumeOpen && resumeDraftId == null ? <TailorResumeDialog jobId={application.job_id} jobTitle={job.title} open onOpenChange={setResumeOpen} onDirtyChange={setResumeDirty} onSaved={() => { void savedResumes.refetch(); void refresh(); }} returnFocusRef={editorOpenerRef} /> : null}
     {resumeDraftId != null && savedResumeDetail.data ? <TailorResumeDialog jobId={application.job_id} jobTitle={job.title} open onOpenChange={(open) => { if (!open) { setResumeOpen(false); setResumeDraftId(null); } }} initialData={savedResumeDetail.data.content} onDirtyChange={setResumeDirty} onSaved={() => { void savedResumes.refetch(); void refresh(); }} returnFocusRef={editorOpenerRef} /> : null}
     <CoverLetterDialog jobId={application.job_id} jobTitle={job.title} open={letterOpen} onOpenChange={setLetterOpen} onDirtyChange={setLetterDirty} onSaved={() => { void savedLetter.refetch(); void refresh(); }} returnFocusRef={editorOpenerRef} />

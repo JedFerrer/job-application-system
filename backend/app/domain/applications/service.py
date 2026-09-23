@@ -1,3 +1,4 @@
+# ruff: noqa: E501, I001
 """Application service (Phase 4 minimal CRM)."""
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from app.domain.applications.schemas import (
     ApplicationTimelinePage,
     ApplicationUpdate,
     ApplicationWorkspaceResponse,
+    DocumentReviewSummary,
     TimelineEventItem,
     WorkspaceDocumentMetadata,
     WorkspaceJobContext,
@@ -45,6 +47,7 @@ from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.models.application_event import ApplicationEvent
 from app.models.application_package import ApplicationPackage
+from app.domain.applications.review_prompts import REVIEW_POLICY_VERSION
 
 logger = get_logger("application_service")
 NEXT_ACTION_FIELDS = (
@@ -251,7 +254,7 @@ class ApplicationService:
         rows = await self._repo.workspace_rows(user_id=user_id, application_id=application_id)
         if rows is None:
             raise ApplicationNotFoundError(application_id)
-        application, job, _stored, match, resume, letter, approved, history = rows
+        application, job, _stored, match, resume, letter, approved, reviewable, history = rows
         if self._preparation_service is None:
             raise RuntimeError("preparation service is required for workspace")
         preparation = await self._preparation_service.get(
@@ -260,6 +263,8 @@ class ApplicationService:
         activity = await self.list_activity(
             user_id=user_id, application_id=application.id, limit=10
         )
+        current = reviewable if preparation.state in {"needs_review", "ready"} else None
+        current_review = await self._repo.current_document_review(user_id=user_id, package=current, policy_version=REVIEW_POLICY_VERSION)
         live = job is not None and job.status == "active"
         job_context = WorkspaceJobContext(
             id=application.job_id,
@@ -295,12 +300,14 @@ class ApplicationService:
                 if letter is not None else None
             ),
             approved_package=self._package_response(approved) if approved is not None else None,
+            current_reviewable_package=self._package_response(current) if current is not None else None,
             package_history=[ApplicationPackageHistoryItem(
                 id=package.id, revision=package.revision, content_sha256=package.content_sha256,
                 created_at=package.created_at,
                 is_approved=package.id == preparation.approved_package_id,
             ) for package in history],
             activity=activity,
+            current_document_review=(DocumentReviewSummary(id=current_review.id, task_id=current_review.task_id, package_id=current_review.package_id, package_content_sha256=current_review.package_content_sha256, review_policy_version=current_review.review_policy_version, state=current_review.state, outcome=current_review.outcome, failure_code=current_review.failure_code) if current_review is not None else None),
         )
 
     @staticmethod

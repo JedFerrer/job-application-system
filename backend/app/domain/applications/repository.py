@@ -1,9 +1,10 @@
+# ruff: noqa: E501
 """Application repository (Phase 4 minimal CRM)."""
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -14,6 +15,7 @@ from app.models.application import Application
 from app.models.application_event import ApplicationEvent
 from app.models.application_package import ApplicationPackage
 from app.models.application_preparation import ApplicationPreparation
+from app.models.application_review import ApplicationDocumentReview
 from app.models.cover_letter import CoverLetter
 from app.models.job import Job
 from app.models.resume import TailoredResumeDraft
@@ -68,8 +70,8 @@ class ApplicationRepository:
     async def workspace_rows(
         self, *, user_id: int, application_id: int, history_limit: int = 10
     ) -> tuple[Application, Job | None, ApplicationPreparation | None, UserJobMatch | None,
-               TailoredResumeDraft | None, CoverLetter | None, ApplicationPackage | None,
-               list[ApplicationPackage]] | None:
+                TailoredResumeDraft | None, CoverLetter | None, ApplicationPackage | None,
+                ApplicationPackage | None, list[ApplicationPackage]] | None:
         """Load bounded owned workspace records without feed-visibility filtering."""
         row = (
             await self._session.execute(
@@ -92,7 +94,7 @@ class ApplicationRepository:
         if row is None:
             return None
         application, job, preparation, match = row
-        resume = letter = approved = None
+        resume = letter = approved = reviewable = None
         if preparation is not None:
             if preparation.resume_draft_id is not None:
                 resume = await self._session.scalar(
@@ -115,6 +117,13 @@ class ApplicationRepository:
                         ApplicationPackage.application_id == application.id,
                     )
                 )
+            if preparation.reviewable_package_id is not None:
+                reviewable = await self._session.scalar(
+                    select(ApplicationPackage).where(
+                        ApplicationPackage.id == preparation.reviewable_package_id,
+                        ApplicationPackage.application_id == application.id,
+                    )
+                )
         history = list(
             (await self._session.execute(
                 select(ApplicationPackage)
@@ -123,7 +132,17 @@ class ApplicationRepository:
                 .limit(history_limit)
             )).scalars().all()
         )
-        return application, job, preparation, match, resume, letter, approved, history
+        return application, job, preparation, match, resume, letter, approved, reviewable, history
+
+    async def current_document_review(self, *, user_id: int, package: ApplicationPackage | None, policy_version: str) -> ApplicationDocumentReview | None:
+        if package is None:
+            return None
+        return cast(ApplicationDocumentReview | None, await self._session.scalar(select(ApplicationDocumentReview).where(
+            ApplicationDocumentReview.user_id == user_id,
+            ApplicationDocumentReview.package_id == package.id,
+            ApplicationDocumentReview.package_content_sha256 == package.content_sha256,
+            ApplicationDocumentReview.review_policy_version == policy_version,
+        ).order_by(ApplicationDocumentReview.created_at.desc(), ApplicationDocumentReview.id.desc())))
 
     async def delete(self, *, application: Application) -> None:
         await self._session.execute(delete(Application).where(Application.id == application.id))

@@ -9,6 +9,7 @@ from app.models.application_form_field import ApplicationFormField
 from app.models.application_form_session import ApplicationFormSession
 from app.models.application_package import ApplicationPackage
 from app.models.application_preparation import ApplicationPreparation
+from app.models.application_review import ApplicationDocumentReview, ApplicationReviewAcknowledgment
 from app.models.cover_letter import CoverLetter
 from app.models.extension_refresh_token import ExtensionRefreshToken
 from app.models.extension_session import ExtensionSession
@@ -33,6 +34,8 @@ __all__ = [
     "ApplicationEvent",
     "ApplicationPackage",
     "ApplicationPreparation",
+    "ApplicationDocumentReview",
+    "ApplicationReviewAcknowledgment",
     "ApplicationFormField",
     "ApplicationFormSession",
     "CandidateProfile",

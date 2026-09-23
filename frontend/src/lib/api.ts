@@ -515,6 +515,10 @@ export const applicationsApi = {
       method: "POST",
       body: JSON.stringify({ expected_version: expectedVersion, package_id: packageId, content_sha256: contentSha256 }),
     }),
+  createDocumentReview: (applicationId: number, packageId: number, idempotencyKey: string, rerun = false) => apiRequest<import("./types").DocumentReview | import("./types").DocumentReviewQueued>(`/applications/${applicationId}/packages/${packageId}/reviews`, { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify({ rerun }) }),
+  getDocumentReview: (applicationId: number, packageId: number, reviewId: string) => apiRequest<import("./types").DocumentReview>(`/applications/${applicationId}/packages/${packageId}/reviews/${reviewId}`),
+  getTaskStatus: (taskId: string) => apiRequest<TaskStatus>(`/applications/tasks/${taskId}`),
+  acknowledgeDocumentReview: (applicationId: number, packageId: number, reviewId: string, packageHash: string, acknowledgments: { finding_id: string; disposition: "keep_wording" | "will_revise" }[]) => apiRequest<import("./types").DocumentReview>(`/applications/${applicationId}/packages/${packageId}/reviews/${reviewId}/acknowledgments`, { method: "POST", body: JSON.stringify({ package_content_sha256: packageHash, acknowledgments }) }),
 };
 
 /** Fetch all application pages via cursor pagination.

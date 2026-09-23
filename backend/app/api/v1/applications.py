@@ -1,14 +1,20 @@
+# ruff: noqa: E501, I001
 """Application endpoints (Phase 4 minimal CRM)."""
 
 from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Header, Query, Response, status
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Response, status
 
 from app.api.deps import (
     ApplicationAttemptServiceDep,
     ApplicationPreparationServiceDep,
+    DbSession,
+    DocumentReviewServiceDep,
+    TaskStoreDep,
     ApplicationServiceDep,
     CurrentUser,
 )
@@ -27,11 +33,58 @@ from app.domain.applications.schemas import (
     AttemptCreateRequest,
     AttemptResponse,
     CreatePackageRequest,
+    DocumentReviewQueuedResponse,
+    DocumentReviewRequest,
+    DocumentReviewResponse,
     PreparationPatch,
     PreparationResponse,
+    ReviewAcknowledgmentRequest,
 )
+from app.domain.applications.document_review import ReviewConflictError, ReviewNotFoundError, run_document_review_background
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+
+
+@router.get("/tasks/{task_id}")
+async def get_application_task(task_id: str, current_user: CurrentUser, task_store: TaskStoreDep) -> dict[str, Any]:
+    task = await task_store.get(task_id)
+    if task is None or task.get("user_id") != current_user.id:
+        raise HTTPException(status_code=404, detail="Task not found or expired")
+    return task
+
+
+@router.post("/{application_id}/packages/{package_id}/reviews", response_model=DocumentReviewResponse | DocumentReviewQueuedResponse)
+async def create_document_review(application_id: int, package_id: int, payload: DocumentReviewRequest, current_user: CurrentUser, service: DocumentReviewServiceDep, task_store: TaskStoreDep, db: DbSession, background_tasks: BackgroundTasks, response: Response, idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, max_length=128)) -> DocumentReviewResponse | DocumentReviewQueuedResponse:
+    try:
+        result = await service.start(user_id=current_user.id, application_id=application_id, package_id=package_id, idempotency_key=idempotency_key, rerun=payload.rerun, task_store=task_store)
+    except ReviewNotFoundError:
+        raise HTTPException(status_code=404, detail="Package not found") from None
+    except ReviewConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    if isinstance(result, DocumentReviewQueuedResponse):
+        response.status_code = status.HTTP_202_ACCEPTED
+        if not result.existing:
+            await db.commit()
+            background_tasks.add_task(run_document_review_background, task_id=result.task_id, review_id=result.review_id, user_id=current_user.id)
+    return result
+
+
+@router.get("/{application_id}/packages/{package_id}/reviews/{review_id}", response_model=DocumentReviewResponse)
+async def get_document_review(application_id: int, package_id: int, review_id: str, current_user: CurrentUser, service: DocumentReviewServiceDep) -> DocumentReviewResponse:
+    try:
+        return await service.get(user_id=current_user.id, application_id=application_id, package_id=package_id, review_id=review_id)
+    except ReviewNotFoundError:
+        raise HTTPException(status_code=404, detail="Review not found") from None
+
+
+@router.post("/{application_id}/packages/{package_id}/reviews/{review_id}/acknowledgments", response_model=DocumentReviewResponse)
+async def acknowledge_document_review(application_id: int, package_id: int, review_id: str, payload: ReviewAcknowledgmentRequest, current_user: CurrentUser, service: DocumentReviewServiceDep) -> DocumentReviewResponse:
+    try:
+        return await service.acknowledge(user_id=current_user.id, application_id=application_id, package_id=package_id, review_id=review_id, payload=payload)
+    except ReviewNotFoundError:
+        raise HTTPException(status_code=404, detail="Review not found") from None
+    except ReviewConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.get("/{application_id}/timeline", response_model=ApplicationTimelinePage)

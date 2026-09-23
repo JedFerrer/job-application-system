@@ -26,6 +26,7 @@ export interface TaskStatus {
   type: string;
   status: "queued" | "running" | "done" | "failed" | "incomplete" | "skipped";
   message: string;
+  review_id?: string;
   // Ingest-specific counters (updated incrementally)
   fetched?: number;
   inserted?: number;
@@ -754,6 +755,11 @@ export interface ApplicationPackage {
   schema_version: string;
   created_at: string;
 }
+export interface DocumentReviewEvidence { role: "target" | "comparison" | "requirement"; document: "job" | "resume" | "cover_letter"; locator: string; excerpt: string; }
+export interface DocumentReviewFinding { id: string; document: "resume" | "cover_letter"; category: string; severity: "concern" | "suggestion"; excerpt: string; locator: string; rationale: string; evidence: DocumentReviewEvidence[]; proposed_action: string; }
+export interface DocumentReview { id: string; application_id: number; package_id: number; package_content_sha256: string; review_policy_version: string; state: "queued" | "running" | "completed" | "failed"; outcome: "no_findings" | "attention_needed" | "insufficient_evidence" | null; findings: DocumentReviewFinding[]; failure_code: string | null; acknowledgments: { finding_id: string; disposition: "keep_wording" | "will_revise" }[]; created_at: string; completed_at: string | null; }
+export interface DocumentReviewQueued { task_id: string; review_id: string; state: "queued" | "running"; }
+export interface DocumentReviewSummary { id: string; task_id: string | null; package_id: number; package_content_sha256: string; review_policy_version: string; state: "queued" | "running" | "completed" | "failed"; outcome: "no_findings" | "attention_needed" | "insufficient_evidence" | null; failure_code: string | null; }
 
 export interface WorkspaceDocumentMetadata {
   id: number;
@@ -799,8 +805,10 @@ export interface ApplicationWorkspace {
   selected_resume: WorkspaceDocumentMetadata | null;
   selected_cover_letter: WorkspaceDocumentMetadata | null;
   approved_package: ApplicationPackage | null;
+  current_reviewable_package?: ApplicationPackage | null;
   package_history: ApplicationPackageHistoryItem[];
   activity: ApplicationActivityResponse;
+  current_document_review?: DocumentReviewSummary | null;
 }
 
 export interface ApplicationAttempt {

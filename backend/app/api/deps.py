@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.security import TokenError, decode_token, decode_token_payload
 from app.domain.applications.attempts import ApplicationAttemptService
+from app.domain.applications.document_review import DocumentReviewService
 from app.domain.applications.preparation import ApplicationPreparationService
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.service import ApplicationService
@@ -359,6 +360,13 @@ def get_application_attempt_service(db: DbSession) -> ApplicationAttemptService:
 ApplicationAttemptServiceDep = Annotated[
     ApplicationAttemptService, Depends(get_application_attempt_service)
 ]
+
+
+def get_document_review_service(db: DbSession) -> DocumentReviewService:
+    return DocumentReviewService(db)
+
+
+DocumentReviewServiceDep = Annotated[DocumentReviewService, Depends(get_document_review_service)]
 
 
 def get_task_store() -> TaskStore:
