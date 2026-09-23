@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from typing import Literal
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from openai import AuthenticationError
 
 from app.domain.resume import service as resume_service
 from app.domain.resume.exceptions import ResumeSourceLayoutUnavailableError
@@ -40,6 +42,7 @@ from app.domain.resume.truthfulness import (
     build_source_evidence_catalog,
     sanitize_tailoring_output,
 )
+from app.infrastructure.llm_client import LLMUnavailableError
 
 pytestmark = pytest.mark.unit
 
@@ -1583,6 +1586,128 @@ async def test_malformed_output_and_llm_failure_use_source_fallback(
         malformed.work_history[0].tailored_highlights
     )
     assert failed.requirement_classifications == malformed.requirement_classifications
+
+
+@pytest.mark.asyncio
+async def test_recognized_provider_failure_uses_source_fallback_without_exception_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, job_repository, llm_mock = _service_and_job()
+    error = AuthenticationError(
+        "SECRET_PROVIDER_MESSAGE_SENTINEL",
+        response=httpx.Response(
+            401,
+            request=httpx.Request("POST", "https://provider.invalid/v1/chat/completions"),
+        ),
+        body={"detail": "SECRET_PROVIDER_BODY_SENTINEL"},
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def warning(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    llm_mock.side_effect = error
+    monkeypatch.setattr(resume_service, "llm_chat_completion", llm_mock)
+    monkeypatch.setattr(resume_service.logger, "warning", warning)
+
+    result = await service.tailor_for_job(user_id=7, job_id=11, job_repository=job_repository)
+
+    assert result.work_history[0].tailored_highlights == [
+        "Implemented caching with Redis",
+        "Built REST APIs with FastAPI",
+        "Improved page performance",
+        "Deployed services with Docker",
+        "Improved latency by 20%",
+    ]
+    assert events == [
+        ("resume.tailor.llm_provider_failed", {"provider_failure_category": "auth_error"})
+    ]
+    assert "SECRET_" not in repr(events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("category", "sentinel"),
+    [
+        ("timeout_or_connection", "SECRET_EXHAUSTED_TIMEOUT_BODY"),
+        ("rate_limit", "SECRET_EXHAUSTED_RATE_LIMIT_BODY"),
+        ("server_error", "SECRET_EXHAUSTED_SERVER_BODY"),
+    ],
+)
+async def test_exhausted_provider_failure_uses_source_fallback_without_chained_details(
+    monkeypatch: pytest.MonkeyPatch,
+    category: str,
+    sentinel: str,
+) -> None:
+    service, job_repository, llm_mock = _service_and_job()
+    provider_error = RuntimeError(sentinel)
+    try:
+        raise LLMUnavailableError(
+            provider_failure_category=category,  # type: ignore[arg-type]
+            providers_exhausted=True,
+            attempted_provider_names=("openai", "deepseek"),
+        ) from provider_error
+    except LLMUnavailableError as error:
+        exhausted_error = error
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def warning(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    llm_mock.side_effect = exhausted_error
+    monkeypatch.setattr(resume_service, "llm_chat_completion", llm_mock)
+    monkeypatch.setattr(resume_service.logger, "warning", warning)
+
+    result = await service.tailor_for_job(user_id=7, job_id=11, job_repository=job_repository)
+
+    assert exhausted_error.__cause__ is provider_error
+    assert result.work_history[0].tailored_highlights == [
+        "Implemented caching with Redis",
+        "Built REST APIs with FastAPI",
+        "Improved page performance",
+        "Deployed services with Docker",
+        "Improved latency by 20%",
+    ]
+    assert events == [
+        (
+            "resume.tailor.llm_providers_exhausted",
+            {
+                "provider_failure_category": category,
+                "providers_exhausted": True,
+                "attempted_provider_names": ("openai", "deepseek"),
+                "attempt_count": 2,
+            },
+        )
+    ]
+    assert sentinel not in repr(events)
+
+
+@pytest.mark.asyncio
+async def test_unexpected_tailoring_failure_keeps_traceback_logging_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, job_repository, llm_mock = _service_and_job()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def warning(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    llm_mock.side_effect = RuntimeError("unrelated programming failure")
+    monkeypatch.setattr(resume_service, "llm_chat_completion", llm_mock)
+    monkeypatch.setattr(resume_service.logger, "warning", warning)
+
+    result = await service.tailor_for_job(user_id=7, job_id=11, job_repository=job_repository)
+
+    assert result.work_history[0].tailored_highlights == [
+        "Implemented caching with Redis",
+        "Built REST APIs with FastAPI",
+        "Improved page performance",
+        "Deployed services with Docker",
+        "Improved latency by 20%",
+    ]
+    assert events == [
+        ("resume.tailor.llm_failed", {"user_id": 7, "job_id": 11, "exc_info": True})
+    ]
 
 
 def _line_candidate(

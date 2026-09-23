@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Centralized LLM client with multi-provider fallback.
 
 Ported from hr-ai-nterviewer-saas (``services/llm_client.py``) and adapted to
@@ -9,14 +10,14 @@ provider. Programmer errors (4xx other than 429) propagate immediately.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from openai import (
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
     AsyncOpenAI,
-    BadRequestError,
+    AuthenticationError,
     RateLimitError,
 )
 from openai.types.chat import ChatCompletion
@@ -32,16 +33,42 @@ _MAX_RETRIES = 2
 # Providers that honour ``response_format={"type": "json_object"}``.
 _JSON_MODE_PROVIDERS = frozenset({"openai", "deepseek"})
 
+ProviderFailureCategory = Literal[
+    "no_provider_config",
+    "timeout_or_connection",
+    "rate_limit",
+    "server_error",
+    "auth_error",
+    "other_http_error",
+    "unknown_provider_error",
+]
+
 
 class LLMUnavailableError(RuntimeError):
     """Raised when no LLM provider is configured or all providers failed."""
 
+    def __init__(
+        self,
+        message: str = "LLM service unavailable",
+        *,
+        provider_failure_category: ProviderFailureCategory = "unknown_provider_error",
+        providers_exhausted: bool = False,
+        attempted_provider_names: tuple[str, ...] = (),
+        attempt_categories: tuple[ProviderFailureCategory, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.provider_failure_category = provider_failure_category
+        self.providers_exhausted = providers_exhausted
+        self.attempted_provider_names = attempted_provider_names
+        self.attempt_categories = attempt_categories
+        self.attempt_count = len(attempted_provider_names)
 
-def _build_client(provider_cfg: dict[str, str | None]) -> AsyncOpenAI:
+
+def _build_client(provider_cfg: dict[str, str | None], *, timeout: float | None = None) -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=provider_cfg["api_key"],
         base_url=provider_cfg.get("base_url"),
-        timeout=_TIMEOUT,
+        timeout=timeout or _TIMEOUT,
         max_retries=_MAX_RETRIES,
     )
 
@@ -53,6 +80,7 @@ async def llm_chat_completion(
     temperature: float = 0.4,
     json_mode: bool = False,
     openai_only: bool = False,
+    timeout: float | None = None,
     **kwargs: Any,
 ) -> tuple[ChatCompletion, str]:
     """Call chat completions with automatic provider fallback.
@@ -74,14 +102,17 @@ async def llm_chat_completion(
             "Set OPENAI_API_KEY."
             if openai_only
             else "No LLM provider configured. Set OPENAI_API_KEY, DEEPSEEK_API_KEY, "
-            "or ANTHROPIC_API_KEY."
+            "or ANTHROPIC_API_KEY.",
+            provider_failure_category="no_provider_config",
         )
 
-    last_exc: Exception | None = None
+    attempted_provider_names: list[str] = []
+    attempt_categories: list[ProviderFailureCategory] = []
 
     for index, provider_cfg in enumerate(chain):
         provider_model = model or provider_cfg["model"] or settings.llm_model
-        client = _build_client(provider_cfg)
+        client = _build_client(provider_cfg, timeout=timeout)
+        provider_name = _safe_provider_name(provider_cfg.get("name"))
 
         call_kwargs = dict(kwargs)
         if json_mode and provider_cfg.get("name") in _JSON_MODE_PROVIDERS:
@@ -102,30 +133,63 @@ async def llm_chat_completion(
                 )
             return response, provider_model
 
-        except BadRequestError:
-            raise
-        except (APITimeoutError, APIConnectionError, RateLimitError) as exc:
-            last_exc = exc
+        except (APITimeoutError, APIConnectionError, RateLimitError, APIStatusError) as exc:
+            category = classify_provider_failure(exc)
+            if category not in {"timeout_or_connection", "rate_limit", "server_error"}:
+                raise
+            attempted_provider_names.append(provider_name)
+            attempt_categories.append(category)
+            fallbacks_remaining = len(chain) - index - 1
             logger.warning(
                 "llm_provider_failed",
-                provider=provider_cfg.get("name"),
+                provider=provider_name,
                 model=provider_model,
-                error=str(exc),
-                fallbacks_remaining=len(chain) - index - 1,
+                provider_failure_category=category,
+                status_code=_safe_status_code(exc),
+                fallbacks_remaining=fallbacks_remaining,
             )
-            continue
-        except APIStatusError as exc:
-            status_code = getattr(exc, "status_code", None) or 0
-            if status_code >= 500:
-                last_exc = exc
-                logger.warning(
-                    "llm_provider_5xx",
-                    provider=provider_cfg.get("name"),
-                    model=provider_model,
-                    status=status_code,
-                    fallbacks_remaining=len(chain) - index - 1,
-                )
+            if fallbacks_remaining:
                 continue
-            raise
+            raise LLMUnavailableError(
+                "LLM service unavailable",
+                provider_failure_category=category,
+                providers_exhausted=True,
+                attempted_provider_names=tuple(attempted_provider_names),
+                attempt_categories=tuple(attempt_categories),
+            ) from exc
+        finally:
+            await client.close()
 
-    raise LLMUnavailableError("All LLM providers failed") from last_exc
+    raise LLMUnavailableError(
+        "LLM service unavailable",
+        providers_exhausted=True,
+        attempted_provider_names=tuple(attempted_provider_names),
+        attempt_categories=tuple(attempt_categories),
+    )
+
+
+def _safe_provider_name(name: object) -> str:
+    """Return only a known provider identifier for diagnostic metadata."""
+    return name if name in {"openai", "deepseek", "anthropic"} else "unknown_provider"
+
+
+def classify_provider_failure(exc: BaseException) -> ProviderFailureCategory:
+    """Map known provider exceptions to fixed, non-sensitive categories."""
+    if isinstance(exc, (APITimeoutError, APIConnectionError)):
+        return "timeout_or_connection"
+    if isinstance(exc, RateLimitError):
+        return "rate_limit"
+    if isinstance(exc, APIStatusError):
+        status_code = _safe_status_code(exc) or 0
+        if status_code >= 500:
+            return "server_error"
+        if status_code in {401, 403} or isinstance(exc, AuthenticationError):
+            return "auth_error"
+        return "other_http_error"
+    return "unknown_provider_error"
+
+
+def _safe_status_code(exc: BaseException) -> int | None:
+    """Return a numeric status only; never render an SDK exception or body."""
+    status_code = getattr(exc, "status_code", None)
+    return status_code if isinstance(status_code, int) else None

@@ -87,7 +87,11 @@ from app.domain.resume.truthfulness import (
     sanitize_tailoring_output,
 )
 from app.infrastructure.embeddings import embed_text
-from app.infrastructure.llm_client import llm_chat_completion
+from app.infrastructure.llm_client import (
+    LLMUnavailableError,
+    classify_provider_failure,
+    llm_chat_completion,
+)
 from app.infrastructure.llm_utils import strip_code_fences
 from app.infrastructure.resume_parser import (
     MAX_RESUME_TEXT_CHARS,
@@ -2128,13 +2132,43 @@ class ResumeService:
             )
             raw = strip_code_fences(response.choices[0].message.content or "{}")
             data = json.loads(raw)
-        except Exception:
+        except LLMUnavailableError as exc:
             logger.warning(
-                "resume.tailor.llm_failed",
-                user_id=user_id,
-                job_id=job_id,
-                exc_info=True,
+                "resume.tailor.llm_providers_exhausted",
+                provider_failure_category=exc.provider_failure_category,
+                providers_exhausted=exc.providers_exhausted,
+                attempted_provider_names=exc.attempted_provider_names,
+                attempt_count=exc.attempt_count,
             )
+            return _untailored_fallback(
+                profile,
+                job_id,
+                report,
+                classifications,
+                fallback_orders,
+                recommended_orders,
+                source_roles,
+                canonical_sections,
+                source_document,
+                source_resume_id=source_resume_id,
+                source_resume_content_id=source_resume_content_id,
+                source_revision=source_revision,
+                source_schema_version=source_schema_version,
+            )
+        except Exception as exc:
+            category = classify_provider_failure(exc)
+            if category != "unknown_provider_error":
+                logger.warning(
+                    "resume.tailor.llm_provider_failed",
+                    provider_failure_category=category,
+                )
+            else:
+                logger.warning(
+                    "resume.tailor.llm_failed",
+                    user_id=user_id,
+                    job_id=job_id,
+                    exc_info=True,
+                )
             # Graceful fallback: return untailored profile with skill report.
             return _untailored_fallback(
                 profile,

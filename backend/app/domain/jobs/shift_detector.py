@@ -291,6 +291,7 @@ async def classify_shift_llm(title: str, description: str) -> str | None:
     """
     from app.infrastructure.llm_client import (  # noqa: PLC0415
         LLMUnavailableError,
+        classify_provider_failure,
         llm_chat_completion,
     )
 
@@ -325,6 +326,13 @@ async def classify_shift_llm(title: str, description: str) -> str | None:
         return None
     except LLMUnavailableError:
         return None
-    except Exception:  # noqa: BLE001
-        logger.warning("shift_llm.failed", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        category = classify_provider_failure(exc)
+        if category != "unknown_provider_error":
+            logger.warning(
+                "shift_llm.provider_failed",
+                provider_failure_category=category,
+            )
+        else:
+            logger.warning("shift_llm.failed", exc_info=True)
         return None

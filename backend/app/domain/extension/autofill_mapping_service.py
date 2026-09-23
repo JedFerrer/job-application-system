@@ -17,7 +17,11 @@ from app.domain.extension.schemas import (
     FormFillLogResponse,
 )
 from app.domain.resume.repository import ResumeRepository
-from app.infrastructure.llm_client import llm_chat_completion
+from app.infrastructure.llm_client import (
+    LLMUnavailableError,
+    classify_provider_failure,
+    llm_chat_completion,
+)
 from app.infrastructure.llm_utils import strip_code_fences
 
 logger = get_logger("autofill")
@@ -190,8 +194,24 @@ class AutofillProfileService:
 
             return FieldMappingResponse(mappings=mappings)
 
-        except Exception:
-            logger.exception("autofill.llm_mapping_failed")
+        except LLMUnavailableError as exc:
+            logger.warning(
+                "autofill.llm_mapping_providers_exhausted",
+                provider_failure_category=exc.provider_failure_category,
+                providers_exhausted=exc.providers_exhausted,
+                attempted_provider_names=exc.attempted_provider_names,
+                attempt_count=exc.attempt_count,
+            )
+            return FieldMappingResponse(mappings=[])
+        except Exception as exc:
+            category = classify_provider_failure(exc)
+            if category != "unknown_provider_error":
+                logger.warning(
+                    "autofill.llm_mapping_provider_failed",
+                    provider_failure_category=category,
+                )
+            else:
+                logger.exception("autofill.llm_mapping_failed")
             return FieldMappingResponse(mappings=[])
 
     async def log_fill(

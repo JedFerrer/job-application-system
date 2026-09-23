@@ -12,12 +12,15 @@ from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
+from openai import AuthenticationError
 from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.security import create_token, decode_token_payload
 from app.domain.auth.exceptions import InvalidTokenError
+from app.domain.extension import autofill_mapping_service
 from app.domain.extension.application_event_service import ApplicationEventService
 from app.domain.extension.autofill_mapping_service import AutofillProfileService
 from app.domain.extension.exceptions import (
@@ -38,6 +41,7 @@ from app.domain.extension.schemas import (
 )
 from app.domain.jobs.dedup import job_fingerprint
 from app.domain.jobs.identity import resolve_source_identity, scoped_key
+from app.infrastructure.llm_client import LLMUnavailableError
 from app.models.application import Application
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1098,6 +1102,115 @@ class TestAutofillProfile:
         )
         # Should return empty mappings on LLM failure (graceful degradation)
         assert result.mappings == []
+
+    @pytest.mark.asyncio
+    async def test_map_fields_omits_recognized_provider_exception_details_from_logs(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class DiagnosticLogger:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict[str, object]]] = []
+
+            def warning(self, event: str, **fields: object) -> None:
+                self.events.append((event, fields))
+
+            def exception(self, event: str, **fields: object) -> None:
+                self.events.append((event, fields))
+
+        error = AuthenticationError(
+            "SECRET_PROVIDER_MESSAGE_SENTINEL",
+            response=httpx.Response(
+                401,
+                request=httpx.Request("POST", "https://provider.invalid/v1/chat/completions"),
+            ),
+            body={"detail": "SECRET_PROVIDER_BODY_SENTINEL"},
+        )
+        diagnostic_logger = DiagnosticLogger()
+        monkeypatch.setattr(
+            autofill_mapping_service,
+            "llm_chat_completion",
+            AsyncMock(side_effect=error),
+        )
+        monkeypatch.setattr(autofill_mapping_service, "logger", diagnostic_logger)
+
+        result = await self._service().map_fields(
+            request=FieldMappingRequest(
+                fields=[FieldMetadata(element_id="field-1", label="First Name", input_type="text")]
+            )
+        )
+
+        assert result.mappings == []
+        assert diagnostic_logger.events == [
+            (
+                "autofill.llm_mapping_provider_failed",
+                {"provider_failure_category": "auth_error"},
+            )
+        ]
+        assert "SECRET_" not in repr(diagnostic_logger.events)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("category", "sentinel"),
+        [
+            ("timeout_or_connection", "SECRET_EXHAUSTED_TIMEOUT_BODY"),
+            ("rate_limit", "SECRET_EXHAUSTED_RATE_LIMIT_BODY"),
+            ("server_error", "SECRET_EXHAUSTED_SERVER_BODY"),
+        ],
+    )
+    async def test_map_fields_omits_chained_exhausted_provider_details_from_logs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        category: str,
+        sentinel: str,
+    ) -> None:
+        class DiagnosticLogger:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict[str, object]]] = []
+
+            def warning(self, event: str, **fields: object) -> None:
+                self.events.append((event, fields))
+
+            def exception(self, event: str, **fields: object) -> None:
+                raise AssertionError("exhausted provider error must not use traceback logging")
+
+        provider_error = RuntimeError(sentinel)
+        try:
+            raise LLMUnavailableError(
+                provider_failure_category=category,  # type: ignore[arg-type]
+                providers_exhausted=True,
+                attempted_provider_names=("openai", "deepseek"),
+            ) from provider_error
+        except LLMUnavailableError as error:
+            exhausted_error = error
+
+        diagnostic_logger = DiagnosticLogger()
+        monkeypatch.setattr(
+            autofill_mapping_service,
+            "llm_chat_completion",
+            AsyncMock(side_effect=exhausted_error),
+        )
+        monkeypatch.setattr(autofill_mapping_service, "logger", diagnostic_logger)
+
+        result = await self._service().map_fields(
+            request=FieldMappingRequest(
+                fields=[FieldMetadata(element_id="field-1", label="First Name", input_type="text")]
+            )
+        )
+
+        assert exhausted_error.__cause__ is provider_error
+        assert result.mappings == []
+        assert diagnostic_logger.events == [
+            (
+                "autofill.llm_mapping_providers_exhausted",
+                {
+                    "provider_failure_category": category,
+                    "providers_exhausted": True,
+                    "attempted_provider_names": ("openai", "deepseek"),
+                    "attempt_count": 2,
+                },
+            )
+        ]
+        assert sentinel not in repr(diagnostic_logger.events)
 
     @pytest.mark.asyncio
     async def test_log_fill_legacy_execution_records_form_session_without_completion_event(
