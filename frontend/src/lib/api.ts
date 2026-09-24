@@ -11,6 +11,11 @@ import type {
   ApplicationUpdate,
   ApplicationWorkspace,
   ApplicationAttempt,
+  ArtifactDetail,
+  ArtifactDocumentType,
+  ArtifactDownload,
+  ArtifactFormat,
+  ArtifactUploadResponse,
   ApplicationTimelinePage,
   AuthUser,
   CoverLetter,
@@ -118,10 +123,10 @@ export class ApiError extends Error {
   }
 }
 
-async function apiRequest<T>(
+async function apiResponse(
   path: string,
   options: RequestInit & { skipAuth?: boolean; _retried?: boolean } = {},
-): Promise<T> {
+): Promise<Response> {
   const { skipAuth = false, _retried = false, ...init } = options;
   const headers: Record<string, string> = {};
 
@@ -154,7 +159,7 @@ async function apiRequest<T>(
   if (response.status === 401 && !skipAuth && !_retried) {
     const refreshed = await tryRefresh();
     if (refreshed) {
-      return apiRequest<T>(path, { ...options, _retried: true });
+      return apiResponse(path, { ...options, _retried: true });
     }
     onAuthExpired?.();
   }
@@ -170,8 +175,31 @@ async function apiRequest<T>(
     );
   }
 
+  return response;
+}
+
+async function apiRequest<T>(
+  path: string,
+  options: RequestInit & { skipAuth?: boolean; _retried?: boolean } = {},
+): Promise<T> {
+  const response = await apiResponse(path, options);
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+function attachmentFilename(header: string | null, fallback: string): string {
+  if (!header) return fallback;
+  const encoded = /(?:^|;)\s*filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header)?.[1];
+  if (encoded) {
+    try { return safeFilename(decodeURIComponent(encoded), fallback); } catch { /* use plain filename */ }
+  }
+  const plain = /(?:^|;)\s*filename\s*=\s*(?:"([^"]*)"|([^;]*))/i.exec(header);
+  return safeFilename(plain?.[1] ?? plain?.[2] ?? "", fallback);
+}
+
+function safeFilename(value: string, fallback: string): string {
+  const name = value.trim().replace(/[\\/\x00-\x1f\x7f]/g, "").replace(/^\.+/, "");
+  return name || fallback;
 }
 
 /**
@@ -510,6 +538,24 @@ export const applicationsApi = {
     }),
   getPackage: (applicationId: number, packageId: number) =>
     apiRequest<ApplicationPackage>(`/applications/${applicationId}/packages/${packageId}`),
+  uploadArtifact: (applicationId: number, packageId: number, file: Blob, filename: string, documentType: ArtifactDocumentType, format: ArtifactFormat, exporterVersion: string) => {
+    const form = new FormData();
+    form.append("file", file, filename);
+    form.append("document_type", documentType);
+    form.append("format", format);
+    form.append("exporter_version", exporterVersion);
+    return apiRequest<ArtifactUploadResponse>(`/applications/${applicationId}/packages/${packageId}/artifacts`, { method: "POST", body: form });
+  },
+  getArtifact: (applicationId: number, artifactId: number) =>
+    apiRequest<ArtifactDetail>(`/applications/${applicationId}/artifacts/${artifactId}`),
+  downloadArtifact: async (applicationId: number, artifactId: number, fallbackFilename = "artifact") : Promise<ArtifactDownload> => {
+    const response = await apiResponse(`/applications/${applicationId}/artifacts/${artifactId}/download`);
+    return { blob: await response.blob(), filename: attachmentFilename(response.headers.get("Content-Disposition"), fallbackFilename) };
+  },
+  retryArtifactValidation: (applicationId: number, artifactId: number) =>
+    apiRequest<ArtifactUploadResponse>(`/applications/${applicationId}/artifacts/${artifactId}/retry`, { method: "POST" }),
+  deleteArtifact: (applicationId: number, artifactId: number) =>
+    apiRequest<void>(`/applications/${applicationId}/artifacts/${artifactId}`, { method: "DELETE" }),
   approvePreparation: (id: number, expectedVersion: number, packageId: number, contentSha256: string) =>
     apiRequest<ApplicationPreparation>(`/applications/${id}/preparation/approve`, {
       method: "POST",

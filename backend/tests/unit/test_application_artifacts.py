@@ -8,6 +8,7 @@ import ctypes
 import os
 import sys
 import zipfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -15,6 +16,7 @@ import pytest
 from docx import Document
 from sqlalchemy import Table
 from app.domain.applications import artifacts
+from app.domain.applications.artifact_lifecycle import artifact_detail
 from app.models.application_artifact import ApplicationArtifact
 
 from app.domain.applications.artifacts import (
@@ -43,6 +45,40 @@ def _docx(text: str) -> bytes:
     document = Document(); document.add_paragraph(text)
     output = io.BytesIO(); document.save(output)
     return output.getvalue()
+
+
+@pytest.mark.parametrize("state", ["queued", "validating", "failed", "unavailable", "validated", "warning"])
+def test_artifact_detail_retry_after_follows_persisted_state(state: str) -> None:
+    changed_at = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    row = ApplicationArtifact(
+        id=31, user_id=4, application_id=7, package_id=12,
+        document_type="resume", format="pdf", filename="resume.pdf",
+        content_type="application/pdf", byte_length=9, sha256="a" * 64,
+        exporter_version="resume-pdf-v1", expected_text_sha256="b" * 64,
+        validation_policy_version="application-artifact-validation-v1",
+        validation_state=state, failure_category=None, validation_report={},
+        task_id=None, validation_state_changed_at=changed_at,
+        created_at=changed_at, content=b"%PDF-1.4\n",
+    )
+    detail = artifact_detail(row)
+    assert detail.retry_after == (changed_at + timedelta(seconds=60) if state in {"queued", "validating"} else None)
+    serialized = detail.model_dump(mode="json")
+    assert serialized["retry_after"] == ("2026-09-24T12:01:00Z" if state in {"queued", "validating"} else None)
+    assert detail.application_id == 7
+
+
+def test_artifact_detail_without_legacy_state_timestamp_has_no_retry_hint() -> None:
+    row = ApplicationArtifact(
+        id=31, user_id=4, application_id=7, package_id=12,
+        document_type="resume", format="pdf", filename="resume.pdf",
+        content_type="application/pdf", byte_length=9, sha256="a" * 64,
+        exporter_version="resume-pdf-v1", expected_text_sha256="b" * 64,
+        validation_policy_version="application-artifact-validation-v1",
+        validation_state="queued", failure_category=None, validation_report={},
+        task_id=None, validation_state_changed_at=None,
+        created_at=datetime(2026, 9, 24, tzinfo=UTC), content=b"%PDF-1.4\n",
+    )
+    assert artifact_detail(row).retry_after is None
 
 
 def _small_docx_parts(*, content_types: bytes = b"<Types/>", extra: dict[str, bytes] | None = None) -> bytes:

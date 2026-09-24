@@ -1,7 +1,7 @@
 /**
  * Client-side export helpers for cover letters and tailored resumes.
  *
- * All functions run entirely in the browser — no server round-trip required.
+ * Builders return bytes without downloading; editor wrappers retain local downloads.
  */
 
 import { Document, Packer, Paragraph, TextRun } from "docx";
@@ -14,6 +14,17 @@ function buildFilename(stem: string, ext: string): string {
   return `${safe || "cover_letter"}.${ext}`;
 }
 
+export interface BuiltArtifact<F extends "pdf" | "docx" = "pdf" | "docx"> {
+  blob: Blob;
+  filename: string;
+  format: F;
+  contentType: string;
+  exporterVersion: string;
+}
+
+const PDF_TYPE = "application/pdf";
+const DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 function triggerDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -23,8 +34,8 @@ function triggerDownload(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
-/** Download the cover letter as a .docx Word document. */
-export async function downloadDocx(content: string, stem = "cover_letter"): Promise<void> {
+/** Build the cover letter as a .docx Word document. */
+export async function buildCoverLetterDocx(content: string, stem = "cover_letter"): Promise<BuiltArtifact<"docx">> {
   const paragraphs = content
     .split(/\n\n+/)
     .map((block) => block.trim())
@@ -42,11 +53,16 @@ export async function downloadDocx(content: string, stem = "cover_letter"): Prom
   });
 
   const buffer = await Packer.toBlob(doc);
-  triggerDownload(buffer, buildFilename(stem, "docx"));
+  return { blob: buffer, filename: buildFilename(stem, "docx"), format: "docx", contentType: DOCX_TYPE, exporterVersion: "cover-letter-docx-v1" };
 }
 
-/** Download the cover letter as a .pdf file. */
-export function downloadPdf(content: string, stem = "cover_letter"): void {
+export async function downloadDocx(content: string, stem = "cover_letter"): Promise<void> {
+  const artifact = await buildCoverLetterDocx(content, stem);
+  triggerDownload(artifact.blob, artifact.filename);
+}
+
+/** Build the cover letter as a .pdf file. */
+export function buildCoverLetterPdf(content: string, stem = "cover_letter"): BuiltArtifact<"pdf"> {
   const pdf = new jsPDF({ unit: "mm", format: "a4" });
 
   const margin = 20;
@@ -70,7 +86,12 @@ export function downloadPdf(content: string, stem = "cover_letter"): void {
     y += lineHeight;
   }
 
-  pdf.save(buildFilename(stem, "pdf"));
+  return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "cover-letter-pdf-v1" };
+}
+
+export function downloadPdf(content: string, stem = "cover_letter"): void {
+  const artifact = buildCoverLetterPdf(content, stem);
+  triggerDownload(artifact.blob, artifact.filename);
 }
 
 // ---- Resume export (professional ATS-friendly layout) -----------------------
@@ -348,8 +369,8 @@ function writeBullet(ctx: PdfCtx, text: string): void {
   ctx.y += blockH + PARA_GAP;
 }
 
-/** Professional resume PDF with ATS-friendly layout and smart page breaks. */
-export function downloadResumePdf(data: TailoredResume, stem: string): void {
+/** Build a professional resume PDF with smart page breaks. */
+export function buildResumePdf(data: TailoredResume, stem: string): BuiltArtifact<"pdf"> {
   const pdf = new jsPDF({ unit: "mm", format: "letter" });
   const ctx: PdfCtx = { pdf, y: MARGIN, pageH: PAGE_H };
   const textW = PAGE_W - MARGIN * 2;
@@ -389,8 +410,7 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
       for (const value of values) writeWrapped(ctx, value, BODY_SIZE, textW);
       ctx.y += SECTION_GAP;
     }
-    pdf.save(buildFilename(stem, "pdf"));
-    return;
+    return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "resume-pdf-v1" };
   }
 
   // Professional Summary
@@ -502,11 +522,16 @@ export function downloadResumePdf(data: TailoredResume, stem: string): void {
     for (const item of data.languages) writeLine(ctx, [item.language, item.proficiency].filter(Boolean).join(" | "), BODY_SIZE, false);
   }
 
-  pdf.save(buildFilename(stem, "pdf"));
+  return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "resume-pdf-v1" };
 }
 
-/** Professional resume DOCX with ATS-friendly single-column layout. */
-export async function downloadResumeDocx(data: TailoredResume, stem: string): Promise<void> {
+export function downloadResumePdf(data: TailoredResume, stem: string): void {
+  const artifact = buildResumePdf(data, stem);
+  triggerDownload(artifact.blob, artifact.filename);
+}
+
+/** Build a professional resume DOCX with a single-column layout. */
+export async function buildResumeDocx(data: TailoredResume, stem: string): Promise<BuiltArtifact<"docx">> {
   const children: Paragraph[] = [];
   const N = "Calibri";
   const SZ = 20; // half-points: 20 = 10pt
@@ -560,8 +585,7 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
     }
     const doc = new Document({ sections: [{ children }] });
     const buffer = await Packer.toBlob(doc);
-    triggerDownload(buffer, buildFilename(stem, "docx"));
-    return;
+    return { blob: buffer, filename: buildFilename(stem, "docx"), format: "docx", contentType: DOCX_TYPE, exporterVersion: "resume-docx-v1" };
   }
 
   // Professional Summary
@@ -639,5 +663,10 @@ export async function downloadResumeDocx(data: TailoredResume, stem: string): Pr
 
   const doc = new Document({ sections: [{ children }] });
   const buffer = await Packer.toBlob(doc);
-  triggerDownload(buffer, buildFilename(stem, "docx"));
+  return { blob: buffer, filename: buildFilename(stem, "docx"), format: "docx", contentType: DOCX_TYPE, exporterVersion: "resume-docx-v1" };
+}
+
+export async function downloadResumeDocx(data: TailoredResume, stem: string): Promise<void> {
+  const artifact = await buildResumeDocx(data, stem);
+  triggerDownload(artifact.blob, artifact.filename);
 }

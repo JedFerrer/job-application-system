@@ -30,7 +30,7 @@ vi.mock("jspdf", () => {
     addPage() {}
     splitTextToSize(text: string) { return [text]; }
     text(value: string | string[]) { capture.pdfText.push(...(Array.isArray(value) ? value : [value])); }
-    save() {}
+    output() { return new Blob(["%PDF-1.4\n"], { type: "application/pdf" }); }
   }
   return { default: MockJsPdf };
 });

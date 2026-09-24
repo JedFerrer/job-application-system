@@ -148,6 +148,7 @@ async def test_upload_commit_duplicate_detail_download_and_delete(engine: AsyncE
         detail = await client.get(f"/applications/{application_id}/artifacts/{artifact_id}")
         assert detail.status_code == 200
         assert "content" not in detail.json()
+        assert detail.json()["retry_after"] is not None
         package_response = await client.get(f"/applications/{application_id}/packages/{package_id}")
         assert package_response.status_code == 200
         assert [item["id"] for item in package_response.json()["artifacts"]] == [artifact_id]

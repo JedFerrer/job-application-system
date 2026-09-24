@@ -68,12 +68,16 @@ def artifact_summary(row: ApplicationArtifact) -> ArtifactSummary:
 
 
 def artifact_detail(row: ApplicationArtifact) -> ArtifactDetail:
+    # The timestamp is guidance for the UI. The locked retry operation remains authoritative.
+    changed_at = row.validation_state_changed_at
+    retry_after = changed_at + STALE_AFTER if row.validation_state in {"queued", "validating"} and changed_at is not None else None
     return ArtifactDetail(
         **artifact_summary(row).model_dump(), application_id=row.application_id,
         content_type=row.content_type, exporter_version=row.exporter_version,
         expected_text_sha256=row.expected_text_sha256,
         validation_policy_version=row.validation_policy_version,
         validation_report=row.validation_report or None, task_id=row.task_id,
+        retry_after=retry_after,
     )
 
 

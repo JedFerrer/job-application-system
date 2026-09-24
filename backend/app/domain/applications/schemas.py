@@ -253,6 +253,7 @@ class ArtifactDetail(ArtifactSummary):
     validation_policy_version: str
     validation_report: ArtifactValidationReport | None
     task_id: str | None
+    retry_after: datetime | None
 
 
 class ArtifactUploadResponse(BaseModel):

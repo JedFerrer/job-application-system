@@ -7,7 +7,7 @@ vi.mock("@/lib/api", () => api);
 vi.mock("@/components/ui/button", () => ({ Button: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props} /> }));
 import { DocumentReviewPanel } from "@/components/applications/document-review-panel";
 
-const packageItem = { id: 2, application_id: 1, revision: 1, content: {}, content_sha256: "a".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-01" };
+const packageItem = { id: 2, application_id: 1, revision: 1, content: {}, content_sha256: "a".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-01", artifacts: [] };
 const detail = { id: "r", application_id: 1, package_id: 2, package_content_sha256: "a".repeat(64), review_policy_version: "application-document-review-v2", state: "completed" as const, outcome: "attention_needed" as const, findings: [{ id: "f", document: "resume" as const, category: "repetition", severity: "suggestion" as const, excerpt: "Repeated text", locator: "/resume", rationale: "Repeated", evidence: [{ role: "target" as const, document: "resume" as const, locator: "/resume", excerpt: "Repeated text" }], proposed_action: "Revise" }], failure_code: null, acknowledgments: [], created_at: "2026-01-01", completed_at: "2026-01-01" };
 const summary = (overrides: Record<string, unknown> = {}) => ({ id: "r", task_id: "task", package_id: 2, package_content_sha256: "a".repeat(64), review_policy_version: "application-document-review-v1", state: "queued" as const, outcome: null, failure_code: null, ...overrides });
 let node: HTMLDivElement | null = null;

@@ -53,7 +53,7 @@ describe("PackagePreview", () => {
     const item = {
       id: 1, application_id: 2, revision: 3, content_sha256: "a".repeat(64),
       schema_version: "application-package-v1", created_at: "2026-01-01T00:00:00Z",
-      content: { job: { title: "Frozen role" }, resume: { professional_summary: "Frozen resume" }, cover_letter: { content: "Frozen letter" } },
+      content: { job: { title: "Frozen role" }, resume: { professional_summary: "Frozen resume" }, cover_letter: { content: "Frozen letter" } }, artifacts: [],
     };
     await act(async () => root.render(<PackagePreview package={item} />));
     expect(node.textContent).toContain("Frozen package preview");

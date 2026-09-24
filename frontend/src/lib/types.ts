@@ -754,6 +754,62 @@ export interface ApplicationPackage {
   content_sha256: string;
   schema_version: string;
   created_at: string;
+  artifacts: ArtifactSummary[];
+}
+
+export type ArtifactDocumentType = "resume" | "cover_letter";
+export type ArtifactFormat = "pdf" | "docx";
+export type ArtifactValidationState = "queued" | "validating" | "validated" | "warning" | "failed" | "unavailable";
+export type ArtifactCheckStatus = "pass" | "warning" | "fail" | "not_checked" | "unavailable";
+export type ArtifactFailureCategory = "unsupported_type" | "size_exceeded" | "corrupt_pdf" | "encrypted_pdf" | "page_limit" | "invalid_docx" | "macro_detected" | "decompression_limit" | "content_mismatch" | "parser_unavailable" | "parser_timeout" | "quota_exceeded";
+
+export interface ArtifactValidationCheck {
+  name: string;
+  status: ArtifactCheckStatus;
+  category: ArtifactFailureCategory | null;
+}
+
+export interface ArtifactValidationReport {
+  policy_version: string;
+  format: ArtifactFormat;
+  state: ArtifactValidationState;
+  checks: ArtifactValidationCheck[];
+  page_count: number | null;
+  failure_category: ArtifactFailureCategory | null;
+}
+
+export interface ArtifactSummary {
+  id: number;
+  package_id: number;
+  document_type: ArtifactDocumentType;
+  format: ArtifactFormat;
+  filename: string;
+  byte_length: number;
+  sha256: string;
+  validation_state: ArtifactValidationState;
+  failure_category: string | null;
+  created_at: string;
+}
+
+export interface ArtifactDetail extends ArtifactSummary {
+  application_id: number;
+  content_type: string;
+  exporter_version: string;
+  expected_text_sha256: string;
+  validation_policy_version: string;
+  validation_report: ArtifactValidationReport | null;
+  task_id: string | null;
+  retry_after: string | null;
+}
+
+export interface ArtifactUploadResponse {
+  artifact: ArtifactDetail;
+  existing: boolean;
+}
+
+export interface ArtifactDownload {
+  blob: Blob;
+  filename: string;
 }
 export interface DocumentReviewEvidence { role: "target" | "comparison" | "requirement"; document: "job" | "resume" | "cover_letter"; locator: string; excerpt: string; }
 export interface DocumentReviewFinding { id: string; document: "resume" | "cover_letter"; category: string; severity: "concern" | "suggestion"; excerpt: string; locator: string; rationale: string; evidence: DocumentReviewEvidence[]; proposed_action: string; }
@@ -795,6 +851,7 @@ export interface ApplicationPackageHistoryItem {
   content_sha256: string;
   created_at: string;
   is_approved: boolean;
+  artifacts: ArtifactSummary[];
 }
 
 export interface ApplicationWorkspace {
