@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { ArtifactPanel } from "@/components/applications/artifact-panel";
 import type { ApplicationPackage, ArtifactDetail, ArtifactSummary } from "@/lib/types";
 
@@ -64,12 +64,20 @@ describe("ArtifactPanel", () => {
   it("builds from frozen content, uploads the same Blob, then downloads stored bytes", async () => {
     const blob = new Blob(["built"]);
     mocks.buildResumePdf.mockReturnValue({ blob, filename: "built.pdf", exporterVersion: "resume-pdf-v1" });
-    mocks.uploadArtifact.mockResolvedValue({ artifact: detail({ validation_state: "queued" }), existing: false });
+    mocks.uploadArtifact.mockResolvedValue({ artifact: detail({ id: 314, validation_state: "queued" }), existing: false });
+    const invalidated = vi.spyOn(client, "invalidateQueries");
     await render(item());
     await click("Generate Resume PDF");
     expect(mocks.buildResumePdf.mock.calls[0]?.[0].professional_summary).toBe("Frozen summary");
+    expect(mocks.buildResumePdf).toHaveBeenCalledTimes(1);
     expect(mocks.uploadArtifact).toHaveBeenCalledWith(7, 12, blob, "built.pdf", "resume", "pdf", "resume-pdf-v1");
-    expect(mocks.downloadArtifact).toHaveBeenCalledWith(7, 81, "saved.pdf");
+    expect(mocks.uploadArtifact.mock.calls[0]?.[2]).toBe(blob);
+    expect(mocks.uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(mocks.downloadArtifact).toHaveBeenCalledWith(7, 314, "saved.pdf");
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-package", 7, 12] });
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-workspace", 7] });
+    expect(URL.createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ size: 6 }));
+    expect(vi.mocked(URL.createObjectURL).mock.calls[0]?.[0]).not.toBe(blob);
     expect(downloadClick).toHaveBeenCalledTimes(1);
   });
 
@@ -86,6 +94,9 @@ describe("ArtifactPanel", () => {
     expect(mocks.buildResumeDocx.mock.calls[0]?.[0].professional_summary).toBe("Frozen summary");
     expect(mocks.buildCoverLetterPdf).toHaveBeenCalledWith("Frozen letter", "cover_letter_package_12");
     expect(mocks.buildCoverLetterDocx).toHaveBeenCalledWith("Frozen letter", "cover_letter_package_12");
+    expect(mocks.buildResumeDocx).toHaveBeenCalledTimes(1);
+    expect(mocks.buildCoverLetterPdf).toHaveBeenCalledTimes(1);
+    expect(mocks.buildCoverLetterDocx).toHaveBeenCalledTimes(1);
     expect(mocks.uploadArtifact.mock.calls.map((call) => [call[4], call[5]])).toEqual([
       ["resume", "docx"], ["cover_letter", "pdf"], ["cover_letter", "docx"],
     ]);
@@ -95,6 +106,7 @@ describe("ArtifactPanel", () => {
     let resolveBuild!: (value: { blob: Blob; filename: string; exporterVersion: string }) => void;
     mocks.buildResumeDocx.mockReturnValue(new Promise((resolve) => { resolveBuild = resolve; }));
     mocks.uploadArtifact.mockResolvedValue({ artifact: detail(), existing: false });
+    const invalidated = vi.spyOn(client, "invalidateQueries");
     await render(item());
     await click("Generate Resume DOCX");
     const replacement = item({ id: 13, content_sha256: "d".repeat(64), artifacts: [] });
@@ -102,6 +114,8 @@ describe("ArtifactPanel", () => {
     const blob = new Blob(["package 12"]);
     await act(async () => resolveBuild({ blob, filename: "old.docx", exporterVersion: "v1" }));
     await vi.waitFor(() => expect(mocks.uploadArtifact).toHaveBeenCalledWith(7, 12, blob, "old.docx", "resume", "docx", "v1"));
+    await vi.waitFor(() => expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-package", 7, 12] }));
+    expect(invalidated).not.toHaveBeenCalledWith({ queryKey: ["application-package", 7, 13] });
     expect(node.textContent).not.toContain("File saved");
     expect(node.textContent).toContain("No exported files saved for this package");
   });
@@ -160,6 +174,18 @@ describe("ArtifactPanel", () => {
     expect(node.textContent).toContain("Checked with warnings");
     await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledWith(7, 81));
     expect(mocks.getArtifact).not.toHaveBeenCalledWith(7, 82);
+    expect(mocks.uploadArtifact).not.toHaveBeenCalled();
+  });
+
+  it.each(["validated", "warning", "failed", "unavailable"] as const)("recovers terminal %s lazily after reload", async (state) => {
+    await render(item({ artifacts: [summary({ validation_state: state })] }));
+    act(() => root.unmount()); client.clear();
+    root = createRoot(node); client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(item({ artifacts: [summary({ validation_state: state })] }));
+    expect(node.textContent).toContain("saved.pdf");
+    expect(mocks.getArtifact).not.toHaveBeenCalled();
+    await click("View report");
+    await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledWith(7, 81));
   });
 
   it("hides letter generation for a not-needed package", async () => {
@@ -211,22 +237,48 @@ describe("ArtifactPanel", () => {
   });
 
   it("retries failed validation on the same artifact and handles a 409", async () => {
-    mocks.getArtifact.mockResolvedValue(detail({ validation_state: "failed" }));
+    mocks.getArtifact.mockResolvedValueOnce(detail({ validation_state: "failed" }))
+      .mockResolvedValue(detail({ validation_state: "validating" }));
     mocks.retryArtifactValidation.mockRejectedValue(new mocks.ApiError(409));
     await render(item({ artifacts: [summary({ validation_state: "failed" })] }));
+    await click("View report");
+    await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(1));
+    const invalidated = vi.spyOn(client, "invalidateQueries");
     await click("Retry validation");
     expect(mocks.retryArtifactValidation).toHaveBeenCalledWith(7, 81);
+    await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(2));
+    expect(node.textContent).toContain("saved.pdf");
+    expect(client.getQueryData<ArtifactDetail>(["application-artifact", 7, 81])?.validation_state).toBe("validating");
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-package", 7, 12] });
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-workspace", 7] });
+    await render(item({ artifacts: [summary({ validation_state: "validating" })] }));
+    expect(node.textContent).toContain("Checking file");
     expect(node.textContent).toContain("Validation is still in progress");
+    expect(mocks.uploadArtifact).not.toHaveBeenCalled();
   });
 
   it("allows an unavailable file to retry validation without creating an artifact", async () => {
     mocks.getArtifact.mockResolvedValue(detail({ validation_state: "unavailable" }));
     mocks.retryArtifactValidation.mockResolvedValue({ artifact: detail({ validation_state: "queued" }), existing: true });
+    const invalidated = vi.spyOn(client, "invalidateQueries");
     await render(item({ artifacts: [summary({ validation_state: "unavailable" })] }));
     await click("Retry validation");
     expect(mocks.retryArtifactValidation).toHaveBeenCalledWith(7, 81);
     expect(mocks.uploadArtifact).not.toHaveBeenCalled();
     expect(node.textContent).toContain("Validation queued for this saved file");
+    expect(node.textContent).toContain("saved.pdf");
+    expect(client.getQueryData<ArtifactDetail>(["application-artifact", 7, 81])?.validation_state).toBe("queued");
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-package", 7, 12] });
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-workspace", 7] });
+  });
+
+  it("retains the persisted row when retry transport fails", async () => {
+    mocks.retryArtifactValidation.mockRejectedValue(new Error("offline"));
+    await render(item({ artifacts: [summary({ validation_state: "failed" })] }));
+    await click("Retry validation");
+    expect(node.textContent).toContain("saved.pdf");
+    expect(node.textContent).toContain("Could not retry validation");
+    expect(mocks.uploadArtifact).not.toHaveBeenCalled();
   });
 
   it("uses retry_after for active files and never retries validated files", async () => {
@@ -244,15 +296,89 @@ describe("ArtifactPanel", () => {
   it.each(["queued", "validating"] as const)("polls %s detail and stops after terminal result", async (initial) => {
     mocks.getArtifact.mockResolvedValueOnce(detail({ validation_state: initial }))
       .mockResolvedValue(detail({ validation_state: "validated" }));
+    const invalidated = vi.spyOn(client, "invalidateQueries");
     vi.useFakeTimers({ shouldAdvanceTime: true });
     await render(item({ artifacts: [summary({ validation_state: initial })] }));
     await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(1));
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     expect(mocks.getArtifact).toHaveBeenCalledTimes(2);
     expect(node.textContent).toContain("Content checks passed");
+    expect(client.getQueryData<ArtifactDetail>(["application-artifact", 7, 81])?.validation_state).toBe("validated");
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-package", 7, 12] });
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-workspace", 7] });
     await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
     expect(mocks.getArtifact).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
+  });
+
+  it("refreshes Package A when its in-flight detail resolves after switching to Package B", async () => {
+    let resolveDetail!: (value: ArtifactDetail) => void;
+    mocks.getArtifact.mockReturnValue(new Promise<ArtifactDetail>((resolve) => { resolveDetail = resolve; }));
+    const invalidated = vi.spyOn(client, "invalidateQueries");
+    await render(item({ artifacts: [summary({ validation_state: "queued" })] }));
+    await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(1));
+    await render(item({ id: 13, content_sha256: "d".repeat(64), artifacts: [summary({ id: 82, package_id: 13, validation_state: "validated" })] }));
+    await act(async () => resolveDetail(detail({ validation_state: "warning" })));
+    await vi.waitFor(() => expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-package", 7, 12] }));
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-workspace", 7] });
+    expect(invalidated).not.toHaveBeenCalledWith({ queryKey: ["application-package", 7, 13] });
+    expect(node.textContent).toContain("Content checks passed");
+    expect(node.textContent).not.toContain("Checked with warnings");
+  });
+
+  it("refetches active detail after browser focus returns", async () => {
+    mocks.getArtifact.mockResolvedValue(detail({ validation_state: "queued" }));
+    await render(item({ artifacts: [summary({ validation_state: "queued" })] }));
+    await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(1));
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(2));
+    focusManager.setFocused(undefined);
+  });
+
+  it("cleans the active polling schedule after the row unmounts", async () => {
+    mocks.getArtifact.mockResolvedValue(detail({ validation_state: "queued" }));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await render(item({ artifacts: [summary({ validation_state: "queued" })] }));
+    await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(1));
+    await render(item({ id: 13, artifacts: [] }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+    expect(mocks.getArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it("enables retry when retry_after passes and clears the one-second timer", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const retryAfter = new Date(Date.now() + 2500).toISOString();
+    mocks.getArtifact.mockResolvedValue(detail({ validation_state: "queued", retry_after: retryAfter }));
+    const setInterval = vi.spyOn(window, "setInterval");
+    const clearInterval = vi.spyOn(window, "clearInterval");
+    await render(item({ artifacts: [summary({ validation_state: "queued" })] }));
+    await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(1));
+    const retryButton = () => Array.from(node.querySelectorAll("button")).find((button) => button.textContent === "Retry validation");
+    expect(retryButton()?.disabled).toBe(true);
+    expect(setInterval.mock.calls.some((call) => call[1] === 1000)).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(retryButton()?.disabled).toBe(false);
+    const retryTimers = setInterval.mock.results.filter((_, index) => setInterval.mock.calls[index]?.[1] === 1000).map((result) => result.value);
+    expect(clearInterval).toHaveBeenCalledWith(retryTimers.at(-1));
+    const count = retryTimers.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(setInterval.mock.calls.filter((call) => call[1] === 1000)).toHaveLength(count);
+  });
+
+  it("clears retry_after timing when the row unmounts before the deadline", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mocks.getArtifact.mockResolvedValue(detail({ validation_state: "queued", retry_after: new Date(Date.now() + 10_000).toISOString() }));
+    const setInterval = vi.spyOn(window, "setInterval");
+    const clearInterval = vi.spyOn(window, "clearInterval");
+    await render(item({ artifacts: [summary({ validation_state: "queued" })] }));
+    await vi.waitFor(() => expect(setInterval.mock.calls.some((call) => call[1] === 1000)).toBe(true));
+    const timer = setInterval.mock.results[setInterval.mock.calls.findIndex((call) => call[1] === 1000)]?.value;
+    await render(item({ id: 13, artifacts: [] }));
+    expect(clearInterval).toHaveBeenCalledWith(timer);
+    const count = setInterval.mock.calls.filter((call) => call[1] === 1000).length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
+    expect(setInterval.mock.calls.filter((call) => call[1] === 1000)).toHaveLength(count);
   });
 
   it.each(["validated", "warning", "failed", "unavailable"] as const)("does not poll terminal %s detail", async (state) => {
@@ -264,13 +390,31 @@ describe("ArtifactPanel", () => {
 
   it("keeps a file visible and refreshes state when delete returns 409", async () => {
     mocks.deleteArtifact.mockRejectedValue(new mocks.ApiError(409));
+    mocks.getArtifact.mockResolvedValueOnce(detail({ validation_state: "failed" }))
+      .mockResolvedValue(detail({ validation_state: "validating" }));
     await render(item({ artifacts: [summary({ validation_state: "failed" })] }));
     await click("View report");
     await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(1));
+    const invalidated = vi.spyOn(client, "invalidateQueries");
     await click("Delete exported file");
     await vi.waitFor(() => expect(mocks.getArtifact).toHaveBeenCalledTimes(2));
     expect(node.textContent).toContain("saved.pdf");
+    expect(client.getQueryData<ArtifactDetail>(["application-artifact", 7, 81])?.validation_state).toBe("validating");
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-package", 7, 12] });
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["application-workspace", 7] });
+    await render(item({ artifacts: [summary({ validation_state: "validating" })] }));
+    expect(node.textContent).toContain("Checking file");
     expect(node.textContent).toContain("File state refreshed");
+    expect(mocks.uploadArtifact).not.toHaveBeenCalled();
+  });
+
+  it("retains the persisted row and package when delete transport fails", async () => {
+    mocks.deleteArtifact.mockRejectedValue(new Error("offline"));
+    await render(item({ artifacts: [summary()] }));
+    await click("Delete exported file");
+    expect(node.textContent).toContain("saved.pdf");
+    expect(node.textContent).toContain("Could not delete the exported file");
+    expect(node.textContent).toContain("Exported files");
   });
 
   it("removes a terminal row only after successful deletion and the persisted package refresh", async () => {

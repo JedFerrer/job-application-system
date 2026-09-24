@@ -15,6 +15,11 @@ describe("real browser artifact builders", () => {
       await buildCoverLetterDocx("Dear Hiring Team,\n\nI can help.", "cover_letter_Role"),
     ];
     expect(built.map((file) => file.exporterVersion)).toEqual(["resume-pdf-v1", "resume-docx-v1", "cover-letter-pdf-v1", "cover-letter-docx-v1"]);
+    expect(built.map((file) => file.format)).toEqual(["pdf", "docx", "pdf", "docx"]);
+    expect(built.map((file) => file.contentType)).toEqual([
+      "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]);
     for (const file of built) {
       expect(file.blob.size).toBeGreaterThan(20);
       expect(file.filename).toMatch(/\.(pdf|docx)$/);

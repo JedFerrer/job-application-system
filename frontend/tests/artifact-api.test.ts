@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, applicationsApi, setAccessToken } from "@/lib/api";
 import { buildCoverLetterPdf } from "@/lib/cover-letter-export";
+import { createHash } from "node:crypto";
 
 const artifact = { id: 9, package_id: 2, document_type: "cover_letter", format: "pdf", validation_state: "queued", retry_after: "2026-09-24T12:01:00Z" };
 
@@ -41,11 +42,14 @@ describe("artifact API", () => {
   });
 
   it("returns binary bytes and a safe server filename, without JSON parsing", async () => {
-    const bytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 52]);
+    const bytes = new Uint8Array([0, 255, 37, 80, 68, 70, 45, 49, 46, 55, 10, 128, 1, 42]);
+    const expectedSha256 = "4b3bbaece915053bc77927b626d7c71b532da93e6d17ccc71701fe2d6204c92c";
     vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { headers: { "Content-Disposition": 'attachment; filename="stored.pdf"', "Content-Type": "application/pdf" } })));
     const result = await applicationsApi.downloadArtifact(1, 9, "fallback.pdf");
     expect(result.filename).toBe("stored.pdf");
-    expect(Array.from(new Uint8Array(await result.blob.arrayBuffer()))).toEqual(Array.from(bytes));
+    const downloaded = new Uint8Array(await result.blob.arrayBuffer());
+    expect(Array.from(downloaded)).toEqual(Array.from(bytes));
+    expect(createHash("sha256").update(downloaded).digest("hex")).toBe(expectedSha256);
   });
 
   it("sanitizes an attachment filename and falls back when it is missing", async () => {

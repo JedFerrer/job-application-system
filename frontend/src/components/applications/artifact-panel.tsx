@@ -83,9 +83,17 @@ function ArtifactRow({ applicationId, item, refresh }: { applicationId: number; 
   const [busy, setBusy] = useState<"download" | "retry" | "delete" | null>(null);
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(Date.now());
+  const mountedRow = useRef(true);
+  useEffect(() => { mountedRow.current = true; return () => { mountedRow.current = false; }; }, []);
   const detail = useQuery({
     queryKey: artifactKey(applicationId, item.id),
-    queryFn: () => applicationsApi.getArtifact(applicationId, item.id),
+    queryFn: async () => {
+      const result = await applicationsApi.getArtifact(applicationId, item.id);
+      if (!mountedRow.current && active(item.validation_state) && !active(result.validation_state)) {
+        await refresh(item.package_id);
+      }
+      return result;
+    },
     enabled: open || active(item.validation_state),
     retry: false,
     refetchInterval: (query) => {
@@ -105,10 +113,10 @@ function ArtifactRow({ applicationId, item, refresh }: { applicationId: number; 
     } else if (active(state)) previouslyActive.current = true;
   }, [state, item.package_id, refresh]);
   useEffect(() => {
-    if (!active(state) || !detail.data?.retry_after) return;
+    if (!active(state) || !detail.data?.retry_after || now >= Date.parse(detail.data.retry_after)) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [state, detail.data?.retry_after]);
+  }, [state, detail.data?.retry_after, now]);
 
   const download = async () => {
     setBusy("download"); setMessage("");
