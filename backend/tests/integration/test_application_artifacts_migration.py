@@ -6,11 +6,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
+from typing import cast
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import String, create_engine, event, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -19,6 +20,38 @@ from app.core.config import get_settings
 from app.domain.applications.artifact_repository import ApplicationArtifactRepository
 from app.domain.applications.artifacts import ArtifactValidationError, MAX_APPLICATION_ARTIFACT_BYTES
 from app.models.application_artifact import ApplicationArtifact
+
+
+def test_0044_lifecycle_columns_match_model_and_existing_rows() -> None:
+    config = _config()
+    engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)
+    try:
+        command.downgrade(config, "0043")
+        with engine.begin() as connection:
+            connection.execute(text("TRUNCATE TABLE users CASCADE"))
+            user = connection.execute(text("INSERT INTO users (email, name) VALUES ('artifact-upgrade@example.test', 'Artifact') RETURNING id")).scalar_one()
+            job = connection.execute(text("INSERT INTO jobs (fingerprint, identity_scope, identity_key, title, company, source, source_url, raw_response, status, visibility, ingest_source) VALUES ('f-upgrade', 'public', 'upgrade', 'Engineer', 'Acme', 'fixture', 'https://example.test/upgrade', '{}'::jsonb, 'active', 'public', 'fixture') RETURNING id")).scalar_one()
+            application = connection.execute(text("INSERT INTO applications (user_id, job_id, status) VALUES (:user, :job, 'saved') RETURNING id"), {"user": user, "job": job}).scalar_one()
+            package = connection.execute(text("INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 1, '{}'::jsonb, :hash, 'application-package-v1', 'upgrade') RETURNING id"), {"application": application, "hash": "a" * 64}).scalar_one()
+            artifact = connection.execute(text("INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'resume.pdf', 'application/pdf', 3, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content) RETURNING id"), {"user": user, "application": application, "package": package, "hash": hashlib.sha256(b"pdf").hexdigest(), "content": b"pdf"}).scalar_one()
+        command.upgrade(config, "0044")
+        columns = {column["name"]: column for column in inspect(engine).get_columns("application_artifacts")}
+        assert {"task_id", "validation_attempt", "validation_state_changed_at"} <= set(columns)
+        assert {"task_id", "validation_attempt", "validation_state_changed_at"} <= set(ApplicationArtifact.__table__.columns.keys())
+        assert columns["task_id"]["nullable"] is True
+        assert cast(String, columns["task_id"]["type"]).length == cast(String, ApplicationArtifact.__table__.columns["task_id"].type).length == 36
+        assert columns["validation_attempt"]["nullable"] is False
+        assert columns["validation_attempt"]["default"] is not None
+        assert columns["validation_state_changed_at"]["nullable"] is False
+        with engine.connect() as connection:
+            row = connection.execute(text("SELECT task_id, validation_attempt, validation_state_changed_at, content FROM application_artifacts WHERE id=:id"), {"id": artifact}).one()
+            assert row.task_id is None
+            assert row.validation_attempt == 0
+            assert row.validation_state_changed_at is not None
+            assert row.content == b"pdf"
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
 
 pytestmark = pytest.mark.integration
 

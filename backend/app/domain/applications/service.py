@@ -14,6 +14,7 @@ from app.domain.applications.exceptions import (
     PreparationDiscardConfirmationRequiredError,
 )
 from app.domain.applications.preparation import ApplicationPreparationService
+from app.domain.applications.artifact_lifecycle import artifact_summary
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.schemas import (
     MANUAL_NEXT_ACTION_EVENT_CLEARED,
@@ -46,6 +47,7 @@ from app.domain.applications.schemas import (
 from app.domain.jobs.exceptions import JobNotFoundError
 from app.domain.jobs.repository import JobRepository
 from app.models.application_event import ApplicationEvent
+from app.models.application_artifact import ApplicationArtifact
 from app.models.application_package import ApplicationPackage
 from app.domain.applications.review_prompts import REVIEW_POLICY_VERSION
 
@@ -265,6 +267,10 @@ class ApplicationService:
         )
         current = reviewable if preparation.state in {"needs_review", "ready"} else None
         current_review = await self._repo.current_document_review(user_id=user_id, package=current, policy_version=REVIEW_POLICY_VERSION)
+        artifact_rows = await self._repo.artifacts_for_packages(
+            user_id=user_id,
+            package_ids={package.id for package in history} | ({approved.id} if approved is not None else set()) | ({current.id} if current is not None else set()),
+        )
         live = job is not None and job.status == "active"
         job_context = WorkspaceJobContext(
             id=application.job_id,
@@ -299,23 +305,25 @@ class ApplicationService:
                     current=preparation.cover_letter_current)
                 if letter is not None else None
             ),
-            approved_package=self._package_response(approved) if approved is not None else None,
-            current_reviewable_package=self._package_response(current) if current is not None else None,
+            approved_package=self._package_response(approved, artifact_rows) if approved is not None else None,
+            current_reviewable_package=self._package_response(current, artifact_rows) if current is not None else None,
             package_history=[ApplicationPackageHistoryItem(
                 id=package.id, revision=package.revision, content_sha256=package.content_sha256,
                 created_at=package.created_at,
                 is_approved=package.id == preparation.approved_package_id,
+                artifacts=[artifact_summary(row) for row in artifact_rows.get(package.id, [])],
             ) for package in history],
             activity=activity,
             current_document_review=(DocumentReviewSummary(id=current_review.id, task_id=current_review.task_id, package_id=current_review.package_id, package_content_sha256=current_review.package_content_sha256, review_policy_version=current_review.review_policy_version, state=current_review.state, outcome=current_review.outcome, failure_code=current_review.failure_code) if current_review is not None else None),
         )
 
     @staticmethod
-    def _package_response(package: ApplicationPackage) -> ApplicationPackageResponse:
+    def _package_response(package: ApplicationPackage, artifact_rows: dict[int, list[ApplicationArtifact]]) -> ApplicationPackageResponse:
         return ApplicationPackageResponse(
             id=package.id, application_id=package.application_id, revision=package.revision,
             content=package.content, content_sha256=package.content_sha256,
             schema_version=package.schema_version, created_at=package.created_at,
+            artifacts=[artifact_summary(row) for row in artifact_rows.get(package.id, [])],
         )
 
     async def list(

@@ -1,4 +1,4 @@
-# ruff: noqa: E501, I001
+# ruff: noqa: E501, I001, A002
 """Application endpoints (Phase 4 minimal CRM)."""
 
 from __future__ import annotations
@@ -7,10 +7,11 @@ from datetime import date
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Response, UploadFile, status
 
 from app.api.deps import (
     ApplicationAttemptServiceDep,
+    ArtifactLifecycleServiceDep,
     ApplicationPreparationServiceDep,
     DbSession,
     DocumentReviewServiceDep,
@@ -19,6 +20,8 @@ from app.api.deps import (
     CurrentUser,
 )
 from app.domain.applications.schemas import (
+    ArtifactDetail,
+    ArtifactUploadResponse,
     ApplicationActionCenterResponse,
     ApplicationActivityResponse,
     ApplicationCreate,
@@ -41,8 +44,145 @@ from app.domain.applications.schemas import (
     ReviewAcknowledgmentRequest,
 )
 from app.domain.applications.document_review import ReviewConflictError, ReviewNotFoundError, run_document_review_background
+from app.domain.applications.artifact_lifecycle import ArtifactConflictError, ArtifactNotFoundError, ArtifactTaskAdmissionError, run_artifact_validation_background
+from app.domain.applications.artifacts import MAX_ARTIFACT_BYTES, ArtifactFailureCategory, ArtifactValidationError, canonical_filename
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+
+
+def _artifact_http_error(exc: ArtifactValidationError) -> HTTPException:
+    if exc.category in {ArtifactFailureCategory.SIZE_EXCEEDED, ArtifactFailureCategory.QUOTA_EXCEEDED}:
+        return HTTPException(status_code=413, detail=exc.category.value)
+    if exc.category == ArtifactFailureCategory.UNSUPPORTED_TYPE:
+        return HTTPException(status_code=415, detail=exc.category.value)
+    return HTTPException(status_code=422, detail=exc.category.value)
+
+
+@router.post("/{application_id}/packages/{package_id}/artifacts", response_model=ArtifactUploadResponse)
+async def upload_application_artifact(
+    application_id: int, package_id: int, current_user: CurrentUser,
+    service: ArtifactLifecycleServiceDep, task_store: TaskStoreDep, db: DbSession,
+    background_tasks: BackgroundTasks, response: Response,
+    file: UploadFile = File(...), document_type: str = Form(...), format: str = Form(...),
+    exporter_version: str = Form(..., min_length=1, max_length=64),
+) -> ArtifactUploadResponse:
+    try:
+        await service.owned_package(user_id=current_user.id, application_id=application_id, package_id=package_id)
+        if document_type not in {"resume", "cover_letter"} or format not in {"pdf", "docx"}:
+            raise HTTPException(status_code=415, detail="unsupported_type")
+        content = bytearray()
+        while len(content) <= MAX_ARTIFACT_BYTES:
+            chunk = await file.read(min(64 * 1024, MAX_ARTIFACT_BYTES + 1 - len(content)))
+            if not chunk:
+                break
+            content.extend(chunk)
+        if len(content) > MAX_ARTIFACT_BYTES:
+            raise HTTPException(status_code=413, detail="size_exceeded")
+        if not content:
+            raise HTTPException(status_code=422, detail="empty_file")
+        result, created = await service.create(
+            user_id=current_user.id, application_id=application_id, package_id=package_id,
+            document_type=document_type, format=format, filename=file.filename or document_type,
+            content=bytes(content), exporter_version=exporter_version, task_store=task_store,
+        )
+        if created:
+            await db.commit()
+            artifact = result.artifact
+            assert artifact.task_id is not None
+            background_tasks.add_task(
+                run_artifact_validation_background, artifact_id=artifact.id,
+                task_id=artifact.task_id, validation_attempt=1,
+            )
+            response.status_code = status.HTTP_202_ACCEPTED
+        else:
+            response.status_code = status.HTTP_200_OK
+        return result
+    except ArtifactNotFoundError:
+        raise HTTPException(status_code=404, detail="Artifact package not found") from None
+    except ArtifactValidationError as exc:
+        raise _artifact_http_error(exc) from None
+    except ArtifactTaskAdmissionError:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Artifact validation temporarily unavailable") from None
+    except HTTPException:
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await file.close()
+
+
+@router.get("/{application_id}/artifacts/{artifact_id}", response_model=ArtifactDetail)
+async def get_application_artifact(
+    application_id: int, artifact_id: int, current_user: CurrentUser, service: ArtifactLifecycleServiceDep,
+) -> ArtifactDetail:
+    try:
+        return await service.detail(user_id=current_user.id, application_id=application_id, artifact_id=artifact_id)
+    except ArtifactNotFoundError:
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+
+
+@router.get("/{application_id}/artifacts/{artifact_id}/download")
+async def download_application_artifact(
+    application_id: int, artifact_id: int, current_user: CurrentUser, service: ArtifactLifecycleServiceDep,
+) -> Response:
+    try:
+        row = await service.owned_artifact(user_id=current_user.id, application_id=application_id, artifact_id=artifact_id)
+    except ArtifactNotFoundError:
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+    filename = canonical_filename(row.filename, row.document_type, row.format)  # type: ignore[arg-type]
+    return Response(
+        content=row.content, media_type=row.content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/{application_id}/artifacts/{artifact_id}/retry", response_model=ArtifactUploadResponse, status_code=202)
+async def retry_application_artifact(
+    application_id: int, artifact_id: int, current_user: CurrentUser,
+    service: ArtifactLifecycleServiceDep, task_store: TaskStoreDep, db: DbSession,
+    background_tasks: BackgroundTasks,
+) -> ArtifactUploadResponse:
+    try:
+        result, attempt = await service.retry(user_id=current_user.id, application_id=application_id, artifact_id=artifact_id, task_store=task_store)
+        await db.commit()
+        assert result.artifact.task_id is not None
+        background_tasks.add_task(
+            run_artifact_validation_background, artifact_id=artifact_id,
+            task_id=result.artifact.task_id,
+            validation_attempt=attempt,
+        )
+        return result
+    except ArtifactNotFoundError:
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+    except ArtifactConflictError:
+        raise HTTPException(status_code=409, detail="Artifact is not eligible for retry") from None
+    except ArtifactTaskAdmissionError:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Artifact validation temporarily unavailable") from None
+    except Exception:
+        await db.rollback()
+        raise
+
+
+@router.delete("/{application_id}/artifacts/{artifact_id}", status_code=204)
+async def delete_application_artifact(
+    application_id: int, artifact_id: int, current_user: CurrentUser,
+    service: ArtifactLifecycleServiceDep, db: DbSession,
+) -> Response:
+    try:
+        await service.delete(user_id=current_user.id, application_id=application_id, artifact_id=artifact_id)
+        await db.commit()
+        return Response(status_code=204)
+    except ArtifactNotFoundError:
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+    except ArtifactConflictError:
+        raise HTTPException(status_code=409, detail="Artifact is still validating") from None
 
 
 @router.get("/tasks/{task_id}")

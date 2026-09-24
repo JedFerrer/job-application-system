@@ -9,9 +9,11 @@ from typing import Any, cast
 from sqlalchemy import and_, case, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.domain.applications.schemas import MANUAL_NEXT_ACTION_EVENT_TYPES
 from app.models.application import Application
+from app.models.application_artifact import ApplicationArtifact
 from app.models.application_event import ApplicationEvent
 from app.models.application_package import ApplicationPackage
 from app.models.application_preparation import ApplicationPreparation
@@ -25,6 +27,27 @@ from app.models.user_job_match import UserJobMatch
 class ApplicationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def artifacts_for_packages(self, *, user_id: int, package_ids: set[int]) -> dict[int, list[ApplicationArtifact]]:
+        if not package_ids:
+            return {}
+        rows = list((await self._session.scalars(
+            select(ApplicationArtifact).options(load_only(
+                ApplicationArtifact.id, ApplicationArtifact.package_id,
+                ApplicationArtifact.document_type, ApplicationArtifact.format,
+                ApplicationArtifact.filename, ApplicationArtifact.byte_length,
+                ApplicationArtifact.sha256, ApplicationArtifact.validation_state,
+                ApplicationArtifact.failure_category, ApplicationArtifact.created_at,
+                raiseload=True,
+            )).where(
+                ApplicationArtifact.user_id == user_id,
+                ApplicationArtifact.package_id.in_(package_ids),
+            ).order_by(ApplicationArtifact.created_at.desc(), ApplicationArtifact.id.desc())
+        )).all())
+        result: dict[int, list[ApplicationArtifact]] = {package_id: [] for package_id in package_ids}
+        for row in rows:
+            result[row.package_id].append(row)
+        return result
 
     async def create_or_get(self, *, user_id: int, job_id: int) -> Application:
         """Idempotently create a ``saved`` application for ``(user, job)``.

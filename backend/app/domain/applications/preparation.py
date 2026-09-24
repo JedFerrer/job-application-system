@@ -9,7 +9,9 @@ from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
+from app.domain.applications.artifact_lifecycle import artifact_summary
 from app.domain.applications.exceptions import (
     ApplicationJobNotActionableError,
     ApplicationNotFoundError,
@@ -33,6 +35,7 @@ from app.domain.resume.repository import ResumeRepository
 from app.domain.resume.schemas import TailoredResume
 from app.domain.resume.service import ResumeService
 from app.models.application import Application
+from app.models.application_artifact import ApplicationArtifact
 from app.models.application_event import ApplicationEvent
 from app.models.application_package import ApplicationPackage
 from app.models.application_preparation import ApplicationPreparation
@@ -181,12 +184,12 @@ class ApplicationPreparationService:
                 raise PackageIdempotencyConflictError()
             preparation.reviewable_package_id = by_key.id
             await self._session.flush()
-            return self._package_response(by_key), False
+            return await self._package_response(by_key), False
         by_content = await self._package_by_hash(application.id, content_hash)
         if by_content is not None:
             preparation.reviewable_package_id = by_content.id
             await self._session.flush()
-            return self._package_response(by_content), False
+            return await self._package_response(by_content), False
         package = ApplicationPackage(
             application_id=application.id,
             revision=preparation.next_package_revision,
@@ -209,7 +212,7 @@ class ApplicationPreparationService:
         await self._event(
             application, "package_created", {"package_id": package.id, "revision": package.revision}
         )
-        return self._package_response(package), True
+        return await self._package_response(package), True
 
     async def get_package(
         self, *, user_id: int, application_id: int, package_id: int
@@ -223,7 +226,7 @@ class ApplicationPreparationService:
         )
         if package is None:
             raise ApplicationNotFoundError(application_id)
-        return self._package_response(package)
+        return await self._package_response(package)
 
     async def approve(
         self, *, user_id: int, application_id: int, payload: ApprovePreparationRequest
@@ -648,7 +651,18 @@ class ApplicationPreparationService:
         if job is None or job.status != "active":
             raise ApplicationJobNotActionableError()
 
-    def _package_response(self, package: ApplicationPackage) -> ApplicationPackageResponse:
+    async def _package_response(self, package: ApplicationPackage) -> ApplicationPackageResponse:
+        artifacts = list((await self._session.scalars(
+            select(ApplicationArtifact).options(load_only(
+                ApplicationArtifact.id, ApplicationArtifact.package_id,
+                ApplicationArtifact.document_type, ApplicationArtifact.format,
+                ApplicationArtifact.filename, ApplicationArtifact.byte_length,
+                ApplicationArtifact.sha256, ApplicationArtifact.validation_state,
+                ApplicationArtifact.failure_category, ApplicationArtifact.created_at,
+                raiseload=True,
+            )).where(ApplicationArtifact.package_id == package.id)
+            .order_by(ApplicationArtifact.created_at.desc(), ApplicationArtifact.id.desc())
+        )).all())
         return ApplicationPackageResponse(
             id=package.id,
             application_id=package.application_id,
@@ -657,6 +671,7 @@ class ApplicationPreparationService:
             content_sha256=package.content_sha256,
             schema_version=package.schema_version,
             created_at=package.created_at,
+            artifacts=[artifact_summary(row) for row in artifacts],
         )
 
 

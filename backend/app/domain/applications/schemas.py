@@ -9,6 +9,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.applications.artifacts import ArtifactValidationReport
+
 ApplicationStatus = Literal["saved", "applied", "interview", "offer", "rejected", "closed"]
 ApplicationNextActionType = Literal[
     "apply",
@@ -230,6 +232,34 @@ class CreatePackageRequest(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+class ArtifactSummary(BaseModel):
+    id: int
+    package_id: int
+    document_type: Literal["resume", "cover_letter"]
+    format: Literal["pdf", "docx"]
+    filename: str
+    byte_length: int
+    sha256: str
+    validation_state: Literal["queued", "validating", "validated", "warning", "failed", "unavailable"]
+    failure_category: str | None
+    created_at: datetime
+
+
+class ArtifactDetail(ArtifactSummary):
+    application_id: int
+    content_type: str
+    exporter_version: str
+    expected_text_sha256: str
+    validation_policy_version: str
+    validation_report: ArtifactValidationReport | None
+    task_id: str | None
+
+
+class ArtifactUploadResponse(BaseModel):
+    artifact: ArtifactDetail
+    existing: bool
+
+
 class ApplicationPackageResponse(BaseModel):
     id: int
     application_id: int
@@ -238,6 +268,7 @@ class ApplicationPackageResponse(BaseModel):
     content_sha256: str
     schema_version: str
     created_at: datetime
+    artifacts: list[ArtifactSummary] = Field(default_factory=list)
 
 
 ReviewState = Literal["queued", "running", "completed", "failed"]
@@ -435,6 +466,7 @@ class ApplicationPackageHistoryItem(BaseModel):
     content_sha256: str
     created_at: datetime
     is_approved: bool
+    artifacts: list[ArtifactSummary] = Field(default_factory=list)
 
 
 class WorkspaceMatchSummary(BaseModel):

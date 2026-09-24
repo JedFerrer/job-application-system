@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.security import TokenError, decode_token, decode_token_payload
+from app.domain.applications.artifact_lifecycle import ArtifactLifecycleService
 from app.domain.applications.attempts import ApplicationAttemptService
 from app.domain.applications.document_review import DocumentReviewService
 from app.domain.applications.preparation import ApplicationPreparationService
@@ -367,6 +368,15 @@ def get_document_review_service(db: DbSession) -> DocumentReviewService:
 
 
 DocumentReviewServiceDep = Annotated[DocumentReviewService, Depends(get_document_review_service)]
+
+
+def get_artifact_lifecycle_service(db: DbSession) -> ArtifactLifecycleService:
+    return ArtifactLifecycleService(db)
+
+
+ArtifactLifecycleServiceDep = Annotated[
+    ArtifactLifecycleService, Depends(get_artifact_lifecycle_service)
+]
 
 
 def get_task_store() -> TaskStore:

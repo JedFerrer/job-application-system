@@ -42,5 +42,8 @@ class ApplicationArtifact(Base):
     validation_state: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
     validation_report: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict)
     failure_category: Mapped[str | None] = mapped_column(String(64))
+    task_id: Mapped[str | None] = mapped_column(String(36))
+    validation_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    validation_state_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

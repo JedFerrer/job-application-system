@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import cast
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.applications.artifacts import (
@@ -61,6 +62,20 @@ class ApplicationArtifactRepository:
         exporter_version: str, expected_text_sha256: str,
         validation_policy_version: str,
     ) -> ApplicationArtifact:
+        artifact, _ = await self.create_artifact_with_status(
+            user_id=user_id, application_id=application_id, package_id=package_id,
+            document_type=document_type, format=format, filename=filename, content=content,
+            exporter_version=exporter_version, expected_text_sha256=expected_text_sha256,
+            validation_policy_version=validation_policy_version,
+        )
+        return artifact
+
+    async def create_artifact_with_status(
+        self, *, user_id: int, application_id: int, package_id: int,
+        document_type: str, format: str, filename: str, content: bytes,
+        exporter_version: str, expected_text_sha256: str,
+        validation_policy_version: str,
+    ) -> tuple[ApplicationArtifact, bool]:
         """Lock, deduplicate, enforce quota, and insert in the caller's transaction."""
         preflight = preflight_artifact(content=content, document_type=document_type, format=format)  # type: ignore[arg-type]
         application = await self._lock_owned_application(user_id=user_id, application_id=application_id)
@@ -70,7 +85,7 @@ class ApplicationArtifactRepository:
             package_id=package_id, document_type=document_type, format=format, sha256=preflight.sha256,
         )
         if existing is not None:
-            return existing
+            return existing, False
         total = await self._stored_bytes_for_application(application_id=application_id)
         if total + preflight.byte_length > MAX_APPLICATION_ARTIFACT_BYTES:
             raise ArtifactValidationError(ArtifactFailureCategory.QUOTA_EXCEEDED)
@@ -83,6 +98,18 @@ class ApplicationArtifactRepository:
             validation_policy_version=validation_policy_version,
             validation_state="queued", validation_report={}, content=content,
         )
-        self._session.add(artifact)
-        await self._session.flush()
-        return artifact
+        try:
+            async with self._session.begin_nested():
+                self._session.add(artifact)
+                await self._session.flush()
+        except IntegrityError as exc:
+            cause = exc.orig
+            if getattr(cause, "sqlstate", None) != "23505" or getattr(getattr(cause, "diag", None), "constraint_name", None) != "uq_application_artifact_identity":
+                raise
+            existing = await self._existing_identity(
+                package_id=package_id, document_type=document_type, format=format, sha256=preflight.sha256,
+            )
+            if existing is None:
+                raise
+            return existing, False
+        return artifact, True
