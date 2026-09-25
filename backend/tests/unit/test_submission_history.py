@@ -188,11 +188,13 @@ async def test_deletion_retains_confirmation_event_without_reconstructing_materi
             idempotency_key="confirmation-a",
         )
         assert created
+        assert confirmed.submitted_at_is_user_reported is False
         repeated, created = await service.confirm(
             user_id=1, application_id=application.id, request=request,
             idempotency_key="confirmation-a",
         )
         assert not created and repeated.id == confirmed.id
+        assert repeated.submitted_at_is_user_reported is False
         events_before = (await db.scalars(select(ApplicationEvent).where(
             ApplicationEvent.application_id == application.id,
         ).order_by(ApplicationEvent.created_at.desc(), ApplicationEvent.id.desc()))).all()
@@ -273,9 +275,19 @@ async def test_deletion_retains_confirmation_event_without_reconstructing_materi
             event.event_type for event in events_after
         ]
         assert timeline.items[0].summary == "Submitted material explicitly confirmed"
+        assert timeline.items[0].submission_id == confirmed.id
+        assert timeline.items[1].submission_id is None
         assert all("old" not in item.model_dump_json() for item in timeline.items)
         assert all("current" not in item.model_dump_json() for item in timeline.items)
         assert all("private note" not in item.model_dump_json() for item in timeline.items)
+    async with AsyncClient(transport=ASGITransport(app=make_app(engine)), base_url="http://test") as client:
+        retained = await client.get(f"/applications/{application.id}/timeline")
+        assert retained.status_code == 200, retained.text
+        assert retained.json()["items"][0]["submission_id"] == confirmed.id
+        assert retained.json()["items"][1]["submission_id"] is None
+        assert (await client.get(
+            f"/applications/{application.id}/submissions/{confirmed.id}"
+        )).status_code == 404
 
 
 async def test_http_confirmation_identity_metadata_and_artifact_guard(engine: AsyncEngine) -> None:
@@ -304,10 +316,12 @@ async def test_http_confirmation_identity_metadata_and_artifact_guard(engine: As
         first = await client.post(path, json=payload, headers={"Idempotency-Key": "  confirmation  "})
         assert first.status_code == 201, first.text
         submission_id = first.json()["id"]
+        assert first.json()["submitted_at_is_user_reported"] is False
         assert first.json()["artifacts"][0]["filename"] == "resume.pdf"
         assert first.json()["artifacts"][0]["sha256"] == "b" * 64
         same = await client.post(path, json=payload, headers={"Idempotency-Key": "confirmation"})
         assert same.status_code == 200 and same.json()["id"] == submission_id
+        assert same.json()["submitted_at_is_user_reported"] is False
         assert (await client.post(
             path, json=payload, headers={"Idempotency-Key": "another-attempt-key"},
         )).status_code == 409
@@ -321,6 +335,8 @@ async def test_http_confirmation_identity_metadata_and_artifact_guard(engine: As
             assert conflict.status_code == 409, conflict.text
         detail = await client.get(f"{path}/{submission_id}")
         assert detail.status_code == 200
+        assert detail.json()["submitted_at_is_user_reported"] is False
+        assert (await client.get(path)).json()["items"][0]["submitted_at_is_user_reported"] is False
         assert detail.json()["artifacts"][0]["validation_state"] == "validated"
         assert "content" not in detail.json()["artifacts"][0]
         assert (await client.get(f"/applications/{application_id}/artifacts/{artifact_id}/download")).status_code == 200
@@ -349,13 +365,32 @@ async def test_explicit_submitted_at_retry_contract(engine: AsyncEngine) -> None
     async with AsyncClient(transport=ASGITransport(app=make_app(engine)), base_url="http://test") as client:
         first = await client.post(path, json=explicit, headers={"Idempotency-Key": "explicit"})
         assert first.status_code == 201, first.text
-        assert (await client.post(path, json=explicit, headers={"Idempotency-Key": "explicit"})).status_code == 200
+        assert first.json()["submitted_at_is_user_reported"] is True
+        assert first.json()["submitted_at"].startswith("2026-01-01T00:00:00")
+        explicit_retry = await client.post(path, json=explicit, headers={"Idempotency-Key": "explicit"})
+        assert explicit_retry.status_code == 200
+        assert explicit_retry.json()["submitted_at_is_user_reported"] is True
         assert (await client.post(path, json=basic, headers={"Idempotency-Key": "explicit"})).status_code == 409
         changed = {**basic, "submitted_at": "2026-01-02T00:00:00Z"}
         assert (await client.post(path, json=changed, headers={"Idempotency-Key": "explicit"})).status_code == 409
         second = await client.post(path, json=basic, headers={"Idempotency-Key": "omitted"})
         assert second.status_code == 201, second.text
-        assert (await client.post(path, json=basic, headers={"Idempotency-Key": "omitted"})).status_code == 200
+        assert second.json()["submitted_at_is_user_reported"] is False
+        omitted_retry = await client.post(path, json=basic, headers={"Idempotency-Key": "omitted"})
+        assert omitted_retry.status_code == 200
+        assert omitted_retry.json()["submitted_at_is_user_reported"] is False
+        listed = await client.get(path)
+        assert listed.status_code == 200
+        listed_flags = {item["id"]: item["submitted_at_is_user_reported"]
+                        for item in listed.json()["items"]}
+        assert listed_flags[first.json()["id"]] is True
+        assert listed_flags[second.json()["id"]] is False
+        assert (await client.get(f"{path}/{first.json()['id']}")).json()[
+            "submitted_at_is_user_reported"
+        ] is True
+        assert (await client.get(f"{path}/{second.json()['id']}")).json()[
+            "submitted_at_is_user_reported"
+        ] is False
         assert (await client.post(path, json=explicit, headers={"Idempotency-Key": "omitted"})).status_code == 409
         assert (await client.post(path, json=basic, headers={
             "Idempotency-Key": "x" * 128,
@@ -476,6 +511,10 @@ async def test_cursor_pages_and_history_query_shape(engine: AsyncEngine) -> None
     # Page reads fetch association IDs in one batch, regardless of page size.
     association_selects = [sql for sql in statements if sql.lstrip().startswith("select") and "application_submission_artifacts" in sql]
     assert len(association_selects) <= pages + 3  # page reads plus optional extra requests/detail
+    provenance_selects = [sql for sql in statements if sql.lstrip().startswith("select")
+                          and "application_events" in sql]
+    assert len(provenance_selects) <= pages + 3  # one bounded provenance lookup per page/detail
+    assert all("application_artifacts.content" not in sql for sql in provenance_selects)
 
 
 async def test_confirmation_rollback_and_real_postgres_races(engine: AsyncEngine) -> None:

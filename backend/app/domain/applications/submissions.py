@@ -158,9 +158,13 @@ class SubmissionService:
         has_more = len(rows) > limit
         rows = rows[:limit]
         links = await self._artifact_ids_for_submissions([row.id for row in rows])
+        reported = await self._reported_time_for_submissions(
+            user_id=user_id, application_id=application_id,
+            submission_ids=[row.id for row in rows],
+        )
         next_cursor = _encode_cursor(rows[-1]) if has_more and rows else None
         return SubmissionListResponse(
-            items=[self._response(row, links.get(row.id, [])) for row in rows],
+            items=[self._response(row, links.get(row.id, []), reported[row.id]) for row in rows],
             next_cursor=next_cursor,
         )
 
@@ -182,8 +186,11 @@ class SubmissionService:
                 )
             ).order_by(ApplicationArtifact.id)
         )).all())
+        reported = await self._reported_time_for_submissions(
+            user_id=user_id, application_id=application_id, submission_ids=[row.id],
+        )
         return self._response(
-            row, [artifact.id for artifact in artifacts],
+            row, [artifact.id for artifact in artifacts], reported[row.id],
             artifacts=[artifact_summary(artifact) for artifact in artifacts],
         )
 
@@ -236,8 +243,33 @@ class SubmissionService:
             links.setdefault(submission_id, []).append(artifact_id)
         return links
 
+    async def _reported_time_for_submissions(
+        self, *, user_id: int, application_id: int, submission_ids: list[int],
+    ) -> dict[int, bool]:
+        if not submission_ids:
+            return {}
+        metadata_rows = (await self._session.scalars(select(
+            ApplicationEvent.metadata_,
+        ).where(
+            ApplicationEvent.user_id == user_id,
+            ApplicationEvent.application_id == application_id,
+            ApplicationEvent.event_type == "submission_confirmed",
+            ApplicationEvent.metadata_["submission_id"].as_integer().in_(submission_ids),
+        ))).all()
+        reported: dict[int, bool] = {}
+        for metadata in metadata_rows:
+            submission_id = metadata.get("submission_id")
+            explicit = metadata.get("submitted_at_explicit")
+            if type(submission_id) is not int or type(explicit) is not bool:
+                raise RuntimeError("Submission confirmation provenance is missing")
+            reported[submission_id] = explicit
+        if set(reported) != set(submission_ids):
+            raise RuntimeError("Submission confirmation provenance is missing")
+        return reported
+
     def _response(
         self, row: ApplicationSubmission, artifact_ids: list[int],
+        submitted_at_is_user_reported: bool,
         *, artifacts: list[ArtifactSummary] | None = None,
     ) -> SubmissionResponse:
         return SubmissionResponse(
@@ -245,7 +277,9 @@ class SubmissionService:
             attempt_id=row.attempt_id, package_id=row.package_id,
             artifact_ids=artifact_ids, artifacts=artifacts or [],
             material_choice=row.material_choice, provenance=row.provenance,
-            submitted_at=row.submitted_at, note=row.note, created_at=row.created_at,
+            submitted_at=row.submitted_at,
+            submitted_at_is_user_reported=submitted_at_is_user_reported,
+            note=row.note, created_at=row.created_at,
         )
 
     async def _same_confirmation(

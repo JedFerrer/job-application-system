@@ -549,6 +549,7 @@ class SubmissionResponse(BaseModel):
     material_choice: SubmissionMaterialChoice
     provenance: str
     submitted_at: datetime
+    submitted_at_is_user_reported: bool
     note: str | None
     created_at: datetime
 
@@ -564,6 +565,7 @@ class TimelineEventItem(BaseModel):
     occurred_at: datetime
     source: str
     summary: str
+    submission_id: int | None = None
     counts: dict[str, int] | None = None
     progress: str | None = None
 

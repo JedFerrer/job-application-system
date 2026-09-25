@@ -63,6 +63,14 @@ NEXT_ACTION_FIELDS = (
 def _timeline_item(event: ApplicationEvent) -> TimelineEventItem:
     event_type = str(event.event_type)
     metadata = getattr(event, "metadata_", {}) or {}
+    stored_submission_id = metadata.get("submission_id") if event_type == "submission_confirmed" else None
+    submission_id = (
+        stored_submission_id
+        if isinstance(stored_submission_id, int)
+        and not isinstance(stored_submission_id, bool)
+        and stored_submission_id > 0
+        else None
+    )
     count_keys = {"attempted", "filled", "skipped", "failed", "field_count"}
     counts = {
         key: value for key, value in metadata.items()
@@ -81,6 +89,7 @@ def _timeline_item(event: ApplicationEvent) -> TimelineEventItem:
         id=str(event.id), type=event_type, occurred_at=event.created_at,
         source="extension" if getattr(event, "attempt_id", None) else "application",
         summary=summary_map.get(event_type, "Application activity recorded"),
+        submission_id=submission_id,
         counts=counts or None,
         progress=(
             event_type if event_type in {
