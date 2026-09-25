@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,11 +18,17 @@ from app.domain.applications.artifacts import (
 from app.models.application import Application
 from app.models.application_artifact import ApplicationArtifact
 from app.models.application_package import ApplicationPackage
+from app.models.application_submission_artifact import ApplicationSubmissionArtifact
 
 
 class ApplicationArtifactRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def is_referenced_by_submission(self, artifact_id: int) -> bool:
+        return bool(await self._session.scalar(select(exists().where(
+            ApplicationSubmissionArtifact.artifact_id == artifact_id
+        ))))
 
     async def _lock_owned_application(self, *, user_id: int, application_id: int) -> Application | None:
         return cast(Application | None, await self._session.scalar(

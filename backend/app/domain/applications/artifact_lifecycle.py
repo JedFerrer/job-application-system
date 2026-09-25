@@ -150,7 +150,16 @@ class ArtifactLifecycleService:
         return ArtifactUploadResponse(artifact=artifact_detail(row), existing=False), row.validation_attempt
 
     async def delete(self, *, user_id: int, application_id: int, artifact_id: int) -> None:
+        # Confirmations lock the application before linking artifacts. Serialize
+        # deletion with that decision so the reference guard sees the final link.
+        application = await self._session.scalar(select(Application.id).where(
+            Application.id == application_id, Application.user_id == user_id,
+        ).with_for_update())
+        if application is None:
+            raise ArtifactNotFoundError
         row = await self.owned_artifact(user_id=user_id, application_id=application_id, artifact_id=artifact_id, lock=True)
+        if await self._repository.is_referenced_by_submission(artifact_id):
+            raise ArtifactConflictError("This exported file is part of confirmed submission history and cannot be deleted")
         if row.validation_state not in TERMINAL_STATES:
             raise ArtifactConflictError
         await self._session.delete(row)

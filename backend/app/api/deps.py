@@ -23,6 +23,7 @@ from app.domain.applications.document_review import DocumentReviewService
 from app.domain.applications.preparation import ApplicationPreparationService
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.service import ApplicationService
+from app.domain.applications.submissions import SubmissionService
 from app.domain.auth.exceptions import InvalidTokenError
 from app.domain.auth.repository import UserRepository
 from app.domain.auth.service import AuthService
@@ -361,6 +362,13 @@ def get_application_attempt_service(db: DbSession) -> ApplicationAttemptService:
 ApplicationAttemptServiceDep = Annotated[
     ApplicationAttemptService, Depends(get_application_attempt_service)
 ]
+
+
+def get_submission_service(db: DbSession) -> SubmissionService:
+    return SubmissionService(db)
+
+
+SubmissionServiceDep = Annotated[SubmissionService, Depends(get_submission_service)]
 
 
 def get_document_review_service(db: DbSession) -> DocumentReviewService:

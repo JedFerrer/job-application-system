@@ -75,6 +75,7 @@ def _timeline_item(event: ApplicationEvent) -> TimelineEventItem:
         "submission_unconfirmed": "Submit click detected; submission is unconfirmed",
         "confirmation_detected": "Application confirmation detected",
         "user_marked_applied": "Application marked as applied",
+        "submission_confirmed": "Submitted material explicitly confirmed",
     }
     return TimelineEventItem(
         id=str(event.id), type=event_type, occurred_at=event.created_at,

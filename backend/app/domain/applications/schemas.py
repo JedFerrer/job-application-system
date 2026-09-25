@@ -510,6 +510,54 @@ class AttemptResponse(BaseModel):
     external_url: str
 
 
+SubmissionMaterialChoice = Literal[
+    "used_selected_package", "used_other_material", "materials_unknown"
+]
+
+
+class SubmissionConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_choice: SubmissionMaterialChoice
+    package_id: int | None = None
+    artifact_ids: list[int] = Field(default_factory=list)
+    attempt_id: str | None = None
+    submitted_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=10_000)
+
+    @model_validator(mode="after")
+    def material_links_match_choice(self) -> SubmissionConfirmRequest:
+        selected = self.material_choice == "used_selected_package"
+        if selected != (self.package_id is not None):
+            raise ValueError("package_id must be present only for selected package material")
+        if not selected and self.artifact_ids:
+            raise ValueError("artifact_ids require selected package material")
+        if len(self.artifact_ids) != len(set(self.artifact_ids)):
+            raise ValueError("artifact_ids must be unique")
+        if self.submitted_at is not None and self.submitted_at.tzinfo is None:
+            raise ValueError("submitted_at must include a time zone")
+        return self
+
+
+class SubmissionResponse(BaseModel):
+    id: int
+    application_id: int
+    attempt_id: str | None
+    package_id: int | None
+    artifact_ids: list[int]
+    artifacts: list[ArtifactSummary] = Field(default_factory=list)
+    material_choice: SubmissionMaterialChoice
+    provenance: str
+    submitted_at: datetime
+    note: str | None
+    created_at: datetime
+
+
+class SubmissionListResponse(BaseModel):
+    items: list[SubmissionResponse]
+    next_cursor: str | None = None
+
+
 class TimelineEventItem(BaseModel):
     id: str
     type: str

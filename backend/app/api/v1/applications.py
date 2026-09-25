@@ -18,6 +18,7 @@ from app.api.deps import (
     TaskStoreDep,
     ApplicationServiceDep,
     CurrentUser,
+    SubmissionServiceDep,
 )
 from app.domain.applications.schemas import (
     ArtifactDetail,
@@ -42,7 +43,11 @@ from app.domain.applications.schemas import (
     PreparationPatch,
     PreparationResponse,
     ReviewAcknowledgmentRequest,
+    SubmissionConfirmRequest,
+    SubmissionListResponse,
+    SubmissionResponse,
 )
+from app.domain.applications.submissions import SubmissionConflictError, SubmissionNotFoundError
 from app.domain.applications.document_review import ReviewConflictError, ReviewNotFoundError, run_document_review_background
 from app.domain.applications.artifact_lifecycle import ArtifactConflictError, ArtifactNotFoundError, ArtifactTaskAdmissionError, run_artifact_validation_background
 from app.domain.applications.artifacts import MAX_ARTIFACT_BYTES, ArtifactFailureCategory, ArtifactValidationError, canonical_filename
@@ -181,8 +186,8 @@ async def delete_application_artifact(
         return Response(status_code=204)
     except ArtifactNotFoundError:
         raise HTTPException(status_code=404, detail="Artifact not found") from None
-    except ArtifactConflictError:
-        raise HTTPException(status_code=409, detail="Artifact is still validating") from None
+    except ArtifactConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc) or "Artifact is still validating") from None
 
 
 @router.get("/tasks/{task_id}")
@@ -239,6 +244,77 @@ async def get_application_timeline(
         user_id=current_user.id, application_id=application_id,
         limit=limit, cursor=cursor,
     )
+
+
+@router.post("/{application_id}/submissions", response_model=SubmissionResponse)
+async def confirm_application_submission(
+    application_id: int, payload: SubmissionConfirmRequest,
+    current_user: CurrentUser, service: SubmissionServiceDep, response: Response,
+    db: DbSession,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+) -> SubmissionResponse:
+    idempotency_key = idempotency_key.strip()
+    if not 1 <= len(idempotency_key) <= 128:
+        raise HTTPException(status_code=422, detail="Idempotency-Key must contain 1 to 128 characters")
+    try:
+        result, created = await service.confirm(
+            user_id=current_user.id, application_id=application_id,
+            request=payload, idempotency_key=idempotency_key,
+        )
+        await db.commit()
+    except SubmissionNotFoundError:
+        raise HTTPException(status_code=404, detail="Submission material not found") from None
+    except SubmissionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    response.status_code = 201 if created else 200
+    return result
+
+
+@router.get("/{application_id}/submissions", response_model=SubmissionListResponse)
+async def list_application_submissions(
+    application_id: int, current_user: CurrentUser, service: SubmissionServiceDep,
+    cursor: str | None = None,
+    limit: int = Query(default=25, ge=1, le=100),
+) -> SubmissionListResponse:
+    try:
+        return await service.list_submissions(
+            user_id=current_user.id, application_id=application_id,
+            cursor=cursor, limit=limit,
+        )
+    except SubmissionNotFoundError:
+        raise HTTPException(status_code=404, detail="Application not found") from None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid submission cursor") from None
+
+
+@router.get("/{application_id}/submissions/{submission_id}", response_model=SubmissionResponse)
+async def get_application_submission(
+    application_id: int, submission_id: int,
+    current_user: CurrentUser, service: SubmissionServiceDep,
+) -> SubmissionResponse:
+    try:
+        return await service.detail(
+            user_id=current_user.id, application_id=application_id,
+            submission_id=submission_id,
+        )
+    except SubmissionNotFoundError:
+        raise HTTPException(status_code=404, detail="Submission not found") from None
+
+
+@router.delete("/{application_id}/submissions/{submission_id}", status_code=204)
+async def delete_application_submission(
+    application_id: int, submission_id: int,
+    current_user: CurrentUser, service: SubmissionServiceDep, db: DbSession,
+) -> Response:
+    try:
+        await service.delete(
+            user_id=current_user.id, application_id=application_id,
+            submission_id=submission_id,
+        )
+        await db.commit()
+    except SubmissionNotFoundError:
+        raise HTTPException(status_code=404, detail="Submission not found") from None
+    return Response(status_code=204)
 
 
 @router.post(
