@@ -6,6 +6,7 @@
 
 import { Document, Packer, Paragraph, TextRun } from "docx";
 import jsPDF from "jspdf";
+import { loadPdfFonts } from "./pdf-fonts";
 import { buildReviewedWorkHistory, type RenderedResumeRole } from "./reviewed-resume-render";
 import type { TailoredCanonicalSection, TailoredResume } from "./types";
 
@@ -24,6 +25,16 @@ export interface BuiltArtifact<F extends "pdf" | "docx" = "pdf" | "docx"> {
 
 const PDF_TYPE = "application/pdf";
 const DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const PDF_FONT = "NotoSans";
+
+async function registerPdfFont(pdf: jsPDF): Promise<void> {
+  const { bold, regular } = await loadPdfFonts();
+  pdf.addFileToVFS("NotoSans-Regular.ttf", regular);
+  pdf.addFileToVFS("NotoSans-Bold.ttf", bold);
+  pdf.addFont("NotoSans-Regular.ttf", PDF_FONT, "normal");
+  pdf.addFont("NotoSans-Bold.ttf", PDF_FONT, "bold");
+  pdf.setFont(PDF_FONT, "normal");
+}
 
 function triggerDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -62,15 +73,16 @@ export async function downloadDocx(content: string, stem = "cover_letter"): Prom
 }
 
 /** Build the cover letter as a .pdf file. */
-export function buildCoverLetterPdf(content: string, stem = "cover_letter"): BuiltArtifact<"pdf"> {
+export async function buildCoverLetterPdf(content: string, stem = "cover_letter"): Promise<BuiltArtifact<"pdf">> {
   const pdf = new jsPDF({ unit: "mm", format: "a4" });
+  await registerPdfFont(pdf);
 
   const margin = 20;
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
   const usableWidth = pageWidth - margin * 2;
 
-  pdf.setFont("helvetica");
+  pdf.setFont(PDF_FONT);
   pdf.setFontSize(11);
 
   const lines = pdf.splitTextToSize(content, usableWidth) as string[];
@@ -86,11 +98,11 @@ export function buildCoverLetterPdf(content: string, stem = "cover_letter"): Bui
     y += lineHeight;
   }
 
-  return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "cover-letter-pdf-v1" };
+  return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "cover-letter-pdf-v2" };
 }
 
-export function downloadPdf(content: string, stem = "cover_letter"): void {
-  const artifact = buildCoverLetterPdf(content, stem);
+export async function downloadPdf(content: string, stem = "cover_letter"): Promise<void> {
+  const artifact = await buildCoverLetterPdf(content, stem);
   triggerDownload(artifact.blob, artifact.filename);
 }
 
@@ -99,8 +111,8 @@ export function downloadPdf(content: string, stem = "cover_letter"): void {
 const MARGIN = 15; // mm (~0.59 inches)
 const PAGE_W = 215.9; // US Letter width in mm
 const PAGE_H = 279.4; // US Letter height in mm
-const FONT = "helvetica";
-const FONT_BOLD = "helvetica";
+const FONT = PDF_FONT;
+const FONT_BOLD = PDF_FONT;
 const NAME_SIZE = 16;
 const HEADING_SIZE = 11;
 const BODY_SIZE = 10;
@@ -370,8 +382,9 @@ function writeBullet(ctx: PdfCtx, text: string): void {
 }
 
 /** Build a professional resume PDF with smart page breaks. */
-export function buildResumePdf(data: TailoredResume, stem: string): BuiltArtifact<"pdf"> {
+export async function buildResumePdf(data: TailoredResume, stem: string): Promise<BuiltArtifact<"pdf">> {
   const pdf = new jsPDF({ unit: "mm", format: "letter" });
+  await registerPdfFont(pdf);
   const ctx: PdfCtx = { pdf, y: MARGIN, pageH: PAGE_H };
   const textW = PAGE_W - MARGIN * 2;
 
@@ -410,7 +423,7 @@ export function buildResumePdf(data: TailoredResume, stem: string): BuiltArtifac
       for (const value of values) writeWrapped(ctx, value, BODY_SIZE, textW);
       ctx.y += SECTION_GAP;
     }
-    return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "resume-pdf-v1" };
+    return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "resume-pdf-v2" };
   }
 
   // Professional Summary
@@ -522,11 +535,11 @@ export function buildResumePdf(data: TailoredResume, stem: string): BuiltArtifac
     for (const item of data.languages) writeLine(ctx, [item.language, item.proficiency].filter(Boolean).join(" | "), BODY_SIZE, false);
   }
 
-  return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "resume-pdf-v1" };
+  return { blob: pdf.output("blob"), filename: buildFilename(stem, "pdf"), format: "pdf", contentType: PDF_TYPE, exporterVersion: "resume-pdf-v2" };
 }
 
-export function downloadResumePdf(data: TailoredResume, stem: string): void {
-  const artifact = buildResumePdf(data, stem);
+export async function downloadResumePdf(data: TailoredResume, stem: string): Promise<void> {
+  const artifact = await buildResumePdf(data, stem);
   triggerDownload(artifact.blob, artifact.filename);
 }
 

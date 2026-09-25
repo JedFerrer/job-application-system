@@ -9,7 +9,7 @@ afterEach(() => { vi.unstubAllGlobals(); setAccessToken(null); });
 
 describe("artifact API", () => {
   it("uploads the exact builder bytes and required multipart metadata", async () => {
-    const built = buildCoverLetterPdf("Hello from the frozen letter", "cover_letter_Role");
+    const built = await buildCoverLetterPdf("Hello from the frozen letter", "cover_letter_Role");
     const requests: FormData[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
       requests.push(init.body as FormData);
@@ -24,7 +24,7 @@ describe("artifact API", () => {
     expect(Array.from(new Uint8Array(await file.arrayBuffer()))).toEqual(Array.from(new Uint8Array(await built.blob.arrayBuffer())));
     expect(form.get("document_type")).toBe("cover_letter");
     expect(form.get("format")).toBe("pdf");
-    expect(form.get("exporter_version")).toBe("cover-letter-pdf-v1");
+    expect(form.get("exporter_version")).toBe("cover-letter-pdf-v2");
   });
 
   it("handles duplicate, detail, retry, and empty delete responses", async () => {

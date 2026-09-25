@@ -8,6 +8,8 @@ const capture = vi.hoisted(() => ({ pdfText: [] as string[], docxText: [] as str
 vi.mock("jspdf", () => {
   class MockJsPdf {
     internal = { pageSize: { getWidth: () => 215.9, getHeight: () => 279.4 } };
+    addFileToVFS() {}
+    addFont() {}
     setFont() {}
     setFontSize() {}
     setDrawColor() {}
@@ -143,7 +145,7 @@ describe("canonical reviewed work-history render model", () => {
   beforeEach(() => {
     capture.pdfText.length = 0;
     capture.docxText.length = 0;
-    vi.stubGlobal("URL", { createObjectURL: () => "blob:resume", revokeObjectURL: () => {} });
+    vi.stubGlobal("URL", class extends URL { static createObjectURL() { return "blob:resume"; } static revokeObjectURL() {} });
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   });
 
@@ -159,7 +161,7 @@ describe("canonical reviewed work-history render model", () => {
     expect(buildResumeRenderModel(resume).find((section) => section.section === "work_history")?.roles).toEqual(roles);
 
     const copied = formatResumeText(resume);
-    downloadResumePdf(resume, "canonical-role");
+    await downloadResumePdf(resume, "canonical-role");
     await downloadResumeDocx(resume, "canonical-role");
 
     expect(semantic).toEqual([NARRATIVE, HEADING, SUGGESTED_ONE, BULLET_TWO]);
@@ -183,7 +185,7 @@ describe("canonical reviewed work-history render model", () => {
     expect(role.bullets.some((bullet) => bullet.text === FRAGMENT_ONE || bullet.text === FRAGMENT_TWO)).toBe(false);
 
     const copied = formatResumeText(resume);
-    downloadResumePdf(resume, "canonical-role");
+    await downloadResumePdf(resume, "canonical-role");
     await downloadResumeDocx(resume, "canonical-role");
     const outputs = workHistoryOutputs(copied, capture.pdfText, capture.docxText);
     for (const lines of outputs) {
@@ -234,7 +236,7 @@ describe("canonical reviewed work-history render model", () => {
     expect(semanticWorkHistoryLines(resume)).not.toContain("Moved migration coordination earlier.");
 
     const copied = formatResumeText(resume);
-    downloadResumePdf(resume, "restored-order");
+    await downloadResumePdf(resume, "restored-order");
     await downloadResumeDocx(resume, "restored-order");
     for (const output of [copied, capture.pdfText.join("\n"), capture.docxText.join("\n")]) {
       expect(output.indexOf(BULLET_TWO)).toBeLessThan(output.indexOf(BULLET_ONE));
@@ -274,7 +276,7 @@ describe("canonical reviewed work-history render model", () => {
 
     expect(buildReviewedWorkHistory(resume)[0]!.bullets.map((bullet) => bullet.text)).toEqual([SUGGESTED_ONE]);
     const copied = formatResumeText(resume);
-    downloadResumePdf(resume, "omitted-bullet");
+    await downloadResumePdf(resume, "omitted-bullet");
     await downloadResumeDocx(resume, "omitted-bullet");
     for (const output of [copied, capture.pdfText.join("\n"), capture.docxText.join("\n")]) {
       expect(output).toContain(SUGGESTED_ONE);

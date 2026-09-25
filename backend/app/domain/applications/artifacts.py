@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import re
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -171,8 +172,23 @@ def _preflight_docx(content: bytes) -> None:
             names = {info.filename for info in infos}
             if "[Content_Types].xml" not in names or "word/document.xml" not in names:
                 raise ArtifactValidationError(ArtifactFailureCategory.INVALID_DOCX)
-            if len(names) != len(infos) or any(info.is_dir() or info.flag_bits & 1 for info in infos):
+            if len(names) != len(infos):
                 raise ArtifactValidationError(ArtifactFailureCategory.INVALID_DOCX)
+            for info in infos:
+                name = info.filename
+                parts = (name[:-1] if info.is_dir() else name).split("/")
+                if (not name or name.startswith("/") or "\\" in name or "\x00" in name
+                        or re.match(r"^[A-Za-z]:", name) or any(part in ("", ".", "..") for part in parts)
+                        or info.flag_bits & 1):
+                    raise ArtifactValidationError(ArtifactFailureCategory.INVALID_DOCX)
+                mode = stat.S_IFMT(info.external_attr >> 16) if info.create_system == 3 else 0
+                if mode not in (0, stat.S_IFREG, stat.S_IFDIR):
+                    raise ArtifactValidationError(ArtifactFailureCategory.INVALID_DOCX)
+                if info.is_dir():
+                    if mode == stat.S_IFREG or info.file_size != 0 or info.compress_size != 0:
+                        raise ArtifactValidationError(ArtifactFailureCategory.INVALID_DOCX)
+                elif mode == stat.S_IFDIR:
+                    raise ArtifactValidationError(ArtifactFailureCategory.INVALID_DOCX)
             if any(_is_docx_macro_part(name) for name in names):
                 raise ArtifactValidationError(ArtifactFailureCategory.MACRO_DETECTED)
             if any(info.file_size < 0 or info.compress_size < 0 for info in infos):
@@ -197,6 +213,8 @@ def _inspect_docx_in_worker(content: bytes) -> None:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             total = xml_total = 0
             for info in archive.infolist():
+                if info.is_dir():
+                    continue
                 with archive.open(info) as member:
                     member_bytes = 0
                     content_types = bytearray() if info.filename == "[Content_Types].xml" else None

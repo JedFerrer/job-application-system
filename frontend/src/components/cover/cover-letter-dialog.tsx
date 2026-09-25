@@ -42,6 +42,8 @@ export function CoverLetterDialog({
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [closeGuard, setCloseGuard] = useState(false);
+  const [pdfExporting, setPdfExporting] = useState(false);
+  const pdfExportInFlight = useRef(false);
   const closeAfterSave = useRef(false);
   const dialogContentRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -106,9 +108,18 @@ export function CoverLetterDialog({
     ? `cover_letter_${jobTitle}`
     : "cover_letter";
 
-  function handleDownloadPdf() {
-    if (!content.trim()) return;
-    downloadPdf(content, filenameStem);
+  async function handleDownloadPdf() {
+    if (!content.trim() || pdfExportInFlight.current) return;
+    pdfExportInFlight.current = true;
+    setPdfExporting(true);
+    try {
+      await downloadPdf(content, filenameStem);
+    } catch {
+      toast.error("Could not create the PDF. Please try again.");
+    } finally {
+      pdfExportInFlight.current = false;
+      setPdfExporting(false);
+    }
   }
 
   async function handleDownloadDocx() {
@@ -206,7 +217,7 @@ export function CoverLetterDialog({
               <Button
                 variant="outline"
                 onClick={handleDownloadPdf}
-                disabled={content.trim().length === 0}
+                disabled={content.trim().length === 0 || pdfExporting}
                 title="Download as PDF"
               >
                 <FileDown className="h-4 w-4" />

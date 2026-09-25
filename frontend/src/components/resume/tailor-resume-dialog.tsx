@@ -75,6 +75,8 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   const [reviewState, setReviewState] = useState<ReviewState | null>(null);
   const [coverageAnalysis, setCoverageAnalysis] = useState<RequirementClassification[] | null>(null);
   const [closeGuard, setCloseGuard] = useState(false);
+  const [pdfExporting, setPdfExporting] = useState(false);
+  const pdfExportInFlight = useRef(false);
   const closeAfterSave = useRef(false);
   const dialogContentRef = useRef<HTMLDivElement | null>(null);
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -122,7 +124,20 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
   const generate = () => { if (readOnly || jobId == null) return; const dirty = reviewState ? reviewStateIsDirty(reviewState) : false; if (dirty && !window.confirm("Regenerate and discard your unsaved review choices?")) return; generateMutation.reset(); generateMutation.mutate(); };
   const ensureExportable = async (): Promise<TailoredResume | null> => { if (!data) return null; if (data.requires_regeneration) { toast.error("This resume must be re-generated after the source resume changes."); return null; } const sourceBacked = data.tailoring_snapshot_version === "lossless-complete-v2" || data.tailoring_snapshot_version === "full-context-v1"; if (data.canonical_sections?.length && data.tailoring_snapshot_version === "full-resume-v1") { toast.error("This saved resume must be re-generated before export."); return null; } if (!sourceBacked) return data; try { return await exportValidationMutation.mutateAsync(data); } catch { toast.error("This resume must be re-generated after the source resume changes."); return null; } };
   const copy = async () => { const validated = await ensureExportable(); if (validated) navigator.clipboard.writeText(formatResumeText(validated)).then(() => toast.success("Copied to clipboard"), () => toast.error("Copy failed")); };
-  const exportPdf = async () => { const validated = await ensureExportable(); if (validated) downloadResumePdf(validated, stem); };
+  const exportPdf = async () => {
+    if (pdfExportInFlight.current) return;
+    pdfExportInFlight.current = true;
+    setPdfExporting(true);
+    try {
+      const validated = await ensureExportable();
+      if (validated) await downloadResumePdf(validated, stem);
+    } catch {
+      toast.error("Could not create the PDF. Please try again.");
+    } finally {
+      pdfExportInFlight.current = false;
+      setPdfExporting(false);
+    }
+  };
   const exportDocx = async () => { const validated = await ensureExportable(); if (validated) await downloadResumeDocx(validated, stem); };
   const save = () => { if (data && !readOnly && !sourceBackedSnapshotInvalid) saveMutation.mutate(data); };
   const isFocusable = (target: HTMLElement | null) => Boolean(target && target.isConnected && !target.matches(":disabled, [hidden], [aria-hidden='true'], [inert]") && !target.closest("[inert]"));
@@ -156,6 +171,6 @@ export function TailorResumeDialog({ jobId, jobTitle, open, onOpenChange, initia
       {sourceBackedSnapshotInvalid ? <p role="alert" className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-800">This draft no longer has a valid source mapping. Regenerate the draft before saving.</p> : null}
       {!readOnly && reviewState ? <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={restoreWording}><RotateCcw className="h-4 w-4" />Restore AI wording</Button><Button size="sm" variant="outline" onClick={includeAll}><RotateCcw className="h-4 w-4" />Include all experience</Button></div> : null}
       {unclassifiedSections.length ? <details className="rounded-md border p-3"><summary className="cursor-pointer text-sm font-medium">Unclassified source text ({unclassifiedSections.reduce((count, section) => count + section.items.length, 0)} items)</summary><p className="mt-2 text-xs text-muted-foreground">This source text is retained for diagnostics and excluded from your tailored resume, Copy, PDF, and DOCX exports.</p><div className="mt-2 space-y-1">{unclassifiedSections.flatMap((section) => section.items).map((item, index) => <p key={`${item.source_id ?? item.display_key}-${index}`} className="text-sm">{item.text}</p>)}</div></details> : null}
-    </div><div className="mt-0 flex shrink-0 flex-wrap gap-2 border-t bg-background/95 pt-4" data-testid="tailor-resume-actions"><Button size="sm" onClick={() => void copy()} disabled={exportValidationMutation.isPending || blockedForRegeneration}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={() => void exportPdf()} disabled={exportValidationMutation.isPending || blockedForRegeneration}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={() => void exportDocx()} disabled={exportValidationMutation.isPending || blockedForRegeneration}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button ref={saveButtonRef} size="sm" onClick={save} disabled={saveMutation.isPending || sourceBackedSnapshotInvalid}><Save className="h-4 w-4" />Save resume</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate draft</Button></>}</div></div>}
+    </div><div className="mt-0 flex shrink-0 flex-wrap gap-2 border-t bg-background/95 pt-4" data-testid="tailor-resume-actions"><Button size="sm" onClick={() => void copy()} disabled={exportValidationMutation.isPending || blockedForRegeneration}><Copy className="h-4 w-4" />Copy all</Button><Button size="sm" variant="outline" onClick={() => void exportPdf()} disabled={exportValidationMutation.isPending || blockedForRegeneration || pdfExporting}><FileDown className="h-4 w-4" />PDF</Button><Button size="sm" variant="outline" onClick={() => void exportDocx()} disabled={exportValidationMutation.isPending || blockedForRegeneration}><FileText className="h-4 w-4" />DOCX</Button>{!readOnly && <><Button ref={saveButtonRef} size="sm" onClick={save} disabled={saveMutation.isPending || sourceBackedSnapshotInvalid}><Save className="h-4 w-4" />Save resume</Button><Button size="sm" variant="outline" onClick={generate} disabled={generateMutation.isPending}><RefreshCw className="h-4 w-4" />Regenerate draft</Button></>}</div></div>}
   </DialogContent><AlertDialog open={closeGuard} onOpenChange={setCloseGuard}><AlertDialogContent onCloseAutoFocus={(event) => { event.preventDefault(); if (guardRestoresEditorRef.current) queueMicrotask(focusEditor); }}><AlertDialogHeader><AlertDialogTitle>Save or discard unsaved edits?</AlertDialogTitle><AlertDialogDescription>Your changes are only included after you save them.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={discardAndClose}>Discard</AlertDialogAction><AlertDialogAction disabled={saveMutation.isPending || sourceBackedSnapshotInvalid} onClick={saveAndClose}>{saveMutation.isPending ? "Saving…" : "Save"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></Dialog>;
 }

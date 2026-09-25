@@ -22,6 +22,8 @@ const capture = vi.hoisted(() => ({ pdfText: [] as string[], docxText: [] as str
 vi.mock("jspdf", () => {
   class MockJsPdf {
     internal = { pageSize: { getWidth: () => 215.9, getHeight: () => 279.4 } };
+    addFileToVFS() {}
+    addFont() {}
     setFont() {}
     setFontSize() {}
     setDrawColor() {}
@@ -126,7 +128,7 @@ describe("Phase 4 QA cross-surface semantic equality", () => {
   beforeEach(() => {
     capture.pdfText.length = 0;
     capture.docxText.length = 0;
-    vi.stubGlobal("URL", { createObjectURL: () => "blob:resume", revokeObjectURL: () => {} });
+    vi.stubGlobal("URL", class extends URL { static createObjectURL() { return "blob:resume"; } static revokeObjectURL() {} });
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   });
 
@@ -165,7 +167,7 @@ describe("Phase 4 QA cross-surface semantic equality", () => {
   it("keeps preview, copy, PDF, and DOCX semantically equal", async () => {
     const resume = qaWrapResumeOriginalBullets();
     const copied = formatResumeText(resume);
-    downloadResumePdf(resume, "qa-wrap-resume");
+    await downloadResumePdf(resume, "qa-wrap-resume");
     await downloadResumeDocx(resume, "qa-wrap-resume");
     assertSemanticSurface(copied);
     assertSemanticSurface(capture.pdfText.join("\n"));

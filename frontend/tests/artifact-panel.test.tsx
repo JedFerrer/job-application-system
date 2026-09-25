@@ -81,6 +81,21 @@ describe("ArtifactPanel", () => {
     expect(downloadClick).toHaveBeenCalledTimes(1);
   });
 
+  it("does not upload a failed PDF build and retries the next generation action", async () => {
+    const blob = new Blob(["retry PDF"]);
+    mocks.buildResumePdf.mockRejectedValueOnce(new Error("font chunk unavailable"))
+      .mockResolvedValueOnce({ blob, filename: "retry.pdf", exporterVersion: "resume-pdf-v2" });
+    mocks.uploadArtifact.mockResolvedValue({ artifact: detail(), existing: false });
+    await render(item());
+    await click("Generate Resume PDF");
+    expect(mocks.buildResumePdf).toHaveBeenCalledTimes(1);
+    expect(mocks.uploadArtifact).not.toHaveBeenCalled();
+    expect(node.textContent).toContain("Could not save");
+    await click("Generate Resume PDF");
+    expect(mocks.buildResumePdf).toHaveBeenCalledTimes(2);
+    expect(mocks.uploadArtifact).toHaveBeenCalledWith(7, 12, blob, "retry.pdf", "resume", "pdf", "resume-pdf-v2");
+  });
+
   it("offers four independent generation actions for a selected letter", async () => {
     const built = { blob: new Blob(["built"]), filename: "built.docx", exporterVersion: "v1" };
     mocks.buildResumeDocx.mockResolvedValue(built);
@@ -100,6 +115,18 @@ describe("ArtifactPanel", () => {
     expect(mocks.uploadArtifact.mock.calls.map((call) => [call[4], call[5]])).toEqual([
       ["resume", "docx"], ["cover_letter", "pdf"], ["cover_letter", "docx"],
     ]);
+  });
+
+  it("keeps generation controls and long report values inside shrinkable cards", async () => {
+    await render(item({ artifacts: [summary({ filename: "very-long-unbroken-export-name.pdf" })] }));
+    expect(node.querySelector('[aria-label="Exported files"]')?.className).toContain("min-w-0");
+    for (const button of Array.from(node.querySelectorAll("button")).filter((candidate) => candidate.textContent?.startsWith("Generate"))) {
+      expect(button.className).toContain("max-w-full");
+      expect(button.className).toContain("whitespace-normal");
+    }
+    await click("View report");
+    await vi.waitFor(() => expect(node.textContent).toContain("Full SHA-256"));
+    expect(node.querySelector("li.rounded-md")?.className).toContain("[overflow-wrap:anywhere]");
   });
 
   it("finishes an in-flight export for the captured package after selection changes", async () => {

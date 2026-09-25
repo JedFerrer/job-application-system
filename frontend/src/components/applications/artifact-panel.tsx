@@ -159,7 +159,7 @@ function ArtifactRow({ applicationId, item, refresh }: { applicationId: number; 
     } finally { setBusy(null); }
   };
   const report = detail.data?.validation_report;
-  return <li className="min-w-0 rounded-md border p-3">
+  return <li className="min-w-0 rounded-md border p-3 [overflow-wrap:anywhere]">
     <p className="break-all font-medium">{item.filename}</p>
     <p className="mt-1 text-sm text-muted-foreground">{item.document_type === "resume" ? "Resume" : "Cover letter"} · {item.format.toUpperCase()} · {new Date(item.created_at).toLocaleString()} · {item.byte_length.toLocaleString()} bytes</p>
     <p className="mt-1 text-sm">{labels[state]}{state === "failed" ? " · File saved; validation failed" : ""}</p>
@@ -177,7 +177,7 @@ function ArtifactRow({ applicationId, item, refresh }: { applicationId: number; 
         {item.format === "docx" && <p>{docxValidationCopy[state]}</p>}
         {report?.page_count != null && <p>Page count: {report.page_count}</p>}
         {report?.failure_category && <p>Reason: {categoryLabels[report.failure_category] ?? readable(report.failure_category)}</p>}
-        {report?.checks.length ? <ul className="list-inside list-disc">{report.checks.map((check, index) => <li key={`${check.name}-${index}`}>{checkLabels[check.name] ?? readable(check.name)}: {readable(check.status)}{check.category ? ` · ${categoryLabels[check.category] ?? readable(check.category)}` : ""}</li>)}</ul> : <p>No check results available yet.</p>}
+        {report?.checks.length ? <ul className="list-inside list-disc">{report.checks.map((check, index) => <li className="[overflow-wrap:anywhere]" key={`${check.name}-${index}`}>{checkLabels[check.name] ?? readable(check.name)}: {readable(check.status)}{check.category ? ` · ${categoryLabels[check.category] ?? readable(check.category)}` : ""}</li>)}</ul> : <p>No check results available yet.</p>}
       </>}
     </div>}
   </li>;
@@ -206,8 +206,8 @@ export function ArtifactPanel({ applicationId, package: item, current }: { appli
     try {
       const stem = documentType === "resume" ? `resume_package_${captured.packageId}` : `cover_letter_package_${captured.packageId}`;
       const built = documentType === "resume"
-        ? format === "pdf" ? buildResumePdf(frozenResume(captured.source), stem) : await buildResumeDocx(frozenResume(captured.source), stem)
-        : format === "pdf" ? buildCoverLetterPdf(frozenLetter(captured.source)!, stem) : await buildCoverLetterDocx(frozenLetter(captured.source)!, stem);
+        ? format === "pdf" ? await buildResumePdf(frozenResume(captured.source), stem) : await buildResumeDocx(frozenResume(captured.source), stem)
+        : format === "pdf" ? await buildCoverLetterPdf(frozenLetter(captured.source)!, stem) : await buildCoverLetterDocx(frozenLetter(captured.source)!, stem);
       const result = await applicationsApi.uploadArtifact(captured.applicationId, captured.packageId, built.blob, built.filename, documentType, format, built.exporterVersion);
       client.setQueryData<ArtifactDetail>(artifactKey(captured.applicationId, result.artifact.id), result.artifact);
       await refresh(captured.packageId);
@@ -228,11 +228,11 @@ export function ArtifactPanel({ applicationId, package: item, current }: { appli
   };
   const letter = frozenLetter(item);
   const rows = [...(item.artifacts ?? [])].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
-  return <section className="rounded-lg border bg-card p-4" aria-label="Exported files">
+  return <section className="min-w-0 rounded-lg border bg-card p-4" aria-label="Exported files">
     <h2 className="font-semibold">Exported files</h2>
     {current ? <div className="mt-3 space-y-3"><p className="text-sm text-muted-foreground">Generate new file from this frozen package.</p>
-      <div className="flex flex-wrap gap-2">{(["pdf", "docx"] as const).map((format) => <Button key={`resume-${format}`} size="sm" disabled={!!busy[`${item.id}:resume:${format}`]} onClick={() => void generate("resume", format)}>Generate Resume {format.toUpperCase()}</Button>)}
-        {letter && (["pdf", "docx"] as const).map((format) => <Button key={`cover-${format}`} size="sm" disabled={!!busy[`${item.id}:cover_letter:${format}`]} onClick={() => void generate("cover_letter", format)}>Generate Cover Letter {format.toUpperCase()}</Button>)}
+      <div className="flex min-w-0 flex-wrap gap-2">{(["pdf", "docx"] as const).map((format) => <Button className="max-w-full whitespace-normal text-center" key={`resume-${format}`} size="sm" disabled={!!busy[`${item.id}:resume:${format}`]} onClick={() => void generate("resume", format)}>Generate Resume {format.toUpperCase()}</Button>)}
+        {letter && (["pdf", "docx"] as const).map((format) => <Button className="max-w-full whitespace-normal text-center" key={`cover-${format}`} size="sm" disabled={!!busy[`${item.id}:cover_letter:${format}`]} onClick={() => void generate("cover_letter", format)}>Generate Cover Letter {format.toUpperCase()}</Button>)}
       </div>
     </div> : <p className="mt-2 text-sm text-muted-foreground">Historical package files are available for download. New files can be generated from the current package.</p>}
     {message && <p className="mt-3 text-sm" role="status">{message}</p>}

@@ -9,12 +9,12 @@ describe("real browser artifact builders", () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click");
     const resume = qaWrapResume();
     const built = [
-      buildResumePdf(resume, "Jordan_Resume"),
+      await buildResumePdf(resume, "Jordan_Resume"),
       await buildResumeDocx(resume, "Jordan_Resume"),
-      buildCoverLetterPdf("Dear Hiring Team,\n\nI can help.", "cover_letter_Role"),
+      await buildCoverLetterPdf("Dear Hiring Team,\n\nI can help.", "cover_letter_Role"),
       await buildCoverLetterDocx("Dear Hiring Team,\n\nI can help.", "cover_letter_Role"),
     ];
-    expect(built.map((file) => file.exporterVersion)).toEqual(["resume-pdf-v1", "resume-docx-v1", "cover-letter-pdf-v1", "cover-letter-docx-v1"]);
+    expect(built.map((file) => file.exporterVersion)).toEqual(["resume-pdf-v2", "resume-docx-v1", "cover-letter-pdf-v2", "cover-letter-docx-v1"]);
     expect(built.map((file) => file.format)).toEqual(["pdf", "docx", "pdf", "docx"]);
     expect(built.map((file) => file.contentType)).toEqual([
       "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -43,9 +43,9 @@ describe("real browser artifact builders", () => {
       names.push(this.download);
     });
     const resume = qaWrapResume();
-    downloadResumePdf(resume, "Jordan_Resume");
+    await downloadResumePdf(resume, "Jordan_Resume");
     await downloadResumeDocx(resume, "Jordan_Resume");
-    downloadPdf("Dear Hiring Team", "cover_letter_Role");
+    await downloadPdf("Dear Hiring Team", "cover_letter_Role");
     await downloadDocx("Dear Hiring Team", "cover_letter_Role");
     expect(names).toEqual(["Jordan_Resume.pdf", "Jordan_Resume.docx", "cover_letter_Role.pdf", "cover_letter_Role.docx"]);
     expect(blobs).toHaveLength(4);

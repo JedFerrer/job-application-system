@@ -6,6 +6,9 @@ import { displaySections, legacyDisplaySections, TailorResumeDialog } from "@/co
 import { createReviewState, reviewedResume, sourceBackedSnapshotIsSaveable, sourceSkillOrder, summaryReview } from "@/lib/tailoring-review";
 import type { TailoredResume } from "@/lib/types";
 
+const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+vi.mock("sonner", () => ({ toast: toastMocks }));
+
 const apiMocks = vi.hoisted(() => ({
   tailorResume: vi.fn(),
   previewCoverage: vi.fn(),
@@ -203,6 +206,19 @@ describe("TailorResumeDialog", () => {
     await vi.waitFor(() => expect(renderedText()).toContain("Save resume"));
   };
   const saveResumeButton = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save resume"));
+
+  it("handles a failed PDF download and allows a successful retry", async () => {
+    exportMocks.downloadResumePdf.mockRejectedValueOnce(new Error("internal chunk URL"))
+      .mockResolvedValueOnce(undefined);
+    await renderGeneratedDraft(tailoredResume as TailoredResume);
+    const pdf = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "PDF")!;
+    await act(async () => { pdf().click(); await Promise.resolve(); });
+    expect(toastMocks.error).toHaveBeenCalledWith("Could not create the PDF. Please try again.");
+    expect(toastMocks.error).not.toHaveBeenCalledWith(expect.stringContaining("internal chunk URL"));
+    expect(pdf().disabled).toBe(false);
+    await act(async () => { pdf().click(); await Promise.resolve(); });
+    expect(exportMocks.downloadResumePdf).toHaveBeenCalledTimes(2);
+  });
   const clickButton = async (label: string) => {
     await act(async () => {
       Array.from(container.querySelectorAll("button")).find((button) => button.textContent === label)?.click();

@@ -6,6 +6,8 @@ const capture = vi.hoisted(() => ({ pdfText: [] as string[], docxText: [] as str
 vi.mock("jspdf", () => {
   class MockJsPdf {
     internal = { pageSize: { getWidth: () => 215.9, getHeight: () => 279.4 } };
+    addFileToVFS() {}
+    addFont() {}
     setFont() {}
     setFontSize() {}
     setDrawColor() {}
@@ -94,12 +96,12 @@ describe("lossless resume exports", () => {
   beforeEach(() => {
     capture.pdfText.length = 0;
     capture.docxText.length = 0;
-    vi.stubGlobal("URL", { createObjectURL: () => "blob:resume", revokeObjectURL: () => {} });
+    vi.stubGlobal("URL", class extends URL { static createObjectURL() { return "blob:resume"; } static revokeObjectURL() {} });
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   });
 
   it("emits each canonical substantive section once in the actual PDF and DOCX paths", async () => {
-    downloadResumePdf(resume, "lossless-resume");
+    await downloadResumePdf(resume, "lossless-resume");
     await downloadResumeDocx(resume, "lossless-resume");
 
     for (const output of [capture.pdfText, capture.docxText]) {
@@ -177,7 +179,7 @@ describe("lossless resume exports", () => {
     expect(count([copied], "TECHNICAL STACK")).toBe(1);
     expect(copied).not.toContain("Full-stack engineer with API design and\nautomation expertise.");
 
-    downloadResumePdf(complete, "v4-resume");
+    await downloadResumePdf(complete, "v4-resume");
     await downloadResumeDocx(complete, "v4-resume");
     for (const output of [capture.pdfText, capture.docxText]) {
       for (const value of header) expect(count(output, value)).toBe(1);
@@ -214,7 +216,7 @@ describe("lossless resume exports", () => {
     expect(copied).toContain("ROLE_CONTEXT_PART_ONE PART_TWO");
     expect(copied.indexOf("ROLE_CONTEXT_PART_ONE PART_TWO")).toBeLessThan(copied.indexOf(RESPONSIBILITIES));
 
-    downloadResumePdf(fullContext, "full-context-resume");
+    await downloadResumePdf(fullContext, "full-context-resume");
     expect(capture.pdfText).toContain("TAILORED_SUMMARY_MARKER: platform leadership aligned to the role.");
     expect(capture.pdfText).toContain("TAILORED_SKILL_FIRST, TAILORED_SKILL_SECOND");
     expect(capture.pdfText).toContain("ROLE_CONTEXT_PART_ONE PART_TWO");
@@ -246,7 +248,7 @@ describe("lossless resume exports", () => {
     };
 
     expect(formatResumeText(ordered).indexOf("PROFESSIONAL EXPERIENCE")).toBeLessThan(formatResumeText(ordered).indexOf("PROJECTS_MARKER"));
-    downloadResumePdf(ordered, "ordered-resume");
+    await downloadResumePdf(ordered, "ordered-resume");
     assertOrder(capture.pdfText);
     capture.docxText.length = 0;
     await downloadResumeDocx(ordered, "ordered-resume");
@@ -263,7 +265,7 @@ describe("lossless resume exports", () => {
       ],
     };
 
-    downloadResumePdf(passthrough, "lossless-resume");
+    await downloadResumePdf(passthrough, "lossless-resume");
     await downloadResumeDocx(passthrough, "lossless-resume");
 
     for (const output of [capture.pdfText, capture.docxText]) {

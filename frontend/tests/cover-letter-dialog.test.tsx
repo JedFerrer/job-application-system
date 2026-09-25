@@ -4,6 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CoverLetterDialog } from "@/components/cover/cover-letter-dialog";
 
+const exportMocks = vi.hoisted(() => ({ downloadPdf: vi.fn() }));
+const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+vi.mock("@/lib/cover-letter-export", () => ({ downloadPdf: exportMocks.downloadPdf, downloadDocx: vi.fn() }));
+vi.mock("sonner", () => ({ toast: toastMocks }));
+
 const apiMocks = vi.hoisted(() => ({ getByJobId: vi.fn(), update: vi.fn(), generate: vi.fn() }));
 const lifecycle = vi.hoisted(() => ({ dialogClose: undefined as undefined | ((event: { preventDefault: () => void }) => void), alertClose: undefined as undefined | ((event: { preventDefault: () => void }) => void) }));
 vi.mock("@/lib/api", () => ({ ApiError: class ApiError extends Error { status = 500; }, coverLettersApi: apiMocks }));
@@ -30,6 +35,20 @@ describe("CoverLetterDialog", () => {
     await act(async () => { Array.from(node.querySelectorAll("button")).find((button) => button.textContent === "Save edits")?.click(); });
     expect(apiMocks.update).toHaveBeenCalledWith(2, "Changed text");
     expect(apiMocks.generate).not.toHaveBeenCalled();
+  });
+
+  it("handles a failed PDF download and succeeds when clicked again", async () => {
+    exportMocks.downloadPdf.mockRejectedValueOnce(new Error("internal chunk URL"))
+      .mockResolvedValueOnce(undefined);
+    await render();
+    const pdf = () => Array.from(node.querySelectorAll("button")).find((button) => button.textContent === "PDF")!;
+    await act(async () => { pdf().click(); await Promise.resolve(); });
+    expect(toastMocks.error).toHaveBeenCalledWith("Could not create the PDF. Please try again.");
+    expect(toastMocks.error).not.toHaveBeenCalledWith(expect.stringContaining("internal chunk URL"));
+    expect(pdf().disabled).toBe(false);
+    await act(async () => { pdf().click(); await Promise.resolve(); });
+    expect(exportMocks.downloadPdf).toHaveBeenCalledTimes(2);
+    expect(exportMocks.downloadPdf).toHaveBeenLastCalledWith("Persisted text", "cover_letter");
   });
 
   it("keeps local edits on Cancel and restores the baseline on Discard", async () => {

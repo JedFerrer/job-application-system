@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import ctypes
 import os
+import stat
 import sys
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -89,6 +90,76 @@ def _small_docx_parts(*, content_types: bytes = b"<Types/>", extra: dict[str, by
         for name, value in (extra or {}).items():
             archive.writestr(name, value)
     return output.getvalue()
+
+
+def _docx_with_member(name: str, content: bytes = b"", *, mode: int = 0) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("[Content_Types].xml", b"<Types/>")
+        archive.writestr("word/document.xml", b"<document/>")
+        member = zipfile.ZipInfo(name)
+        member.create_system = 3
+        member.external_attr = mode << 16
+        archive.writestr(member, content)
+    return output.getvalue()
+
+
+def test_canonical_empty_docx_directory_is_accepted() -> None:
+    payload = _docx_with_member("word/media/", mode=stat.S_IFDIR | 0o755)
+    preflight_artifact(content=payload, document_type="resume", format="docx")
+    artifacts._inspect_docx_in_worker(payload)
+
+
+def test_docx_directories_count_toward_entry_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(artifacts, "MAX_DOCX_ENTRIES", 2)
+    with pytest.raises(ArtifactValidationError, match="decompression_limit"):
+        preflight_artifact(content=_docx_with_member("word/media/"), document_type="resume", format="docx")
+
+
+def test_docx_rejects_duplicate_member_names() -> None:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("[Content_Types].xml", b"<Types/>")
+        archive.writestr("word/document.xml", b"<document/>")
+        archive.writestr("word/document.xml", b"<document/>")
+    with pytest.raises(ArtifactValidationError, match="invalid_docx"):
+        preflight_artifact(content=output.getvalue(), document_type="resume", format="docx")
+
+
+def test_docx_rejects_encrypted_directory_flag() -> None:
+    payload = bytearray(_docx_with_member("word/media/"))
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        info = archive.getinfo("word/media/")
+        offset = info.header_offset
+    payload[offset + 6] |= 1
+    central = payload.find(b"PK\x01\x02", offset)
+    while central >= 0:
+        name_length = int.from_bytes(payload[central + 28:central + 30], "little")
+        name = payload[central + 46:central + 46 + name_length]
+        if name == b"word/media/":
+            payload[central + 8] |= 1
+            break
+        central = payload.find(b"PK\x01\x02", central + 4)
+    with pytest.raises(ArtifactValidationError, match="invalid_docx"):
+        preflight_artifact(content=bytes(payload), document_type="resume", format="docx")
+
+
+@pytest.mark.parametrize("name,content,mode", [
+    ("word/media/", b"payload", stat.S_IFDIR | 0o755),
+    ("word/../evil/", b"", stat.S_IFDIR | 0o755),
+    ("word//", b"", stat.S_IFDIR | 0o755),
+    ("word/../evil.xml", b"", stat.S_IFREG | 0o644),
+    ("/absolute.xml", b"", stat.S_IFREG | 0o644),
+    ("C:/absolute.xml", b"", stat.S_IFREG | 0o644),
+    ("\\\\server\\share.xml", b"", stat.S_IFREG | 0o644),
+    ("word\\..\\evil.xml", b"", stat.S_IFREG | 0o644),
+    ("word/link.xml", b"", stat.S_IFLNK | 0o777),
+    ("word/link/", b"", stat.S_IFLNK | 0o777),
+    ("word/file/", b"", stat.S_IFREG | 0o644),
+])
+def test_docx_rejects_unsafe_members(name: str, content: bytes, mode: int) -> None:
+    with pytest.raises(ArtifactValidationError, match="invalid_docx"):
+        preflight_artifact(content=_docx_with_member(name, content, mode=mode), document_type="resume", format="docx")
 
 
 def test_sha_and_filename_are_server_deterministic() -> None:
