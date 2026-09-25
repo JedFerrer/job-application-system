@@ -51,8 +51,29 @@ from app.domain.applications.submissions import SubmissionConflictError, Submiss
 from app.domain.applications.document_review import ReviewConflictError, ReviewNotFoundError, run_document_review_background
 from app.domain.applications.artifact_lifecycle import ArtifactConflictError, ArtifactNotFoundError, ArtifactTaskAdmissionError, run_artifact_validation_background
 from app.domain.applications.artifacts import MAX_ARTIFACT_BYTES, ArtifactFailureCategory, ArtifactValidationError, canonical_filename
+from app.domain.interview.application_schemas import ApplicationInterviewRequest, ApplicationInterviewResponse
+from app.domain.interview.application_service import (
+    ApplicationInterviewContextInvalidError,
+    ApplicationInterviewNotFoundError,
+    ApplicationInterviewService,
+)
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+
+
+@router.post("/{application_id}/interview-prep", response_model=ApplicationInterviewResponse)
+async def generate_application_interview_prep(
+    application_id: int, payload: ApplicationInterviewRequest,
+    current_user: CurrentUser, db: DbSession,
+) -> ApplicationInterviewResponse:
+    try:
+        return await ApplicationInterviewService(db).get_or_generate(
+            user_id=current_user.id, application_id=application_id, request=payload,
+        )
+    except ApplicationInterviewNotFoundError:
+        raise HTTPException(status_code=404, detail="Application context not found") from None
+    except ApplicationInterviewContextInvalidError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 def _artifact_http_error(exc: ArtifactValidationError) -> HTTPException:
