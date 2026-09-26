@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeft, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -16,6 +16,8 @@ import { PreparationChecklist } from "./preparation-checklist";
 import { ApplicationTimeline } from "./application-timeline";
 import { DocumentReviewPanel } from "./document-review-panel";
 import { ArtifactPanel } from "./artifact-panel";
+import { SubmissionHistory, submissionListKey } from "./submission-history";
+import { ApplicationInterviewPrep } from "./application-interview-prep";
 
 function workspaceKey(id: number) { return ["application-workspace", id] as const; }
 function uuid() { return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
@@ -28,6 +30,9 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
   const [resumeDirty, setResumeDirty] = useState(false);
   const [letterDirty, setLetterDirty] = useState(false);
   const [selectedHistoricalPackageId, setSelectedHistoricalPackageId] = useState<number | null>(null);
+  const [pendingPackageFocus, setPendingPackageFocus] = useState<{ view: "historical"; id: number; dialogClosed: boolean } | { view: "current" } | null>(null);
+  const historicalHeading = useRef<HTMLHeadingElement>(null);
+  const currentHeading = useRef<HTMLHeadingElement>(null);
   const [newQuestion, setNewQuestion] = useState("");
   const [newAnswer, setNewAnswer] = useState("");
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
@@ -36,6 +41,7 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
   const packageKey = useRef<string | null>(null);
   const editorOpenerRef = useRef<HTMLElement | null>(null);
   const workspace = useQuery({ queryKey: workspaceKey(applicationId), queryFn: () => applicationsApi.getWorkspace(applicationId) });
+  const submissions = useInfiniteQuery({ queryKey: submissionListKey(applicationId), initialPageParam: null as string | null, queryFn: ({ pageParam }) => applicationsApi.listSubmissions(applicationId, { cursor: pageParam ?? undefined, limit: 25 }), getNextPageParam: (last) => last.next_cursor ?? undefined, retry: false });
   const data = workspace.data;
   const savedResumes = useQuery({ queryKey: ["resume-drafts"], queryFn: resumeApi.listDrafts, retry: false });
   const savedResumeDetail = useQuery({ queryKey: ["resume-draft", resumeDraftId], queryFn: () => resumeApi.getDraft(resumeDraftId!), enabled: resumeDraftId != null, retry: false });
@@ -46,6 +52,23 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
     enabled: selectedHistoricalPackageId != null,
     retry: false,
   });
+  const viewHistoricalPackage = (id: number, fromDialog = false) => {
+    setPendingPackageFocus({ view: "historical", id, dialogClosed: !fromDialog });
+    setSelectedHistoricalPackageId(id);
+  };
+  const returnToCurrentPackage = () => {
+    setPendingPackageFocus({ view: "current" });
+    setSelectedHistoricalPackageId(null);
+  };
+  useEffect(() => {
+    if (pendingPackageFocus?.view === "historical" && pendingPackageFocus.dialogClosed && selectedHistoricalPackageId === pendingPackageFocus.id && historicalPackage.data?.id === pendingPackageFocus.id && historicalHeading.current) {
+      historicalHeading.current.focus();
+      setPendingPackageFocus(null);
+    } else if (pendingPackageFocus?.view === "current" && selectedHistoricalPackageId === null && data?.current_reviewable_package && currentHeading.current) {
+      currentHeading.current.focus();
+      setPendingPackageFocus(null);
+    }
+  }, [pendingPackageFocus, selectedHistoricalPackageId, historicalPackage.data?.id, data?.current_reviewable_package]);
   const refresh = () => client.invalidateQueries({ queryKey: workspaceKey(applicationId) });
   const invalidateApplicationSurfaces = () => {
     void refresh();
@@ -176,10 +199,12 @@ export function ApplicationWorkspace({ applicationId }: { applicationId: number 
       </section>
       <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Next action</h2><p className="mt-2 text-sm text-muted-foreground">{application.next_action_type ? `${application.next_action_type.replace("_", " ")}${application.next_action_due_date ? ` · due ${application.next_action_due_date}` : ""}` : "No next action set."}</p></section>
       <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Activity</h2>{data.activity.events.length ? <ul className="mt-2 space-y-2 text-sm">{data.activity.events.map((event) => <li key={event.id}>{event.event_type.replaceAll("_", " ")} · {new Date(event.created_at).toLocaleString()}</li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No activity yet.</p>}</section>
+      <SubmissionHistory applicationId={applicationId} workspace={data} onViewPackage={(id) => viewHistoricalPackage(id, true)} onPackageNavigationClosed={() => setPendingPackageFocus((pending) => pending?.view === "historical" ? { ...pending, dialogClosed: true } : pending)} />
+      <ApplicationInterviewPrep applicationId={applicationId} submissions={Array.from(new Map((submissions.data?.pages.flatMap((page) => page.items) ?? []).map((item) => [item.id, item])).values())} loading={submissions.isLoading || submissions.isError || submissions.isFetchingNextPage} hasMore={Boolean(submissions.hasNextPage)} onLoadMore={() => void submissions.fetchNextPage()} />
       <ApplicationTimeline applicationId={applicationId} />
     </main><aside className="min-w-0 space-y-6">
-      {selectedHistoricalPackageId != null ? <section className="rounded-lg border bg-card p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium">Viewing historical package revision {data.package_history.find((item) => item.id === selectedHistoricalPackageId)?.revision ?? ""}</p><Button size="sm" variant="outline" onClick={() => setSelectedHistoricalPackageId(null)}>Back to current package</Button></div><div className="mt-4">{historicalPackage.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading package revision…</p> : historicalPackage.isError ? <p className="text-sm text-muted-foreground" role="alert">{historicalPackage.error instanceof ApiError && historicalPackage.error.status === 404 ? "Package revision is unavailable." : "Could not load this package revision."}</p> : historicalPackage.data ? <><PackagePreview package={historicalPackage.data} /><div className="mt-4"><ArtifactPanel key={historicalPackage.data.id} applicationId={applicationId} package={historicalPackage.data} current={false} /></div></> : null}</div></section> : data.current_reviewable_package ? <><PackagePreview package={data.current_reviewable_package} /><ArtifactPanel key={data.current_reviewable_package.id} applicationId={applicationId} package={data.current_reviewable_package} current /><DocumentReviewPanel applicationId={applicationId} package={data.current_reviewable_package} initialReview={data.current_document_review ?? null} /></> : <section className="rounded-lg border p-4 text-sm text-muted-foreground">No current package yet.</section>}
-      <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Package history</h2>{data.package_history.length ? <ul className="mt-2 space-y-2 text-sm">{data.package_history.map((item) => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2"><span>Revision {item.revision}{item.is_approved ? " · approved" : ""} · {new Date(item.created_at).toLocaleString()}</span><Button size="sm" variant="outline" onClick={() => setSelectedHistoricalPackageId(item.id)}>View</Button></li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No package revisions yet.</p>}</section>
+      {selectedHistoricalPackageId != null ? <section className="rounded-lg border bg-card p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h2 ref={historicalHeading} tabIndex={-1} className="text-sm font-medium">Historical package revision {data.package_history.find((item) => item.id === selectedHistoricalPackageId)?.revision ?? ""}</h2><Button size="sm" variant="outline" onClick={returnToCurrentPackage}>Back to current package</Button></div><div className="mt-4">{historicalPackage.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading package revision…</p> : historicalPackage.isError ? <p className="text-sm text-muted-foreground" role="alert">{historicalPackage.error instanceof ApiError && historicalPackage.error.status === 404 ? "Package revision is unavailable." : "Could not load this package revision."}</p> : historicalPackage.data ? <><PackagePreview package={historicalPackage.data} /><div className="mt-4"><ArtifactPanel key={historicalPackage.data.id} applicationId={applicationId} package={historicalPackage.data} current={false} /></div></> : null}</div></section> : data.current_reviewable_package ? <><PackagePreview package={data.current_reviewable_package} headingRef={currentHeading} current /><ArtifactPanel key={data.current_reviewable_package.id} applicationId={applicationId} package={data.current_reviewable_package} current /><DocumentReviewPanel applicationId={applicationId} package={data.current_reviewable_package} initialReview={data.current_document_review ?? null} /></> : <section className="rounded-lg border p-4 text-sm text-muted-foreground">No current package yet.</section>}
+      <section className="rounded-lg border bg-card p-4"><h2 className="font-semibold">Package history</h2>{data.package_history.length ? <ul className="mt-2 space-y-2 text-sm">{data.package_history.map((item) => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2"><span>Revision {item.revision}{item.is_approved ? " · approved" : ""} · {new Date(item.created_at).toLocaleString()}</span><Button size="sm" variant="outline" onClick={() => viewHistoricalPackage(item.id)}>View</Button></li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No package revisions yet.</p>}</section>
     </aside></div>
     <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-background/95 p-3 backdrop-blur"><div className="mx-auto flex max-w-7xl flex-col items-end gap-2 sm:flex-row sm:justify-end"><p id="review-package-requirements" className="text-right text-sm text-muted-foreground">{canReviewPackage ? "Review the current package before approval." : "Complete the preparation checklist before reviewing your package."}</p><Button onClick={review} disabled={!canReviewPackage || createPackage.isPending} aria-describedby="review-package-requirements">{createPackage.isPending ? <Loader2 className="animate-spin" /> : null}Review package</Button>{data.current_reviewable_package ? <Button onClick={() => approve.mutate()} disabled={approve.isPending}>{approve.isPending ? <Loader2 className="animate-spin" /> : null}Approve package</Button> : null}</div></div>
     {resumeOpen && resumeDraftId == null ? <TailorResumeDialog jobId={application.job_id} jobTitle={job.title} open onOpenChange={setResumeOpen} onDirtyChange={setResumeDirty} onSaved={() => { void savedResumes.refetch(); void refresh(); }} returnFocusRef={editorOpenerRef} /> : null}

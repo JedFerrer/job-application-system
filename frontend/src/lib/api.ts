@@ -11,6 +11,11 @@ import type {
   ApplicationUpdate,
   ApplicationWorkspace,
   ApplicationAttempt,
+  ApplicationSubmissionConfirmation,
+  ApplicationSubmissionDetail,
+  ApplicationSubmissionPage,
+  ApplicationInterviewPrepRequest,
+  ApplicationInterviewPrepResponse,
   ArtifactDetail,
   ArtifactDocumentType,
   ArtifactDownload,
@@ -525,6 +530,19 @@ export const applicationsApi = {
     }),
   getTimeline: (id: number, cursor?: string) =>
     apiRequest<ApplicationTimelinePage>(`/applications/${id}/timeline?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+  confirmSubmission: (id: number, payload: ApplicationSubmissionConfirmation, idempotencyKey: string) =>
+    apiRequest<ApplicationSubmissionDetail>(`/applications/${id}/submissions`, { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) }),
+  listSubmissions: (id: number, opts: { limit?: number; cursor?: string } = {}) => {
+    const qs = new URLSearchParams({ limit: String(opts.limit ?? 25) });
+    if (opts.cursor) qs.set("cursor", opts.cursor);
+    return apiRequest<ApplicationSubmissionPage>(`/applications/${id}/submissions?${qs}`);
+  },
+  getSubmission: (id: number, submissionId: number) =>
+    apiRequest<ApplicationSubmissionDetail>(`/applications/${id}/submissions/${submissionId}`),
+  deleteSubmission: (id: number, submissionId: number) =>
+    apiRequest<void>(`/applications/${id}/submissions/${submissionId}`, { method: "DELETE" }),
+  prepareInterview: (id: number, payload: ApplicationInterviewPrepRequest) =>
+    apiRequest<ApplicationInterviewPrepResponse>(`/applications/${id}/interview-prep`, { method: "POST", body: JSON.stringify(payload) }),
   patchPreparation: (id: number, payload: ApplicationPreparationPatch) =>
     apiRequest<ApplicationPreparation>(`/applications/${id}/preparation`, {
       method: "PATCH",

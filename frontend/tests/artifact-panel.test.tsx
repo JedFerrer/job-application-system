@@ -8,7 +8,7 @@ import type { ApplicationPackage, ArtifactDetail, ArtifactSummary } from "@/lib/
 const mocks = vi.hoisted(() => ({
   buildResumePdf: vi.fn(), buildResumeDocx: vi.fn(), buildCoverLetterPdf: vi.fn(), buildCoverLetterDocx: vi.fn(),
   uploadArtifact: vi.fn(), downloadArtifact: vi.fn(), getArtifact: vi.fn(), retryArtifactValidation: vi.fn(), deleteArtifact: vi.fn(),
-  ApiError: class ApiError extends Error { constructor(public status: number) { super("Request failed"); } },
+  ApiError: class ApiError extends Error { constructor(public status: number, message = "Request failed") { super(message); } },
 }));
 vi.mock("@/lib/api", () => ({ ApiError: mocks.ApiError, applicationsApi: {
   uploadArtifact: mocks.uploadArtifact, downloadArtifact: mocks.downloadArtifact, getArtifact: mocks.getArtifact,
@@ -433,6 +433,16 @@ describe("ArtifactPanel", () => {
     expect(node.textContent).toContain("Checking file");
     expect(node.textContent).toContain("File state refreshed");
     expect(mocks.uploadArtifact).not.toHaveBeenCalled();
+  });
+
+  it("explains a confirmed-submission artifact deletion conflict", async () => {
+    mocks.deleteArtifact.mockRejectedValue(new mocks.ApiError(409,
+      "This exported file is part of confirmed submission history and cannot be deleted"));
+    await render(item({ artifacts: [summary()] }));
+    await click("Delete exported file");
+    expect(node.textContent).toContain("This file is part of confirmed submission history and cannot be deleted.");
+    expect(node.textContent).toContain("saved.pdf");
+    expect(node.textContent).toContain("Download");
   });
 
   it("retains the persisted row and package when delete transport fails", async () => {

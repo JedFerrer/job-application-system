@@ -154,7 +154,9 @@ function ArtifactRow({ applicationId, item, refresh }: { applicationId: number; 
       if (error instanceof ApiError && error.status === 409) {
         await client.invalidateQueries({ queryKey: artifactKey(applicationId, item.id) });
         await refresh(item.package_id);
-        setMessage("This file is still being checked or cannot be deleted. File state refreshed.");
+        setMessage(error.message.includes("confirmed submission history")
+          ? "This file is part of confirmed submission history and cannot be deleted."
+          : "This file is still being checked or cannot be deleted. File state refreshed.");
       } else setMessage("Could not delete the exported file. Try again.");
     } finally { setBusy(null); }
   };

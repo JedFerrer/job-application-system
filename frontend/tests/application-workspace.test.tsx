@@ -6,14 +6,14 @@ import { ApplicationWorkspace } from "@/components/applications/application-work
 import { PackagePreview } from "@/components/applications/package-preview";
 
 const apiMocks = vi.hoisted(() => ({
-  getWorkspace: vi.fn(), getPackage: vi.fn(), patchPreparation: vi.fn(), createPackage: vi.fn(), approvePreparation: vi.fn(), createAttempt: vi.fn(), getTimeline: vi.fn(),
+  getWorkspace: vi.fn(), getPackage: vi.fn(), patchPreparation: vi.fn(), createPackage: vi.fn(), approvePreparation: vi.fn(), createAttempt: vi.fn(), getTimeline: vi.fn(), listSubmissions: vi.fn().mockResolvedValue({ items: [], next_cursor: null }), getSubmission: vi.fn(),
   listDrafts: vi.fn(), getDraft: vi.fn(), getByJobId: vi.fn(), tailorResume: vi.fn(), generate: vi.fn(),
   ApiError: class ApiError extends Error { status: number; constructor(status = 500) { super("API error"); this.status = status; } },
 }));
 
 vi.mock("@/lib/api", () => ({
   ApiError: apiMocks.ApiError,
-  applicationsApi: { getWorkspace: apiMocks.getWorkspace, getPackage: apiMocks.getPackage, patchPreparation: apiMocks.patchPreparation, createPackage: apiMocks.createPackage, approvePreparation: apiMocks.approvePreparation, createAttempt: apiMocks.createAttempt, getTimeline: apiMocks.getTimeline },
+  applicationsApi: { getWorkspace: apiMocks.getWorkspace, getPackage: apiMocks.getPackage, patchPreparation: apiMocks.patchPreparation, createPackage: apiMocks.createPackage, approvePreparation: apiMocks.approvePreparation, createAttempt: apiMocks.createAttempt, getTimeline: apiMocks.getTimeline, listSubmissions: apiMocks.listSubmissions, getSubmission: apiMocks.getSubmission },
   resumeApi: { listDrafts: apiMocks.listDrafts, getDraft: apiMocks.getDraft, tailorResume: apiMocks.tailorResume },
   coverLettersApi: { getByJobId: apiMocks.getByJobId, generate: apiMocks.generate },
 }));
@@ -125,6 +125,45 @@ describe("ApplicationWorkspace saved-document actions", () => {
     await vi.waitFor(() => expect(node?.textContent).toContain("Current resume"));
     await act(async () => { button(node!, "View")?.click(); });
     await vi.waitFor(() => expect(node?.textContent).toContain("Frozen historical resume"));
+  });
+
+  it("focuses the historical and current headings after keyboard navigation without refocus on refresh", async () => {
+    const current = { id: 12, application_id: 7, revision: 2, content_sha256: "b".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-02T00:00:00Z", content: { job: { title: "CURRENT_B_JOB" }, resume: { professional_summary: "CURRENT_B_RESUME" } } };
+    const historical = { id: 11, application_id: 7, revision: 1, content_sha256: "a".repeat(64), schema_version: "application-package-v1", created_at: "2026-01-01T00:00:00Z", content: { job: { title: "HISTORICAL_A_JOB" }, resume: { professional_summary: "HISTORICAL_A_RESUME" } } };
+    apiMocks.getWorkspace.mockResolvedValue(workspace({ current_reviewable_package: current, package_history: [{ id: 11, revision: 1, content_sha256: historical.content_sha256, created_at: historical.created_at, is_approved: false }, { id: 12, revision: 2, content_sha256: current.content_sha256, created_at: current.created_at, is_approved: false }] }));
+    apiMocks.getPackage.mockResolvedValue(historical);
+    apiMocks.listSubmissions.mockResolvedValue({ items: [{ id: 31, package_id: 11, material_choice: "used_selected_package", artifact_ids: [], submitted_at: "2026-01-03T00:00:00Z", submitted_at_is_user_reported: false, created_at: "2026-01-03T00:00:00Z", note: null }], next_cursor: null });
+    apiMocks.getSubmission.mockResolvedValue({ id: 31, package_id: 11, material_choice: "used_selected_package", artifact_ids: [], artifacts: [], submitted_at: "2026-01-03T00:00:00Z", submitted_at_is_user_reported: false, created_at: "2026-01-03T00:00:00Z", provenance: "user_confirmed", note: null });
+    apiMocks.getTimeline.mockResolvedValue({ application_id: 7, items: [], next_cursor: null });
+    apiMocks.listDrafts.mockResolvedValue([]); apiMocks.getByJobId.mockRejectedValue(new apiMocks.ApiError(404));
+    node = document.createElement("div"); document.body.appendChild(node); root = createRoot(node);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root?.render(<QueryClientProvider client={client}><ApplicationWorkspace applicationId={7} /></QueryClientProvider>));
+    await vi.waitFor(() => expect(button(node!, "View details")).toBeTruthy());
+    const activate = async (target: HTMLButtonElement) => {
+      target.focus();
+      await act(async () => { target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); target.click(); });
+    };
+    await activate(button(node!, "View details")!);
+    await vi.waitFor(() => expect([...document.querySelectorAll("button")].some((item) => item.textContent === "Inspect historical package")).toBe(true));
+    const inspect = [...document.querySelectorAll("button")].find((item) => item.textContent === "Inspect historical package")!;
+    await activate(inspect);
+    await vi.waitFor(() => expect(node?.textContent).toContain("HISTORICAL_A_RESUME"));
+    const historicalHeading = [...node!.querySelectorAll("h2")].find((item) => item.textContent === "Historical package revision 1");
+    await vi.waitFor(() => expect(document.activeElement).toBe(historicalHeading));
+    expect(document.activeElement).not.toBe(document.body);
+    expect(node?.textContent).not.toContain("CURRENT_B_RESUME");
+
+    await activate(button(node!, "Back to current package")!);
+    await vi.waitFor(() => expect(node?.textContent).toContain("CURRENT_B_RESUME"));
+    const currentHeading = [...node!.querySelectorAll("h2")].find((item) => item.textContent === "Current package preview");
+    await vi.waitFor(() => expect(document.activeElement).toBe(currentHeading));
+    expect(document.activeElement).not.toBe(document.body);
+
+    const other = button(node!, "Confirm materials")!;
+    other.focus();
+    await act(async () => { await client.invalidateQueries({ queryKey: ["application-workspace", 7] }); });
+    expect(document.activeElement).toBe(other);
   });
 
   it("shows explicit loading and handled historical package errors without a mutable fallback", async () => {

@@ -874,9 +874,63 @@ export interface ApplicationAttempt {
   external_url: string;
 }
 
+export type SubmissionMaterialChoice = "used_selected_package" | "used_other_material" | "materials_unknown";
+export interface ApplicationSubmissionArtifactSummary extends ArtifactSummary {}
+export interface ApplicationSubmissionSummary {
+  id: number;
+  application_id: number;
+  attempt_id: string | null;
+  package_id: number | null;
+  artifact_ids: number[];
+  artifacts: ApplicationSubmissionArtifactSummary[];
+  material_choice: SubmissionMaterialChoice;
+  provenance: string;
+  submitted_at: string;
+  submitted_at_is_user_reported: boolean;
+  note: string | null;
+  created_at: string;
+}
+export interface ApplicationSubmissionDetail extends ApplicationSubmissionSummary {}
+export interface ApplicationSubmissionPage { items: ApplicationSubmissionSummary[]; next_cursor: string | null; }
+export interface ApplicationSubmissionConfirmation {
+  material_choice: SubmissionMaterialChoice;
+  package_id?: number | null;
+  artifact_ids?: number[];
+  attempt_id?: string | null;
+  submitted_at?: string | null;
+  note?: string | null;
+}
+export type ApplicationInterviewStage = "screening" | "technical" | "behavioral" | "final" | "unspecified";
+export interface ApplicationInterviewPrepRequest {
+  submission_id: number | null;
+  current_profile_fallback: boolean;
+  stage: ApplicationInterviewStage;
+  focus_areas: string[];
+  question_count: number;
+  force_refresh: boolean;
+}
+export interface ApplicationInterviewQuestion { question: string; suggested_answer: string; source_locators: string[]; }
+export interface ApplicationInterviewEvidence { locator: string; source: "job" | "resume" | "cover_letter" | "manual_questions" | "profile"; }
+export interface ApplicationInterviewPrepResponse {
+  application_id: number;
+  submission_id: number | null;
+  source_label: "confirmed_submission" | "current_profile_fallback";
+  stage: ApplicationInterviewStage;
+  focus_areas: string[];
+  question_count: number;
+  context_hash: string;
+  cached: boolean;
+  questions: ApplicationInterviewQuestion[];
+  evidence: ApplicationInterviewEvidence[];
+  model: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ApplicationTimelineEvent {
   id: string;
   type: string;
+  submission_id: number | null;
   occurred_at: string;
   source: string;
   summary: string;
