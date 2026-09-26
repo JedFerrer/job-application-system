@@ -33,6 +33,7 @@ def _expect_rejected(connection: object, statement: str, parameters: dict[str, o
             connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))  # type: ignore[attr-defined]
 
 
+@pytest.mark.migration
 def test_0045_upgrade_constraints_retention_and_downgrade() -> None:
     engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)
     config = _config()

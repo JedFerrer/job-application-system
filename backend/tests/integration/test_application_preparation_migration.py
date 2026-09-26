@@ -31,6 +31,7 @@ def _revision(connection: object) -> str:
     return str(connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one())  # type: ignore[attr-defined]
 
 
+@pytest.mark.migration
 def test_0039_upgrade_schema_fk_behavior_and_downgrade() -> None:
     """Exercise the actual PostgreSQL migration, including its reversible FK graph."""
     config = _config()

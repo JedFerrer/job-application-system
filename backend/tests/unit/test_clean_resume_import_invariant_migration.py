@@ -21,6 +21,7 @@ from app.core.config import get_settings
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.migration
 def test_tfr2_reset_preserves_snapshots_and_unrelated_rows() -> None:
     backend_dir = Path(__file__).resolve().parents[2]
     config = Config(str(backend_dir / "alembic.ini"))

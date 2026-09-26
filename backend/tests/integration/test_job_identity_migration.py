@@ -66,6 +66,7 @@ def _reverse_0037_schema(connection: Connection) -> None:
     )
 
 
+@pytest.mark.migration
 def test_scoped_identity_migration_is_resolver_compatible_and_non_destructive() -> None:
     config = _alembic_config()
     engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)

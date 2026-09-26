@@ -23,6 +23,7 @@ def _alembic_config() -> Config:
     return Config(str(backend_dir / "alembic.ini"))
 
 
+@pytest.mark.migration
 def test_migration_backfills_existing_expired_rows_once() -> None:
     """Upgrade 0023 -> 0024 gives old expired rows a fresh 90-day clock."""
     config = _alembic_config()

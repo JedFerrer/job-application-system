@@ -27,6 +27,7 @@ def _config() -> Config:
     return Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
 
 
+@pytest.mark.migration
 def test_0041_upgrade_constraints_and_downgrade() -> None:
     config = _config()
     engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)

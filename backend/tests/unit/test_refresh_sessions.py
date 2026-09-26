@@ -382,6 +382,7 @@ async def test_legacy_extension_refresh_backfill_preserves_family_rotation(
         assert refreshed.refresh_token not in {row.token_hash for row in rows}
 
 
+@pytest.mark.migration
 async def test_migration_backfills_active_and_revoked_legacy_sessions(
     engine: AsyncEngine, settings: Settings
 ) -> None:
@@ -1091,6 +1092,7 @@ async def test_reset_rejects_invalid_version_and_token_variants(
             )
 
 
+@pytest.mark.migration
 def test_password_reset_migration_backfills_existing_users() -> None:
     config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", get_settings().sync_database_url)
@@ -1333,6 +1335,7 @@ async def test_web_session_cleanup_respects_batch_size_and_is_idempotent(
         )
 
 
+@pytest.mark.migration
 async def test_web_session_retention_migration_adds_indexes_without_deleting_rows(
     engine: AsyncEngine,
 ) -> None:

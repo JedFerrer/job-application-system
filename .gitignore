@@ -48,6 +48,11 @@ feature-plan-improvements/
 # ── Misc ───────────────────────────────────────────────────────────────────
 nul
 
+# Local validation evidence and developer-only Compose settings
+/qa-*
+/tmp/
+/backend/docker-compose.override.yml
+
 # Local tooling artifacts
 .agents/*
 !.agents/skills/

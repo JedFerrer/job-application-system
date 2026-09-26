@@ -487,6 +487,7 @@ async def test_v10_cache_separation_preserves_historical_v9_readability(
         assert store.created == [("document_review", 1, first.task_id)]
 
 
+@pytest.mark.migration
 def test_0042_upgrade_downgrade_reupgrade_preserves_historical_null() -> None:
     config = _config()
     engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)

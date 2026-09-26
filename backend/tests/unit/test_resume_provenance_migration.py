@@ -24,6 +24,7 @@ def _alembic_config() -> Config:
     return Config(str(backend_dir / "alembic.ini"))
 
 
+@pytest.mark.migration
 def test_provenance_migration_is_nullable_non_backfilled_and_reversible() -> None:
     """0028 -> 0029 adds only a nullable JSONB column and can be downgraded."""
     config = _alembic_config()

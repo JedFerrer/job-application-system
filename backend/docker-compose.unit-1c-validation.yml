@@ -1,23 +1,38 @@
-# Standalone broader-backend validation. Never combine with docker-compose.yml.
-name: unit1c_validation
-
+# Standalone test topology. Use only through scripts/run_public_tests.py.
+# The runner supplies a fresh project name and verifies its actual resources.
 services:
   db_test:
     image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: job_app_test
+      POSTGRES_DB: public_app_test
     volumes:
-      - unit1c_validation_pgdata:/var/lib/postgresql/data
+      - app_test_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d job_app_test"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d public_app_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db_migration:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: public_migration_test
+    volumes:
+      - migration_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d public_migration_test"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   test-redis:
     image: redis:7.4-alpine
+    volumes:
+      - redis_test_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -31,19 +46,20 @@ services:
         INSTALL_DEV: "true"
     environment:
       ENVIRONMENT: test
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_test:5432/job_app_test
-      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_test:5432/job_app_test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_test:5432/public_app_test
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_test:5432/public_app_test
       REDIS_URL: redis://test-redis:6379/0
       EMAIL_DELIVERY_MODE: console
     depends_on:
       db_test:
         condition: service_healthy
+      db_migration:
+        condition: service_healthy
       test-redis:
         condition: service_healthy
-    command: >
-      sh -c "python scripts/verify_unit_1c_validation_env.py &&
-             alembic upgrade head &&
-             python -m pytest tests/ -v --tb=short --no-header -o 'addopts='"
+    command: ["python", "-m", "pytest", "tests/"]
 
 volumes:
-  unit1c_validation_pgdata:
+  app_test_data:
+  migration_test_data:
+  redis_test_data:

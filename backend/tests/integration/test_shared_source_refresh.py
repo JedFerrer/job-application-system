@@ -528,6 +528,7 @@ async def test_lazy_unknown_state_is_staggered_persistent_and_idempotent() -> No
         await engine.dispose()
 
 
+@pytest.mark.migration
 def test_0038_backfills_only_persisted_source_names_as_unknown_state() -> None:
     """The real upgrade never promotes legacy query timestamps to freshness."""
     config = _alembic_config()

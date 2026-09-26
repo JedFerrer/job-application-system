@@ -22,6 +22,7 @@ from app.domain.applications.artifacts import ArtifactValidationError, MAX_APPLI
 from app.models.application_artifact import ApplicationArtifact
 
 
+@pytest.mark.migration
 def test_0044_lifecycle_columns_match_model_and_existing_rows() -> None:
     config = _config()
     engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)
@@ -60,6 +61,7 @@ def _config() -> Config:
     return Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
 
 
+@pytest.mark.migration
 def test_0043_artifact_schema_and_binary_round_trip() -> None:
     config = _config(); engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)
     try:
@@ -99,6 +101,7 @@ def test_0043_artifact_schema_and_binary_round_trip() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.migration
 async def test_two_session_application_artifact_quota_locking() -> None:
     """B waits for A's application lock, then checks committed quota anew."""
     config = _config()
