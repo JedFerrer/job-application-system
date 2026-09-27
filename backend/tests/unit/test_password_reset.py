@@ -22,6 +22,7 @@ def _settings(environment: str = "development") -> Settings:
     """Return a Settings instance with the given environment."""
     return Settings(
         environment=environment,
+        email_delivery_mode="console",
         jwt_secret=SecretStr("test-secret-for-testing-12345678"),
     )
 
@@ -40,9 +41,7 @@ async def test_dev_includes_reset_url() -> None:
 
     assert "message" in result
     assert "reset_url" in result
-    assert result["reset_url"].startswith(
-        "http://localhost:3000/reset-password?token="
-    )
+    assert result["reset_url"].startswith("http://localhost:3000/reset-password?token=")
 
 
 async def test_production_excludes_reset_url() -> None:
@@ -86,9 +85,7 @@ async def test_unknown_email_always_returns_generic_message() -> None:
         svc = AuthService(repository=repo, settings=_settings(env))
         result = await svc.forgot_password(email="nobody@example.com")
 
-        assert result == {
-            "message": "If the email is registered, a reset link has been sent."
-        }
+        assert result == {"message": "If the email is registered, a reset link has been sent."}
         assert "reset_url" not in result
 
 
@@ -104,7 +101,5 @@ async def test_google_only_user_returns_generic_message() -> None:
         svc = AuthService(repository=repo, settings=_settings(env))
         result = await svc.forgot_password(email="googleuser@example.com")
 
-        assert result == {
-            "message": "If the email is registered, a reset link has been sent."
-        }
+        assert result == {"message": "If the email is registered, a reset link has been sent."}
         assert "reset_url" not in result

@@ -49,8 +49,7 @@ async def test_shared_refresh_explicit_public_links_exclude_private_imports() ->
     try:
         async with session_factory() as session:
             users = [
-                User(email=email, name=f"Subscriber {index}")
-                for index, email in enumerate(emails)
+                User(email=email, name=f"Subscriber {index}") for index, email in enumerate(emails)
             ]
             session.add_all(users)
             await session.flush()
@@ -174,16 +173,20 @@ async def test_concurrent_shared_ingests_link_only_their_committed_public_ids() 
         "indeed": GatedSource(
             "indeed",
             RawJobPost(
-                source="indeed", source_url=f"https://example.test/a/{marker}",
-                title="Query A", company="Acme",
+                source="indeed",
+                source_url=f"https://example.test/a/{marker}",
+                title="Query A",
+                company="Acme",
             ),
             started[0],
         ),
         "linkedin": GatedSource(
             "linkedin",
             RawJobPost(
-                source="linkedin", source_url=f"https://example.test/b/{marker}",
-                title="Query B", company="Acme",
+                source="linkedin",
+                source_url=f"https://example.test/b/{marker}",
+                title="Query B",
+                company="Acme",
             ),
             started[1],
         ),
@@ -207,8 +210,7 @@ async def test_concurrent_shared_ingests_link_only_their_committed_public_ids() 
     try:
         async with session_factory() as session:
             users = [
-                User(email=email, name=f"Concurrent {index}")
-                for index, email in enumerate(emails)
+                User(email=email, name=f"Concurrent {index}") for index, email in enumerate(emails)
             ]
             session.add_all(users)
             await session.commit()
@@ -230,10 +232,16 @@ async def test_concurrent_shared_ingests_link_only_their_committed_public_ids() 
                         fingerprint=f"private{marker}"[:16],
                         identity_scope=f"user:{user_ids[0]}",
                         identity_key=f"private:{marker}",
-                        title="Private overlap import", company="Acme", location="Remote",
-                        source="manual", source_url=f"https://example.test/private/{marker}",
-                        raw_response={}, status="active", visibility="private",
-                        ingest_source="manual", created_by_user_id=user_ids[0],
+                        title="Private overlap import",
+                        company="Acme",
+                        location="Remote",
+                        source="manual",
+                        source_url=f"https://example.test/private/{marker}",
+                        raw_response={},
+                        status="active",
+                        visibility="private",
+                        ingest_source="manual",
+                        created_by_user_id=user_ids[0],
                     )
                 )
                 await session.commit()
@@ -243,9 +251,13 @@ async def test_concurrent_shared_ingests_link_only_their_committed_public_ids() 
         assert len(result_a.touched_job_ids) == len(result_b.touched_job_ids) == 1
         assert set(result_a.touched_job_ids).isdisjoint(result_b.touched_job_ids)
         async with session_factory() as session:
-            links = set((await session.execute(
-                select(UserJob.user_id, UserJob.job_id).where(UserJob.user_id.in_(user_ids))
-            )).all())
+            links = set(
+                (
+                    await session.execute(
+                        select(UserJob.user_id, UserJob.job_id).where(UserJob.user_id.in_(user_ids))
+                    )
+                ).all()
+            )
         assert links == {
             (user_ids[0], result_a.touched_job_ids[0]),
             (user_ids[1], result_b.touched_job_ids[0]),
@@ -253,7 +265,9 @@ async def test_concurrent_shared_ingests_link_only_their_committed_public_ids() 
     finally:
         release.set()
         async with session_factory() as session:
-            await session.execute(delete(Job).where(Job.source_url.like(f"https://example.test/%/{marker}")))
+            await session.execute(
+                delete(Job).where(Job.source_url.like(f"https://example.test/%/{marker}"))
+            )
             await session.execute(delete(User).where(User.email.in_(emails)))
             await session.commit()
         await engine.dispose()
@@ -430,18 +444,20 @@ async def test_due_source_selects_query_despite_legacy_query_freshness() -> None
             session.add(query)
             await session.flush()
             query_id = query.id
-            session.add_all([
-                ScrapeQuerySourceState(
-                    scrape_query_id=query.id,
-                    source="indeed",
-                    next_due_at=now - timedelta(seconds=1),
-                ),
-                ScrapeQuerySourceState(
-                    scrape_query_id=query.id,
-                    source="linkedin",
-                    next_due_at=now + timedelta(hours=4),
-                ),
-            ])
+            session.add_all(
+                [
+                    ScrapeQuerySourceState(
+                        scrape_query_id=query.id,
+                        source="indeed",
+                        next_due_at=now - timedelta(seconds=1),
+                    ),
+                    ScrapeQuerySourceState(
+                        scrape_query_id=query.id,
+                        source="linkedin",
+                        next_due_at=now + timedelta(hours=4),
+                    ),
+                ]
+            )
             await session.commit()
 
         async with session_factory() as session:
@@ -509,11 +525,17 @@ async def test_lazy_unknown_state_is_staggered_persistent_and_idempotent() -> No
                 query_id=query_id, source="indeed", now=now + timedelta(hours=3)
             )
             assert second.next_due_at == expected
-            count = (await session.execute(
-                select(ScrapeQuerySourceState).where(
-                    ScrapeQuerySourceState.scrape_query_id == query_id
+            count = (
+                (
+                    await session.execute(
+                        select(ScrapeQuerySourceState).where(
+                            ScrapeQuerySourceState.scrape_query_id == query_id
+                        )
+                    )
                 )
-            )).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(count) == 1
     finally:
         if query_id is not None:
@@ -529,6 +551,7 @@ async def test_lazy_unknown_state_is_staggered_persistent_and_idempotent() -> No
 
 
 @pytest.mark.migration
+@pytest.mark.migration_start("0037_scoped_job_identity")
 def test_0038_backfills_only_persisted_source_names_as_unknown_state() -> None:
     """The real upgrade never promotes legacy query timestamps to freshness."""
     config = _alembic_config()
@@ -578,16 +601,21 @@ def test_0038_backfills_only_persisted_source_names_as_unknown_state() -> None:
 
         command.upgrade(config, "0038_source_refresh_state")
         with engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    "SELECT source, last_attempt_at, last_successful_complete_at, "
-                    "next_due_at, latest_status, completeness, fetched_count, "
-                    "accepted_count, rejected_count, "
-                    "effective_country, effective_result_limit "
-                    "FROM scrape_query_source_states WHERE scrape_query_id = :id ORDER BY source"
-                ),
-                {"id": query_id},
-            ).mappings().all()
+            rows = (
+                connection.execute(
+                    text(
+                        "SELECT source, last_attempt_at, last_successful_complete_at, "
+                        "next_due_at, latest_status, completeness, fetched_count, "
+                        "accepted_count, rejected_count, "
+                        "effective_country, effective_result_limit "
+                        "FROM scrape_query_source_states WHERE scrape_query_id = :id "
+                        "ORDER BY source"
+                    ),
+                    {"id": query_id},
+                )
+                .mappings()
+                .all()
+            )
         assert [row["source"] for row in rows] == ["indeed", "linkedin"]
         assert all(row["latest_status"] == "unavailable" for row in rows)
         assert all(row["completeness"] == "unknown" for row in rows)
@@ -596,21 +624,16 @@ def test_0038_backfills_only_persisted_source_names_as_unknown_state() -> None:
         assert all(row["next_due_at"] is not None for row in rows)
         assert len({row["next_due_at"] for row in rows}) == 2
         assert all(
-            (row["fetched_count"], row["accepted_count"], row["rejected_count"])
-            == (0, 0, 0)
+            (row["fetched_count"], row["accepted_count"], row["rejected_count"]) == (0, 0, 0)
             for row in rows
         )
         assert all(
-            row["effective_country"] is None
-            and row["effective_result_limit"] is None
+            row["effective_country"] is None and row["effective_result_limit"] is None
             for row in rows
         )
         with engine.connect() as connection:
             empty_state_count = connection.execute(
-                text(
-                    "SELECT count(*) FROM scrape_query_source_states "
-                    "WHERE scrape_query_id = :id"
-                ),
+                text("SELECT count(*) FROM scrape_query_source_states WHERE scrape_query_id = :id"),
                 {"id": empty_query_id},
             ).scalar_one()
         assert empty_state_count == 0
@@ -654,9 +677,7 @@ async def test_preference_refresh_parent_aggregates_children_once_and_is_termina
     }
     try:
         await store.initialize_refresh_parent(task_id, [first, second])
-        await asyncio.gather(
-            *(store.record_refresh_child(task_id, second, busy) for _ in range(8))
-        )
+        await asyncio.gather(*(store.record_refresh_child(task_id, second, busy) for _ in range(8)))
         running = await store.get(task_id)
         assert running is not None
         assert running["status"] == "running"
@@ -711,13 +732,22 @@ async def test_worker_parent_reporting_uses_each_source_committed_counters() -> 
             due_sources=["indeed", "glassdoor"],
             executed_results=[
                 SourceRunResult(
-                    source="indeed", status="success", fetched=4,
-                    inserted=3, updated=1, embedded=2, accepted=4,
+                    source="indeed",
+                    status="success",
+                    fetched=4,
+                    inserted=3,
+                    updated=1,
+                    embedded=2,
+                    accepted=4,
                     completeness="known_complete",
                 ),
                 SourceRunResult(
-                    source="glassdoor", status="success", fetched=2,
-                    inserted=2, embedded=1, accepted=2,
+                    source="glassdoor",
+                    status="success",
+                    fetched=2,
+                    inserted=2,
+                    embedded=1,
+                    accepted=2,
                     completeness="known_complete",
                 ),
             ],

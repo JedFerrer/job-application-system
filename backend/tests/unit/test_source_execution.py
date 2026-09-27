@@ -1,9 +1,11 @@
 """Deterministic Unit 1B execution/admission coverage."""
+
 from __future__ import annotations
 
 import asyncio
 import threading
 
+import pytest
 from anyio import to_thread
 
 from app.infrastructure.job_sources.base import (
@@ -19,15 +21,19 @@ from app.infrastructure.job_sources.execution import (
 )
 from app.infrastructure.job_sources.jobspy_source import JobSpySource
 
+pytestmark = pytest.mark.unit
+
 
 class Redis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+
     async def set(self, key: str, value: str, *, nx: bool, ex: int) -> bool:
         if nx and key in self.values:
             return False
         self.values[key] = value
         return True
+
     async def eval(self, script: str, count: int, key: str, token: str, *args: object) -> int:
         if self.values.get(key) != token:
             return 0
@@ -39,17 +45,22 @@ class Redis:
 class Source:
     def __init__(self, name: str, gate: threading.Barrier, bounded: bool = True) -> None:
         self.name, self.gate, self.bounded = name, gate, bounded
+
     @property
     def capabilities(self) -> SourceCapabilities:
         return SourceCapabilities(
-            source=self.name, supported_query_fields=("search_term",),
+            source=self.name,
+            supported_query_fields=("search_term",),
             bounded_execution=self.bounded,
         )
+
     def search(self, query: JobQuery) -> SourceSearchResult:
         self.gate.wait(timeout=2)
         return SourceSearchResult(source=self.name, status="empty", completeness="known_complete")
+
     def fetch(self, query: JobQuery) -> list[RawJobPost]:
         return []
+
     def get_detail(self, source_url: str) -> SourceDetailResult:
         return SourceDetailResult(source=self.name, status="unsupported")
 
@@ -57,8 +68,10 @@ class Source:
 async def test_bounded_sources_overlap_in_requested_order() -> None:
     gate = threading.Barrier(2)
     results = await execute_sources(
-        [Source("a", gate), Source("b", gate)], JobQuery(search_term="x"),
-        controller=None, concurrency=2,
+        [Source("a", gate), Source("b", gate)],
+        JobQuery(search_term="x"),
+        controller=None,
+        concurrency=2,
     )
     assert [r.source for r in results] == ["a", "b"]
 
@@ -80,10 +93,14 @@ async def test_concurrency_one_never_starts_second_source_early() -> None:
             )
 
     gate = threading.Barrier(1)
-    task = asyncio.create_task(execute_sources(
-        [SerialSource("first", gate), SerialSource("second", gate)],
-        JobQuery(search_term="x"), controller=None, concurrency=1,
-    ))
+    task = asyncio.create_task(
+        execute_sources(
+            [SerialSource("first", gate), SerialSource("second", gate)],
+            JobQuery(search_term="x"),
+            controller=None,
+            concurrency=1,
+        )
+    )
     await to_thread.run_sync(first_started.wait)
     assert not second_started.is_set()
     release_first.set()
@@ -133,6 +150,4 @@ async def test_bounded_admission_wait_returns_retryable_source_busy() -> None:
         concurrency=2,
     )
 
-    assert [(item.status, item.reason_code) for item in result] == [
-        ("unavailable", "source_busy")
-    ]
+    assert [(item.status, item.reason_code) for item in result] == [("unavailable", "source_busy")]

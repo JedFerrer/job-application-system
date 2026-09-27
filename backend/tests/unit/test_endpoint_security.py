@@ -26,6 +26,8 @@ from app.domain.resume.schemas import ParsedProfile, ResumeResponse
 from app.infrastructure.task_store import TaskStore
 from app.models.user import User
 
+pytestmark = pytest.mark.unit
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
@@ -118,9 +120,7 @@ class TestTaskOwnershipEndpoints:
 
     # ── /jobs/tasks/{task_id} ────────────────────────────────────────────
 
-    def test_user_can_poll_own_ingest_task(
-        self, user_a: User, task_store: FakeTaskStore
-    ) -> None:
+    def test_user_can_poll_own_ingest_task(self, user_a: User, task_store: FakeTaskStore) -> None:
         """User polls their own ingest task → 200 with task data."""
         import asyncio
 
@@ -130,7 +130,8 @@ class TestTaskOwnershipEndpoints:
         task_id = asyncio.run(_setup())
 
         app = _build_app_with_overrides(
-            current_user=user_a, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_a,
+            task_store=task_store,  # type: ignore[arg-type]
         )
         client = TestClient(app)
 
@@ -152,7 +153,8 @@ class TestTaskOwnershipEndpoints:
         task_id = asyncio.run(_setup())
 
         app = _build_app_with_overrides(
-            current_user=user_b, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_b,
+            task_store=task_store,  # type: ignore[arg-type]
         )
         client = TestClient(app)
 
@@ -164,7 +166,8 @@ class TestTaskOwnershipEndpoints:
     ) -> None:
         """A task ID that doesn't exist → 404."""
         app = _build_app_with_overrides(
-            current_user=user_a, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_a,
+            task_store=task_store,  # type: ignore[arg-type]
         )
         client = TestClient(app)
 
@@ -173,9 +176,7 @@ class TestTaskOwnershipEndpoints:
 
     # ── /resume/tasks/{task_id} ──────────────────────────────────────────
 
-    def test_user_can_poll_own_resume_task(
-        self, user_a: User, task_store: FakeTaskStore
-    ) -> None:
+    def test_user_can_poll_own_resume_task(self, user_a: User, task_store: FakeTaskStore) -> None:
         """User polls their own resume task → 200."""
         import asyncio
 
@@ -185,7 +186,8 @@ class TestTaskOwnershipEndpoints:
         task_id = asyncio.run(_setup())
 
         app = _build_app_with_overrides(
-            current_user=user_a, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_a,
+            task_store=task_store,  # type: ignore[arg-type]
         )
         client = TestClient(app)
 
@@ -201,9 +203,7 @@ class TestTaskOwnershipEndpoints:
         """The owner receives the complete serialized import result."""
         import asyncio
 
-        provenance = build_resume_import_provenance("resume.pdf", []).model_dump(
-            mode="json"
-        )
+        provenance = build_resume_import_provenance("resume.pdf", []).model_dump(mode="json")
         result = ResumeResponse(
             resume_id=7,
             filename="resume.pdf",
@@ -215,14 +215,13 @@ class TestTaskOwnershipEndpoints:
 
         async def _setup() -> str:
             task_id = await task_store.create("resume_parse", user_id=user_a.id)
-            await task_store.update(
-                task_id, status="done", message="Parsed", result=result
-            )
+            await task_store.update(task_id, status="done", message="Parsed", result=result)
             return task_id
 
         task_id = asyncio.run(_setup())
         app = _build_app_with_overrides(
-            current_user=user_a, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_a,
+            task_store=task_store,  # type: ignore[arg-type]
         )
 
         response = TestClient(app).get(f"/resume/tasks/{task_id}")
@@ -250,14 +249,13 @@ class TestTaskOwnershipEndpoints:
 
         async def _setup() -> str:
             task_id = await task_store.create("resume_parse", user_id=user_a.id)
-            await task_store.update(
-                task_id, status="done", message="Parsed", result=result
-            )
+            await task_store.update(task_id, status="done", message="Parsed", result=result)
             return task_id
 
         task_id = asyncio.run(_setup())
         app = _build_app_with_overrides(
-            current_user=user_b, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_b,
+            task_store=task_store,  # type: ignore[arg-type]
         )
 
         response = TestClient(app).get(f"/resume/tasks/{task_id}")
@@ -277,7 +275,8 @@ class TestTaskOwnershipEndpoints:
         task_id = asyncio.run(_setup())
 
         app = _build_app_with_overrides(
-            current_user=user_b, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_b,
+            task_store=task_store,  # type: ignore[arg-type]
         )
         client = TestClient(app)
 
@@ -289,7 +288,8 @@ class TestTaskOwnershipEndpoints:
     ) -> None:
         """A resume task ID that doesn't exist → 404."""
         app = _build_app_with_overrides(
-            current_user=user_a, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_a,
+            task_store=task_store,  # type: ignore[arg-type]
         )
         client = TestClient(app)
 
@@ -308,7 +308,8 @@ class TestTaskOwnershipEndpoints:
         }
 
         app = _build_app_with_overrides(
-            current_user=user_a, task_store=task_store  # type: ignore[arg-type]
+            current_user=user_a,
+            task_store=task_store,  # type: ignore[arg-type]
         )
         client = TestClient(app)
 
@@ -421,20 +422,14 @@ class TestCrossUserJobDenial:
 
     # ── GET /jobs/{job_id} ───────────────────────────────────────────────
 
-    def test_get_job_cross_user_returns_404(
-        self, user_a: User, user_b: User
-    ) -> None:
+    def test_get_job_cross_user_returns_404(self, user_a: User, user_b: User) -> None:
         """User B tries to GET user A's private job → 404."""
         from app.domain.jobs.exceptions import JobNotFoundError
 
         mock_svc = MagicMock()
-        mock_svc.get_job = AsyncMock(
-            side_effect=JobNotFoundError(job_id=42)
-        )
+        mock_svc.get_job = AsyncMock(side_effect=JobNotFoundError(job_id=42))
 
-        app = _make_app_with_mocked_services(
-            user=user_b, job_service_mock=mock_svc
-        )
+        app = _make_app_with_mocked_services(user=user_b, job_service_mock=mock_svc)
         client = TestClient(app)
 
         resp = client.get("/jobs/42")
@@ -444,20 +439,14 @@ class TestCrossUserJobDenial:
 
     # ── GET /resume/tailor/{job_id} ──────────────────────────────────────
 
-    def test_tailor_resume_cross_user_returns_404(
-        self, user_a: User, user_b: User
-    ) -> None:
+    def test_tailor_resume_cross_user_returns_404(self, user_a: User, user_b: User) -> None:
         """User B tries to tailor resume for user A's private job → 404."""
         from app.domain.jobs.exceptions import JobNotFoundError
 
         mock_svc = MagicMock()
-        mock_svc.tailor_for_job = AsyncMock(
-            side_effect=JobNotFoundError(job_id=99)
-        )
+        mock_svc.tailor_for_job = AsyncMock(side_effect=JobNotFoundError(job_id=99))
 
-        app = _make_app_with_mocked_services(
-            user=user_b, resume_service_mock=mock_svc
-        )
+        app = _make_app_with_mocked_services(user=user_b, resume_service_mock=mock_svc)
         client = TestClient(app)
 
         resp = client.get("/resume/tailor/99")
@@ -468,20 +457,14 @@ class TestCrossUserJobDenial:
 
     # ── POST /cover-letters ──────────────────────────────────────────────
 
-    def test_cover_letter_cross_user_returns_404(
-        self, user_a: User, user_b: User
-    ) -> None:
+    def test_cover_letter_cross_user_returns_404(self, user_a: User, user_b: User) -> None:
         """User B tries to generate cover letter for user A's private job → 404."""
         from app.domain.jobs.exceptions import JobNotFoundError
 
         mock_svc = MagicMock()
-        mock_svc.generate = AsyncMock(
-            side_effect=JobNotFoundError(job_id=99)
-        )
+        mock_svc.generate = AsyncMock(side_effect=JobNotFoundError(job_id=99))
 
-        app = _make_app_with_mocked_services(
-            user=user_b, cover_letter_service_mock=mock_svc
-        )
+        app = _make_app_with_mocked_services(user=user_b, cover_letter_service_mock=mock_svc)
         client = TestClient(app)
 
         resp = client.post(
@@ -489,26 +472,18 @@ class TestCrossUserJobDenial:
             json={"job_id": 99},
         )
         assert resp.status_code == 404
-        mock_svc.generate.assert_awaited_once_with(
-            user_id=user_b.id, job_id=99, tone=None
-        )
+        mock_svc.generate.assert_awaited_once_with(user_id=user_b.id, job_id=99, tone=None)
 
     # ── POST /interview-prep/{job_id} ────────────────────────────────────
 
-    def test_interview_prep_cross_user_returns_404(
-        self, user_a: User, user_b: User
-    ) -> None:
+    def test_interview_prep_cross_user_returns_404(self, user_a: User, user_b: User) -> None:
         """User B tries interview prep for user A's private job → 404."""
         from app.domain.jobs.exceptions import JobNotFoundError
 
         mock_svc = MagicMock()
-        mock_svc.get_or_generate = AsyncMock(
-            side_effect=JobNotFoundError(job_id=99)
-        )
+        mock_svc.get_or_generate = AsyncMock(side_effect=JobNotFoundError(job_id=99))
 
-        app = _make_app_with_mocked_services(
-            user=user_b, interview_service_mock=mock_svc
-        )
+        app = _make_app_with_mocked_services(user=user_b, interview_service_mock=mock_svc)
         client = TestClient(app)
 
         resp = client.post(
@@ -523,44 +498,30 @@ class TestCrossUserJobDenial:
 
     # ── GET /matches/{job_id}/explain ────────────────────────────────────
 
-    def test_match_explanation_cross_user_returns_404(
-        self, user_a: User, user_b: User
-    ) -> None:
+    def test_match_explanation_cross_user_returns_404(self, user_a: User, user_b: User) -> None:
         """User B tries to get match explanation for user A's private job → 404."""
         from app.domain.jobs.exceptions import JobNotFoundError
 
         mock_svc = MagicMock()
-        mock_svc.explain_match = AsyncMock(
-            side_effect=JobNotFoundError(job_id=99)
-        )
+        mock_svc.explain_match = AsyncMock(side_effect=JobNotFoundError(job_id=99))
 
-        app = _make_app_with_mocked_services(
-            user=user_b, matching_service_mock=mock_svc
-        )
+        app = _make_app_with_mocked_services(user=user_b, matching_service_mock=mock_svc)
         client = TestClient(app)
 
         resp = client.get("/matches/99/explain")
         assert resp.status_code == 404
-        mock_svc.explain_match.assert_awaited_once_with(
-            user_id=user_b.id, job_id=99
-        )
+        mock_svc.explain_match.assert_awaited_once_with(user_id=user_b.id, job_id=99)
 
     # ── POST /applications ───────────────────────────────────────────────
 
-    def test_create_application_cross_user_returns_404(
-        self, user_a: User, user_b: User
-    ) -> None:
+    def test_create_application_cross_user_returns_404(self, user_a: User, user_b: User) -> None:
         """User B tries to create application for user A's private job → 404."""
         from app.domain.jobs.exceptions import JobNotFoundError
 
         mock_svc = MagicMock()
-        mock_svc.create = AsyncMock(
-            side_effect=JobNotFoundError(job_id=99)
-        )
+        mock_svc.create = AsyncMock(side_effect=JobNotFoundError(job_id=99))
 
-        app = _make_app_with_mocked_services(
-            user=user_b, application_service_mock=mock_svc
-        )
+        app = _make_app_with_mocked_services(user=user_b, application_service_mock=mock_svc)
         client = TestClient(app)
 
         resp = client.post(
@@ -568,21 +529,15 @@ class TestCrossUserJobDenial:
             json={"job_id": 99},
         )
         assert resp.status_code == 404
-        mock_svc.create.assert_awaited_once_with(
-            user_id=user_b.id, job_id=99
-        )
+        mock_svc.create.assert_awaited_once_with(user_id=user_b.id, job_id=99)
 
-    def test_create_application_for_non_actionable_job_returns_409(
-        self, user_a: User
-    ) -> None:
+    def test_create_application_for_non_actionable_job_returns_409(self, user_a: User) -> None:
         """A visible non-active job is a state conflict, not an authorization leak."""
         from app.domain.applications.exceptions import ApplicationJobNotActionableError
 
         mock_svc = MagicMock()
         mock_svc.create = AsyncMock(side_effect=ApplicationJobNotActionableError())
-        app = _make_app_with_mocked_services(
-            user=user_a, application_service_mock=mock_svc
-        )
+        app = _make_app_with_mocked_services(user=user_a, application_service_mock=mock_svc)
         client = TestClient(app)
 
         resp = client.post("/applications", json={"job_id": 99})

@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -17,6 +18,8 @@ from app.api.deps import (
 from app.api.v1.extension import auth as auth_routes
 from app.infrastructure.database import get_db
 from app.models.user import User
+
+pytestmark = pytest.mark.unit
 
 
 class _FakeAuthService:
@@ -36,9 +39,7 @@ class _FakeExtensionRepository:
         return False
 
 
-def _app(
-    *, principal: ExtensionAuthPrincipal, user: User, service: _FakeAuthService
-) -> FastAPI:
+def _app(*, principal: ExtensionAuthPrincipal, user: User, service: _FakeAuthService) -> FastAPI:
     app = FastAPI()
     app.include_router(auth_routes.router)
     app.include_router(auth_routes.web_router)

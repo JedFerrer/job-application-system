@@ -8,6 +8,8 @@ import pytest
 
 from app.workers import match_ranking
 
+pytestmark = pytest.mark.unit
+
 
 class FakeRedis:
     def __init__(self, values: dict[str, str] | None = None) -> None:

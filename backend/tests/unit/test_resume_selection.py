@@ -1,7 +1,11 @@
 """Deterministic TFR-4 canonical evidence selection tests."""
 
+import pytest
+
 from app.domain.resume.schemas import SourceRole, SourceTextItem
 from app.domain.resume.selection import select_source_bullets
+
+pytestmark = pytest.mark.unit
 
 
 def _role(*bullets: str) -> SourceRole:

@@ -33,40 +33,8 @@ def _current_revision(connection: Connection) -> str:
     return version
 
 
-def _reverse_0037_schema(connection: Connection) -> None:
-    """Test-only schema reverse so 0036 data can be seeded. Not a production downgrade."""
-    connection.execute(text("ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_identity_scope"))
-    connection.execute(text("ALTER TABLE jobs DROP CONSTRAINT IF EXISTS uq_jobs_identity_key"))
-    connection.execute(text("DROP INDEX IF EXISTS ix_jobs_identity_scope"))
-    connection.execute(text("ALTER TABLE jobs DROP COLUMN IF EXISTS identity_scope"))
-    connection.execute(text("ALTER TABLE jobs DROP COLUMN IF EXISTS identity_key"))
-    connection.execute(text("DROP INDEX IF EXISTS ix_jobs_fingerprint"))
-    connection.execute(text("CREATE UNIQUE INDEX ix_jobs_fingerprint ON jobs (fingerprint)"))
-
-    connection.execute(
-        text("ALTER TABLE job_source_links DROP CONSTRAINT IF EXISTS ck_job_source_links_scope")
-    )
-    connection.execute(
-        text("ALTER TABLE job_source_links DROP CONSTRAINT IF EXISTS uq_job_source_link_identity")
-    )
-    connection.execute(text("DROP INDEX IF EXISTS ix_job_source_links_scope"))
-    connection.execute(text("ALTER TABLE job_source_links DROP COLUMN IF EXISTS scope_key"))
-    connection.execute(text("ALTER TABLE job_source_links DROP COLUMN IF EXISTS identity_key"))
-    connection.execute(text("ALTER TABLE job_source_links DROP COLUMN IF EXISTS source_tenant"))
-    connection.execute(
-        text(
-            "ALTER TABLE job_source_links DROP CONSTRAINT IF EXISTS uq_source_job_id"
-        )
-    )
-    connection.execute(
-        text(
-            "ALTER TABLE job_source_links ADD CONSTRAINT uq_source_job_id "
-            "UNIQUE (source, source_job_id)"
-        )
-    )
-
-
 @pytest.mark.migration
+@pytest.mark.migration_start(_PRE_IDENTITY_REVISION)
 def test_scoped_identity_migration_is_resolver_compatible_and_non_destructive() -> None:
     config = _alembic_config()
     engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)
@@ -90,9 +58,7 @@ def test_scoped_identity_migration_is_resolver_compatible_and_non_destructive() 
     try:
         with engine.begin() as connection:
             connection.execute(text("TRUNCATE TABLE jobs, users RESTART IDENTITY CASCADE"))
-            if _current_revision(connection) == _IDENTITY_REVISION:
-                _reverse_0037_schema(connection)
-        command.stamp(config, _PRE_IDENTITY_REVISION)
+            assert _current_revision(connection) == _PRE_IDENTITY_REVISION
 
         with engine.begin() as connection:
             user_id = connection.execute(
@@ -373,13 +339,17 @@ def test_scoped_identity_migration_is_resolver_compatible_and_non_destructive() 
 
             colliding_identity = resolve_source_identity(colliding_url)
             assert colliding_identity is not None
-            colliding_owners = connection.execute(
-                text(
-                    "SELECT job_id FROM job_source_links "
-                    "WHERE scope_key = 'public' AND identity_key = :key ORDER BY job_id"
-                ),
-                {"key": scoped_key("public", colliding_identity.stable_token)},
-            ).scalars().all()
+            colliding_owners = (
+                connection.execute(
+                    text(
+                        "SELECT job_id FROM job_source_links "
+                        "WHERE scope_key = 'public' AND identity_key = :key ORDER BY job_id"
+                    ),
+                    {"key": scoped_key("public", colliding_identity.stable_token)},
+                )
+                .scalars()
+                .all()
+            )
             assert colliding_owners == [job_ids["collision_a"]]
             assert jobs[job_ids["collision_a"]].id != jobs[job_ids["collision_b"]].id
             assert jobs[job_ids["collision_b"]].identity_key == scoped_key(
@@ -420,10 +390,14 @@ def test_scoped_identity_migration_is_resolver_compatible_and_non_destructive() 
             assert malformed_link.source_job_id == "malformed-port-legacy"
             assert malformed_link.source_url == malformed_port_url
             assert malformed_link.canonical_url == malformed_port_url
-            malformed_job_links = connection.execute(
-                text("SELECT id FROM job_source_links WHERE job_id = :id"),
-                {"id": job_ids["malformed_port"]},
-            ).scalars().all()
+            malformed_job_links = (
+                connection.execute(
+                    text("SELECT id FROM job_source_links WHERE job_id = :id"),
+                    {"id": job_ids["malformed_port"]},
+                )
+                .scalars()
+                .all()
+            )
             assert malformed_job_links == [malformed_port_link_id]
             native_or_url_aliases = connection.execute(
                 text(
@@ -432,9 +406,7 @@ def test_scoped_identity_migration_is_resolver_compatible_and_non_destructive() 
                 ),
                 {
                     "id": job_ids["malformed_port"],
-                    "legacy_key": scoped_key(
-                        "public", f"legacy-link:{malformed_port_link_id}"
-                    ),
+                    "legacy_key": scoped_key("public", f"legacy-link:{malformed_port_link_id}"),
                 },
             ).scalar_one()
             assert native_or_url_aliases == 0

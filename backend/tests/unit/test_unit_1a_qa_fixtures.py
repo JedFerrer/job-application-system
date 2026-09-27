@@ -23,6 +23,8 @@ from app.infrastructure.job_sources.qa_browser_fixtures import (
 )
 from app.infrastructure.job_sources.registry import build_sources
 
+pytestmark = pytest.mark.unit
+
 
 def test_qa_fixture_mode_requires_test_environment_and_isolated_database() -> None:
     assert not Settings(
@@ -86,8 +88,9 @@ def test_guarded_preference_aliases_are_local_and_preserve_requested_names() -> 
     assert outcomes[1].reason_code == "provider_error"
     assert all(source.capabilities.country_coverage is None for source in sources)
     assert all(
-        {"search_term", "location", "country", "is_remote", "hours_old", "results_wanted"}
-        .issubset(source.capabilities.supported_query_fields)
+        {"search_term", "location", "country", "is_remote", "hours_old", "results_wanted"}.issubset(
+            source.capabilities.supported_query_fields
+        )
         for source in sources
     )
 

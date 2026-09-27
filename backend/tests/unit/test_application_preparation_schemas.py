@@ -22,6 +22,8 @@ from app.domain.applications.schemas import ManualQuestion, PreparationPatch
 from app.models.application import Application
 from app.models.user_job_match import UserJobMatch
 
+pytestmark = pytest.mark.unit
+
 
 def test_selected_cover_letter_requires_id() -> None:
     with pytest.raises(ValidationError):
@@ -59,7 +61,10 @@ def test_manual_question_utf8_limit_is_bytes_not_characters() -> None:
 def test_manual_question_count_boundary(count: int, valid: bool) -> None:
     questions = [ManualQuestion(question="q", answer="a") for _ in range(count)]
     if valid:
-        assert PreparationPatch(expected_version=0, manual_questions=questions).manual_questions == questions
+        assert (
+            PreparationPatch(expected_version=0, manual_questions=questions).manual_questions
+            == questions
+        )
     else:
         with pytest.raises(ValidationError):
             PreparationPatch(expected_version=0, manual_questions=questions)
@@ -126,7 +131,10 @@ def test_manual_question_order_is_preserved() -> None:
         ManualQuestion(id="00000000-0000-0000-0000-000000000002", question="Second", answer="b"),
         ManualQuestion(id="00000000-0000-0000-0000-000000000001", question="First", answer="a"),
     ]
-    assert [item["question"] for item in _questions_for_storage(questions, [])] == ["Second", "First"]
+    assert [item["question"] for item in _questions_for_storage(questions, [])] == [
+        "Second",
+        "First",
+    ]
 
 
 def test_canonical_package_hash_ignores_dictionary_key_order() -> None:
@@ -211,8 +219,14 @@ async def test_fit_hash_normalizes_only_unordered_match_skill_collections(reorde
 @pytest.mark.asyncio
 async def test_fit_hash_changes_for_material_skill_changes_and_unavailable_is_stable() -> None:
     job = SimpleNamespace(
-        id=1, title="Engineer", company="Acme", location="Remote", job_type=None,
-        source="fixture", source_url="https://example.test/jobs/1", description="Build APIs",
+        id=1,
+        title="Engineer",
+        company="Acme",
+        location="Remote",
+        job_type=None,
+        source="fixture",
+        source_url="https://example.test/jobs/1",
+        description="Build APIs",
     )
 
     async def fit_hash(match: UserJobMatch | None) -> str:
@@ -222,9 +236,23 @@ async def test_fit_hash_changes_for_material_skill_changes_and_unavailable_is_st
         application = cast(Application, SimpleNamespace(id=1, job_id=1))
         return (await service._fit_hash(application, 1))[0]
 
-    first = UserJobMatch(user_id=1, job_id=1, vector_score=0.7, matched_skills=["Python"], missing_keywords=["Docker"])
-    changed_skill = UserJobMatch(user_id=1, job_id=1, vector_score=0.7, matched_skills=["Go"], missing_keywords=["Docker"])
-    changed_missing = UserJobMatch(user_id=1, job_id=1, vector_score=0.7, matched_skills=["Python"], missing_keywords=["Kubernetes"])
+    first = UserJobMatch(
+        user_id=1,
+        job_id=1,
+        vector_score=0.7,
+        matched_skills=["Python"],
+        missing_keywords=["Docker"],
+    )
+    changed_skill = UserJobMatch(
+        user_id=1, job_id=1, vector_score=0.7, matched_skills=["Go"], missing_keywords=["Docker"]
+    )
+    changed_missing = UserJobMatch(
+        user_id=1,
+        job_id=1,
+        vector_score=0.7,
+        matched_skills=["Python"],
+        missing_keywords=["Kubernetes"],
+    )
     assert await fit_hash(first) != await fit_hash(changed_skill)
     assert await fit_hash(first) != await fit_hash(changed_missing)
     assert await fit_hash(None) == await fit_hash(None)

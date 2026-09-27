@@ -2,27 +2,30 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
+from app.domain.matching.repository import MatchingRepository
 from app.domain.matching.service import MatchingService
+from app.models.job import Job
+from app.models.user_job_match import UserJobMatch
 
 pytestmark = pytest.mark.unit
 
 
-class _Repository:
-    def __init__(self, candidates: list[tuple[object, object, str | None]]) -> None:
+class _Repository(MatchingRepository):
+    def __init__(self, candidates: list[tuple[Job, UserJobMatch, str | None]]) -> None:
         self.candidates = candidates
 
-    async def list_recommendation_candidates(self, *, user_id: int, limit: int):
+    async def list_recommendation_candidates(
+        self, *, user_id: int, limit: int = 100
+    ) -> list[tuple[Job, UserJobMatch, str | None]]:
         assert user_id == 7
         assert limit == 100
         return self.candidates
 
 
-def _job(job_id: int) -> SimpleNamespace:
-    return SimpleNamespace(
+def _job(job_id: int) -> Job:
+    return Job(
         id=job_id,
         title=f"Role {job_id}",
         company="Example",
@@ -41,8 +44,8 @@ def _match(
     *,
     matched: list[str] | None = None,
     missing: list[str] | None = None,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+) -> UserJobMatch:
+    return UserJobMatch(
         vector_score=score,
         confidence="strong" if score >= 80 else "moderate",
         llm_score=None,

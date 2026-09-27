@@ -44,6 +44,8 @@ from app.domain.jobs.identity import resolve_source_identity, scoped_key
 from app.infrastructure.llm_client import LLMUnavailableError
 from app.models.application import Application
 
+pytestmark = pytest.mark.unit
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
@@ -154,9 +156,7 @@ class FakeExtensionRepository:
         token = self.refresh_tokens.get(token_hash)
         return _DictObj(token) if token else None
 
-    async def rotate_refresh_token(
-        self, token: Any, *, new_hash: str, expires_at: datetime
-    ) -> Any:
+    async def rotate_refresh_token(self, token: Any, *, new_hash: str, expires_at: datetime) -> Any:
         token.used_at = datetime.now(UTC)
         successor = {
             "id": str(uuid4()),
@@ -196,11 +196,7 @@ class FakeExtensionRepository:
         return count
 
     async def list_user_sessions(self, user_id: int) -> list[Any]:
-        return [
-            _DictObj(s)
-            for s in self.sessions.values()
-            if s["user_id"] == user_id
-        ]
+        return [_DictObj(s) for s in self.sessions.values() if s["user_id"] == user_id]
 
     async def create_event(self, **kwargs: Any) -> Any:
         eid = str(self._next_event_id)
@@ -239,9 +235,7 @@ class FakeExtensionRepository:
         )
         return _DictObj(event) if event else None
 
-    async def list_events_for_application(
-        self, *, application_id: int, user_id: int
-    ) -> list[Any]:
+    async def list_events_for_application(self, *, application_id: int, user_id: int) -> list[Any]:
         return [
             _DictObj(e)
             for e in self.events
@@ -345,11 +339,11 @@ class FakeJobRepository:
 
     async def resolve_visible_by_url(self, *, user_id: int, canonical_url: str) -> Any | None:
         from app.domain.jobs.identity import canonicalize_job_url
+
         for job in self.jobs.values():
             if canonicalize_job_url(str(job.get("source_url", ""))) == canonical_url:
                 return _DictObj(job)
         return None
-
 
     async def mark_as_private_import(
         self, *, job_id: int, user_id: int, ingest_source: str = "manual"
@@ -490,6 +484,7 @@ class TestPairingCodeFlow:
         code, _ = await svc.generate_pairing_code(user_id=42)
         # Corrupt expiry to simulate expiration
         from app.domain.extension.extension_auth_service import _pairing_codes_fallback
+
         if code in _pairing_codes_fallback:
             uid, _ = _pairing_codes_fallback[code]
             _pairing_codes_fallback[code] = (
@@ -513,6 +508,7 @@ class TestRefreshRotation:
     @pytest.mark.asyncio
     async def test_refresh_rotates_tokens(self) -> None:
         import asyncio
+
         repo, svc = self._repo_and_service()
         code, _ = await svc.generate_pairing_code(user_id=42)
         result = await svc.complete_pairing(code)
@@ -580,9 +576,7 @@ class TestRefreshRotation:
     async def test_legacy_refresh_without_session_claim_is_migrated(self) -> None:
         repo, svc = self._repo_and_service()
         session = await repo.create_session(user_id=42, refresh_token_hash="legacy")
-        legacy_refresh = create_token(
-            settings=_settings(), subject=42, token_type="refresh"
-        )
+        legacy_refresh = create_token(settings=_settings(), subject=42, token_type="refresh")
         legacy_hash = hashlib.sha256(legacy_refresh.encode()).hexdigest()
         await repo.create_refresh_token(
             session_id=str(session.id),
@@ -752,7 +746,9 @@ class TestJobImport:
 
 
 class TestApplyClick:
-    def _service(self) -> tuple[
+    def _service(
+        self,
+    ) -> tuple[
         FakeExtensionRepository,
         FakeApplicationRepository,
         FakeJobRepository,
@@ -774,6 +770,7 @@ class TestApplyClick:
         url: str = "https://linkedin.com/jobs/view/123",
     ) -> int:
         import hashlib
+
         fp = hashlib.sha256(b"acme corp|senior backend engineer|remote").hexdigest()[:16]
         jid = 1
         job_repo.jobs[jid] = {
@@ -874,7 +871,9 @@ class TestApplyClick:
 
 
 class TestMarkApplied:
-    def _service(self) -> tuple[
+    def _service(
+        self,
+    ) -> tuple[
         FakeExtensionRepository,
         FakeApplicationRepository,
         FakeJobRepository,
@@ -896,6 +895,7 @@ class TestMarkApplied:
         app_repo: FakeApplicationRepository,
     ) -> tuple[int, int]:
         import hashlib
+
         fp = hashlib.sha256(b"acme corp|senior backend engineer|remote").hexdigest()[:16]
         jid = 1
         job_repo.jobs[jid] = {
@@ -1058,14 +1058,16 @@ class TestAutofillProfile:
 
     @pytest.mark.asyncio
     async def test_profile_excludes_raw_resume_text(self) -> None:
-        svc = self._service({
-            "parsed": {
-                "full_name": "Jane Doe",
-                "email": "jane@example.com",
-                "raw_text": "SHOULD NOT BE EXPOSED",
-                "skills": ["Python", "FastAPI"],
+        svc = self._service(
+            {
+                "parsed": {
+                    "full_name": "Jane Doe",
+                    "email": "jane@example.com",
+                    "raw_text": "SHOULD NOT BE EXPOSED",
+                    "skills": ["Python", "FastAPI"],
+                }
             }
-        })
+        )
         profile = cast(dict[str, Any], await svc.get_autofill_profile(user_id=42))
 
         assert profile["personal"]["first_name"] == "Jane"
@@ -1105,7 +1107,8 @@ class TestAutofillProfile:
 
     @pytest.mark.asyncio
     async def test_map_fields_omits_recognized_provider_exception_details_from_logs(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         class DiagnosticLogger:
             def __init__(self) -> None:
@@ -1394,6 +1397,7 @@ class TestExtensionSessionTokenClaims:
     async def test_refreshed_tokens_carry_same_session_id(self) -> None:
         """After refresh, new token pair keeps the same session_id."""
         import asyncio
+
         repo, svc = self._service()
         code, _ = await svc.generate_pairing_code(user_id=42)
         result = await svc.complete_pairing(code)
@@ -1457,6 +1461,7 @@ class TestExtensionSessionTokenClaims:
 
         # Tamper with the refresh token to have a wrong session_id
         import jwt
+
         payload = decode_token_payload(
             settings=_settings(),
             token=result.refresh_token,
@@ -1470,6 +1475,7 @@ class TestExtensionSessionTokenClaims:
         )
 
         from app.domain.auth.exceptions import InvalidTokenError
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(tampered_token)
 
@@ -1480,9 +1486,7 @@ class TestCurrentExtensionUserDependency:
     def _settings(self) -> Settings:
         return _settings()
 
-    def _token_for_session(
-        self, session_id: str, user_id: int = 42
-    ) -> str:
+    def _token_for_session(self, session_id: str, user_id: int = 42) -> str:
         """Create an access token carrying a session_id claim."""
         return create_token(
             settings=self._settings(),
@@ -1542,9 +1546,7 @@ class TestCurrentExtensionUserDependency:
         # Simulate the dependency check
         found = await repo.get_session(session_id)
         is_active = (
-            found is not None
-            and found.user_id == int(payload["sub"])
-            and found.revoked_at is None
+            found is not None and found.user_id == int(payload["sub"]) and found.revoked_at is None
         )
         assert is_active is False
 

@@ -36,6 +36,8 @@ from app.infrastructure.resume_parser import (
     _source_contract_retry_prompt,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class LifecycleRepository:
     def __init__(self, previous: object | None) -> None:
@@ -84,9 +86,7 @@ async def _run_upload(
         source = SourceResumeContentPayloadV4(
             document={
                 "candidates": ledger.candidates,
-                "layout": SourceResumeLayoutReferencesV4.model_validate(
-                    layout.layout.model_dump()
-                ),
+                "layout": SourceResumeLayoutReferencesV4.model_validate(layout.layout.model_dump()),
             },
             layout_validation_status="verified",
         )
@@ -145,9 +145,7 @@ async def test_verified_v3_import_is_upgraded_for_active_tailoring_source(
             source_validation_status="verified",
         )
 
-    monkeypatch.setattr(
-        "app.domain.resume.service.extract_text_from_bytes", lambda *_: "text"
-    )
+    monkeypatch.setattr("app.domain.resume.service.extract_text_from_bytes", lambda *_: "text")
     monkeypatch.setattr("app.domain.resume.service.parse_resume_text", parse)
     monkeypatch.setattr("app.domain.resume.service.embed_text", lambda _: _embedding())
 
@@ -208,9 +206,7 @@ async def test_valid_profile_summary_and_embedding_use_human_readable_prose(
         work_history=[{"company": "Acme", "title": "Engineer", "highlights": ["Built APIs."]}],
     )
     ledger = build_source_candidate_ledger("Acme - Engineer\nBuilt APIs.")
-    layout = {
-        "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
-    }
+    layout = {"work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]}
     resolved = resolve_source_layout(layout, ledger)
     assert resolved.status == "verified"
     source_content = SourceResumeContentPayloadV2(
@@ -252,16 +248,14 @@ async def test_alias_corrupted_profile_fails_before_persistence_or_embedding(
     repository = LifecycleRepository(None)
     payload = {
         "work_history": [{"highlights": ["c1"]}],
-        "source_references": {
-            "work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]
-        },
+        "source_references": {"work_history": [{"order": 0, "header": "c0", "highlights": ["c1"]}]},
     }
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
     )
-    monkeypatch.setattr(resume_parser, "llm_chat_completion", AsyncMock(
-        return_value=(response, "test-model")
-    ))
+    monkeypatch.setattr(
+        resume_parser, "llm_chat_completion", AsyncMock(return_value=(response, "test-model"))
+    )
     monkeypatch.setattr(
         "app.domain.resume.service.extract_text_from_bytes",
         lambda *_: "Acme - Engineer\nBuilt APIs.",
@@ -297,9 +291,7 @@ async def test_parser_keeps_all_verified_late_bullets_without_profile_identity(
     ]
     raw_text = "Acme Platform - Engineer\n" + "\n".join(bullets)
     payload = {
-        "work_history": [
-            {"company": "Acme Platform", "title": "Engineer", "highlights": bullets}
-        ],
+        "work_history": [{"company": "Acme Platform", "title": "Engineer", "highlights": bullets}],
         "source_references": {
             "work_history": [{"header": "c0", "highlights": [f"c{i}" for i in range(1, 8)]}]
         },
@@ -358,15 +350,21 @@ async def test_parser_verifies_complete_source_backed_resume_shape(
         "work_history": [{"company": "Acme", "title": "Engineer", "highlights": ["Built APIs"]}],
         "source_references": {
             "contact": {
-                "name": "c0", "address": "c1", "address_2": "c2",
-                "email": "c3", "phone": "c6",
+                "name": "c0",
+                "address": "c1",
+                "address_2": "c2",
+                "email": "c3",
+                "phone": "c6",
             },
             "links": {"github": "c4", "website": "c5"},
             "summary": "c8",
             "summary_lines": ["c9"],
             "section_headings": {
-                "summary": "c7", "skills": "c10", "work_history": "c18",
-                "education": "c21", "named:0": "c23",
+                "summary": "c7",
+                "skills": "c10",
+                "work_history": "c18",
+                "education": "c21",
+                "named:0": "c23",
             },
             "skills": [f"c{i}" for i in range(11, 18)],
             "work_history": [{"header": "c19", "highlights": ["c20"]}],
@@ -432,8 +430,7 @@ async def test_parser_imports_readable_resume_when_header_line_is_unclassified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw_text = (
-        "Ada Example\n123 Main Street\nPROFESSIONAL EXPERIENCE\n"
-        "Acme - Engineer\n• Built APIs"
+        "Ada Example\n123 Main Street\nPROFESSIONAL EXPERIENCE\nAcme - Engineer\n• Built APIs"
     )
     payload = {
         "full_name": "Ada Example",
@@ -521,9 +518,7 @@ async def test_concurrent_first_imports_create_only_one_active_resume(
     )
 
     assert sum(result.is_active for result in results) == 1
-    assert sum(
-        result.lifecycle_status == ResumeLifecycleStatus.DRAFT for result in results
-    ) == 1
+    assert sum(result.lifecycle_status == ResumeLifecycleStatus.DRAFT for result in results) == 1
 
 
 def test_source_layout_rejects_unclassified_header_metadata() -> None:
@@ -579,29 +574,30 @@ def test_source_layout_rejects_missing_core_heading_and_skill_ownership() -> Non
     ledger = build_source_candidate_ledger(raw)
     layout = resolve_source_layout_v3({"skills": ["c1"]}, ledger)
     assert layout.layout is not None
-    errors = _required_header_layout_errors(
-        ParsedProfile.model_validate({}), layout.layout, ledger
-    )
+    errors = _required_header_layout_errors(ParsedProfile.model_validate({}), layout.layout, ledger)
     assert "missing_source_section_heading" in errors
     assert "unclassified_core_section_content" in errors
 
 
 def test_source_layout_audits_project_references_without_crashing() -> None:
     ledger = build_source_candidate_ledger("PROJECTS\nAPI Portal\nDescription")
-    layout = resolve_source_layout_v3(
-        {"projects": [{"name": "c1", "description": "c2"}]}, ledger
-    )
+    layout = resolve_source_layout_v3({"projects": [{"name": "c1", "description": "c2"}]}, ledger)
     assert layout.layout is not None
-    errors = _required_header_layout_errors(
-        ParsedProfile.model_validate({}), layout.layout, ledger
-    )
+    errors = _required_header_layout_errors(ParsedProfile.model_validate({}), layout.layout, ledger)
     assert "missing_source_section_heading" in errors
 
 
 def test_source_contract_prompts_enumerate_all_supported_heading_keys() -> None:
     supported = (
-        "summary", "skills", "work_history", "education", "certifications",
-        "projects", "licenses", "languages", "named:<index>",
+        "summary",
+        "skills",
+        "work_history",
+        "education",
+        "certifications",
+        "projects",
+        "licenses",
+        "languages",
+        "named:<index>",
     )
     retry_prompt = _source_contract_retry_prompt("base")
     for key in supported:

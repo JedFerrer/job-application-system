@@ -5,9 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+import pytest
 from sqlalchemy import Table
 
 from app.models.resume import TailoredResumeDraft
+
+pytestmark = pytest.mark.unit
 
 _MIGRATION = (
     Path(__file__).resolve().parents[2]
@@ -19,11 +22,7 @@ _MIGRATION = (
 
 def test_model_declares_user_job_uniqueness() -> None:
     table = cast(Table, TailoredResumeDraft.__table__)
-    constraints = {
-        constraint.name
-        for constraint in table.constraints
-        if constraint.name
-    }
+    constraints = {constraint.name for constraint in table.constraints if constraint.name}
     assert "uq_tailored_resume_drafts_user_job" in constraints
 
 

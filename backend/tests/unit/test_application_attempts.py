@@ -26,6 +26,7 @@ from app.domain.applications.exceptions import (
     ApplicationNotFoundError,
     PreparationVersionConflictError,
 )
+from app.domain.applications.preparation import ApplicationPreparationService
 from app.domain.applications.repository import ApplicationRepository
 from app.domain.applications.schemas import AttemptCreateRequest
 from app.domain.applications.service import ApplicationService
@@ -52,9 +53,7 @@ from app.models.user import User
 
 pytestmark = pytest.mark.integration
 
-_GREENHOUSE_URL = (
-    "https://boards.greenhouse.io/acme/jobs/123?tracking=fixture#attempt"
-)
+_GREENHOUSE_URL = "https://boards.greenhouse.io/acme/jobs/123?tracking=fixture#attempt"
 _SAFE_GREENHOUSE_URL = "https://boards.greenhouse.io/acme/jobs/123"
 
 
@@ -72,34 +71,59 @@ async def clean_db(engine: AsyncEngine) -> None:
 
 
 async def _seed(db: AsyncSession) -> tuple[Application, ApplicationPackage]:
-    db.add_all([
-        User(id=1, email="owner@example.test", name="Owner", is_active=True),
-        User(id=2, email="other@example.test", name="Other", is_active=True),
-        Job(
-            id=1, fingerprint="a" * 16, identity_scope="public", identity_key="public:attempt",
-            title="Engineer", company="Acme", location="Remote", source="greenhouse",
-            source_url=_GREENHOUSE_URL, visibility="public",
-            ingest_source="scraper", status="active", raw_response={},
-        ),
-    ])
+    db.add_all(
+        [
+            User(id=1, email="owner@example.test", name="Owner", is_active=True),
+            User(id=2, email="other@example.test", name="Other", is_active=True),
+            Job(
+                id=1,
+                fingerprint="a" * 16,
+                identity_scope="public",
+                identity_key="public:attempt",
+                title="Engineer",
+                company="Acme",
+                location="Remote",
+                source="greenhouse",
+                source_url=_GREENHOUSE_URL,
+                visibility="public",
+                ingest_source="scraper",
+                status="active",
+                raw_response={},
+            ),
+        ]
+    )
     await db.flush()
     application = Application(user_id=1, job_id=1, status="saved")
     db.add(application)
     await db.flush()
     package = ApplicationPackage(
-        application_id=application.id, revision=1, content={}, content_sha256="b" * 64,
-        schema_version="application-package-v1", idempotency_key="attempt-fixture",
+        application_id=application.id,
+        revision=1,
+        content={},
+        content_sha256="b" * 64,
+        schema_version="application-package-v1",
+        idempotency_key="attempt-fixture",
     )
     db.add(package)
     await db.flush()
-    db.add(ApplicationPreparation(
-        application_id=application.id, version=3, approved_package_id=package.id,
-        cover_letter_mode="not_needed",
-    ))
-    db.add(JobSourceLink(
-        job_id=1, source="greenhouse", scope_key="public", identity_key="attempt-source",
-        source_url=_GREENHOUSE_URL, canonical_url=_GREENHOUSE_URL,
-    ))
+    db.add(
+        ApplicationPreparation(
+            application_id=application.id,
+            version=3,
+            approved_package_id=package.id,
+            cover_letter_mode="not_needed",
+        )
+    )
+    db.add(
+        JobSourceLink(
+            job_id=1,
+            source="greenhouse",
+            scope_key="public",
+            identity_key="attempt-source",
+            source_url=_GREENHOUSE_URL,
+            canonical_url=_GREENHOUSE_URL,
+        )
+    )
     await db.commit()
     return application, package
 
@@ -229,27 +253,27 @@ async def test_resolution_excludes_attempt_when_approved_package_changes(
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as db:
         application, package = await _seed(db)
-        db.add(ApplicationAttempt(
-            user_id=1, application_id=application.id, package_id=package.id,
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ))
+        db.add(
+            ApplicationAttempt(
+                user_id=1,
+                application_id=application.id,
+                package_id=package.id,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        )
         await db.commit()
         with patch(
             "app.domain.applications.preparation.ApplicationPreparationService.get",
             new=AsyncMock(return_value=SimpleNamespace(state="ready", approval_current=True)),
         ):
-            candidates = await ApplicationAttemptService(db).resolve(
-                user_id=1, url=_GREENHOUSE_URL
-            )
+            candidates = await ApplicationAttemptService(db).resolve(user_id=1, url=_GREENHOUSE_URL)
         assert len(candidates) == 1
 
         preparation = await db.get(ApplicationPreparation, application.id)
         assert preparation is not None
         preparation.approved_package_id = None
         await db.commit()
-        assert await ApplicationAttemptService(db).resolve(
-            user_id=1, url=_GREENHOUSE_URL
-        ) == []
+        assert await ApplicationAttemptService(db).resolve(user_id=1, url=_GREENHOUSE_URL) == []
 
 
 @pytest.mark.asyncio
@@ -287,10 +311,14 @@ async def test_resolution_matches_recognized_source_identity_only(
         assert link is not None
         link.source_url = stored_url
         link.canonical_url = stored_url
-        db.add(ApplicationAttempt(
-            user_id=1, application_id=application.id, package_id=package.id,
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ))
+        db.add(
+            ApplicationAttempt(
+                user_id=1,
+                application_id=application.id,
+                package_id=package.id,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        )
         await db.commit()
         with patch(
             "app.domain.applications.preparation.ApplicationPreparationService.get",
@@ -328,7 +356,9 @@ async def test_opened_attempt_accepts_matching_safe_page_identity(
         link.source_url = stored_url
         link.canonical_url = stored_url
         attempt = ApplicationAttempt(
-            user_id=1, application_id=application.id, package_id=package.id,
+            user_id=1,
+            application_id=application.id,
+            package_id=package.id,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
         db.add(attempt)
@@ -342,7 +372,9 @@ async def test_opened_attempt_accepts_matching_safe_page_identity(
             result = await service.record_event(
                 user_id=1,
                 request=ApplicationEventRequest(
-                    event_type="opened", attempt_id=UUID(attempt.id), event_id=uuid4(),
+                    event_type="opened",
+                    attempt_id=UUID(attempt.id),
+                    event_id=uuid4(),
                     page_url=page_url,
                 ),
             )
@@ -378,7 +410,9 @@ async def test_opened_attempt_rejects_false_page_correlation_before_persistence(
         link.source_url = stored_url
         link.canonical_url = stored_url
         attempt = ApplicationAttempt(
-            user_id=1, application_id=application.id, package_id=package.id,
+            user_id=1,
+            application_id=application.id,
+            package_id=package.id,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
         db.add(attempt)
@@ -393,7 +427,9 @@ async def test_opened_attempt_rejects_false_page_correlation_before_persistence(
                 await service.record_event(
                     user_id=1,
                     request=ApplicationEventRequest(
-                        event_type="opened", attempt_id=UUID(attempt.id), event_id=uuid4(),
+                        event_type="opened",
+                        attempt_id=UUID(attempt.id),
+                        event_id=uuid4(),
                         page_url=page_url,
                     ),
                 )
@@ -407,7 +443,9 @@ async def test_opened_attempt_requires_page_url_before_persistence(engine: Async
     async with factory() as db:
         application, package = await _seed(db)
         attempt = ApplicationAttempt(
-            user_id=1, application_id=application.id, package_id=package.id,
+            user_id=1,
+            application_id=application.id,
+            package_id=package.id,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
         db.add(attempt)
@@ -422,7 +460,9 @@ async def test_opened_attempt_requires_page_url_before_persistence(engine: Async
                 await service.record_event(
                     user_id=1,
                     request=ApplicationEventRequest(
-                        event_type="opened", attempt_id=UUID(attempt.id), event_id=uuid4(),
+                        event_type="opened",
+                        attempt_id=UUID(attempt.id),
+                        event_id=uuid4(),
                     ),
                 )
 
@@ -438,7 +478,9 @@ async def test_opened_attempt_rejects_expired_or_stale_attempt_before_persistenc
     async with factory() as db:
         application, package = await _seed(db)
         attempt = ApplicationAttempt(
-            user_id=1, application_id=application.id, package_id=package.id,
+            user_id=1,
+            application_id=application.id,
+            package_id=package.id,
             expires_at=(datetime.now(UTC) + timedelta(hours=1)) if stale else datetime.now(UTC),
         )
         db.add(attempt)
@@ -453,7 +495,9 @@ async def test_opened_attempt_rejects_expired_or_stale_attempt_before_persistenc
             await service.record_event(
                 user_id=1,
                 request=ApplicationEventRequest(
-                    event_type="opened", attempt_id=UUID(attempt.id), event_id=uuid4(),
+                    event_type="opened",
+                    attempt_id=UUID(attempt.id),
+                    event_id=uuid4(),
                     page_url=_SAFE_GREENHOUSE_URL,
                 ),
             )
@@ -467,24 +511,37 @@ async def test_owned_timeline_is_newest_first_and_cursor_stable(engine: AsyncEng
     async with factory() as db:
         application, _ = await _seed(db)
         same_time = datetime(2026, 9, 10, 11, 0, tzinfo=UTC)
-        db.add_all([
-            ApplicationEvent(
-                id="00000000-0000-0000-0000-000000000001", user_id=1,
-                application_id=application.id, job_id=application.job_id,
-                event_type="opened", metadata_={}, created_at=same_time,
-            ),
-            ApplicationEvent(
-                id="00000000-0000-0000-0000-000000000002", user_id=1,
-                application_id=application.id, job_id=application.job_id,
-                event_type="form_detected", metadata_={"field_count": 2, "unsafe": "nope"},
-                created_at=same_time,
-            ),
-            ApplicationEvent(
-                id="00000000-0000-0000-0000-000000000003", user_id=2,
-                application_id=application.id, job_id=application.job_id,
-                event_type="opened", metadata_={}, created_at=same_time,
-            ),
-        ])
+        db.add_all(
+            [
+                ApplicationEvent(
+                    id="00000000-0000-0000-0000-000000000001",
+                    user_id=1,
+                    application_id=application.id,
+                    job_id=application.job_id,
+                    event_type="opened",
+                    metadata_={},
+                    created_at=same_time,
+                ),
+                ApplicationEvent(
+                    id="00000000-0000-0000-0000-000000000002",
+                    user_id=1,
+                    application_id=application.id,
+                    job_id=application.job_id,
+                    event_type="form_detected",
+                    metadata_={"field_count": 2, "unsafe": "nope"},
+                    created_at=same_time,
+                ),
+                ApplicationEvent(
+                    id="00000000-0000-0000-0000-000000000003",
+                    user_id=2,
+                    application_id=application.id,
+                    job_id=application.job_id,
+                    event_type="opened",
+                    metadata_={},
+                    created_at=same_time,
+                ),
+            ]
+        )
         await db.commit()
         service = ApplicationService(
             repository=ApplicationRepository(db), job_repository=JobRepository(db)
@@ -511,29 +568,53 @@ async def test_event_id_is_user_scoped_while_legacy_null_ids_remain_valid(
     async with factory() as db:
         application, _ = await _seed(db)
         shared_event_id = "00000000-0000-0000-0000-000000000099"
-        db.add_all([
-            ApplicationEvent(
-                user_id=1, application_id=application.id, job_id=application.job_id,
-                event_type="opened", metadata_={}, event_id=None,
-            ),
-            ApplicationEvent(
-                user_id=1, application_id=application.id, job_id=application.job_id,
-                event_type="form_detected", metadata_={}, event_id=None,
-            ),
-            ApplicationEvent(
-                user_id=1, application_id=application.id, job_id=application.job_id,
-                event_type="opened", metadata_={}, event_id=shared_event_id,
-            ),
-            ApplicationEvent(
-                user_id=2, application_id=application.id, job_id=application.job_id,
-                event_type="opened", metadata_={}, event_id=shared_event_id,
-            ),
-        ])
+        db.add_all(
+            [
+                ApplicationEvent(
+                    user_id=1,
+                    application_id=application.id,
+                    job_id=application.job_id,
+                    event_type="opened",
+                    metadata_={},
+                    event_id=None,
+                ),
+                ApplicationEvent(
+                    user_id=1,
+                    application_id=application.id,
+                    job_id=application.job_id,
+                    event_type="form_detected",
+                    metadata_={},
+                    event_id=None,
+                ),
+                ApplicationEvent(
+                    user_id=1,
+                    application_id=application.id,
+                    job_id=application.job_id,
+                    event_type="opened",
+                    metadata_={},
+                    event_id=shared_event_id,
+                ),
+                ApplicationEvent(
+                    user_id=2,
+                    application_id=application.id,
+                    job_id=application.job_id,
+                    event_type="opened",
+                    metadata_={},
+                    event_id=shared_event_id,
+                ),
+            ]
+        )
         await db.commit()
-        db.add(ApplicationEvent(
-            user_id=1, application_id=application.id, job_id=application.job_id,
-            event_type="opened", metadata_={}, event_id=shared_event_id,
-        ))
+        db.add(
+            ApplicationEvent(
+                user_id=1,
+                application_id=application.id,
+                job_id=application.job_id,
+                event_type="opened",
+                metadata_={},
+                event_id=shared_event_id,
+            )
+        )
         with pytest.raises(IntegrityError):
             await db.commit()
         await db.rollback()
@@ -560,10 +641,16 @@ async def test_mark_applied_db_replay_is_idempotent_and_conflicts_do_not_mutate(
             await db.commit()
 
     async with factory() as verify:
-        events = list((await verify.execute(select(ApplicationEvent).where(
-            ApplicationEvent.user_id == 1,
-            ApplicationEvent.event_id == str(event_id),
-        ))).scalars())
+        events = list(
+            (
+                await verify.execute(
+                    select(ApplicationEvent).where(
+                        ApplicationEvent.user_id == 1,
+                        ApplicationEvent.event_id == str(event_id),
+                    )
+                )
+            ).scalars()
+        )
         application = await verify.get(Application, application_id)
         assert first.idempotent is False
         assert replay.idempotent is True
@@ -583,33 +670,39 @@ async def test_mark_applied_db_conflicting_replay_does_not_mutate_saved_status(
     async with factory() as db:
         application = await db.get(Application, application_id)
         assert application is not None
-        db.add(ApplicationEvent(
-            user_id=1,
-            application_id=application.id,
-            job_id=application.job_id,
-            event_type="confirmation_detected",
-            source_url=_SAFE_GREENHOUSE_URL,
-            metadata_={"confirmation_source": "confirmation_detected"},
-            attempt_id=attempt_id,
-            event_id=str(event_id),
-        ))
+        db.add(
+            ApplicationEvent(
+                user_id=1,
+                application_id=application.id,
+                job_id=application.job_id,
+                event_type="confirmation_detected",
+                source_url=_SAFE_GREENHOUSE_URL,
+                metadata_={"confirmation_source": "confirmation_detected"},
+                attempt_id=attempt_id,
+                event_id=str(event_id),
+            )
+        )
         await db.commit()
 
         service = _event_service(db, ExtensionRepository(db))
         with pytest.raises(EventIdConflictError):
             await service.mark_applied(
                 user_id=1,
-                request=_mark_applied_request(
-                    event_id, attempt_id, source="user_marked_applied"
-                ),
+                request=_mark_applied_request(event_id, attempt_id, source="user_marked_applied"),
             )
         await db.rollback()
 
     async with factory() as verify:
-        events = list((await verify.execute(select(ApplicationEvent).where(
-            ApplicationEvent.user_id == 1,
-            ApplicationEvent.event_id == str(event_id),
-        ))).scalars())
+        events = list(
+            (
+                await verify.execute(
+                    select(ApplicationEvent).where(
+                        ApplicationEvent.user_id == 1,
+                        ApplicationEvent.event_id == str(event_id),
+                    )
+                )
+            ).scalars()
+        )
         application = await verify.get(Application, application_id)
         assert len(events) == 1
         assert application is not None and application.status == "saved"
@@ -617,9 +710,7 @@ async def test_mark_applied_db_conflicting_replay_does_not_mutate_saved_status(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["interview", "offer", "rejected", "closed"])
-async def test_mark_applied_db_preserves_later_statuses(
-    engine: AsyncEngine, status: str
-) -> None:
+async def test_mark_applied_db_preserves_later_statuses(engine: AsyncEngine, status: str) -> None:
     application_id, attempt_id = await _seed_attempt(engine)
     event_id = uuid4()
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -648,10 +739,16 @@ async def test_mark_applied_db_preserves_later_statuses(
             await db.rollback()
 
     async with factory() as verify:
-        events = list((await verify.execute(select(ApplicationEvent).where(
-            ApplicationEvent.user_id == 1,
-            ApplicationEvent.event_id == str(event_id),
-        ))).scalars())
+        events = list(
+            (
+                await verify.execute(
+                    select(ApplicationEvent).where(
+                        ApplicationEvent.user_id == 1,
+                        ApplicationEvent.event_id == str(event_id),
+                    )
+                )
+            ).scalars()
+        )
         application = await verify.get(Application, application_id)
         assert replay.idempotent is True
         assert len(events) == 1
@@ -702,13 +799,9 @@ async def test_mark_applied_db_concurrent_identical_replay_is_single_event(
     async def mark() -> MarkAppliedResponse:
         async with factory() as db:
             service = _event_service(db, _CoordinatedExtensionRepository(db, barrier))
-            with patch(
-                "app.domain.extension.application_event_service.ApplicationPreparationService.get",
-                new=AsyncMock(return_value=SimpleNamespace(state="ready", approval_current=True)),
-            ):
-                result = await service.mark_applied(
-                    user_id=1, request=_mark_applied_request(event_id, attempt_id)
-                )
+            result = await service.mark_applied(
+                user_id=1, request=_mark_applied_request(event_id, attempt_id)
+            )
             assert (
                 await db.scalar(select(Application.id).where(Application.id == application_id))
                 == application_id
@@ -716,13 +809,25 @@ async def test_mark_applied_db_concurrent_identical_replay_is_single_event(
             await db.commit()
             return result
 
-    first, second = await asyncio.wait_for(asyncio.gather(mark(), mark()), timeout=10)
+    original_get = ApplicationPreparationService.get
+    with patch(
+        "app.domain.extension.application_event_service.ApplicationPreparationService.get",
+        new=AsyncMock(return_value=SimpleNamespace(state="ready", approval_current=True)),
+    ):
+        first, second = await asyncio.wait_for(asyncio.gather(mark(), mark()), timeout=10)
+    assert ApplicationPreparationService.get is original_get
 
     async with factory() as verify:
-        events = list((await verify.execute(select(ApplicationEvent).where(
-            ApplicationEvent.user_id == 1,
-            ApplicationEvent.event_id == str(event_id),
-        ))).scalars())
+        events = list(
+            (
+                await verify.execute(
+                    select(ApplicationEvent).where(
+                        ApplicationEvent.user_id == 1,
+                        ApplicationEvent.event_id == str(event_id),
+                    )
+                )
+            ).scalars()
+        )
         application = await verify.get(Application, application_id)
         assert len(events) == 1
         assert application is not None and application.status == "applied"
@@ -788,10 +893,16 @@ async def test_fill_event_db_replay_is_idempotent_and_conflicts_preserve_origina
             await db.rollback()
 
     async with factory() as verify:
-        events = list((await verify.execute(select(ApplicationEvent).where(
-            ApplicationEvent.user_id == 1,
-            ApplicationEvent.event_id == str(event_id),
-        ))).scalars())
+        events = list(
+            (
+                await verify.execute(
+                    select(ApplicationEvent).where(
+                        ApplicationEvent.user_id == 1,
+                        ApplicationEvent.event_id == str(event_id),
+                    )
+                )
+            ).scalars()
+        )
         assert len(events) == 1
         assert events[0].event_type == "autofill_completed"
         assert events[0].metadata_ == {

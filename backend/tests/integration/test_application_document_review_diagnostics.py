@@ -73,24 +73,39 @@ def _config() -> Config:
 def _content() -> dict[str, object]:
     return {
         "job": {"description": "Requires Python"},
-        "resume": {"content": {"summary": "Built APIs"}, "provenance": {"source_revision_sha256": "a"}},
+        "resume": {
+            "content": {"summary": "Built APIs"},
+            "provenance": {"source_revision_sha256": "a"},
+        },
         "cover_letter": {"content": "Built APIs for this role"},
     }
 
 
-def _finding(*, locator: str = "/resume/content/summary", excerpt: str = "Built APIs") -> dict[str, object]:
+def _finding(
+    *, locator: str = "/resume/content/summary", excerpt: str = "Built APIs"
+) -> dict[str, object]:
     return {
-        "id": "f1", "document": "resume", "category": "repetition", "severity": "suggestion",
-        "excerpt": excerpt, "locator": locator, "rationale": "Repeated wording",
-        "evidence": [{"role": "target", "document": "resume", "locator": locator, "excerpt": excerpt}],
+        "id": "f1",
+        "document": "resume",
+        "category": "repetition",
+        "severity": "suggestion",
+        "excerpt": excerpt,
+        "locator": locator,
+        "rationale": "Repeated wording",
+        "evidence": [
+            {"role": "target", "document": "resume", "locator": locator, "excerpt": excerpt}
+        ],
         "proposed_action": "Vary the wording",
     }
 
 
 def _provider_finding(*, evidence_id: str = "resume-e0001") -> dict[str, object]:
     return {
-        "id": "f1", "category": "repetition", "severity": "suggestion",
-        "rationale": "Repeated wording", "target_evidence_id": evidence_id,
+        "id": "f1",
+        "category": "repetition",
+        "severity": "suggestion",
+        "rationale": "Repeated wording",
+        "target_evidence_id": evidence_id,
         "proposed_action": "Vary the wording",
     }
 
@@ -112,16 +127,26 @@ async def _seed_review(session: AsyncSession, review_id: str) -> ApplicationDocu
     content = _content()
     encoded = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     package = ApplicationPackage(
-        application_id=application.id, revision=1, content=content,
+        application_id=application.id,
+        revision=1,
+        content=content,
         content_sha256=hashlib.sha256(encoded.encode()).hexdigest(),
-        schema_version="application-package-v1", idempotency_key=f"package-{review_id}",
+        schema_version="application-package-v1",
+        idempotency_key=f"package-{review_id}",
     )
     session.add(package)
     await session.flush()
     review = ApplicationDocumentReview(
-        id=review_id, user_id=1, application_id=application.id, package_id=package.id,
-        package_content_sha256=package.content_sha256, review_policy_version=REVIEW_POLICY_VERSION,
-        idempotency_key=f"review-{review_id}", task_id=f"task-{review_id}", state="queued", findings=[],
+        id=review_id,
+        user_id=1,
+        application_id=application.id,
+        package_id=package.id,
+        package_content_sha256=package.content_sha256,
+        review_policy_version=REVIEW_POLICY_VERSION,
+        idempotency_key=f"review-{review_id}",
+        task_id=f"task-{review_id}",
+        state="queued",
+        findings=[],
     )
     session.add(review)
     await session.commit()
@@ -130,13 +155,19 @@ async def _seed_review(session: AsyncSession, review_id: str) -> ApplicationDocu
 
 async def _reloaded(engine: AsyncEngine, review_id: str) -> ApplicationDocumentReview:
     async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as session:
-        review = await session.scalar(select(ApplicationDocumentReview).where(ApplicationDocumentReview.id == review_id))
+        review = await session.scalar(
+            select(ApplicationDocumentReview).where(ApplicationDocumentReview.id == review_id)
+        )
         assert review is not None
         return review
 
 
 def _install_worker(
-    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine, provider: object, store: _Store, logger: _Logger,
+    monkeypatch: pytest.MonkeyPatch,
+    engine: AsyncEngine,
+    provider: object,
+    store: _Store,
+    logger: _Logger,
 ) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(document_review, "async_session_factory", factory)
@@ -150,10 +181,16 @@ class _ReviewService(document_review.DocumentReviewService):
     """Exercise cache behavior without rebuilding preparation fixtures."""
 
     async def _current_owned_package(
-        self, *, user_id: int, application_id: int, package_id: int,
+        self,
+        *,
+        user_id: int,
+        application_id: int,
+        package_id: int,
     ) -> ApplicationPackage:
         return await self._owned_package(
-            user_id=user_id, application_id=application_id, package_id=package_id,
+            user_id=user_id,
+            application_id=application_id,
+            package_id=package_id,
         )
 
 
@@ -161,35 +198,96 @@ class _ReviewService(document_review.DocumentReviewService):
 @pytest.mark.parametrize(
     ("review_id", "responses", "expected_state", "expected_generations", "expected_failure_reason"),
     [
-        ("provider-failure", [LLMUnavailableError("SECRET_PROVIDER_RESPONSE", provider_failure_category="rate_limit", providers_exhausted=True, attempted_provider_names=("openai",), attempt_categories=("rate_limit",))], "failed", 1, None),
-        ("noneligible", [{"findings": [_finding(locator="/resume/content/summary/extra")] }], "failed", 1, None),
-        ("namespace-gen2-failure", [
-            {"findings": [_provider_finding(evidence_id="job-e0001")]},
-            {"findings": [_provider_finding(evidence_id="job-e0001")]},
-        ], "failed", 2, None),
-        ("gen2-failure", [{"findings": [_provider_finding(evidence_id="resume-e999999")]}, LLMUnavailableError("SECRET_PROVIDER_RESPONSE", provider_failure_category="rate_limit", providers_exhausted=True, attempted_provider_names=("openai",), attempt_categories=("rate_limit",))], "failed", 2, "invalid_evidence_id"),
+        (
+            "provider-failure",
+            [
+                LLMUnavailableError(
+                    "SECRET_PROVIDER_RESPONSE",
+                    provider_failure_category="rate_limit",
+                    providers_exhausted=True,
+                    attempted_provider_names=("openai",),
+                    attempt_categories=("rate_limit",),
+                )
+            ],
+            "failed",
+            1,
+            None,
+        ),
+        (
+            "noneligible",
+            [{"findings": [_finding(locator="/resume/content/summary/extra")]}],
+            "failed",
+            1,
+            None,
+        ),
+        (
+            "namespace-gen2-failure",
+            [
+                {"findings": [_provider_finding(evidence_id="job-e0001")]},
+                {"findings": [_provider_finding(evidence_id="job-e0001")]},
+            ],
+            "failed",
+            2,
+            None,
+        ),
+        (
+            "gen2-failure",
+            [
+                {"findings": [_provider_finding(evidence_id="resume-e999999")]},
+                LLMUnavailableError(
+                    "SECRET_PROVIDER_RESPONSE",
+                    provider_failure_category="rate_limit",
+                    providers_exhausted=True,
+                    attempted_provider_names=("openai",),
+                    attempt_categories=("rate_limit",),
+                ),
+            ],
+            "failed",
+            2,
+            "invalid_evidence_id",
+        ),
         ("schema-gen2-failure", [{}, {}], "failed", 2, None),
         ("gen1-success", [{"findings": [_provider_finding()]}], "completed", 1, None),
-        ("gen2-success", [{"findings": [_provider_finding(evidence_id="resume-e999999")]}, {"findings": [_provider_finding()]}], "completed", 2, None),
+        (
+            "gen2-success",
+            [
+                {"findings": [_provider_finding(evidence_id="resume-e999999")]},
+                {"findings": [_provider_finding()]},
+            ],
+            "completed",
+            2,
+            None,
+        ),
     ],
 )
 async def test_diagnostic_jsonb_persists_and_reloads(
-    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, review_id: str, responses: list[object],
-    expected_state: str, expected_generations: int, expected_failure_reason: str | None,
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    review_id: str,
+    responses: list[object],
+    expected_state: str,
+    expected_generations: int,
+    expected_failure_reason: str | None,
 ) -> None:
     async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as session:
         review = await _seed_review(session, review_id)
     semantic_calls = 0
+
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         nonlocal semantic_calls
         item = responses[semantic_calls]
         semantic_calls += 1
         if isinstance(item, BaseException):
             raise item
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(item)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(item)))]
+        ), "fake-model"
+
     store, logger = _Store(), _Logger()
     _install_worker(monkeypatch, engine, provider, store, logger)
-    await document_review.run_document_review_background(task_id=review.task_id, review_id=review.id, user_id=1)
+    await document_review.run_document_review_background(
+        task_id=review.task_id, review_id=review.id, user_id=1
+    )
     persisted = await _reloaded(engine, review.id)
     assert persisted.state == expected_state
     assert persisted.diagnostic_summary is not None
@@ -220,15 +318,25 @@ async def test_diagnostic_jsonb_persists_and_reloads(
             assert "resume-e999999" not in json.dumps(persisted.findings)
     else:
         generations = summary["generations"]
-        assert isinstance(generations, list) and len(generations) == expected_generations, logger.events
-        assert [entry["generation_attempt"] for entry in generations] == list(range(1, expected_generations + 1))
+        assert isinstance(generations, list) and len(generations) == expected_generations, (
+            logger.events
+        )
+        assert [entry["generation_attempt"] for entry in generations] == list(
+            range(1, expected_generations + 1)
+        )
         assert all(isinstance(entry["generation_attempt"], int) for entry in generations)
         if expected_failure_reason is not None:
             assert expected_failure_reason in [entry.get("reason") for entry in generations]
         if review_id == "noneligible":
             assert semantic_calls == 1
     rendered = json.dumps(summary, sort_keys=True)
-    for sentinel in ("SECRET_RAW_LOCATOR", "SECRET_EXCERPT", "SECRET_FINDING_TEXT", "SECRET_PROVIDER_RESPONSE", "SECRET_EXCEPTION_TEXT"):
+    for sentinel in (
+        "SECRET_RAW_LOCATOR",
+        "SECRET_EXCERPT",
+        "SECRET_FINDING_TEXT",
+        "SECRET_PROVIDER_RESPONSE",
+        "SECRET_EXCEPTION_TEXT",
+    ):
         assert sentinel not in rendered
     if review_id == "schema-gen2-failure":
         schema_generations = cast(list[dict[str, object]], summary["generations"])
@@ -239,26 +347,39 @@ async def test_diagnostic_jsonb_persists_and_reloads(
 
 @pytest.mark.asyncio
 async def test_v10_namespace_schema_correction_persists_gen2_completion_safely(
-    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as session:
         review = await _seed_review(session, "namespace-schema-gen2-success")
     invalid_evidence_id = "resume-e0001"
     responses = [
-        {"findings": [{
-            "id": "namespace-correction", "category": "cross_document_mismatch",
-            "severity": "suggestion", "rationale": "Documents conflict",
-            "resume_evidence_id": invalid_evidence_id,
-            "cover_letter_evidence_id": invalid_evidence_id,
-            "proposed_action": "Align the documents",
-        }]},
-        {"findings": [{
-            "id": "namespace-correction", "category": "cross_document_mismatch",
-            "severity": "suggestion", "rationale": "Documents conflict",
-            "resume_evidence_id": "resume-e0001",
-            "cover_letter_evidence_id": "cover-e0001",
-            "proposed_action": "Align the documents",
-        }]},
+        {
+            "findings": [
+                {
+                    "id": "namespace-correction",
+                    "category": "cross_document_mismatch",
+                    "severity": "suggestion",
+                    "rationale": "Documents conflict",
+                    "resume_evidence_id": invalid_evidence_id,
+                    "cover_letter_evidence_id": invalid_evidence_id,
+                    "proposed_action": "Align the documents",
+                }
+            ]
+        },
+        {
+            "findings": [
+                {
+                    "id": "namespace-correction",
+                    "category": "cross_document_mismatch",
+                    "severity": "suggestion",
+                    "rationale": "Documents conflict",
+                    "resume_evidence_id": "resume-e0001",
+                    "cover_letter_evidence_id": "cover-e0001",
+                    "proposed_action": "Align the documents",
+                }
+            ]
+        },
     ]
     calls = 0
 
@@ -268,35 +389,59 @@ async def test_v10_namespace_schema_correction_persists_gen2_completion_safely(
             raise AssertionError("third generation attempted")
         payload = responses[calls]
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
     store, logger = _Store(), _Logger()
     _install_worker(monkeypatch, engine, provider, store, logger)
-    await document_review.run_document_review_background(task_id=review.task_id, review_id=review.id, user_id=1)
+    await document_review.run_document_review_background(
+        task_id=review.task_id, review_id=review.id, user_id=1
+    )
 
     persisted = await _reloaded(engine, review.id)
     assert calls == 2
     assert persisted.state == "completed"
     assert store.updates[-1]["status"] == "done"
     assert persisted.diagnostic_summary == {
-        "diagnostic_version": "document-review-diagnostic-v1", "review_id": review.id,
-        "task_id": review.task_id, "outcome": "completed", "generation_count": 2,
+        "diagnostic_version": "document-review-diagnostic-v1",
+        "review_id": review.id,
+        "task_id": review.task_id,
+        "outcome": "completed",
+        "generation_count": 2,
         "completed_on_generation": 2,
     }
     rendered = json.dumps((persisted.diagnostic_summary, logger.events), sort_keys=True)
     assert "document_review_schema_validation_failed" in rendered
-    for forbidden in (invalid_evidence_id, "cover-e0001", "regex", "pattern", "input", "locator", "excerpt", "rationale"):
+    for forbidden in (
+        invalid_evidence_id,
+        "cover-e0001",
+        "regex",
+        "pattern",
+        "input",
+        "locator",
+        "excerpt",
+        "rationale",
+    ):
         assert forbidden not in rendered
     assert "evidence_id" not in json.dumps(persisted.findings)
-    schema_events = [fields for event_name, fields in logger.events if event_name == "document_review_schema_validation_failed"]
-    assert schema_events == [{
-        "generation": 1,
-        "validation_error_count": 1,
-        "normalized_schema_issues": ({
-            "schema_issue_type": "invalid_evidence_id_namespace",
-            "field_path": "findings.*.cover_letter_evidence_id",
-        },),
-    }]
+    schema_events = [
+        fields
+        for event_name, fields in logger.events
+        if event_name == "document_review_schema_validation_failed"
+    ]
+    assert schema_events == [
+        {
+            "generation": 1,
+            "validation_error_count": 1,
+            "normalized_schema_issues": (
+                {
+                    "schema_issue_type": "invalid_evidence_id_namespace",
+                    "field_path": "findings.*.cover_letter_evidence_id",
+                },
+            ),
+        }
+    ]
 
 
 class _ForcedCanonicalFinding(BaseModel):
@@ -306,7 +451,8 @@ class _ForcedCanonicalFinding(BaseModel):
 
 @pytest.mark.asyncio
 async def test_v8_canonical_validation_diagnostic_persists_safely(
-    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as session:
         review = await _seed_review(session, "canonical-validation")
@@ -315,36 +461,64 @@ async def test_v8_canonical_validation_diagnostic_persists_safely(
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         nonlocal calls
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [_provider_finding()]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [_provider_finding()]}))
+                )
+            ]
+        ), "fake-model"
 
     store, logger = _Store(), _Logger()
     monkeypatch.setattr(document_review, "DocumentReviewFinding", _ForcedCanonicalFinding)
     _install_worker(monkeypatch, engine, provider, store, logger)
-    await document_review.run_document_review_background(task_id=review.task_id, review_id=review.id, user_id=1)
+    await document_review.run_document_review_background(
+        task_id=review.task_id, review_id=review.id, user_id=1
+    )
 
     persisted = await _reloaded(engine, review.id)
     assert calls == 1 and persisted.state == "failed"
     assert persisted.diagnostic_summary == {
-        "diagnostic_version": "document-review-diagnostic-v1", "review_id": review.id,
-        "task_id": review.task_id, "outcome": "failed",
+        "diagnostic_version": "document-review-diagnostic-v1",
+        "review_id": review.id,
+        "task_id": review.task_id,
+        "outcome": "failed",
         "generations": [{"generation_attempt": 1, "stage": "canonical_validation"}],
     }
-    canonical_events = [fields for event_name, fields in logger.events if event_name == "document_review_canonical_validation_failed"]
-    schema_events = [fields for event_name, fields in logger.events if event_name == "document_review_schema_validation_failed"]
-    assert canonical_events == [{"generation": 1, "exception_class": "ValidationError", "validation_error_count": 1}]
+    canonical_events = [
+        fields
+        for event_name, fields in logger.events
+        if event_name == "document_review_canonical_validation_failed"
+    ]
+    schema_events = [
+        fields
+        for event_name, fields in logger.events
+        if event_name == "document_review_schema_validation_failed"
+    ]
+    assert canonical_events == [
+        {"generation": 1, "exception_class": "ValidationError", "validation_error_count": 1}
+    ]
     assert schema_events == []
     rendered = json.dumps((persisted.diagnostic_summary, logger.events), sort_keys=True)
-    for forbidden in ("excerpt", "locator", "evidence_id", "normalized_schema_issues", "Built APIs"):
+    for forbidden in (
+        "excerpt",
+        "locator",
+        "evidence_id",
+        "normalized_schema_issues",
+        "Built APIs",
+    ):
         assert forbidden not in rendered
 
 
 @pytest.mark.asyncio
 async def test_diagnostic_specific_persistence_failure_rolls_back_and_preserves_failed_terminal_state(
-    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as session:
         review = await _seed_review(session, "fallback-failed")
     fail_once = {"value": True}
+
     def reject_diagnostic(_session: Session, _context: object, instances: object) -> None:
         del instances
         if fail_once["value"] and any(
@@ -353,13 +527,24 @@ async def test_diagnostic_specific_persistence_failure_rolls_back_and_preserves_
         ):
             fail_once["value"] = False
             raise RuntimeError("SECRET_DIAGNOSTIC_DB_EXCEPTION_DO_NOT_LOG")
+
     event.listen(Session, "before_flush", reject_diagnostic)
     store, logger = _Store(), _Logger()
+
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        raise LLMUnavailableError("SECRET_PROVIDER_RESPONSE", provider_failure_category="rate_limit", providers_exhausted=True, attempted_provider_names=("openai",), attempt_categories=("rate_limit",))
+        raise LLMUnavailableError(
+            "SECRET_PROVIDER_RESPONSE",
+            provider_failure_category="rate_limit",
+            providers_exhausted=True,
+            attempted_provider_names=("openai",),
+            attempt_categories=("rate_limit",),
+        )
+
     _install_worker(monkeypatch, engine, provider, store, logger)
     try:
-        await document_review.run_document_review_background(task_id=review.task_id, review_id=review.id, user_id=1)
+        await document_review.run_document_review_background(
+            task_id=review.task_id, review_id=review.id, user_id=1
+        )
     finally:
         event.remove(Session, "before_flush", reject_diagnostic)
     persisted = await _reloaded(engine, review.id)
@@ -401,7 +586,9 @@ async def test_historical_null_and_public_projection_do_not_fabricate_or_expose_
             },
         )
         persisted_review.diagnostic_summary = document_review._failure_diagnostic(
-            persisted_review, persisted_review.task_id, [generation],
+            persisted_review,
+            persisted_review.task_id,
+            [generation],
         )
         await session.commit()
     durable = await _reloaded(engine, review.id)
@@ -411,11 +598,14 @@ async def test_historical_null_and_public_projection_do_not_fabricate_or_expose_
     assert "SECRET_UNKNOWN_DIAGNOSTIC_VALUE" not in rendered_durable
 
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
     async def db() -> Any:
         async with factory() as session:
             yield session
+
     async def user() -> User:
         return User(id=1, email="owner@example.test", name="Owner")
+
     app = FastAPI()
     app.include_router(applications_module.router)
     app.dependency_overrides[get_db] = db
@@ -426,7 +616,14 @@ async def test_historical_null_and_public_projection_do_not_fabricate_or_expose_
         )
     assert response.status_code == 200
     rendered = response.text
-    for key in ("diagnostic_summary", "diagnostic_version", "generations", "generation_attempt", "provider_failure_category", "provider_attempt_count"):
+    for key in (
+        "diagnostic_summary",
+        "diagnostic_version",
+        "generations",
+        "generation_attempt",
+        "provider_failure_category",
+        "provider_attempt_count",
+    ):
         assert key not in rendered
 
 
@@ -494,14 +691,24 @@ def test_0042_upgrade_downgrade_reupgrade_preserves_historical_null() -> None:
     try:
         command.downgrade(config, "0041")
         with engine.connect() as connection:
-            assert "diagnostic_summary" not in {column["name"] for column in inspect(connection).get_columns("application_document_reviews")}
+            assert "diagnostic_summary" not in {
+                column["name"]
+                for column in inspect(connection).get_columns("application_document_reviews")
+            }
         command.upgrade(config, "0042")
         with engine.connect() as connection:
-            column = next(column for column in inspect(connection).get_columns("application_document_reviews") if column["name"] == "diagnostic_summary")
+            column = next(
+                column
+                for column in inspect(connection).get_columns("application_document_reviews")
+                if column["name"] == "diagnostic_summary"
+            )
             assert column["type"].__class__.__name__ == "JSONB" and column["nullable"] is True
         command.downgrade(config, "0041")
         with engine.connect() as connection:
-            assert "diagnostic_summary" not in {column["name"] for column in inspect(connection).get_columns("application_document_reviews")}
+            assert "diagnostic_summary" not in {
+                column["name"]
+                for column in inspect(connection).get_columns("application_document_reviews")
+            }
         command.upgrade(config, "0042")
     finally:
         command.upgrade(config, "head")

@@ -50,6 +50,7 @@ pytestmark = pytest.mark.integration
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def engine() -> AsyncEngine:
     settings = get_settings()
@@ -69,6 +70,7 @@ async def clean_db(engine: AsyncEngine) -> None:
 def settings() -> Settings:
     # Use a fixed secret for deterministic token generation in tests.
     from pydantic import SecretStr
+
     return Settings(
         environment="development",
         jwt_secret=SecretStr("test-secret-for-testing-at-least-32-chars!!"),
@@ -114,9 +116,7 @@ async def test_login_creates_session(engine: AsyncEngine, settings: Settings) ->
         assert len(sessions) == 1
         s = sessions[0]
         assert s.user_id == 1
-        assert s.refresh_token_hash == hashlib.sha256(
-            tokens.refresh_token.encode()
-        ).hexdigest()
+        assert s.refresh_token_hash == hashlib.sha256(tokens.refresh_token.encode()).hexdigest()
         assert s.revoked_at is None
         assert s.token_family is not None
 
@@ -140,18 +140,14 @@ async def test_refresh_rotates_token(engine: AsyncEngine, settings: Settings) ->
 
     # Verify old session revoked, new session created, same family.
     async with sf() as db:
-        result = await db.execute(
-            select(WebRefreshSession).order_by(WebRefreshSession.created_at)
-        )
+        result = await db.execute(select(WebRefreshSession).order_by(WebRefreshSession.created_at))
         sessions = result.scalars().all()
         assert len(sessions) == 2
         old_s, new_s = sessions[0], sessions[1]
         assert old_s.revoked_at is not None
         assert new_s.revoked_at is None
         assert old_s.token_family == new_s.token_family
-        assert new_s.refresh_token_hash == hashlib.sha256(
-            new_token.encode()
-        ).hexdigest()
+        assert new_s.refresh_token_hash == hashlib.sha256(new_token.encode()).hexdigest()
 
 
 async def test_old_token_reuse_revokes_family(engine: AsyncEngine, settings: Settings) -> None:
@@ -193,9 +189,7 @@ async def test_old_token_reuse_revokes_family(engine: AsyncEngine, settings: Set
             assert s.revoked_at is not None
     async with sf() as verify_db:
         with pytest.raises(InvalidTokenError):
-            await _make_svc(verify_db, settings).refresh(
-                refresh_token=rotated_tokens.refresh_token
-            )
+            await _make_svc(verify_db, settings).refresh(refresh_token=rotated_tokens.refresh_token)
 
 
 async def test_logout_revokes_session(engine: AsyncEngine, settings: Settings) -> None:
@@ -221,14 +215,13 @@ async def test_logout_revokes_session(engine: AsyncEngine, settings: Settings) -
         assert sessions[0].revoked_at is not None
 
 
-async def test_password_reset_revokes_all_sessions(
-    engine: AsyncEngine, settings: Settings
-) -> None:
+async def test_password_reset_revokes_all_sessions(engine: AsyncEngine, settings: Settings) -> None:
     """Password reset revokes all active web refresh sessions for the user."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
         from app.core.security import hash_password
+
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -259,9 +252,7 @@ async def test_password_reset_revokes_all_sessions(
             token_type="reset",
             extra_claims={"reset_version": user.password_reset_version},
         )
-        await svc.reset_password(
-            token_str=reset_token, new_password="newpassword456"
-        )
+        await svc.reset_password(token_str=reset_token, new_password="newpassword456")
         await db.commit()
 
     # Verify all sessions revoked.
@@ -318,9 +309,7 @@ async def test_delayed_web_reuse_api_persists_family_revocation(
         await db.commit()
 
     await app_engine.dispose()
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             "/api/v1/auth/refresh",
             cookies={api_settings.refresh_cookie_name: tokens.refresh_token},
@@ -332,9 +321,7 @@ async def test_delayed_web_reuse_api_persists_family_revocation(
         assert rows
         assert all(row.revoked_at is not None for row in rows)
         with pytest.raises(InvalidTokenError):
-            await _make_svc(db, api_settings).refresh(
-                refresh_token=rotated.refresh_token
-            )
+            await _make_svc(db, api_settings).refresh(refresh_token=rotated.refresh_token)
 
 
 async def test_legacy_extension_refresh_backfill_preserves_family_rotation(
@@ -362,19 +349,21 @@ async def test_legacy_extension_refresh_backfill_preserves_family_rotation(
         )
         await db.commit()
 
-        service = ExtensionAuthService(
-            repository=ExtensionRepository(db), settings=settings
-        )
+        service = ExtensionAuthService(repository=ExtensionRepository(db), settings=settings)
         refreshed = await service.refresh(legacy_token)
         await db.commit()
 
         rows = (
-            await db.execute(
-                select(ExtensionRefreshToken)
-                .where(ExtensionRefreshToken.extension_session_id == session.id)
-                .order_by(ExtensionRefreshToken.created_at)
+            (
+                await db.execute(
+                    select(ExtensionRefreshToken)
+                    .where(ExtensionRefreshToken.extension_session_id == session.id)
+                    .order_by(ExtensionRefreshToken.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(rows) == 2
         assert rows[0].used_at is not None
         assert rows[1].token_family == family
@@ -383,6 +372,7 @@ async def test_legacy_extension_refresh_backfill_preserves_family_rotation(
 
 
 @pytest.mark.migration
+@pytest.mark.migration_start("0029_resume_import_provenance")
 async def test_migration_backfills_active_and_revoked_legacy_sessions(
     engine: AsyncEngine, settings: Settings
 ) -> None:
@@ -424,14 +414,16 @@ async def test_migration_backfills_active_and_revoked_legacy_sessions(
 
         async with sf() as db:
             rows = (
-                await db.execute(
-                    select(ExtensionRefreshToken).where(
-                        ExtensionRefreshToken.extension_session_id.in_(
-                            [active_id, revoked_id]
+                (
+                    await db.execute(
+                        select(ExtensionRefreshToken).where(
+                            ExtensionRefreshToken.extension_session_id.in_([active_id, revoked_id])
                         )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(rows) == 2
             by_session = {row.extension_session_id: row for row in rows}
             active_row = by_session[active_id]
@@ -447,9 +439,7 @@ async def test_migration_backfills_active_and_revoked_legacy_sessions(
             assert active_row.token_family
             assert revoked_row.token_family
 
-            service = ExtensionAuthService(
-                repository=ExtensionRepository(db), settings=settings
-            )
+            service = ExtensionAuthService(repository=ExtensionRepository(db), settings=settings)
             refreshed = await service.refresh(active_token)
             assert refreshed.refresh_token
             await db.commit()
@@ -466,18 +456,14 @@ async def test_concurrent_extension_refresh_has_one_success(
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
-        service = ExtensionAuthService(
-            repository=ExtensionRepository(db), settings=settings
-        )
+        service = ExtensionAuthService(repository=ExtensionRepository(db), settings=settings)
         code, _ = await service.generate_pairing_code(user_id=user.id)
         pair = await service.complete_pairing(code)
         await db.commit()
 
     async def attempt() -> str:
         async with sf() as db:
-            worker = ExtensionAuthService(
-                repository=ExtensionRepository(db), settings=settings
-            )
+            worker = ExtensionAuthService(repository=ExtensionRepository(db), settings=settings)
             try:
                 await worker.refresh(pair.refresh_token)
                 await db.commit()
@@ -507,9 +493,7 @@ async def test_concurrent_web_refresh_has_one_success_without_family_revocation(
     async def attempt() -> str:
         async with sf() as db:
             try:
-                await _make_svc(db, settings).refresh(
-                    refresh_token=tokens.refresh_token
-                )
+                await _make_svc(db, settings).refresh(refresh_token=tokens.refresh_token)
                 await db.commit()
                 return "success"
             except InvalidTokenError:
@@ -521,10 +505,10 @@ async def test_concurrent_web_refresh_has_one_success_without_family_revocation(
 
     async with sf() as db:
         rows = (
-            await db.execute(
-                select(WebRefreshSession).order_by(WebRefreshSession.created_at)
-            )
-        ).scalars().all()
+            (await db.execute(select(WebRefreshSession).order_by(WebRefreshSession.created_at)))
+            .scalars()
+            .all()
+        )
         assert len(rows) == 2
         assert sum(row.revoked_at is None for row in rows) == 1
         assert len({row.token_family for row in rows}) == 1
@@ -563,14 +547,13 @@ async def test_recent_web_reuse_within_grace_does_not_revoke_family(
         assert sum(row.revoked_at is None for row in rows) == 1
 
 
-async def test_refresh_with_revoked_token_fails(
-    engine: AsyncEngine, settings: Settings
-) -> None:
+async def test_refresh_with_revoked_token_fails(engine: AsyncEngine, settings: Settings) -> None:
     """A logged-out token cannot be used to refresh."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
         from app.core.security import hash_password
+
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -580,13 +563,12 @@ async def test_refresh_with_revoked_token_fails(
         await db.commit()
 
         from app.domain.auth.exceptions import InvalidTokenError
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=tokens.refresh_token)
 
 
-async def test_refresh_with_inactive_user_fails(
-    engine: AsyncEngine, settings: Settings
-) -> None:
+async def test_refresh_with_inactive_user_fails(engine: AsyncEngine, settings: Settings) -> None:
     """A valid refresh token cannot revive an inactive account."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
@@ -606,9 +588,7 @@ async def test_refresh_with_inactive_user_fails(
 # ── Cryptographic JWT validation in session-based path ────────────────────
 
 
-async def test_expired_refresh_token_rejected(
-    engine: AsyncEngine, settings: Settings
-) -> None:
+async def test_expired_refresh_token_rejected(engine: AsyncEngine, settings: Settings) -> None:
     """An expired JWT is rejected by decode_token() before the hash lookup."""
     from datetime import UTC, datetime, timedelta
 
@@ -646,6 +626,7 @@ async def test_expired_refresh_token_rejected(
 
         svc = _make_svc(db, settings)
         from app.domain.auth.exceptions import InvalidTokenError
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=expired_token)
 
@@ -658,6 +639,7 @@ async def test_access_token_used_as_refresh_rejected(
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
         from app.core.security import hash_password
+
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -667,13 +649,12 @@ async def test_access_token_used_as_refresh_rejected(
         access = tokens.access_token
 
         from app.domain.auth.exceptions import InvalidTokenError
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=access)
 
 
-async def test_invalid_signature_token_rejected(
-    engine: AsyncEngine, settings: Settings
-) -> None:
+async def test_invalid_signature_token_rejected(engine: AsyncEngine, settings: Settings) -> None:
     """A token signed with a different secret is rejected."""
     import jwt as pyjwt
 
@@ -690,13 +671,12 @@ async def test_invalid_signature_token_rejected(
 
         svc = _make_svc(db, settings)
         from app.domain.auth.exceptions import InvalidTokenError
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=forged)
 
 
-async def test_wrong_audience_token_rejected(
-    engine: AsyncEngine, settings: Settings
-) -> None:
+async def test_wrong_audience_token_rejected(engine: AsyncEngine, settings: Settings) -> None:
     """A token with the wrong audience claim is rejected."""
     from datetime import UTC, datetime, timedelta
 
@@ -714,7 +694,8 @@ async def test_wrong_audience_token_rejected(
         "exp": int((now + timedelta(days=1)).timestamp()),
     }
     wrong_aud_token = pyjwt.encode(
-        payload, settings.jwt_secret.get_secret_value(),
+        payload,
+        settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
 
@@ -732,13 +713,12 @@ async def test_wrong_audience_token_rejected(
 
         svc = _make_svc(db, settings)
         from app.domain.auth.exceptions import InvalidTokenError
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=wrong_aud_token)
 
 
-async def test_wrong_issuer_token_rejected(
-    engine: AsyncEngine, settings: Settings
-) -> None:
+async def test_wrong_issuer_token_rejected(engine: AsyncEngine, settings: Settings) -> None:
     """A token with the wrong issuer claim is rejected."""
     from datetime import UTC, datetime, timedelta
 
@@ -756,7 +736,8 @@ async def test_wrong_issuer_token_rejected(
         "exp": int((now + timedelta(days=1)).timestamp()),
     }
     wrong_iss_token = pyjwt.encode(
-        payload, settings.jwt_secret.get_secret_value(),
+        payload,
+        settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
 
@@ -773,6 +754,7 @@ async def test_wrong_issuer_token_rejected(
 
         svc = _make_svc(db, settings)
         from app.domain.auth.exceptions import InvalidTokenError
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=wrong_iss_token)
 
@@ -789,7 +771,9 @@ async def test_jwt_user_id_mismatch_session_rejected(
 
         # Create a valid refresh token for user A.
         token_for_a = create_token(
-            settings=settings, subject=user_a.id, token_type="refresh",
+            settings=settings,
+            subject=user_a.id,
+            token_type="refresh",
         )
 
         # But insert the hash into a session that points to user B.
@@ -803,6 +787,7 @@ async def test_jwt_user_id_mismatch_session_rejected(
 
         svc = _make_svc(db, settings)
         from app.domain.auth.exceptions import InvalidTokenError
+
         with pytest.raises(InvalidTokenError):
             await svc.refresh(refresh_token=token_for_a)
 
@@ -810,14 +795,13 @@ async def test_jwt_user_id_mismatch_session_rejected(
 # ── last_used_at tracking ─────────────────────────────────────────────────
 
 
-async def test_last_used_at_updated_on_refresh(
-    engine: AsyncEngine, settings: Settings
-) -> None:
+async def test_last_used_at_updated_on_refresh(engine: AsyncEngine, settings: Settings) -> None:
     """After a successful refresh, the old session has last_used_at set."""
     sf = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
         from app.core.security import hash_password
+
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -829,9 +813,7 @@ async def test_last_used_at_updated_on_refresh(
         await db.commit()
 
     async with sf() as db:
-        result = await db.execute(
-            select(WebRefreshSession).order_by(WebRefreshSession.created_at)
-        )
+        result = await db.execute(select(WebRefreshSession).order_by(WebRefreshSession.created_at))
         sessions = result.scalars().all()
         assert len(sessions) == 2
         # The first (old) session should have last_used_at set.
@@ -860,6 +842,7 @@ async def test_forgot_password_dev_returns_reset_url(engine: AsyncEngine) -> Non
     async with sf() as db:
         user = await _create_user(db, 1, "a@test.com")
         from app.core.security import hash_password
+
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -884,6 +867,7 @@ async def test_forgot_password_prod_excludes_reset_url(engine: AsyncEngine) -> N
     async with sf() as db:
         user = await _create_user(db, 2, "b@test.com")
         from app.core.security import hash_password
+
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -924,9 +908,7 @@ async def test_forgot_password_advances_version_and_embeds_claim(
         await db.refresh(user)
         assert user.password_reset_version == 1
         token = result["reset_url"].split("token=", 1)[1]
-        payload = decode_token_payload(
-            settings=settings, token=token, expected_type="reset"
-        )
+        payload = decode_token_payload(settings=settings, token=token, expected_type="reset")
         assert payload["reset_version"] == 1
         assert isinstance(payload["reset_version"], int)
 
@@ -1018,9 +1000,7 @@ async def test_concurrent_password_reset_has_one_winner(
     async def attempt(password: str) -> str:
         async with sf() as db:
             try:
-                await _make_svc(db, settings).reset_password(
-                    token_str=token, new_password=password
-                )
+                await _make_svc(db, settings).reset_password(token_str=token, new_password=password)
                 await db.commit()
                 return "success"
             except InvalidTokenError:
@@ -1043,9 +1023,7 @@ async def test_reset_rejects_invalid_version_and_token_variants(
         svc = _make_svc(db, settings)
         result = await svc.forgot_password(email=user.email)
         token = result["reset_url"].split("token=", 1)[1]
-        base = decode_token_payload(
-            settings=settings, token=token, expected_type="reset"
-        )
+        base = decode_token_payload(settings=settings, token=token, expected_type="reset")
 
         variants: list[str] = ["not-a-jwt"]
         for claim in (None, "1", 0):
@@ -1085,14 +1063,13 @@ async def test_reset_rejects_invalid_version_and_token_variants(
 
         with pytest.raises(InvalidTokenError):
             await svc.reset_password(
-                token_str=create_token(
-                    settings=settings, subject=user.id, token_type="access"
-                ),
+                token_str=create_token(settings=settings, subject=user.id, token_type="access"),
                 new_password="new456",
             )
 
 
 @pytest.mark.migration
+@pytest.mark.migration_start("0030_ext_refresh_token_history")
 def test_password_reset_migration_backfills_existing_users() -> None:
     config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", get_settings().sync_database_url)
@@ -1158,14 +1135,13 @@ async def test_forgot_password_prod_calls_email_provider(engine: AsyncEngine) ->
     async with sf() as db:
         user = await _create_user(db, 3, "c@test.com")
         from app.core.security import hash_password
+
         user.hashed_password = hash_password("password123")
         await db.commit()
 
         svc = _make_svc(db, prod_settings)
         provider = _FakeEmailProvider()
-        result = await svc.forgot_password(
-            email="c@test.com", email_provider=provider
-        )
+        result = await svc.forgot_password(email="c@test.com", email_provider=provider)
         # Response must never leak reset_url in production
         assert "reset_url" not in result
         # Provider must have been called
@@ -1189,6 +1165,7 @@ async def test_forgot_password_no_provider_no_leak(engine: AsyncEngine) -> None:
     async with sf() as db:
         user = await _create_user(db, 4, "d@test.com")
         from app.core.security import hash_password
+
         user.hashed_password = hash_password("password123")
         await db.commit()
 
@@ -1272,12 +1249,16 @@ async def test_web_session_cleanup_deletes_only_unusable_rows_and_preserves_hist
 
     async with sf() as db:
         remaining = (
-            await db.execute(
-                select(WebRefreshSession.refresh_token_hash).order_by(
-                    WebRefreshSession.refresh_token_hash
+            (
+                await db.execute(
+                    select(WebRefreshSession.refresh_token_hash).order_by(
+                        WebRefreshSession.refresh_token_hash
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert remaining == ["active", "recent-never-revoked", "recent-revoked"]
         assert await db.scalar(select(ExtensionRefreshToken.token_hash)) == "extension-history"
 
@@ -1336,6 +1317,7 @@ async def test_web_session_cleanup_respects_batch_size_and_is_idempotent(
 
 
 @pytest.mark.migration
+@pytest.mark.migration_start("0031_password_reset_version")
 async def test_web_session_retention_migration_adds_indexes_without_deleting_rows(
     engine: AsyncEngine,
 ) -> None:
@@ -1366,8 +1348,7 @@ async def test_web_session_retention_migration_adds_indexes_without_deleting_row
                 row.indexname
                 for row in connection.execute(
                     text(
-                        "SELECT indexname FROM pg_indexes "
-                        "WHERE tablename = 'web_refresh_sessions'"
+                        "SELECT indexname FROM pg_indexes WHERE tablename = 'web_refresh_sessions'"
                     )
                 )
             }

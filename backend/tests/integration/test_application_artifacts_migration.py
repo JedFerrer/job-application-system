@@ -18,7 +18,10 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.domain.applications.artifact_repository import ApplicationArtifactRepository
-from app.domain.applications.artifacts import ArtifactValidationError, MAX_APPLICATION_ARTIFACT_BYTES
+from app.domain.applications.artifacts import (
+    ArtifactValidationError,
+    MAX_APPLICATION_ARTIFACT_BYTES,
+)
 from app.models.application_artifact import ApplicationArtifact
 
 
@@ -30,22 +33,65 @@ def test_0044_lifecycle_columns_match_model_and_existing_rows() -> None:
         command.downgrade(config, "0043")
         with engine.begin() as connection:
             connection.execute(text("TRUNCATE TABLE users CASCADE"))
-            user = connection.execute(text("INSERT INTO users (email, name) VALUES ('artifact-upgrade@example.test', 'Artifact') RETURNING id")).scalar_one()
-            job = connection.execute(text("INSERT INTO jobs (fingerprint, identity_scope, identity_key, title, company, source, source_url, raw_response, status, visibility, ingest_source) VALUES ('f-upgrade', 'public', 'upgrade', 'Engineer', 'Acme', 'fixture', 'https://example.test/upgrade', '{}'::jsonb, 'active', 'public', 'fixture') RETURNING id")).scalar_one()
-            application = connection.execute(text("INSERT INTO applications (user_id, job_id, status) VALUES (:user, :job, 'saved') RETURNING id"), {"user": user, "job": job}).scalar_one()
-            package = connection.execute(text("INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 1, '{}'::jsonb, :hash, 'application-package-v1', 'upgrade') RETURNING id"), {"application": application, "hash": "a" * 64}).scalar_one()
-            artifact = connection.execute(text("INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'resume.pdf', 'application/pdf', 3, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content) RETURNING id"), {"user": user, "application": application, "package": package, "hash": hashlib.sha256(b"pdf").hexdigest(), "content": b"pdf"}).scalar_one()
+            user = connection.execute(
+                text(
+                    "INSERT INTO users (email, name) VALUES ('artifact-upgrade@example.test', 'Artifact') RETURNING id"
+                )
+            ).scalar_one()
+            job = connection.execute(
+                text(
+                    "INSERT INTO jobs (fingerprint, identity_scope, identity_key, title, company, source, source_url, raw_response, status, visibility, ingest_source) VALUES ('f-upgrade', 'public', 'upgrade', 'Engineer', 'Acme', 'fixture', 'https://example.test/upgrade', '{}'::jsonb, 'active', 'public', 'fixture') RETURNING id"
+                )
+            ).scalar_one()
+            application = connection.execute(
+                text(
+                    "INSERT INTO applications (user_id, job_id, status) VALUES (:user, :job, 'saved') RETURNING id"
+                ),
+                {"user": user, "job": job},
+            ).scalar_one()
+            package = connection.execute(
+                text(
+                    "INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 1, '{}'::jsonb, :hash, 'application-package-v1', 'upgrade') RETURNING id"
+                ),
+                {"application": application, "hash": "a" * 64},
+            ).scalar_one()
+            artifact = connection.execute(
+                text(
+                    "INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'resume.pdf', 'application/pdf', 3, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content) RETURNING id"
+                ),
+                {
+                    "user": user,
+                    "application": application,
+                    "package": package,
+                    "hash": hashlib.sha256(b"pdf").hexdigest(),
+                    "content": b"pdf",
+                },
+            ).scalar_one()
         command.upgrade(config, "0044")
-        columns = {column["name"]: column for column in inspect(engine).get_columns("application_artifacts")}
+        columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("application_artifacts")
+        }
         assert {"task_id", "validation_attempt", "validation_state_changed_at"} <= set(columns)
-        assert {"task_id", "validation_attempt", "validation_state_changed_at"} <= set(ApplicationArtifact.__table__.columns.keys())
+        assert {"task_id", "validation_attempt", "validation_state_changed_at"} <= set(
+            ApplicationArtifact.__table__.columns.keys()
+        )
         assert columns["task_id"]["nullable"] is True
-        assert cast(String, columns["task_id"]["type"]).length == cast(String, ApplicationArtifact.__table__.columns["task_id"].type).length == 36
+        assert (
+            cast(String, columns["task_id"]["type"]).length
+            == cast(String, ApplicationArtifact.__table__.columns["task_id"].type).length
+            == 36
+        )
         assert columns["validation_attempt"]["nullable"] is False
         assert columns["validation_attempt"]["default"] is not None
         assert columns["validation_state_changed_at"]["nullable"] is False
         with engine.connect() as connection:
-            row = connection.execute(text("SELECT task_id, validation_attempt, validation_state_changed_at, content FROM application_artifacts WHERE id=:id"), {"id": artifact}).one()
+            row = connection.execute(
+                text(
+                    "SELECT task_id, validation_attempt, validation_state_changed_at, content FROM application_artifacts WHERE id=:id"
+                ),
+                {"id": artifact},
+            ).one()
             assert row.task_id is None
             assert row.validation_attempt == 0
             assert row.validation_state_changed_at is not None
@@ -53,6 +99,7 @@ def test_0044_lifecycle_columns_match_model_and_existing_rows() -> None:
     finally:
         command.upgrade(config, "head")
         engine.dispose()
+
 
 pytestmark = pytest.mark.integration
 
@@ -63,16 +110,33 @@ def _config() -> Config:
 
 @pytest.mark.migration
 def test_0043_artifact_schema_and_binary_round_trip() -> None:
-    config = _config(); engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)
+    config = _config()
+    engine = create_engine(get_settings().sync_database_url, poolclass=NullPool)
     try:
-        command.downgrade(config, "0042"); command.upgrade(config, "0043")
+        command.downgrade(config, "0042")
+        command.upgrade(config, "0043")
         with engine.connect() as connection:
-            inspector = inspect(connection); columns = {column["name"]: column for column in inspector.get_columns("application_artifacts")}
-            assert {"user_id", "application_id", "package_id", "content", "validation_report", "sha256"} <= set(columns)
+            inspector = inspect(connection)
+            columns = {
+                column["name"]: column for column in inspector.get_columns("application_artifacts")
+            }
+            assert {
+                "user_id",
+                "application_id",
+                "package_id",
+                "content",
+                "validation_report",
+                "sha256",
+            } <= set(columns)
             assert columns["content"]["type"].__class__.__name__ in {"BYTEA", "LargeBinary"}
             assert columns["validation_report"]["type"].__class__.__name__ == "JSONB"
-            assert {"users", "applications", "application_packages"} <= {fk["referred_table"] for fk in inspector.get_foreign_keys("application_artifacts")}
-            constraints = {constraint["name"] for constraint in inspector.get_check_constraints("application_artifacts")}
+            assert {"users", "applications", "application_packages"} <= {
+                fk["referred_table"] for fk in inspector.get_foreign_keys("application_artifacts")
+            }
+            constraints = {
+                constraint["name"]
+                for constraint in inspector.get_check_constraints("application_artifacts")
+            }
             assert {
                 "ck_application_artifact_document_type",
                 "ck_application_artifact_format",
@@ -80,24 +144,63 @@ def test_0043_artifact_schema_and_binary_round_trip() -> None:
                 "ck_application_artifact_byte_length",
             } <= constraints
             indexes = {index["name"] for index in inspector.get_indexes("application_artifacts")}
-            assert {"ix_application_artifact_owner_application", "ix_application_artifact_package"} <= indexes
+            assert {
+                "ix_application_artifact_owner_application",
+                "ix_application_artifact_package",
+            } <= indexes
         with engine.begin() as connection:
             connection.execute(text("TRUNCATE TABLE users CASCADE"))
-            user = connection.execute(text("INSERT INTO users (email, name) VALUES ('artifact@example.test', 'Artifact') RETURNING id")).scalar_one()
-            job = connection.execute(text("INSERT INTO jobs (fingerprint, identity_scope, identity_key, title, company, source, source_url, raw_response, status, visibility, ingest_source) VALUES ('f-artifact', 'public', 'artifact-test', 'Engineer', 'Acme', 'fixture', 'https://example.test/a', '{}'::jsonb, 'active', 'public', 'fixture') RETURNING id")).scalar_one()
-            application = connection.execute(text("INSERT INTO applications (user_id, job_id, status) VALUES (:user, :job, 'saved') RETURNING id"), {"user": user, "job": job}).scalar_one()
-            package = connection.execute(text("INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 1, '{}'::jsonb, :hash, 'application-package-v1', 'artifact') RETURNING id"), {"application": application, "hash": "a" * 64}).scalar_one()
-            values = {"user": user, "application": application, "package": package, "hash": hashlib.sha256(b"pdf").hexdigest()}
-            connection.execute(text("INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'resume.pdf', 'application/pdf', 3, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content)"), {**values, "content": b"pdf"})
+            user = connection.execute(
+                text(
+                    "INSERT INTO users (email, name) VALUES ('artifact@example.test', 'Artifact') RETURNING id"
+                )
+            ).scalar_one()
+            job = connection.execute(
+                text(
+                    "INSERT INTO jobs (fingerprint, identity_scope, identity_key, title, company, source, source_url, raw_response, status, visibility, ingest_source) VALUES ('f-artifact', 'public', 'artifact-test', 'Engineer', 'Acme', 'fixture', 'https://example.test/a', '{}'::jsonb, 'active', 'public', 'fixture') RETURNING id"
+                )
+            ).scalar_one()
+            application = connection.execute(
+                text(
+                    "INSERT INTO applications (user_id, job_id, status) VALUES (:user, :job, 'saved') RETURNING id"
+                ),
+                {"user": user, "job": job},
+            ).scalar_one()
+            package = connection.execute(
+                text(
+                    "INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 1, '{}'::jsonb, :hash, 'application-package-v1', 'artifact') RETURNING id"
+                ),
+                {"application": application, "hash": "a" * 64},
+            ).scalar_one()
+            values = {
+                "user": user,
+                "application": application,
+                "package": package,
+                "hash": hashlib.sha256(b"pdf").hexdigest(),
+            }
+            connection.execute(
+                text(
+                    "INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'resume.pdf', 'application/pdf', 3, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content)"
+                ),
+                {**values, "content": b"pdf"},
+            )
             with pytest.raises(IntegrityError):
                 with connection.begin_nested():
-                    connection.execute(text("INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'again.pdf', 'application/pdf', 3, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content)"), {**values, "content": b"pdf"})
+                    connection.execute(
+                        text(
+                            "INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'again.pdf', 'application/pdf', 3, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content)"
+                        ),
+                        {**values, "content": b"pdf"},
+                    )
         with engine.connect() as connection:
-            stored = connection.execute(text("SELECT content, sha256 FROM application_artifacts")).one()
+            stored = connection.execute(
+                text("SELECT content, sha256 FROM application_artifacts")
+            ).one()
             assert stored.content == b"pdf"
             assert stored.sha256 == hashlib.sha256(b"pdf").hexdigest()
     finally:
-        command.upgrade(config, "head"); engine.dispose()
+        command.upgrade(config, "head")
+        engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -111,23 +214,61 @@ async def test_two_session_application_artifact_quota_locking() -> None:
     try:
         with sync_engine.begin() as connection:
             connection.execute(text("TRUNCATE TABLE users CASCADE"))
-            user = connection.execute(text("INSERT INTO users (email, name) VALUES ('artifact-lock@example.test', 'Artifact') RETURNING id")).scalar_one()
-            job = connection.execute(text("INSERT INTO jobs (fingerprint, identity_scope, identity_key, title, company, source, source_url, raw_response, status, visibility, ingest_source) VALUES ('f-artifact-lock', 'public', 'artifact-lock', 'Engineer', 'Acme', 'fixture', 'https://example.test/lock', '{}'::jsonb, 'active', 'public', 'fixture') RETURNING id")).scalar_one()
-            application = connection.execute(text("INSERT INTO applications (user_id, job_id, status) VALUES (:user, :job, 'saved') RETURNING id"), {"user": user, "job": job}).scalar_one()
-            package = connection.execute(text("INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 1, '{}'::jsonb, :hash, 'application-package-v1', 'artifact-lock') RETURNING id"), {"application": application, "hash": "a" * 64}).scalar_one()
+            user = connection.execute(
+                text(
+                    "INSERT INTO users (email, name) VALUES ('artifact-lock@example.test', 'Artifact') RETURNING id"
+                )
+            ).scalar_one()
+            job = connection.execute(
+                text(
+                    "INSERT INTO jobs (fingerprint, identity_scope, identity_key, title, company, source, source_url, raw_response, status, visibility, ingest_source) VALUES ('f-artifact-lock', 'public', 'artifact-lock', 'Engineer', 'Acme', 'fixture', 'https://example.test/lock', '{}'::jsonb, 'active', 'public', 'fixture') RETURNING id"
+                )
+            ).scalar_one()
+            application = connection.execute(
+                text(
+                    "INSERT INTO applications (user_id, job_id, status) VALUES (:user, :job, 'saved') RETURNING id"
+                ),
+                {"user": user, "job": job},
+            ).scalar_one()
+            package = connection.execute(
+                text(
+                    "INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 1, '{}'::jsonb, :hash, 'application-package-v1', 'artifact-lock') RETURNING id"
+                ),
+                {"application": application, "hash": "a" * 64},
+            ).scalar_one()
             for index in range(4):
                 payload = b"%PDF-" + bytes([index]) * (5 * 1024 * 1024 - 5)
-                connection.execute(text("INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'resume.pdf', 'application/pdf', :length, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content)"), {"user": user, "application": application, "package": package, "length": len(payload), "hash": hashlib.sha256(payload).hexdigest(), "content": payload})
+                connection.execute(
+                    text(
+                        "INSERT INTO application_artifacts (user_id, application_id, package_id, document_type, format, filename, content_type, byte_length, sha256, exporter_version, expected_text_sha256, validation_policy_version, validation_state, validation_report, content) VALUES (:user, :application, :package, 'resume', 'pdf', 'resume.pdf', 'application/pdf', :length, :hash, 'browser-v1', :hash, 'artifact-v1', 'queued', '{}'::jsonb, :content)"
+                    ),
+                    {
+                        "user": user,
+                        "application": application,
+                        "package": package,
+                        "length": len(payload),
+                        "hash": hashlib.sha256(payload).hexdigest(),
+                        "content": payload,
+                    },
+                )
 
         factory = async_sessionmaker(async_engine, expire_on_commit=False)
         content_a = b"%PDF-" + b"A" * (3 * 1024 * 1024 - 5)
         content_b = b"%PDF-" + b"B" * (3 * 1024 * 1024 - 5)
 
-        async def create(session: object, content: bytes, target_package: int = package) -> ApplicationArtifact:
+        async def create(
+            session: object, content: bytes, target_package: int = package
+        ) -> ApplicationArtifact:
             return await ApplicationArtifactRepository(session).create_artifact(  # type: ignore[arg-type]
-                user_id=user, application_id=application, package_id=target_package,
-                document_type="resume", format="pdf", filename="resume.pdf", content=content,
-                exporter_version="browser-v1", expected_text_sha256="c" * 64,
+                user_id=user,
+                application_id=application,
+                package_id=target_package,
+                document_type="resume",
+                format="pdf",
+                filename="resume.pdf",
+                content=content,
+                exporter_version="browser-v1",
+                expected_text_sha256="c" * 64,
                 validation_policy_version="artifact-v1",
             )
 
@@ -138,7 +279,14 @@ async def test_two_session_application_artifact_quota_locking() -> None:
             quota_recomputed = asyncio.Event()
             task: asyncio.Task[None] | None = None
 
-            def observe_b_sql(_connection: object, _cursor: object, statement: str, _parameters: object, _context: object, _executemany: bool) -> None:
+            def observe_b_sql(
+                _connection: object,
+                _cursor: object,
+                statement: str,
+                _parameters: object,
+                _context: object,
+                _executemany: bool,
+            ) -> None:
                 if asyncio.current_task() is not task:
                     return
                 query = statement.casefold()
@@ -166,8 +314,10 @@ async def test_two_session_application_artifact_quota_locking() -> None:
                 assert quota_recomputed.is_set()
                 assert task.done()
                 await second.rollback()
-                print("B_LOCK_ATTEMPTED=true B_COMPLETED_BEFORE_A_COMMIT=false A_COMMITTED=true "
-                      "B_COMPLETED_AFTER_A_COMMIT=true B_RESULT=quota_exceeded")
+                print(
+                    "B_LOCK_ATTEMPTED=true B_COMPLETED_BEFORE_A_COMMIT=false A_COMMITTED=true "
+                    "B_COMPLETED_AFTER_A_COMMIT=true B_RESULT=quota_exceeded"
+                )
             finally:
                 event.remove(async_engine.sync_engine, "before_cursor_execute", observe_b_sql)
                 if task is not None and not task.done():
@@ -175,18 +325,33 @@ async def test_two_session_application_artifact_quota_locking() -> None:
                     await asyncio.gather(task, return_exceptions=True)
 
         with sync_engine.connect() as connection:
-            total = connection.execute(text("SELECT sum(byte_length) FROM application_artifacts WHERE application_id=:application"), {"application": application}).scalar_one()
+            total = connection.execute(
+                text(
+                    "SELECT sum(byte_length) FROM application_artifacts WHERE application_id=:application"
+                ),
+                {"application": application},
+            ).scalar_one()
             assert total == 23 * 1024 * 1024
             assert total <= MAX_APPLICATION_ARTIFACT_BYTES
         with sync_engine.begin() as connection:
-            second_package = connection.execute(text("INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 2, '{}'::jsonb, :hash, 'application-package-v1', 'artifact-lock-2') RETURNING id"), {"application": application, "hash": "d" * 64}).scalar_one()
+            second_package = connection.execute(
+                text(
+                    "INSERT INTO application_packages (application_id, revision, content, content_sha256, schema_version, idempotency_key) VALUES (:application, 2, '{}'::jsonb, :hash, 'application-package-v1', 'artifact-lock-2') RETURNING id"
+                ),
+                {"application": application, "hash": "d" * 64},
+            ).scalar_one()
         async with factory() as session:
             extra = b"%PDF-" + b"C" * (1024 * 1024 - 5)
             assert (await create(session, extra)).package_id == package
             assert (await create(session, extra, second_package)).package_id == second_package
             await session.commit()
         with sync_engine.connect() as connection:
-            total = connection.execute(text("SELECT sum(byte_length) FROM application_artifacts WHERE application_id=:application"), {"application": application}).scalar_one()
+            total = connection.execute(
+                text(
+                    "SELECT sum(byte_length) FROM application_artifacts WHERE application_id=:application"
+                ),
+                {"application": application},
+            ).scalar_one()
             assert total == MAX_APPLICATION_ARTIFACT_BYTES
     finally:
         command.upgrade(config, "head")

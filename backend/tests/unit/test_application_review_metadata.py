@@ -1,17 +1,18 @@
 """ORM metadata parity for application document review migration constraints."""
 
+import pytest
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.sql.elements import TextClause
 
 from app.models.application_review import ApplicationDocumentReview, ApplicationReviewAcknowledgment
 
+pytestmark = pytest.mark.unit
+
 
 def test_application_review_orm_metadata_matches_active_and_acknowledgment_invariants() -> None:
     review_table = ApplicationDocumentReview.metadata.tables["application_document_reviews"]
     active_index = next(
-        index
-        for index in review_table.indexes
-        if index.name == "uq_application_review_active"
+        index for index in review_table.indexes if index.name == "uq_application_review_active"
     )
 
     active_index_table = active_index.table

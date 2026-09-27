@@ -9,6 +9,8 @@ from app.domain.interview.exceptions import InterviewGenerationError
 from app.domain.interview.schemas import InterviewPrepRequest, InterviewQuestion
 from app.domain.interview.service import InterviewService
 
+pytestmark = pytest.mark.unit
+
 
 def _question(category: str = "technical") -> dict[str, str]:
     return {
@@ -40,11 +42,7 @@ def test_parse_questions_handles_code_fences() -> None:
 
 
 def test_parse_questions_skips_malformed_entries() -> None:
-    content = (
-        '{"questions": ['
-        + _json(_question())
-        + ', {"question": "no fields"}]}'
-    )
+    content = '{"questions": [' + _json(_question()) + ', {"question": "no fields"}]}'
     parsed = InterviewService._parse_questions(content, expected_count=8)
     assert len(parsed) == 1  # malformed second entry dropped
 

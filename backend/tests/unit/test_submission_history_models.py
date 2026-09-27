@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import DateTime, String
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
@@ -12,6 +13,8 @@ from app.models import (
     ApplicationSubmissionArtifact,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def test_submission_models_are_registered_without_changing_legacy_models() -> None:
     assert {
@@ -20,9 +23,10 @@ def test_submission_models_are_registered_without_changing_legacy_models() -> No
         "application_interview_preps",
     } <= set(Base.metadata.tables)
     assert ApplicationSubmission.__table__ is Base.metadata.tables["application_submissions"]
-    assert ApplicationSubmissionArtifact.__table__ is Base.metadata.tables[
-        "application_submission_artifacts"
-    ]
+    assert (
+        ApplicationSubmissionArtifact.__table__
+        is Base.metadata.tables["application_submission_artifacts"]
+    )
     assert ApplicationInterviewPrep.__table__ is Base.metadata.tables["application_interview_preps"]
     assert "interview_preps" in Base.metadata.tables
     assert "application_events" in Base.metadata.tables

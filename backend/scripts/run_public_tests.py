@@ -8,16 +8,23 @@ anything whose identity has become uncertain.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
+
+import coverage
 
 HERE = Path(__file__).resolve().parents[1]
 COMPOSE = HERE / "docker-compose.unit-1c-validation.yml"
@@ -28,14 +35,23 @@ DATABASES = {
 }
 VOLUMES = {"app_test_data", "migration_test_data", "redis_test_data"}
 SERVICE_VOLUME = {
-    "db_test": "app_test_data", "db_migration": "migration_test_data",
+    "db_test": "app_test_data",
+    "db_migration": "migration_test_data",
     "test-redis": "redis_test_data",
 }
 CLEANUP_FAILURE = 3
 FORBIDDEN_ENV = {
-    "DATABASE_URL", "TEST_DATABASE_URL", "TEST_DATABASE_NAME", "PUBLIC_TEST_LANE",
-    "PUBLIC_TEST_RUN_ID", "PUBLIC_TEST_DB_SYSTEM_ID", "DOCKER_HOST", "DOCKER_CONTEXT",
+    "DATABASE_URL",
+    "TEST_DATABASE_URL",
+    "TEST_DATABASE_NAME",
+    "PUBLIC_TEST_LANE",
+    "PUBLIC_TEST_RUN_ID",
+    "PUBLIC_TEST_DB_SYSTEM_ID",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
 }
+MARKER_LANES = ("non_db", "application", "migration")
+UNREACHABLE_URL = "postgresql+asyncpg://postgres:invalid@127.0.0.1:1/unreachable"
 
 
 class SafetyError(RuntimeError):
@@ -54,9 +70,9 @@ class Inventory:
 
 def clean_environment(environ: dict[str, str]) -> dict[str, str]:
     unexpected = sorted(
-        key for key in environ
-        if key.upper() in FORBIDDEN_ENV
-        or key.upper().startswith(("COMPOSE_", "PG"))
+        key
+        for key in environ
+        if key.upper() in FORBIDDEN_ENV or key.upper().startswith(("COMPOSE_", "PG"))
     )
     if unexpected:
         raise SafetyError(f"remove inherited connection/Compose settings: {', '.join(unexpected)}")
@@ -205,11 +221,26 @@ def inspect_started(project: str, env: dict[str, str]) -> tuple[dict[str, str], 
             ):
                 raise SafetyError(f"container storage differs: {service}")
             volume = inspect_resource("volume", volume_name, env)
-            if (volume.get("Driver") != "local" or volume.get("Options")
-                    or volume.get("Labels", {}).get("com.docker.compose.project") != project):
+            if (
+                volume.get("Driver") != "local"
+                or volume.get("Options")
+                or volume.get("Labels", {}).get("com.docker.compose.project") != project
+            ):
                 raise SafetyError(f"volume identity or storage differs: {service}")
-            sid = docker(["exec", cid, "psql", "-U", "postgres", "-d", database,
-                          "-Atqc", "SELECT system_identifier FROM pg_control_system()"], env)
+            sid = docker(
+                [
+                    "exec",
+                    cid,
+                    "psql",
+                    "-U",
+                    "postgres",
+                    "-d",
+                    database,
+                    "-Atqc",
+                    "SELECT system_identifier FROM pg_control_system()",
+                ],
+                env,
+            )
             if not re.fullmatch(r"[0-9]+", sid):
                 raise SafetyError(f"cannot inspect PostgreSQL cluster identity: {service}")
             system_ids[service] = sid
@@ -222,8 +253,11 @@ def inspect_started(project: str, env: dict[str, str]) -> tuple[dict[str, str], 
             ):
                 raise SafetyError("Redis storage differs")
             volume = inspect_resource("volume", redis_volume_name, env)
-            if (volume.get("Driver") != "local" or volume.get("Options")
-                    or volume.get("Labels", {}).get("com.docker.compose.project") != project):
+            if (
+                volume.get("Driver") != "local"
+                or volume.get("Options")
+                or volume.get("Labels", {}).get("com.docker.compose.project") != project
+            ):
                 raise SafetyError("Redis volume identity or storage differs")
         container_ids[service] = cid
     if system_ids["db_test"] == system_ids["db_migration"]:
@@ -247,31 +281,41 @@ def owned_inventory(project: str, env: dict[str, str]) -> Inventory:
         raise SafetyError("unexpected project network or volume; cleanup refused")
     for nid in networks:
         info = inspect_resource("network", nid, env)
-        if (info.get("Name") != expected_network
-                or info.get("Labels", {}).get("com.docker.compose.project") != project):
+        if (
+            info.get("Name") != expected_network
+            or info.get("Labels", {}).get("com.docker.compose.project") != project
+        ):
             raise SafetyError(f"network ownership uncertain: {nid}")
     for name in volumes:
         info = inspect_resource("volume", name, env)
-        if (info.get("Name") != name or info.get("Driver") != "local"
-                or info.get("Options")
-                or info.get("Labels", {}).get("com.docker.compose.project") != project):
+        if (
+            info.get("Name") != name
+            or info.get("Driver") != "local"
+            or info.get("Options")
+            or info.get("Labels", {}).get("com.docker.compose.project") != project
+        ):
             raise SafetyError(f"volume ownership uncertain: {name}")
     services_seen: set[str] = set()
     for cid in containers:
         info = inspect_resource("container", cid, env)
         labels = info.get("Config", {}).get("Labels", {})
         service = labels.get("com.docker.compose.service")
-        if (info.get("Id") != cid
-                or labels.get("com.docker.compose.project") != project
-                or service not in SERVICE_VOLUME or service in services_seen):
+        if (
+            info.get("Id") != cid
+            or labels.get("com.docker.compose.project") != project
+            or service not in SERVICE_VOLUME
+            or service in services_seen
+        ):
             raise SafetyError(f"container ownership uncertain: {cid}")
         services_seen.add(service)
         expected_volume = f"{project}_{SERVICE_VOLUME[service]}"
         mounts = info.get("Mounts", [])
-        if (len(mounts) != 1 or mounts[0].get("Type") != "volume"
-                or mounts[0].get("Name") != expected_volume
-                or set(info.get("NetworkSettings", {}).get("Networks", {}))
-                != {expected_network}):
+        if (
+            len(mounts) != 1
+            or mounts[0].get("Type") != "volume"
+            or mounts[0].get("Name") != expected_volume
+            or set(info.get("NetworkSettings", {}).get("Networks", {})) != {expected_network}
+        ):
             raise SafetyError(f"container storage or network uncertain: {cid}")
     return Inventory(frozenset(containers), frozenset(volumes), frozenset(networks))
 
@@ -305,8 +349,10 @@ def verify_removed(inventory: Inventory, env: dict[str, str]) -> None:
 
 
 def cleanup(project: str, env: dict[str, str], inventory: Inventory) -> None:
-    print(f"cleanup inventory: containers={sorted(inventory.containers)} "
-          f"volumes={sorted(inventory.volumes)} networks={sorted(inventory.networks)}")
+    print(
+        f"cleanup inventory: containers={sorted(inventory.containers)} "
+        f"volumes={sorted(inventory.volumes)} networks={sorted(inventory.networks)}"
+    )
     current = owned_inventory(project, env)
     if current != inventory:
         raise SafetyError(f"resource inventory changed; cleanup refused: {current}")
@@ -330,34 +376,368 @@ def cleanup(project: str, env: dict[str, str], inventory: Inventory) -> None:
     print(f"cleanup VERIFIED REMOVED: {project}")
 
 
-def run_in_test_container(project: str, env: dict[str, str], lane: str, run_id: str,
-                          system_id: str, command: list[str], *, emit_output: bool = True) -> str:
+def run_in_test_container(
+    project: str,
+    env: dict[str, str],
+    lane: str,
+    run_id: str,
+    system_id: str,
+    command: list[str],
+    *,
+    emit_output: bool = True,
+) -> str:
     overrides = [
-        "-e", f"PUBLIC_TEST_LANE={lane}", "-e", f"PUBLIC_TEST_RUN_ID={run_id}",
-        "-e", f"PUBLIC_TEST_DB_SYSTEM_ID={system_id}",
+        "-e",
+        f"PUBLIC_TEST_LANE={lane}",
+        "-e",
+        f"PUBLIC_TEST_RUN_ID={run_id}",
+        "-e",
+        f"PUBLIC_TEST_DB_SYSTEM_ID={system_id}",
     ]
     if lane == "migration":
         url = "postgresql+asyncpg://postgres:postgres@db_migration:5432/public_migration_test"
         overrides += ["-e", f"DATABASE_URL={url}", "-e", f"TEST_DATABASE_URL={url}"]
-    output = compose(project, ["run", "--rm", "--no-deps", *overrides,
-                               "backend-test", *command], env)
+    elif lane == "non_db":
+        overrides += [
+            "-e",
+            f"DATABASE_URL={UNREACHABLE_URL}",
+            "-e",
+            f"TEST_DATABASE_URL={UNREACHABLE_URL}",
+        ]
+    output = compose(
+        project, ["run", "--rm", "--no-deps", *overrides, "backend-test", *command], env
+    )
     if output and emit_output:
         print(output)
     return output
 
 
-def application_snapshot(project: str, env: dict[str, str], run_id: str,
-                         system_id: str) -> dict[str, Any]:
+def application_snapshot(
+    project: str, env: dict[str, str], run_id: str, system_id: str
+) -> dict[str, Any]:
     output = run_in_test_container(
-        project, env, "application", run_id, system_id,
+        project,
+        env,
+        "application",
+        run_id,
+        system_id,
         ["python", "scripts/verify_unit_1c_validation_env.py", "--schema-snapshot"],
         emit_output=False,
     )
     snapshot = cast(dict[str, Any], json.loads(output))
-    if (snapshot.get("cluster_id") != system_id
-            or snapshot.get("database") != DATABASES["db_test"][1]):
+    if (
+        snapshot.get("cluster_id") != system_id
+        or snapshot.get("database") != DATABASES["db_test"][1]
+    ):
         raise SafetyError("application snapshot target identity differs")
     return snapshot
+
+
+def _lane_payload(
+    project: str, env: dict[str, str], lane: str, run_id: str, system_ids: dict[str, str], mode: str
+) -> dict[str, Any]:
+    container_lane = "application" if lane == "all" else lane
+    service = "db_migration" if container_lane == "migration" else "db_test"
+    output = run_in_test_container(
+        project,
+        env,
+        container_lane,
+        run_id,
+        system_ids[service],
+        ["python", "scripts/public_test_lane.py", mode, lane],
+        emit_output=False,
+    )
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise SafetyError(f"{mode} {lane} did not return machine-readable results") from exc
+    if not isinstance(value, dict) or value.get("mode") != mode or value.get("lane") != lane:
+        raise SafetyError(f"{mode} {lane} result identity differs")
+    return cast(dict[str, Any], value)
+
+
+def _manifest_nodes(payload: dict[str, Any], lane: str) -> set[str]:
+    if payload.get("exit_code") != 0 or not isinstance(payload.get("manifest"), list):
+        raise SafetyError(
+            f"collection {lane} failed: {payload.get('stdout_tail')} {payload.get('stderr_tail')}"
+        )
+    entries = payload["manifest"]
+    nodes: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("nodeid"), str):
+            raise SafetyError(f"collection {lane} contains invalid node IDs")
+        nodes.append(entry["nodeid"])
+    if len(nodes) != len(set(nodes)):
+        raise SafetyError(f"collection {lane} contains duplicate node IDs")
+    if lane != "all" and any(entry.get("lane") != lane for entry in entries):
+        raise SafetyError(f"collection {lane} contains conflicting lane assignments")
+    return set(nodes)
+
+
+def _reconcile_manifests(manifests: dict[str, dict[str, Any]]) -> dict[str, set[str]]:
+    nodes = {lane: _manifest_nodes(payload, lane) for lane, payload in manifests.items()}
+    all_nodes = nodes["all"]
+    assigned = set().union(*(nodes[lane] for lane in MARKER_LANES))
+    overlaps = {
+        f"{left}/{right}": sorted(nodes[left] & nodes[right])
+        for index, left in enumerate(MARKER_LANES)
+        for right in MARKER_LANES[index + 1 :]
+        if nodes[left] & nodes[right]
+    }
+    if overlaps or assigned != all_nodes:
+        raise SafetyError(
+            f"lane accounting differs: overlap={overlaps}; "
+            f"missing={sorted(all_nodes - assigned)}; unexpected={sorted(assigned - all_nodes)}"
+        )
+    complete_assignments = {
+        entry["nodeid"]: entry["lane"] for entry in manifests["all"]["manifest"]
+    }
+    for lane in MARKER_LANES:
+        if any(complete_assignments[node] != lane for node in nodes[lane]):
+            raise SafetyError(f"complete manifest conflicts with {lane} selection")
+    return nodes
+
+
+def _write_lane_evidence(
+    root: Path, lane: str, payload: dict[str, Any], expected: set[str]
+) -> tuple[bool, list[dict[str, str]]]:
+    (root / f"{lane}-result.json").write_text(
+        json.dumps(
+            {key: value for key, value in payload.items() if key not in {"coverage", "junit"}},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    for key in ("junit", "coverage"):
+        encoded = payload.get(key)
+        if not isinstance(encoded, str):
+            raise SafetyError(f"{lane} did not produce {key} evidence")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise SafetyError(f"{lane} {key} transport encoding invalid") from exc
+        destination = root / (f"{lane}-junit.xml" if key == "junit" else f".coverage.{lane}")
+        destination.write_bytes(raw)
+    suite = ET.parse(root / f"{lane}-junit.xml").getroot()  # noqa: S314 - pytest output
+    cases = suite.findall(".//testcase")
+    counts = {
+        "selected": len(expected),
+        "reported": len(cases),
+        "failed": sum(case.find("failure") is not None for case in cases),
+        "errors": sum(case.find("error") is not None for case in cases),
+        "skipped": sum(case.find("skipped") is not None for case in cases),
+    }
+    counts["passed"] = counts["reported"] - sum(
+        counts[key] for key in ("failed", "errors", "skipped")
+    )
+    counts["exit_code"] = payload.get("exit_code", -1)
+    (root / f"{lane}-summary.json").write_text(json.dumps(counts, indent=2), encoding="utf-8")
+    result = payload.get("results")
+    if not isinstance(result, dict) or not isinstance(result.get("results"), dict):
+        raise SafetyError(f"{lane} did not produce execution accounting")
+    reports = result["results"]
+    if set(reports) != expected:
+        raise SafetyError(
+            f"{lane} execution differs from collection: "
+            f"missing={sorted(expected - set(reports))}; "
+            f"unexpected={sorted(set(reports) - expected)}"
+        )
+    skips: list[dict[str, str]] = []
+    bad: list[str] = []
+    for node, phases in reports.items():
+        if not isinstance(phases, list) or not phases:
+            bad.append(node)
+            continue
+        if any(phase.get("outcome") == "failed" or "wasxfail" in phase for phase in phases):
+            bad.append(node)
+        for phase in phases:
+            if phase.get("outcome") == "skipped":
+                reason = phase.get("reason", "")
+                if not reason:
+                    bad.append(node)
+                skips.append({"nodeid": node, "reason": reason})
+    passed = (
+        payload.get("exit_code") == 0
+        and result.get("pytest_exit") == 0
+        and counts["reported"] == len(expected)
+        and counts["failed"] == 0
+        and counts["errors"] == 0
+        and not bad
+    )
+    (root / f"{lane}-skips.json").write_text(json.dumps(skips, indent=2), encoding="utf-8")
+    if not passed:
+        print(
+            f"{lane} failures: {sorted(set(bad))}; pytest={payload.get('exit_code')} "
+            f"{payload.get('stdout_tail')}",
+            file=sys.stderr,
+        )
+    print(
+        f"{lane} selected={len(expected)} reported={len(reports)} "
+        f"skipped={len(skips)} exit={payload.get('exit_code')}"
+    )
+    return passed, skips
+
+
+def _initialize_coverage(root: Path) -> None:
+    combined = root / ".coverage"
+    measured = coverage.Coverage(data_file=str(combined), source=[str(HERE / "app")])
+    measured.erase()
+
+
+def _application_source(filename: str) -> bool:
+    """Match coverage's relative names and the known host/container app roots."""
+    normalized = filename.replace("\\", "/")
+    host = HERE.as_posix().replace("\\", "/")
+    if normalized.startswith("app/"):
+        relative = normalized[4:]
+    elif normalized.startswith(f"{host}/app/"):
+        relative = normalized[len(host) + 5 :]
+    elif normalized.startswith("/app/app/"):
+        relative = normalized[len("/app/app/") :]
+    else:
+        return False
+    parts = relative.split("/")
+    return bool(parts and all(part not in {"", ".", ".."} for part in parts)) and (
+        relative.endswith(".py") and (HERE / "app" / Path(*parts)).is_file()
+    )
+
+
+def _validate_lane_coverage(root: Path, lane: str) -> dict[str, Any]:
+    """Require executed application lines in a real coverage data file."""
+    if lane not in MARKER_LANES:
+        raise SafetyError(f"unknown coverage lane: {lane}")
+    path = root / f".coverage.{lane}"
+    if not path.is_file():
+        raise SafetyError(f"{lane} coverage payload missing")
+    data = coverage.CoverageData(basename=str(path))
+    try:
+        data.read()
+        files = sorted(data.measured_files())
+        executed = {
+            filename: len(lines)
+            for filename in files
+            if _application_source(filename)
+            if (lines := data.lines(filename))
+        }
+    except (coverage.CoverageException, OSError, ValueError) as exc:
+        raise SafetyError(f"{lane} coverage data unreadable: {type(exc).__name__}") from exc
+    if not executed:
+        raise SafetyError(f"{lane} no executed application lines recorded")
+    summary = {
+        "lane": lane,
+        "measured_files": len(files),
+        "application_files_with_executed_lines": executed,
+        "executed_application_lines": sum(executed.values()),
+    }
+    (root / f"{lane}-coverage-summary.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+    print(
+        f"{lane} coverage accepted: {len(executed)} application files, "
+        f"{summary['executed_application_lines']} executed lines"
+    )
+    return summary
+
+
+def _combined_coverage(root: Path) -> float:
+    combined = root / ".coverage"
+    measured = coverage.Coverage(data_file=str(combined), source=[str(HERE / "app")])
+    measured.combine(data_paths=[str(root)], strict=True, keep=True)
+    measured.save()
+    with (root / "coverage-report.txt").open("w", encoding="utf-8") as report:
+        percentage = measured.report(file=report, show_missing=True)
+    print(f"aggregate app coverage: {percentage:.2f}%")
+    return percentage
+
+
+def _full_workflow(
+    project: str, env: dict[str, str], run_id: str, system_ids: dict[str, str]
+) -> int:
+    root = HERE.parent / "tmp" / "qa-public2" / run_id
+    root.mkdir(parents=True, exist_ok=False)
+    _initialize_coverage(root)
+    metadata = {
+        "run_id": run_id,
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "python": sys.version,
+        "head": call(["git", "rev-parse", "HEAD"], env=env),
+        "branch": call(["git", "branch", "--show-current"], env=env),
+        "main": call(["git", "rev-parse", "refs/heads/main"], env=env),
+        "git_status": call(["git", "status", "--short", "--untracked-files=all"], env=env),
+        "git_diff_check": call(["git", "diff", "--check"], env=env),
+        "cluster_ids": system_ids,
+        "docker_server": docker(["version", "--format", "{{.Server.Version}}"], env),
+        "versions": {
+            name: version(name) for name in ("pytest", "pytest-cov", "coverage", "ruff", "mypy")
+        },
+        "commands": {
+            "collect": (
+                "python scripts/public_test_lane.py collect <all|non_db|application|migration>"
+            ),
+            "run": "python scripts/public_test_lane.py run <non_db|application|migration>",
+            "coverage": "combine lane data; report app source; require 80 percent",
+        },
+    }
+    (root / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    manifests = {
+        lane: _lane_payload(project, env, lane, run_id, system_ids, "collect")
+        for lane in ("all", *MARKER_LANES)
+    }
+    for lane, payload in manifests.items():
+        (root / f"{lane}-manifest.json").write_text(
+            json.dumps(payload.get("manifest"), indent=2), encoding="utf-8"
+        )
+    nodes = _reconcile_manifests(manifests)
+    print(
+        "collection exact-set PASS: "
+        + ", ".join(f"{lane}={len(nodes[lane])}" for lane in ("all", *MARKER_LANES))
+    )
+    passing = True
+    skips: list[dict[str, str]] = []
+    for lane in ("non_db", "application"):
+        payload = _lane_payload(project, env, lane, run_id, system_ids, "run")
+        passed, lane_skips = _write_lane_evidence(root, lane, payload, nodes[lane])
+        passing &= passed
+        skips.extend(lane_skips)
+    before = application_snapshot(project, env, run_id, system_ids["db_test"])
+    (root / "application-schema-before.json").write_text(
+        json.dumps(before, sort_keys=True), encoding="utf-8"
+    )
+    try:
+        payload = _lane_payload(project, env, "migration", run_id, system_ids, "run")
+        passed, lane_skips = _write_lane_evidence(root, "migration", payload, nodes["migration"])
+        passing &= passed
+        skips.extend(lane_skips)
+    finally:
+        after = application_snapshot(project, env, run_id, system_ids["db_test"])
+        (root / "application-schema-after.json").write_text(
+            json.dumps(after, sort_keys=True), encoding="utf-8"
+        )
+        if before != after:
+            passing = False
+            print("application-schema preservation FAIL", file=sys.stderr)
+        else:
+            print("application-schema preservation PASS")
+    (root / "intentional-skips.json").write_text(json.dumps(skips, indent=2), encoding="utf-8")
+    for lane in MARKER_LANES:
+        _validate_lane_coverage(root, lane)
+    percentage = _combined_coverage(root)
+    if percentage < 80:
+        passing = False
+        print("aggregate coverage below 80%", file=sys.stderr)
+    (root / "summary.json").write_text(
+        json.dumps(
+            {
+                "passing": passing,
+                "coverage_percent": percentage,
+                "counts": {lane: len(nodes[lane]) for lane in nodes},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"PUBLIC.2 evidence: {root}")
+    return 0 if passing else 2
 
 
 def main() -> int:
@@ -366,11 +746,10 @@ def main() -> int:
     mode.add_argument(
         "--verify-only", action="store_true", help="validate resources without pytest"
     )
+    mode.add_argument("--smoke", action="store_true", help="run one DB test in each isolated lane")
     mode.add_argument(
-        "--smoke", action="store_true", help="run one DB test in each isolated lane"
-    )
-    mode.add_argument(
-        "--legacy-migration", action="store_true",
+        "--legacy-migration",
+        action="store_true",
         help="exercise the known failing downgrade through 0037 on the migration lane",
     )
     args = parser.parse_args()
@@ -384,6 +763,8 @@ def main() -> int:
     started = False
     inventory: Inventory | None = None
     result = 0
+    cleanup_verified = False
+    system_ids: dict[str, str] = {}
     try:
         started = True
         compose(project, ["up", "-d", "--wait", "db_test", "db_migration", "test-redis"], env)
@@ -391,60 +772,96 @@ def main() -> int:
         inventory = owned_inventory(project, env)
         if inventory.containers != frozenset(verified_ids.values()):
             raise SafetyError("started container inventory differs")
-        print(f"verified resource inventory: containers={sorted(inventory.containers)} "
-              f"volumes={sorted(inventory.volumes)} networks={sorted(inventory.networks)}")
-        print(f"verified cluster IDs: application={system_ids['db_test']} "
-              f"migration={system_ids['db_migration']}")
+        print(
+            f"verified resource inventory: containers={sorted(inventory.containers)} "
+            f"volumes={sorted(inventory.volumes)} networks={sorted(inventory.networks)}"
+        )
+        print(
+            f"verified cluster IDs: application={system_ids['db_test']} "
+            f"migration={system_ids['db_migration']}"
+        )
         compose(project, ["build", "backend-test"], env)
         for lane, service in (("application", "db_test"), ("migration", "db_migration")):
-            run_in_test_container(project, env, lane, run_id, system_ids[service],
-                                  ["python", "scripts/verify_unit_1c_validation_env.py"])
+            run_in_test_container(
+                project,
+                env,
+                lane,
+                run_id,
+                system_ids[service],
+                ["python", "scripts/verify_unit_1c_validation_env.py"],
+            )
         print("verification/setup PASS")
         if not args.verify_only:
             for lane, service in (("application", "db_test"), ("migration", "db_migration")):
-                run_in_test_container(project, env, lane, run_id, system_ids[service],
-                                      ["alembic", "upgrade", "head"])
-            app_tests = ["tests/unit/test_refresh_sessions.py::test_login_creates_session"]
-            if args.smoke:
-                migration_tests = [
-                    "tests/integration/test_application_document_review_diagnostics.py"
-                    "::test_0042_upgrade_downgrade_reupgrade_preserves_historical_null"
-                ]
-            elif args.legacy_migration:
-                migration_tests = [
-                    "tests/unit/test_expired_job_purge_migration.py"
-                    "::test_migration_backfills_existing_expired_rows_once"
-                ]
+                run_in_test_container(
+                    project, env, lane, run_id, system_ids[service], ["alembic", "upgrade", "head"]
+                )
+            if not args.smoke and not args.legacy_migration:
+                result = _full_workflow(project, env, run_id, system_ids)
             else:
-                app_tests = ["tests/"]
-                migration_tests = ["tests/"]
-            def selected_test(lane: str, system_id: str, nodes: list[str], marker: str,
-                              label: str | None = None) -> None:
-                nonlocal result
-                try:
-                    run_in_test_container(
-                        project, env, lane, run_id, system_id,
-                        ["python", "-m", "pytest", *nodes, "-m", marker,
-                         "-v", "--tb=short", "--no-header", "-o", "addopts="],
-                    )
-                    print(f"{label or lane} tests PASS")
-                except SafetyError as exc:
-                    result = 2
-                    print(f"{label or lane} tests FAIL: {exc}", file=sys.stderr)
+                app_tests = ["tests/unit/test_refresh_sessions.py::test_login_creates_session"]
+                migration_tests = (
+                    [
+                        "tests/integration/test_application_document_review_diagnostics.py"
+                        "::test_0042_upgrade_downgrade_reupgrade_preserves_historical_null"
+                    ]
+                    if args.smoke
+                    else [
+                        "tests/unit/test_expired_job_purge_migration.py"
+                        "::test_migration_backfills_existing_expired_rows_once"
+                    ]
+                )
 
-            selected_test("application", system_ids["db_test"], app_tests, "not migration")
-            before = application_snapshot(project, env, run_id, system_ids["db_test"])
-            print(f"application schema BEFORE migration: {json.dumps(before, sort_keys=True)}")
-            selected_test("migration", system_ids["db_migration"], migration_tests, "migration")
-            after = application_snapshot(project, env, run_id, system_ids["db_test"])
-            print(f"application schema AFTER migration: {json.dumps(after, sort_keys=True)}")
-            if before != after:
-                result = 2
-                print("application-schema preservation FAIL", file=sys.stderr)
-            else:
-                print("application-schema preservation PASS")
-            selected_test("application", system_ids["db_test"], app_tests,
-                          "not migration", "application post-migration")
+                def selected_test(
+                    lane: str,
+                    system_id: str,
+                    nodes: list[str],
+                    marker: str,
+                    label: str | None = None,
+                ) -> None:
+                    nonlocal result
+                    try:
+                        run_in_test_container(
+                            project,
+                            env,
+                            lane,
+                            run_id,
+                            system_id,
+                            [
+                                "python",
+                                "-m",
+                                "pytest",
+                                *nodes,
+                                "-m",
+                                marker,
+                                "-v",
+                                "--tb=short",
+                                "--no-header",
+                                "-o",
+                                "addopts=",
+                            ],
+                        )
+                        print(f"{label or lane} tests PASS")
+                    except SafetyError as exc:
+                        result = 2
+                        print(f"{label or lane} tests FAIL: {exc}", file=sys.stderr)
+
+                selected_test("application", system_ids["db_test"], app_tests, "not migration")
+                before = application_snapshot(project, env, run_id, system_ids["db_test"])
+                selected_test("migration", system_ids["db_migration"], migration_tests, "migration")
+                after = application_snapshot(project, env, run_id, system_ids["db_test"])
+                if before != after:
+                    result = 2
+                    print("application-schema preservation FAIL", file=sys.stderr)
+                else:
+                    print("application-schema preservation PASS")
+                selected_test(
+                    "application",
+                    system_ids["db_test"],
+                    app_tests,
+                    "not migration",
+                    "application post-migration",
+                )
     except KeyboardInterrupt:
         result = 130
         print("execution interrupted", file=sys.stderr)
@@ -458,10 +875,25 @@ def main() -> int:
                     # A failed startup can still leave independently provable resources.
                     inventory = owned_inventory(project, env)
                 cleanup(project, env, inventory)
+                cleanup_verified = True
             except (SafetyError, subprocess.SubprocessError, ValueError, KeyError) as exc:
                 if result == 0:
                     result = CLEANUP_FAILURE
                 print(f"cleanup FAIL; project may remain: {project}; {exc}", file=sys.stderr)
+    evidence_root = HERE.parent / "tmp" / "qa-public2" / run_id
+    if evidence_root.is_dir():
+        (evidence_root / "final-status.json").write_text(
+            json.dumps(
+                {
+                    "runner_exit": result,
+                    "cleanup_verified": cleanup_verified,
+                    "project": project,
+                    "cluster_ids": system_ids if inventory else None,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     return result
 
 

@@ -8,6 +8,8 @@ import pytest
 
 from scripts.verify_unit_1c_validation_env import main
 
+pytestmark = pytest.mark.unit
+
 
 class FakeCursor:
     def __init__(self, system_id: str, database: str) -> None:
@@ -49,8 +51,10 @@ def safe_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PUBLIC_TEST_DB_SYSTEM_ID", "12345")
     monkeypatch.setenv("DATABASE_URL", target)
     monkeypatch.setenv("TEST_DATABASE_URL", target)
-    monkeypatch.setattr("scripts.verify_unit_1c_validation_env.psycopg.connect",
-                        lambda _url: FakeConnection("12345", "public_app_test"))
+    monkeypatch.setattr(
+        "scripts.verify_unit_1c_validation_env.psycopg.connect",
+        lambda _url: FakeConnection("12345", "public_app_test"),
+    )
 
 
 def test_accepts_exact_runner_target() -> None:
@@ -58,11 +62,14 @@ def test_accepts_exact_runner_target() -> None:
 
 
 @pytest.mark.parametrize("variable", ["DATABASE_URL", "TEST_DATABASE_URL"])
-@pytest.mark.parametrize("target", [
-    "postgresql+asyncpg://postgres:postgres@db:5432/job_app",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/job_app_test",
-    "postgresql+asyncpg://postgres:postgres@db_test:5432/public_app_test?sslmode=disable",
-])
+@pytest.mark.parametrize(
+    "target",
+    [
+        "postgresql+asyncpg://postgres:postgres@db:5432/job_app",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/job_app_test",
+        "postgresql+asyncpg://postgres:postgres@db_test:5432/public_app_test?sslmode=disable",
+    ],
+)
 def test_rejects_connection_override(
     monkeypatch: pytest.MonkeyPatch, variable: str, target: str
 ) -> None:
@@ -71,12 +78,15 @@ def test_rejects_connection_override(
         main()
 
 
-@pytest.mark.parametrize("name,value", [
-    ("ENVIRONMENT", "development"),
-    ("PUBLIC_TEST_LANE", "other"),
-    ("PUBLIC_TEST_RUN_ID", "short"),
-    ("PUBLIC_TEST_DB_SYSTEM_ID", ""),
-])
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("ENVIRONMENT", "development"),
+        ("PUBLIC_TEST_LANE", "other"),
+        ("PUBLIC_TEST_RUN_ID", "short"),
+        ("PUBLIC_TEST_DB_SYSTEM_ID", ""),
+    ],
+)
 def test_rejects_missing_runner_proof(
     monkeypatch: pytest.MonkeyPatch, name: str, value: str
 ) -> None:
@@ -86,8 +96,10 @@ def test_rejects_missing_runner_proof(
 
 
 def test_rejects_wrong_connected_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("scripts.verify_unit_1c_validation_env.psycopg.connect",
-                        lambda _url: FakeConnection("99999", "public_app_test"))
+    monkeypatch.setattr(
+        "scripts.verify_unit_1c_validation_env.psycopg.connect",
+        lambda _url: FakeConnection("99999", "public_app_test"),
+    )
     with pytest.raises(RuntimeError, match="cluster identity"):
         main()
 
@@ -97,8 +109,10 @@ def test_migration_lane_has_separate_target(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("PUBLIC_TEST_LANE", "migration")
     monkeypatch.setenv("DATABASE_URL", target)
     monkeypatch.setenv("TEST_DATABASE_URL", target)
-    monkeypatch.setattr("scripts.verify_unit_1c_validation_env.psycopg.connect",
-                        lambda _url: FakeConnection("12345", "public_migration_test"))
+    monkeypatch.setattr(
+        "scripts.verify_unit_1c_validation_env.psycopg.connect",
+        lambda _url: FakeConnection("12345", "public_migration_test"),
+    )
     assert main() == 0
 
 
@@ -125,8 +139,9 @@ def test_application_snapshot_uses_verified_connection(
             self.cursor_result = SnapshotCursor()
 
     connection = SnapshotConnection()
-    monkeypatch.setattr("scripts.verify_unit_1c_validation_env.psycopg.connect",
-                        lambda _url: connection)
+    monkeypatch.setattr(
+        "scripts.verify_unit_1c_validation_env.psycopg.connect", lambda _url: connection
+    )
     assert main(schema_snapshot=True) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["cluster_id"] == "12345"
@@ -136,7 +151,7 @@ def test_application_snapshot_uses_verified_connection(
 
 
 def test_snapshot_rejects_wrong_cluster_before_catalog_queries(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class RecordingCursor(FakeCursor):
         def __init__(self) -> None:
@@ -153,8 +168,9 @@ def test_snapshot_rejects_wrong_cluster_before_catalog_queries(
             self.cursor_result = RecordingCursor()
 
     connection = RecordingConnection()
-    monkeypatch.setattr("scripts.verify_unit_1c_validation_env.psycopg.connect",
-                        lambda _url: connection)
+    monkeypatch.setattr(
+        "scripts.verify_unit_1c_validation_env.psycopg.connect", lambda _url: connection
+    )
     with pytest.raises(RuntimeError, match="cluster identity"):
         main(schema_snapshot=True)
     assert len(connection.cursor_result.queries) == 1

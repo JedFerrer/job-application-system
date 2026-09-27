@@ -7,9 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.domain.resume.matching_inputs import build_matching_input_fingerprint
-from app.domain.resume.repository import ResumeImportApprovalResult
+from app.domain.resume.repository import ResumeImportApprovalResult, ResumeRepository
 from app.domain.resume.schemas import ParsedProfile
 from app.domain.resume.service import ResumeService, build_summary_text
+
+pytestmark = pytest.mark.unit
 
 
 class FakeResumeRepository:
@@ -66,7 +68,7 @@ class FakeProfileEditRepository:
         return self.previous
 
 
-class FakeApprovalRepository:
+class FakeApprovalRepository(ResumeRepository):
     def __init__(self, result: ResumeImportApprovalResult) -> None:
         self.result = result
 
@@ -231,9 +233,7 @@ async def test_profile_edit_certification_change_refreshes_without_reembedding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     base = ParsedProfile(headline="Engineer", skills=["Python"])
-    edited = ParsedProfile(
-        headline="Engineer", skills=["Python"], certifications=["AWS"]
-    )
+    edited = ParsedProfile(headline="Engineer", skills=["Python"], certifications=["AWS"])
     repository = FakeProfileEditRepository(base)
 
     async def fail_embed(_: str) -> list[float]:

@@ -22,6 +22,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.migration
+@pytest.mark.migration_start("0034_source_resume_contents")
 def test_tfr2_reset_preserves_snapshots_and_unrelated_rows() -> None:
     backend_dir = Path(__file__).resolve().parents[2]
     config = Config(str(backend_dir / "alembic.ini"))
@@ -54,7 +55,7 @@ def test_tfr2_reset_preserves_snapshots_and_unrelated_rows() -> None:
                     "'{}'::jsonb, 'active', 'public', 'test' FROM jobs "
                     "RETURNING id"
                 ),
-                    {"fingerprint": f"tfr2-{marker[:8]}", "url": f"https://example.test/{marker}"},
+                {"fingerprint": f"tfr2-{marker[:8]}", "url": f"https://example.test/{marker}"},
             ).scalar_one()
             resume_id = connection.execute(
                 text(
@@ -92,16 +93,44 @@ def test_tfr2_reset_preserves_snapshots_and_unrelated_rows() -> None:
 
         command.upgrade(config, "0035_clean_resume_invariant")
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT 1 FROM resumes WHERE id = :id"), {"id": resume_id}).first() is None
-            assert connection.execute(text("SELECT 1 FROM candidate_profiles WHERE id = :id"), {"id": profile_id}).first() is None
-            assert connection.execute(text("SELECT 1 FROM source_resume_contents WHERE resume_id = :id"), {"id": resume_id}).first() is None
+            assert (
+                connection.execute(
+                    text("SELECT 1 FROM resumes WHERE id = :id"), {"id": resume_id}
+                ).first()
+                is None
+            )
+            assert (
+                connection.execute(
+                    text("SELECT 1 FROM candidate_profiles WHERE id = :id"), {"id": profile_id}
+                ).first()
+                is None
+            )
+            assert (
+                connection.execute(
+                    text("SELECT 1 FROM source_resume_contents WHERE resume_id = :id"),
+                    {"id": resume_id},
+                ).first()
+                is None
+            )
             snapshot = connection.execute(
-                text("SELECT user_id, job_id, source_profile_id, content FROM tailored_resume_drafts WHERE id = :id"),
+                text(
+                    "SELECT user_id, job_id, source_profile_id, content FROM tailored_resume_drafts WHERE id = :id"
+                ),
                 {"id": snapshot_id},
             ).one()
             assert snapshot == (user_id, job_id, None, {"keep": True})
-            assert connection.execute(text("SELECT 1 FROM users WHERE id = :id"), {"id": user_id}).first() is not None
-            assert connection.execute(text("SELECT 1 FROM jobs WHERE id = :id"), {"id": job_id}).first() is not None
+            assert (
+                connection.execute(
+                    text("SELECT 1 FROM users WHERE id = :id"), {"id": user_id}
+                ).first()
+                is not None
+            )
+            assert (
+                connection.execute(
+                    text("SELECT 1 FROM jobs WHERE id = :id"), {"id": job_id}
+                ).first()
+                is not None
+            )
 
             new_resume = connection.execute(
                 text(
@@ -131,7 +160,9 @@ def test_tfr2_reset_preserves_snapshots_and_unrelated_rows() -> None:
         command.upgrade(config, "head")
         with engine.begin() as connection:
             if snapshot_id is not None:
-                connection.execute(text("DELETE FROM tailored_resume_drafts WHERE id = :id"), {"id": snapshot_id})
+                connection.execute(
+                    text("DELETE FROM tailored_resume_drafts WHERE id = :id"), {"id": snapshot_id}
+                )
             if user_id is not None:
                 connection.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
         engine.dispose()

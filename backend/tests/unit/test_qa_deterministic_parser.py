@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -17,11 +18,10 @@ pytestmark = pytest.mark.unit
 async def test_qa_parser_uses_fixture_only_with_all_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = Path(__file__).parents[2] / ".." / "qa-tfr9-resume.docx"
-    extracted = resume_parser.extract_text_from_bytes(
-        fixture.read_bytes(), fixture.name, True
-    ).text
+    fixture = Path(__file__).parents[1] / "fixtures" / "qa_deterministic_resume.txt"
+    extracted = fixture.read_text(encoding="utf-8")
     monkeypatch.setenv("QA_DETERMINISTIC_PARSER", "true")
+    monkeypatch.setenv("QA_FIXTURE_SHA256", hashlib.sha256(extracted.encode()).hexdigest())
     monkeypatch.setenv("ENVIRONMENT", "test")
     monkeypatch.setenv(
         "DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/job_app_test"
@@ -30,7 +30,7 @@ async def test_qa_parser_uses_fixture_only_with_all_guards(
     result = await resume_parser.parse_resume_text(extracted)
     assert result.source_validation_status == "verified"
     assert result.source_content is not None
-    assert result.source_content.schema_version == "source-resume-v3"
+    assert result.source_content.schema_version == "source-resume-v5"
     assert len(result.source_content.document.candidates) == 48
     get_settings.cache_clear()
 

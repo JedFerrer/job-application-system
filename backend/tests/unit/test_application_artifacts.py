@@ -37,52 +37,90 @@ from app.domain.applications.artifacts import (
     validate_in_isolated_process,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _pdf_fixture() -> bytes:
-    return (Path(__file__).resolve().parents[1] / "fixtures" / "resume_extraction" / "multipage.pdf").read_bytes()
+    return (
+        Path(__file__).resolve().parents[1] / "fixtures" / "resume_extraction" / "multipage.pdf"
+    ).read_bytes()
 
 
 def _docx(text: str) -> bytes:
-    document = Document(); document.add_paragraph(text)
-    output = io.BytesIO(); document.save(output)
+    document = Document()
+    document.add_paragraph(text)
+    output = io.BytesIO()
+    document.save(output)
     return output.getvalue()
 
 
-@pytest.mark.parametrize("state", ["queued", "validating", "failed", "unavailable", "validated", "warning"])
+@pytest.mark.parametrize(
+    "state", ["queued", "validating", "failed", "unavailable", "validated", "warning"]
+)
 def test_artifact_detail_retry_after_follows_persisted_state(state: str) -> None:
     changed_at = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
     row = ApplicationArtifact(
-        id=31, user_id=4, application_id=7, package_id=12,
-        document_type="resume", format="pdf", filename="resume.pdf",
-        content_type="application/pdf", byte_length=9, sha256="a" * 64,
-        exporter_version="resume-pdf-v1", expected_text_sha256="b" * 64,
+        id=31,
+        user_id=4,
+        application_id=7,
+        package_id=12,
+        document_type="resume",
+        format="pdf",
+        filename="resume.pdf",
+        content_type="application/pdf",
+        byte_length=9,
+        sha256="a" * 64,
+        exporter_version="resume-pdf-v1",
+        expected_text_sha256="b" * 64,
         validation_policy_version="application-artifact-validation-v1",
-        validation_state=state, failure_category=None, validation_report={},
-        task_id=None, validation_state_changed_at=changed_at,
-        created_at=changed_at, content=b"%PDF-1.4\n",
+        validation_state=state,
+        failure_category=None,
+        validation_report={},
+        task_id=None,
+        validation_state_changed_at=changed_at,
+        created_at=changed_at,
+        content=b"%PDF-1.4\n",
     )
     detail = artifact_detail(row)
-    assert detail.retry_after == (changed_at + timedelta(seconds=60) if state in {"queued", "validating"} else None)
+    assert detail.retry_after == (
+        changed_at + timedelta(seconds=60) if state in {"queued", "validating"} else None
+    )
     serialized = detail.model_dump(mode="json")
-    assert serialized["retry_after"] == ("2026-09-24T12:01:00Z" if state in {"queued", "validating"} else None)
+    assert serialized["retry_after"] == (
+        "2026-09-24T12:01:00Z" if state in {"queued", "validating"} else None
+    )
     assert detail.application_id == 7
 
 
 def test_artifact_detail_without_legacy_state_timestamp_has_no_retry_hint() -> None:
     row = ApplicationArtifact(
-        id=31, user_id=4, application_id=7, package_id=12,
-        document_type="resume", format="pdf", filename="resume.pdf",
-        content_type="application/pdf", byte_length=9, sha256="a" * 64,
-        exporter_version="resume-pdf-v1", expected_text_sha256="b" * 64,
+        id=31,
+        user_id=4,
+        application_id=7,
+        package_id=12,
+        document_type="resume",
+        format="pdf",
+        filename="resume.pdf",
+        content_type="application/pdf",
+        byte_length=9,
+        sha256="a" * 64,
+        exporter_version="resume-pdf-v1",
+        expected_text_sha256="b" * 64,
         validation_policy_version="application-artifact-validation-v1",
-        validation_state="queued", failure_category=None, validation_report={},
-        task_id=None, validation_state_changed_at=None,
-        created_at=datetime(2026, 9, 24, tzinfo=UTC), content=b"%PDF-1.4\n",
+        validation_state="queued",
+        failure_category=None,
+        validation_report={},
+        task_id=None,
+        validation_state_changed_at=None,
+        created_at=datetime(2026, 9, 24, tzinfo=UTC),
+        content=b"%PDF-1.4\n",
     )
     assert artifact_detail(row).retry_after is None
 
 
-def _small_docx_parts(*, content_types: bytes = b"<Types/>", extra: dict[str, bytes] | None = None) -> bytes:
+def _small_docx_parts(
+    *, content_types: bytes = b"<Types/>", extra: dict[str, bytes] | None = None
+) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("[Content_Types].xml", content_types)
@@ -113,7 +151,9 @@ def test_canonical_empty_docx_directory_is_accepted() -> None:
 def test_docx_directories_count_toward_entry_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(artifacts, "MAX_DOCX_ENTRIES", 2)
     with pytest.raises(ArtifactValidationError, match="decompression_limit"):
-        preflight_artifact(content=_docx_with_member("word/media/"), document_type="resume", format="docx")
+        preflight_artifact(
+            content=_docx_with_member("word/media/"), document_type="resume", format="docx"
+        )
 
 
 def test_docx_rejects_duplicate_member_names() -> None:
@@ -134,8 +174,8 @@ def test_docx_rejects_encrypted_directory_flag() -> None:
     payload[offset + 6] |= 1
     central = payload.find(b"PK\x01\x02", offset)
     while central >= 0:
-        name_length = int.from_bytes(payload[central + 28:central + 30], "little")
-        name = payload[central + 46:central + 46 + name_length]
+        name_length = int.from_bytes(payload[central + 28 : central + 30], "little")
+        name = payload[central + 46 : central + 46 + name_length]
         if name == b"word/media/":
             payload[central + 8] |= 1
             break
@@ -144,26 +184,35 @@ def test_docx_rejects_encrypted_directory_flag() -> None:
         preflight_artifact(content=bytes(payload), document_type="resume", format="docx")
 
 
-@pytest.mark.parametrize("name,content,mode", [
-    ("word/media/", b"payload", stat.S_IFDIR | 0o755),
-    ("word/../evil/", b"", stat.S_IFDIR | 0o755),
-    ("word//", b"", stat.S_IFDIR | 0o755),
-    ("word/../evil.xml", b"", stat.S_IFREG | 0o644),
-    ("/absolute.xml", b"", stat.S_IFREG | 0o644),
-    ("C:/absolute.xml", b"", stat.S_IFREG | 0o644),
-    ("\\\\server\\share.xml", b"", stat.S_IFREG | 0o644),
-    ("word\\..\\evil.xml", b"", stat.S_IFREG | 0o644),
-    ("word/link.xml", b"", stat.S_IFLNK | 0o777),
-    ("word/link/", b"", stat.S_IFLNK | 0o777),
-    ("word/file/", b"", stat.S_IFREG | 0o644),
-])
+@pytest.mark.parametrize(
+    "name,content,mode",
+    [
+        ("word/media/", b"payload", stat.S_IFDIR | 0o755),
+        ("word/../evil/", b"", stat.S_IFDIR | 0o755),
+        ("word//", b"", stat.S_IFDIR | 0o755),
+        ("word/../evil.xml", b"", stat.S_IFREG | 0o644),
+        ("/absolute.xml", b"", stat.S_IFREG | 0o644),
+        ("C:/absolute.xml", b"", stat.S_IFREG | 0o644),
+        ("\\\\server\\share.xml", b"", stat.S_IFREG | 0o644),
+        ("word\\..\\evil.xml", b"", stat.S_IFREG | 0o644),
+        ("word/link.xml", b"", stat.S_IFLNK | 0o777),
+        ("word/link/", b"", stat.S_IFLNK | 0o777),
+        ("word/file/", b"", stat.S_IFREG | 0o644),
+    ],
+)
 def test_docx_rejects_unsafe_members(name: str, content: bytes, mode: int) -> None:
     with pytest.raises(ArtifactValidationError, match="invalid_docx"):
-        preflight_artifact(content=_docx_with_member(name, content, mode=mode), document_type="resume", format="docx")
+        preflight_artifact(
+            content=_docx_with_member(name, content, mode=mode),
+            document_type="resume",
+            format="docx",
+        )
 
 
 def test_sha_and_filename_are_server_deterministic() -> None:
-    assert sha256_hex(b"bytes") == "277089d91c0bdf4f2e6862ba7e4a07605119431f5d13f726dd352b06f1b206a9"
+    assert (
+        sha256_hex(b"bytes") == "277089d91c0bdf4f2e6862ba7e4a07605119431f5d13f726dd352b06f1b206a9"
+    )
     assert canonical_filename("../../Résumé!.PDF", "resume", "pdf") == "Rsum.pdf"
 
 
@@ -171,7 +220,9 @@ def test_preflight_rejects_wrong_type_and_size() -> None:
     with pytest.raises(ArtifactValidationError, match="unsupported_type"):
         preflight_artifact(content=b"not a pdf", document_type="resume", format="pdf")
     with pytest.raises(ArtifactValidationError, match="size_exceeded"):
-        preflight_artifact(content=b"%PDF-" + b"x" * MAX_ARTIFACT_BYTES, document_type="resume", format="pdf")
+        preflight_artifact(
+            content=b"%PDF-" + b"x" * MAX_ARTIFACT_BYTES, document_type="resume", format="pdf"
+        )
 
 
 def test_docx_preflight_rejects_bad_zip_macro_and_expansion() -> None:
@@ -179,12 +230,15 @@ def test_docx_preflight_rejects_bad_zip_macro_and_expansion() -> None:
         preflight_artifact(content=b"PK\x03\x04bad", document_type="resume", format="docx")
     macro = io.BytesIO()
     with zipfile.ZipFile(macro, "w") as archive:
-        archive.writestr("[Content_Types].xml", "<types/>"); archive.writestr("word/document.xml", "<document/>"); archive.writestr("word/vbaProject.bin", b"macro")
+        archive.writestr("[Content_Types].xml", "<types/>")
+        archive.writestr("word/document.xml", "<document/>")
+        archive.writestr("word/vbaProject.bin", b"macro")
     with pytest.raises(ArtifactValidationError, match="macro_detected"):
         preflight_artifact(content=macro.getvalue(), document_type="resume", format="docx")
     expanded = io.BytesIO()
     with zipfile.ZipFile(expanded, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", "<types/>"); archive.writestr("word/document.xml", "x" * (MAX_DOCX_XML_BYTES + 1))
+        archive.writestr("[Content_Types].xml", "<types/>")
+        archive.writestr("word/document.xml", "x" * (MAX_DOCX_XML_BYTES + 1))
     with pytest.raises(ArtifactValidationError, match="decompression_limit"):
         preflight_artifact(content=expanded.getvalue(), document_type="resume", format="docx")
 
@@ -195,7 +249,9 @@ def test_docx_non_xml_expansion_is_rejected_from_metadata(monkeypatch: pytest.Mo
         archive.writestr("[Content_Types].xml", "<Types/>")
         archive.writestr("word/document.xml", "<document/>")
         archive.writestr("word/media/bomb.bin", b"0" * (MAX_DOCX_EXPANDED_BYTES + 1))
-    monkeypatch.setattr(zipfile.ZipFile, "testzip", lambda self: pytest.fail("main process decompressed archive"))
+    monkeypatch.setattr(
+        zipfile.ZipFile, "testzip", lambda self: pytest.fail("main process decompressed archive")
+    )
     with pytest.raises(ArtifactValidationError, match="decompression_limit"):
         preflight_artifact(content=bomb.getvalue(), document_type="resume", format="docx")
 
@@ -232,20 +288,29 @@ def test_known_vba_part_rejected() -> None:
 def test_docx_macro_content_type_rejected_in_worker() -> None:
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", '<Types><Override ContentType="application/vnd.ms-word.document.macroEnabled.main+xml"/></Types>')
+        archive.writestr(
+            "[Content_Types].xml",
+            '<Types><Override ContentType="application/vnd.ms-word.document.macroEnabled.main+xml"/></Types>',
+        )
         archive.writestr("word/document.xml", "<document/>")
     preflight_artifact(content=payload.getvalue(), document_type="resume", format="docx")
     with pytest.raises(ArtifactValidationError, match="macro_detected"):
-        validate_in_isolated_process(content=payload.getvalue(), format="docx", expected="Ada", document_type="resume")
+        validate_in_isolated_process(
+            content=payload.getvalue(), format="docx", expected="Ada", document_type="resume"
+        )
 
 
 def test_utf16_macro_content_type_rejected_in_worker() -> None:
-    types = ('<?xml version="1.0" encoding="UTF-16"?>'
-             '<Types><Override ContentType="application/vnd.ms-word.document.macroEnabled.main+xml"/></Types>').encode("utf-16")
+    types = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<Types><Override ContentType="application/vnd.ms-word.document.macroEnabled.main+xml"/></Types>'
+    ).encode("utf-16")
     payload = _small_docx_parts(content_types=types)
     preflight_artifact(content=payload, document_type="resume", format="docx")
     with pytest.raises(ArtifactValidationError, match="macro_detected"):
-        validate_in_isolated_process(content=payload, format="docx", expected="Ada", document_type="resume")
+        validate_in_isolated_process(
+            content=payload, format="docx", expected="Ada", document_type="resume"
+        )
 
 
 def test_normal_utf8_content_types_accepted_in_worker() -> None:
@@ -256,9 +321,13 @@ def test_normal_utf8_content_types_accepted_in_worker() -> None:
 
 
 def test_content_type_parser_ignores_free_text_and_rejects_doctype() -> None:
-    ordinary = _small_docx_parts(content_types=b'<Types><Override ContentType="application/xml" Note="macroEnabled"/></Types>')
+    ordinary = _small_docx_parts(
+        content_types=b'<Types><Override ContentType="application/xml" Note="macroEnabled"/></Types>'
+    )
     artifacts._inspect_docx_in_worker(ordinary)
-    hostile = _small_docx_parts(content_types=b'<!DOCTYPE Types [<!ENTITY x "macroEnabled">]><Types/>')
+    hostile = _small_docx_parts(
+        content_types=b'<!DOCTYPE Types [<!ENTITY x "macroEnabled">]><Types/>'
+    )
     with pytest.raises(ArtifactValidationError, match="invalid_docx"):
         artifacts._inspect_docx_in_worker(hostile)
 
@@ -281,59 +350,136 @@ def test_docx_entry_and_ratio_limits(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_exact_five_mib_size_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     content = b"%PDF-" + b"0" * (MAX_ARTIFACT_BYTES - 5)
-    assert preflight_artifact(content=content, document_type="resume", format="pdf").byte_length == MAX_ARTIFACT_BYTES
-    monkeypatch.setattr(artifacts, "_validate_pdf", lambda *_args: pytest.fail("oversized payload parsed"))
+    assert (
+        preflight_artifact(content=content, document_type="resume", format="pdf").byte_length
+        == MAX_ARTIFACT_BYTES
+    )
+    monkeypatch.setattr(
+        artifacts, "_validate_pdf", lambda *_args: pytest.fail("oversized payload parsed")
+    )
     with pytest.raises(ArtifactValidationError, match="size_exceeded"):
         preflight_artifact(content=content + b"0", document_type="resume", format="pdf")
 
 
 def test_package_expected_text_keeps_unicode_numbers_punctuation_and_order() -> None:
-    package: dict[str, object] = {"resume": {"content": {"full_name": "Ada Lovelace", "skills": ["C++", "C#", ".NET", "Node.js"], "work_history": [{"bullets": ["Improved 25% in 2024"]}]}}}
+    package: dict[str, object] = {
+        "resume": {
+            "content": {
+                "full_name": "Ada Lovelace",
+                "skills": ["C++", "C#", ".NET", "Node.js"],
+                "work_history": [{"bullets": ["Improved 25% in 2024"]}],
+            }
+        }
+    }
     expected = package_expected_text(package, "resume")
     assert "C++\nC#\n.NET\nNode.js" in expected and expected.index("Ada") < expected.index("C++")
     assert expected_text_sha256(package, "resume") == sha256_hex(expected.encode("utf-8"))
 
 
 def test_resume_manifest_only_selected_rendered_content() -> None:
-    package: dict[str, object] = {"resume": {"content": {
-        "full_name": "Ada Lovelace", "professional_summary": "Delivered 25%",
-        "missing_keywords": ["Draft 10%"], "summary_evidence": [{"excerpt": "Draft 20%"}],
-        "work_history": [{"title": "Engineer", "company": "Acme", "tailored_highlights": ["Draft 10%"],
-                          "selection_decisions": [{"source_index": 0, "final_included": True, "final_text": "Delivered 25%", "original_text": "Draft 10%", "suggested_text": "Draft 20%", "output_rank": 0}]}],
-    }}}
+    package: dict[str, object] = {
+        "resume": {
+            "content": {
+                "full_name": "Ada Lovelace",
+                "professional_summary": "Delivered 25%",
+                "missing_keywords": ["Draft 10%"],
+                "summary_evidence": [{"excerpt": "Draft 20%"}],
+                "work_history": [
+                    {
+                        "title": "Engineer",
+                        "company": "Acme",
+                        "tailored_highlights": ["Draft 10%"],
+                        "selection_decisions": [
+                            {
+                                "source_index": 0,
+                                "final_included": True,
+                                "final_text": "Delivered 25%",
+                                "original_text": "Draft 10%",
+                                "suggested_text": "Draft 20%",
+                                "output_rank": 0,
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    }
     expected = package_expected_text(package, "resume")
     assert "Delivered 25%" in expected
     assert "Draft 10%" not in expected and "Draft 20%" not in expected
 
 
 def test_canonical_manifest_respects_render_order_and_excludes_metadata() -> None:
-    package: dict[str, object] = {"resume": {"content": {
-        "tailoring_snapshot_version": "full-context-v1", "professional_summary": "Delivered 25%",
-        "summary_evidence_ids": ["e1"], "missing_keywords": ["Draft 10%"],
-        "source_section_order": ["contact", "summary", "skills"],
-        "canonical_sections": [
-            {"section": "skills", "canonical_order": 2, "items": [{"source_id": "skills", "canonical_order": 2, "text": "Draft 20%"}]},
-            {"section": "contact", "canonical_order": 0, "items": [{"source_id": "contact", "canonical_order": 0, "text": "Ada"}]},
-            {"section": "summary", "canonical_order": 1, "items": [{"source_id": "summary", "canonical_order": 1, "text": "Draft 10%"}]},
-        ], "skills": ["C++"], "work_history": [],
-    }}}
+    package: dict[str, object] = {
+        "resume": {
+            "content": {
+                "tailoring_snapshot_version": "full-context-v1",
+                "professional_summary": "Delivered 25%",
+                "summary_evidence_ids": ["e1"],
+                "missing_keywords": ["Draft 10%"],
+                "source_section_order": ["contact", "summary", "skills"],
+                "canonical_sections": [
+                    {
+                        "section": "skills",
+                        "canonical_order": 2,
+                        "items": [
+                            {"source_id": "skills", "canonical_order": 2, "text": "Draft 20%"}
+                        ],
+                    },
+                    {
+                        "section": "contact",
+                        "canonical_order": 0,
+                        "items": [{"source_id": "contact", "canonical_order": 0, "text": "Ada"}],
+                    },
+                    {
+                        "section": "summary",
+                        "canonical_order": 1,
+                        "items": [
+                            {"source_id": "summary", "canonical_order": 1, "text": "Draft 10%"}
+                        ],
+                    },
+                ],
+                "skills": ["C++"],
+                "work_history": [],
+            }
+        }
+    }
     expected = package_expected_text(package, "resume")
     assert expected == "Ada\nDelivered 25%\nC++"
 
 
 def test_cover_letter_manifest_uses_only_selected_content() -> None:
-    package: dict[str, object] = {"cover_letter": {"mode": "selected", "content": "Dear Ada,\nDelivered 25%", "reviewer_notes": "Draft 20%"}}
+    package: dict[str, object] = {
+        "cover_letter": {
+            "mode": "selected",
+            "content": "Dear Ada,\nDelivered 25%",
+            "reviewer_notes": "Draft 20%",
+        }
+    }
     assert package_expected_text(package, "cover_letter") == "Dear Ada, Delivered 25%"
 
 
-@pytest.mark.parametrize(("actual", "expected", "valid"), [
-    ("A B A", "A\nB\nA", True), ("A B", "A\nB\nA", False),
-    ("Ada", "Ada\nAd", False), ("Ada ... Ad", "Ada\nAd", True),
-    ("C++ C# .NET Node.js café 東京 25% 3.5 $100 2024", "C++\nC#\n.NET\nNode.js\ncafé\n東京\n25%\n3.5\n$100\n2024", True),
-    ("25", "25%", False), ("2025", "2024", False),
-    ("$1000", "$100", False), ("35", "3.5", False),
-])
-def test_ordered_distinct_boundary_and_numeric_matching(actual: str, expected: str, valid: bool) -> None:
+@pytest.mark.parametrize(
+    ("actual", "expected", "valid"),
+    [
+        ("A B A", "A\nB\nA", True),
+        ("A B", "A\nB\nA", False),
+        ("Ada", "Ada\nAd", False),
+        ("Ada ... Ad", "Ada\nAd", True),
+        (
+            "C++ C# .NET Node.js café 東京 25% 3.5 $100 2024",
+            "C++\nC#\n.NET\nNode.js\ncafé\n東京\n25%\n3.5\n$100\n2024",
+            True,
+        ),
+        ("25", "25%", False),
+        ("2025", "2024", False),
+        ("$1000", "$100", False),
+        ("35", "3.5", False),
+    ],
+)
+def test_ordered_distinct_boundary_and_numeric_matching(
+    actual: str, expected: str, valid: bool
+) -> None:
     checks = _content_checks(actual, expected)
     assert all(check.status == "pass" for check in checks) is valid
 
@@ -342,8 +488,14 @@ def test_parser_timeout_terminates_and_reaps_child(tmp_path: Path) -> None:
     marker = tmp_path / "child.pid"
     script = f"import os,time,pathlib;pathlib.Path({str(marker)!r}).write_text(str(os.getpid()));time.sleep(30)"
     with pytest.raises(ArtifactValidationError, match="parser_timeout"):
-        validate_in_isolated_process(content=b"x", format="pdf", expected="x", document_type="resume",
-                                     timeout_seconds=0.5, worker_command=[sys.executable, "-c", script])
+        validate_in_isolated_process(
+            content=b"x",
+            format="pdf",
+            expected="x",
+            document_type="resume",
+            timeout_seconds=0.5,
+            worker_command=[sys.executable, "-c", script],
+        )
     assert marker.exists()
     if os.name == "nt":
         from ctypes import wintypes
@@ -361,8 +513,13 @@ def test_parser_timeout_terminates_and_reaps_child(tmp_path: Path) -> None:
 
 def test_parser_child_crash_has_bounded_error() -> None:
     with pytest.raises(ArtifactValidationError, match="parser_unavailable") as error:
-        validate_in_isolated_process(content=b"SECRET_BINARY", format="pdf", expected="SECRET_TEXT", document_type="resume",
-                                     worker_command=[sys.executable, "-c", "raise RuntimeError('SECRET_TEXT')"])
+        validate_in_isolated_process(
+            content=b"SECRET_BINARY",
+            format="pdf",
+            expected="SECRET_TEXT",
+            document_type="resume",
+            worker_command=[sys.executable, "-c", "raise RuntimeError('SECRET_TEXT')"],
+        )
     assert "SECRET" not in str(error.value)
 
 
@@ -375,23 +532,36 @@ def test_content_checks_detect_missing_numeric_order_and_occurrence_changes() ->
 def test_isolated_pdf_and_docx_validation_report_honest_layout() -> None:
     pdf = _pdf_fixture()
     preflight_artifact(content=pdf, document_type="resume", format="pdf")
-    pdf_report = validate_in_isolated_process(content=pdf, format="pdf", expected="Fictional Atlas", document_type="resume")
+    pdf_report = validate_in_isolated_process(
+        content=pdf, format="pdf", expected="Fictional Atlas", document_type="resume"
+    )
     assert pdf_report.state == ArtifactValidationState.VALIDATED and pdf_report.page_count == 2
     docx = _docx("Ada C++ improved 25%")
     preflight_artifact(content=docx, document_type="resume", format="docx")
-    docx_report = validate_in_isolated_process(content=docx, format="docx", expected="Ada C++ improved 25%", document_type="resume")
-    assert any(check.name == "pagination_layout" and check.status == "not_checked" for check in docx_report.checks)
+    docx_report = validate_in_isolated_process(
+        content=docx, format="docx", expected="Ada C++ improved 25%", document_type="resume"
+    )
+    assert any(
+        check.name == "pagination_layout" and check.status == "not_checked"
+        for check in docx_report.checks
+    )
 
 
 def test_pdf_page_limit_and_blank_pages_are_safe_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     class Page:
         def extract_text(self) -> str:
             return "Ada"
+
     class Pdf:
         is_encrypted = False
         pages = [Page()] * (MAX_PDF_PAGES + 1)
-        def __enter__(self) -> Pdf: return self
-        def __exit__(self, *_args: object) -> None: pass
+
+        def __enter__(self) -> Pdf:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
     monkeypatch.setattr(artifacts.pdfplumber, "open", lambda *_args: Pdf())  # type: ignore[attr-defined]
     with pytest.raises(ArtifactValidationError) as error:
         artifacts._validate_pdf(b"%PDF-", "Ada", "resume")

@@ -14,6 +14,8 @@ from app.domain.applications.schemas import DocumentReviewQueuedResponse, Docume
 from app.infrastructure.database import get_db
 from app.models.user import User
 
+pytestmark = pytest.mark.unit
+
 
 class _Reviews:
     async def start(
@@ -25,11 +27,17 @@ class _Reviews:
             raise ReviewConflictError("conflict")
         if kwargs["package_id"] == 201:
             return DocumentReviewResponse(
-                id="review", application_id=1, package_id=201,
+                id="review",
+                application_id=1,
+                package_id=201,
                 package_content_sha256="a" * 64,
                 review_policy_version="application-document-review-v1",
-                state="completed", outcome="insufficient_evidence", findings=[],
-                failure_code=None, created_at=datetime.now(UTC), completed_at=datetime.now(UTC),
+                state="completed",
+                outcome="insufficient_evidence",
+                findings=[],
+                failure_code=None,
+                created_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
             )
         if kwargs["package_id"] == 200:
             return DocumentReviewQueuedResponse(
@@ -45,11 +53,17 @@ class _Reviews:
         if kwargs["package_id"] == 409:
             raise ReviewConflictError("Review no longer matches this package")
         return DocumentReviewResponse(
-            id="review", application_id=1, package_id=2,
+            id="review",
+            application_id=1,
+            package_id=2,
             package_content_sha256="a" * 64,
             review_policy_version="application-document-review-v1",
-            state="failed", outcome="insufficient_evidence", findings=[],
-            failure_code="unavailable", created_at=datetime.now(UTC), completed_at=None,
+            state="failed",
+            outcome="insufficient_evidence",
+            findings=[],
+            failure_code="unavailable",
+            created_at=datetime.now(UTC),
+            completed_at=None,
         )
 
 
@@ -72,7 +86,10 @@ async def _db() -> AsyncGenerator[_Session]:
 def _app() -> FastAPI:
     app = FastAPI()
     app.include_router(applications_module.router)
-    async def user() -> User: return User(id=1, email="owner@example.test", name="Owner")
+
+    async def user() -> User:
+        return User(id=1, email="owner@example.test", name="Owner")
+
     app.dependency_overrides[get_current_user] = user
     app.dependency_overrides[get_document_review_service] = _Reviews
     app.dependency_overrides[get_task_store] = _Tasks

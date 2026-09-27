@@ -6,6 +6,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from app.domain.jobs.identity import (
     canonicalize_job_url,
     resolve_source_identity,
@@ -14,11 +16,10 @@ from app.domain.jobs.identity import (
     strong_employer_apply_url,
 )
 
+pytestmark = pytest.mark.unit
+
 _MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "migrations"
-    / "versions"
-    / "0037_scoped_job_identity.py"
+    Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0037_scoped_job_identity.py"
 )
 
 

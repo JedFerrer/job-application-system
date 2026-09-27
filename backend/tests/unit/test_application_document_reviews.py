@@ -35,9 +35,12 @@ from app.infrastructure.task_store import TaskStore
 from app.models.application_package import ApplicationPackage
 from app.models.application_review import ApplicationDocumentReview
 
+pytestmark = pytest.mark.unit
+
 
 def _provider_status_error(
-    status: int, cls: type[APIStatusError] = APIStatusError,
+    status: int,
+    cls: type[APIStatusError] = APIStatusError,
 ) -> APIStatusError:
     return cls(
         "SECRET_PROVIDER_BODY_SENTINEL",
@@ -52,7 +55,10 @@ def _provider_status_error(
 def _package() -> dict[str, object]:
     return {
         "job": {"description": "Requires Python"},
-        "resume": {"content": {"summary": "Built APIs", "nested": ["Leaf evidence"]}, "provenance": {"source_revision_sha256": "a"}},
+        "resume": {
+            "content": {"summary": "Built APIs", "nested": ["Leaf evidence"]},
+            "provenance": {"source_revision_sha256": "a"},
+        },
         "cover_letter": {"content": "Built APIs for this role"},
     }
 
@@ -60,20 +66,41 @@ def _package() -> dict[str, object]:
 def _current_shape_package() -> dict[str, object]:
     return {
         "job": {"title": "Engineer", "company": "Example Co", "description": "Requires Python"},
-        "resume": {"content": {
-            "matched_skills": ["Python"],
-            "canonical_sections": [{"items": [{"text": "Built API services"}]}],
-            "work_history": [{"title": "Backend Engineer", "tailored_highlights": ["Automated deployment checks"]}],
-        }, "provenance": {"source_revision_sha256": "a"}},
+        "resume": {
+            "content": {
+                "matched_skills": ["Python"],
+                "canonical_sections": [{"items": [{"text": "Built API services"}]}],
+                "work_history": [
+                    {
+                        "title": "Backend Engineer",
+                        "tailored_highlights": ["Automated deployment checks"],
+                    }
+                ],
+            },
+            "provenance": {"source_revision_sha256": "a"},
+        },
         "cover_letter": {"mode": "string"},
     }
 
 
 def _finding(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
-        "id": "f1", "document": "resume", "category": "repetition", "severity": "suggestion",
-        "excerpt": "Built APIs", "locator": "/resume/content/summary", "rationale": "Repeated wording",
-        "evidence": [{"role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs"}], "proposed_action": "Vary the wording",
+        "id": "f1",
+        "document": "resume",
+        "category": "repetition",
+        "severity": "suggestion",
+        "excerpt": "Built APIs",
+        "locator": "/resume/content/summary",
+        "rationale": "Repeated wording",
+        "evidence": [
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/summary",
+                "excerpt": "Built APIs",
+            }
+        ],
+        "proposed_action": "Vary the wording",
     }
     value.update(overrides)
     return value
@@ -83,11 +110,32 @@ def _legacy_test_review_prompt_explicitly_describes_the_response_contract() -> N
     prompt = review_messages(projection=_package())[0]["content"]
 
     for required_text in (
-        '"findings"', "id", "document", "category", "severity", "excerpt", "locator",
-        "rationale", "evidence", "proposed_action", "resume", "cover_letter", "concern",
-        "suggestion", "unsupported_claim", "cross_document_mismatch", "job_document_mismatch",
-        "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing", "target",
-        "comparison", "requirement", "job", "exact string leaf",
+        '"findings"',
+        "id",
+        "document",
+        "category",
+        "severity",
+        "excerpt",
+        "locator",
+        "rationale",
+        "evidence",
+        "proposed_action",
+        "resume",
+        "cover_letter",
+        "concern",
+        "suggestion",
+        "unsupported_claim",
+        "cross_document_mismatch",
+        "job_document_mismatch",
+        "omitted_verified_evidence",
+        "repetition",
+        "clarity",
+        "keyword_stuffing",
+        "target",
+        "comparison",
+        "requirement",
+        "job",
+        "exact string leaf",
     ):
         assert required_text in prompt
 
@@ -189,7 +237,9 @@ def test_validates_evidence_bound_finding() -> None:
     assert _validate_findings(json.dumps({"findings": [_finding()]}), _package())[0]["id"] == "f1"
 
 
-@pytest.mark.parametrize("field,value", [("locator", "/resume/content/missing"), ("excerpt", "Invented metric")])
+@pytest.mark.parametrize(
+    "field,value", [("locator", "/resume/content/missing"), ("excerpt", "Invented metric")]
+)
 def test_rejects_invalid_locator_or_excerpt(field: str, value: str) -> None:
     with pytest.raises(ValueError):
         _validate_findings(json.dumps({"findings": [_finding(**{field: value})]}), _package())
@@ -199,53 +249,128 @@ def test_rejects_malicious_or_oversized_output() -> None:
     with pytest.raises(ValueError):
         _validate_findings('{"ignore_previous": true}', _package())
     with pytest.raises(ValueError):
-        _validate_findings(json.dumps({"findings": [_finding(id=str(index)) for index in range(21)]}), _package())
+        _validate_findings(
+            json.dumps({"findings": [_finding(id=str(index)) for index in range(21)]}), _package()
+        )
 
 
-@pytest.mark.parametrize("evidence", [
-    [],
-    [{"role": "target", "document": "resume", "locator": "/resume/content/missing", "excerpt": "Built APIs"}],
-    [{"role": "target", "document": "cover_letter", "locator": "/resume/content/summary", "excerpt": "Built APIs"}],
-    [{"role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Invented"}],
+@pytest.mark.parametrize(
+    "evidence",
     [
-        {"role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs"},
-        {"role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs"},
+        [],
+        [
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/missing",
+                "excerpt": "Built APIs",
+            }
+        ],
+        [
+            {
+                "role": "target",
+                "document": "cover_letter",
+                "locator": "/resume/content/summary",
+                "excerpt": "Built APIs",
+            }
+        ],
+        [
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/summary",
+                "excerpt": "Invented",
+            }
+        ],
+        [
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/summary",
+                "excerpt": "Built APIs",
+            },
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/summary",
+                "excerpt": "Built APIs",
+            },
+        ],
     ],
-])
+)
 def test_rejects_invalid_structured_evidence(evidence: list[dict[str, str]]) -> None:
     with pytest.raises(ValueError):
         _validate_findings(json.dumps({"findings": [_finding(evidence=evidence)]}), _package())
 
 
 def test_requires_both_sides_for_comparison_categories() -> None:
-    evidence = [{"role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs"}]
+    evidence = [
+        {
+            "role": "target",
+            "document": "resume",
+            "locator": "/resume/content/summary",
+            "excerpt": "Built APIs",
+        }
+    ]
     with pytest.raises(ValueError):
-        _validate_findings(json.dumps({"findings": [_finding(category="cross_document_mismatch", evidence=evidence)]}), _package())
+        _validate_findings(
+            json.dumps(
+                {"findings": [_finding(category="cross_document_mismatch", evidence=evidence)]}
+            ),
+            _package(),
+        )
     with pytest.raises(ValueError):
-        _validate_findings(json.dumps({"findings": [_finding(category="job_document_mismatch", evidence=evidence)]}), _package())
+        _validate_findings(
+            json.dumps(
+                {"findings": [_finding(category="job_document_mismatch", evidence=evidence)]}
+            ),
+            _package(),
+        )
 
 
 def test_rejects_broad_object_list_and_partial_evidence_locators() -> None:
     broad_object = _finding(locator="/resume/content", excerpt="Built APIs")
     broad_list = _finding(locator="/resume/content/nested", excerpt="Leaf evidence")
-    partial = _finding(excerpt="Built", evidence=[{
-        "role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built",
-    }])
+    partial = _finding(
+        excerpt="Built",
+        evidence=[
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/summary",
+                "excerpt": "Built",
+            }
+        ],
+    )
     for finding in (broad_object, broad_list, partial):
         with pytest.raises(ValueError):
             _validate_findings(json.dumps({"findings": [finding]}), _package())
-    leaf = _finding(locator="/resume/content/nested/0", excerpt="Leaf evidence", evidence=[{
-        "role": "target", "document": "resume", "locator": "/resume/content/nested/0", "excerpt": "Leaf evidence",
-    }])
+    leaf = _finding(
+        locator="/resume/content/nested/0",
+        excerpt="Leaf evidence",
+        evidence=[
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/nested/0",
+                "excerpt": "Leaf evidence",
+            }
+        ],
+    )
     assert _validate_findings(json.dumps({"findings": [leaf]}), _package())[0]["id"] == "f1"
 
 
 def test_rejects_finding_substring_when_its_evidence_is_exact() -> None:
     finding = _finding(
         excerpt="Built",
-        evidence=[{
-            "role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs",
-        }],
+        evidence=[
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/summary",
+                "excerpt": "Built APIs",
+            }
+        ],
     )
     with pytest.raises(ValueError):
         _validate_findings(json.dumps({"findings": [finding]}), _package())
@@ -254,18 +379,60 @@ def test_rejects_finding_substring_when_its_evidence_is_exact() -> None:
 @pytest.mark.parametrize(
     ("category", "document", "evidence"),
     [
-        ("cross_document_mismatch", "resume", [
-            {"role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs"},
-            {"role": "comparison", "document": "cover_letter", "locator": "/cover_letter/content", "excerpt": "Built APIs for this role"},
-        ]),
-        ("job_document_mismatch", "resume", [
-            {"role": "requirement", "document": "job", "locator": "/job/description", "excerpt": "Requires Python"},
-            {"role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs"},
-        ]),
-        ("omitted_verified_evidence", "cover_letter", [
-            {"role": "requirement", "document": "job", "locator": "/job/description", "excerpt": "Requires Python"},
-            {"role": "target", "document": "cover_letter", "locator": "/cover_letter/content", "excerpt": "Built APIs for this role"},
-        ]),
+        (
+            "cross_document_mismatch",
+            "resume",
+            [
+                {
+                    "role": "target",
+                    "document": "resume",
+                    "locator": "/resume/content/summary",
+                    "excerpt": "Built APIs",
+                },
+                {
+                    "role": "comparison",
+                    "document": "cover_letter",
+                    "locator": "/cover_letter/content",
+                    "excerpt": "Built APIs for this role",
+                },
+            ],
+        ),
+        (
+            "job_document_mismatch",
+            "resume",
+            [
+                {
+                    "role": "requirement",
+                    "document": "job",
+                    "locator": "/job/description",
+                    "excerpt": "Requires Python",
+                },
+                {
+                    "role": "target",
+                    "document": "resume",
+                    "locator": "/resume/content/summary",
+                    "excerpt": "Built APIs",
+                },
+            ],
+        ),
+        (
+            "omitted_verified_evidence",
+            "cover_letter",
+            [
+                {
+                    "role": "requirement",
+                    "document": "job",
+                    "locator": "/job/description",
+                    "excerpt": "Requires Python",
+                },
+                {
+                    "role": "target",
+                    "document": "cover_letter",
+                    "locator": "/cover_letter/content",
+                    "excerpt": "Built APIs for this role",
+                },
+            ],
+        ),
     ],
 )
 def test_accepts_required_category_evidence_roles(
@@ -276,31 +443,85 @@ def test_accepts_required_category_evidence_roles(
         if document == "cover_letter"
         else {}
     )
-    assert _validate_findings(json.dumps({"findings": [_finding(
-        category=category, document=document, evidence=evidence, **target,
-    )]}), _package())[0]["id"] == "f1"
+    assert (
+        _validate_findings(
+            json.dumps(
+                {
+                    "findings": [
+                        _finding(
+                            category=category,
+                            document=document,
+                            evidence=evidence,
+                            **target,
+                        )
+                    ]
+                }
+            ),
+            _package(),
+        )[0]["id"]
+        == "f1"
+    )
 
 
 @pytest.mark.parametrize(
     ("category", "document", "evidence"),
     [
-        ("cross_document_mismatch", "resume", [
-            {"role": "comparison", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs"},
-            {"role": "target", "document": "cover_letter", "locator": "/cover_letter/content", "excerpt": "Built APIs for this role"},
-        ]),
-        ("job_document_mismatch", "resume", [
-            {"role": "target", "document": "job", "locator": "/job/description", "excerpt": "Requires Python"},
-            {"role": "requirement", "document": "resume", "locator": "/resume/content/summary", "excerpt": "Built APIs"},
-        ]),
+        (
+            "cross_document_mismatch",
+            "resume",
+            [
+                {
+                    "role": "comparison",
+                    "document": "resume",
+                    "locator": "/resume/content/summary",
+                    "excerpt": "Built APIs",
+                },
+                {
+                    "role": "target",
+                    "document": "cover_letter",
+                    "locator": "/cover_letter/content",
+                    "excerpt": "Built APIs for this role",
+                },
+            ],
+        ),
+        (
+            "job_document_mismatch",
+            "resume",
+            [
+                {
+                    "role": "target",
+                    "document": "job",
+                    "locator": "/job/description",
+                    "excerpt": "Requires Python",
+                },
+                {
+                    "role": "requirement",
+                    "document": "resume",
+                    "locator": "/resume/content/summary",
+                    "excerpt": "Built APIs",
+                },
+            ],
+        ),
     ],
 )
 def test_rejects_swapped_evidence_roles(
     category: str, document: str, evidence: list[dict[str, str]]
 ) -> None:
     with pytest.raises(ValueError):
-        _validate_findings(json.dumps({"findings": [_finding(
-            category=category, document=document, evidence=evidence,
-        )]}), _package())
+        _validate_findings(
+            json.dumps(
+                {
+                    "findings": [
+                        _finding(
+                            category=category,
+                            document=document,
+                            evidence=evidence,
+                        )
+                    ]
+                }
+            ),
+            _package(),
+        )
 
 
 class _MemoryTaskStore(TaskStore):
@@ -320,7 +541,13 @@ class _MemoryTaskStore(TaskStore):
 
 
 class _WorkerSession:
-    def __init__(self, review: ApplicationDocumentReview, package: ApplicationPackage, *, fail_completion_commit: bool = False) -> None:
+    def __init__(
+        self,
+        review: ApplicationDocumentReview,
+        package: ApplicationPackage,
+        *,
+        fail_completion_commit: bool = False,
+    ) -> None:
         self.review = review
         self.package = package
         self.fail_completion_commit = fail_completion_commit
@@ -398,21 +625,38 @@ class _DiagnosticLogger:
         self.events.append((event, fields))
 
 
-def _review(package: ApplicationPackage, *, review_id: str = "review-worker") -> ApplicationDocumentReview:
+def _review(
+    package: ApplicationPackage, *, review_id: str = "review-worker"
+) -> ApplicationDocumentReview:
     return ApplicationDocumentReview(
-        id=review_id, user_id=1, application_id=1, package_id=package.id,
+        id=review_id,
+        user_id=1,
+        application_id=1,
+        package_id=package.id,
         package_content_sha256=package.content_sha256,
-        review_policy_version=REVIEW_POLICY_VERSION, idempotency_key="review",
-        task_id=f"task-{review_id}", state="queued", findings=[],
+        review_policy_version=REVIEW_POLICY_VERSION,
+        idempotency_key="review",
+        task_id=f"task-{review_id}",
+        state="queued",
+        findings=[],
     )
 
 
 def _install_worker(
-    monkeypatch: MonkeyPatch, *, review: ApplicationDocumentReview, package: ApplicationPackage,
-    provider: object, store: _MemoryTaskStore, session: _WorkerSession | None = None,
+    monkeypatch: MonkeyPatch,
+    *,
+    review: ApplicationDocumentReview,
+    package: ApplicationPackage,
+    provider: object,
+    store: _MemoryTaskStore,
+    session: _WorkerSession | None = None,
 ) -> _DiagnosticLogger:
     diagnostic_logger = _DiagnosticLogger()
-    monkeypatch.setattr(document_review, "async_session_factory", lambda: _SessionScope(session or _WorkerSession(review, package)))
+    monkeypatch.setattr(
+        document_review,
+        "async_session_factory",
+        lambda: _SessionScope(session or _WorkerSession(review, package)),
+    )
     monkeypatch.setattr(document_review, "TaskStore", lambda _redis: store)
     monkeypatch.setattr(document_review, "get_redis", lambda: object())
     monkeypatch.setattr(document_review, "llm_chat_completion", provider)
@@ -421,7 +665,9 @@ def _install_worker(
 
 
 async def _run_worker(review: ApplicationDocumentReview) -> None:
-    await document_review.run_document_review_background(task_id=review.task_id, review_id=review.id, user_id=1)
+    await document_review.run_document_review_background(
+        task_id=review.task_id, review_id=review.id, user_id=1
+    )
 
 
 def _event_fields(logger: _DiagnosticLogger) -> dict[str, object]:
@@ -436,10 +682,16 @@ async def test_background_timeout_is_terminal_and_late_provider_completion_is_ig
 ) -> None:
     package = _worker_package()
     review = ApplicationDocumentReview(
-        id="review-timeout", user_id=1, application_id=1, package_id=package.id,
+        id="review-timeout",
+        user_id=1,
+        application_id=1,
+        package_id=package.id,
         package_content_sha256=package.content_sha256,
-        review_policy_version=REVIEW_POLICY_VERSION, idempotency_key="review",
-        task_id="task-timeout", state="queued", findings=[],
+        review_policy_version=REVIEW_POLICY_VERSION,
+        idempotency_key="review",
+        task_id="task-timeout",
+        state="queued",
+        findings=[],
     )
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
@@ -450,7 +702,9 @@ async def test_background_timeout_is_terminal_and_late_provider_completion_is_ig
         async def complete_late() -> Any:
             await late_release.wait()
             late_finished.set()
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))])
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))]
+            )
 
         completion = asyncio.create_task(complete_late())
         return await asyncio.shield(completion), "fake-model"
@@ -471,7 +725,10 @@ async def test_background_timeout_is_terminal_and_late_provider_completion_is_ig
     assert review.findings == []
     assert review.model_name is None
     assert store.data[review.task_id] == {
-        "user_id": 1, "status": "failed", "message": "Review unavailable", "review_id": review.id
+        "user_id": 1,
+        "status": "failed",
+        "message": "Review unavailable",
+        "review_id": review.id,
     }
     late_release.set()
     await asyncio.wait_for(late_finished.wait(), timeout=1)
@@ -499,7 +756,9 @@ async def test_worker_records_safe_provider_call_diagnostics_without_public_deta
             attempt_categories=("rate_limit", "server_error"),
         )
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     fields = _event_fields(diagnostic_logger)
@@ -520,11 +779,23 @@ async def test_worker_records_safe_provider_call_diagnostics_without_public_deta
     assert review.failure_code == "unavailable"
     assert review.failure_message == "Review unavailable"
     assert store.data[review.task_id]["message"] == "Review unavailable"
-    assert "SECRET_" not in str((diagnostic_logger.events, review.failure_message, store.data[review.task_id]))
+    assert "SECRET_" not in str(
+        (diagnostic_logger.events, review.failure_message, store.data[review.task_id])
+    )
     assert review.diagnostic_summary == {
-        "diagnostic_version": "document-review-diagnostic-v1", "review_id": review.id,
-        "task_id": review.task_id, "outcome": "failed",
-        "generations": [{"generation_attempt": 1, "stage": "provider_call", "provider_failure_category": "rate_limit", "provider_attempt_count": 2, "providers_exhausted": True}],
+        "diagnostic_version": "document-review-diagnostic-v1",
+        "review_id": review.id,
+        "task_id": review.task_id,
+        "outcome": "failed",
+        "generations": [
+            {
+                "generation_attempt": 1,
+                "stage": "provider_call",
+                "provider_failure_category": "rate_limit",
+                "provider_attempt_count": 2,
+                "providers_exhausted": True,
+            }
+        ],
     }
 
 
@@ -537,7 +808,9 @@ async def test_worker_records_safe_provider_call_diagnostics_without_public_deta
     ],
 )
 async def test_worker_safely_classifies_propagated_non_retryable_provider_errors(
-    monkeypatch: MonkeyPatch, error: APIStatusError, expected_category: str,
+    monkeypatch: MonkeyPatch,
+    error: APIStatusError,
+    expected_category: str,
 ) -> None:
     package = _worker_package()
     review = _review(package, review_id=f"provider-{expected_category}")
@@ -547,7 +820,9 @@ async def test_worker_safely_classifies_propagated_non_retryable_provider_errors
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         raise error
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     fields = _event_fields(diagnostic_logger)
@@ -564,13 +839,20 @@ async def test_worker_safely_classifies_propagated_non_retryable_provider_errors
     assert review.failure_code == "unavailable"
     assert review.failure_message == "Review unavailable"
     assert store.data[review.task_id]["message"] == "Review unavailable"
-    assert "SECRET_" not in str((diagnostic_logger.events, review.failure_message, store.data[review.task_id]))
+    assert "SECRET_" not in str(
+        (diagnostic_logger.events, review.failure_message, store.data[review.task_id])
+    )
 
 
 @pytest.mark.asyncio
-async def test_worker_classifies_response_extraction_failure_without_content_leakage(monkeypatch: MonkeyPatch) -> None:
+async def test_worker_classifies_response_extraction_failure_without_content_leakage(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
-    package.content["resume"] = {"content": {"summary": "SECRET_RESUME_SENTINEL"}, "provenance": {"source_revision_sha256": "a"}}
+    package.content["resume"] = {
+        "content": {"summary": "SECRET_RESUME_SENTINEL"},
+        "provenance": {"source_revision_sha256": "a"},
+    }
     package.content["cover_letter"] = {"content": "SECRET_COVER_LETTER_SENTINEL"}
     encoded = json.dumps(package.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     package.content_sha256 = hashlib.sha256(encoded.encode()).hexdigest()
@@ -581,7 +863,9 @@ async def test_worker_classifies_response_extraction_failure_without_content_lea
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace())]), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     fields = _event_fields(diagnostic_logger)
@@ -591,11 +875,20 @@ async def test_worker_classifies_response_extraction_failure_without_content_lea
     assert review.failure_code == "unavailable"
     assert review.failure_message == "Review unavailable"
     assert store.data[review.task_id]["message"] == "Review unavailable"
-    assert "SECRET_" not in str((diagnostic_logger.events, review.failure_message, store.data[review.task_id], review.findings))
+    assert "SECRET_" not in str(
+        (
+            diagnostic_logger.events,
+            review.failure_message,
+            store.data[review.task_id],
+            review.findings,
+        )
+    )
 
 
 @pytest.mark.asyncio
-async def test_worker_classifies_malformed_json_without_content_leakage(monkeypatch: MonkeyPatch) -> None:
+async def test_worker_classifies_malformed_json_without_content_leakage(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="json")
     store = _MemoryTaskStore()
@@ -603,9 +896,13 @@ async def test_worker_classifies_malformed_json_without_content_leakage(monkeypa
     raw = "SECRET_PROVIDER_CONTENT_SENTINEL"
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=raw))]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     fields = _event_fields(diagnostic_logger)
@@ -613,7 +910,14 @@ async def test_worker_classifies_malformed_json_without_content_leakage(monkeypa
     assert fields["content_length"] == len(raw)
     assert review.failure_code == "unavailable"
     assert review.findings == []
-    assert "SECRET_PROVIDER_CONTENT_SENTINEL" not in str((diagnostic_logger.events, review.failure_message, store.data[review.task_id], review.findings))
+    assert "SECRET_PROVIDER_CONTENT_SENTINEL" not in str(
+        (
+            diagnostic_logger.events,
+            review.failure_message,
+            store.data[review.task_id],
+            review.findings,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -624,12 +928,22 @@ async def test_worker_classifies_schema_validation_failure(monkeypatch: MonkeyPa
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [{"id": "f1"}]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [{"id": "f1"}]}))
+                )
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
-    failure_events = [fields for event, fields in diagnostic_logger.events if event == "document_review.failed"]
+    failure_events = [
+        fields for event, fields in diagnostic_logger.events if event == "document_review.failed"
+    ]
     assert len(failure_events) == 1
     fields = failure_events[0]
     assert fields["stage"] == "response_schema_validation"
@@ -640,30 +954,57 @@ async def test_worker_classifies_schema_validation_failure(monkeypatch: MonkeyPa
 
 
 @pytest.mark.asyncio
-async def _legacy_test_worker_classifies_evidence_validation_failure_without_content_leakage(monkeypatch: MonkeyPatch) -> None:
+async def _legacy_test_worker_classifies_evidence_validation_failure_without_content_leakage(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="evidence")
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
-    invalid = _finding(excerpt="SECRET_EVIDENCE_SENTINEL", evidence=[{
-        "role": "target", "document": "resume", "locator": "/resume/content/summary", "excerpt": "SECRET_EVIDENCE_SENTINEL",
-    }])
+    invalid = _finding(
+        excerpt="SECRET_EVIDENCE_SENTINEL",
+        evidence=[
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/summary",
+                "excerpt": "SECRET_EVIDENCE_SENTINEL",
+            }
+        ],
+    )
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [invalid]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [invalid]}))
+                )
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     fields = _event_fields(diagnostic_logger)
     assert fields["stage"] == "evidence_validation"
     assert fields["evidence_reason"] == "excerpt_mismatch"
     assert review.failure_code == "unavailable"
-    assert "SECRET_EVIDENCE_SENTINEL" not in str((diagnostic_logger.events, review.failure_message, store.data[review.task_id], review.findings))
+    assert "SECRET_EVIDENCE_SENTINEL" not in str(
+        (
+            diagnostic_logger.events,
+            review.failure_message,
+            store.data[review.task_id],
+            review.findings,
+        )
+    )
 
 
 @pytest.mark.asyncio
-async def _legacy_test_worker_rejects_container_pointer_as_non_string_leaf(monkeypatch: MonkeyPatch) -> None:
+async def _legacy_test_worker_rejects_container_pointer_as_non_string_leaf(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _current_shape_worker_package()
     review = _review(package, review_id="container")
     store = _MemoryTaskStore()
@@ -671,15 +1012,28 @@ async def _legacy_test_worker_rejects_container_pointer_as_non_string_leaf(monke
     invalid = _finding(
         locator="/resume/content/work_history",
         excerpt="Backend Engineer",
-        evidence=[{
-            "role": "target", "document": "resume", "locator": "/resume/content/work_history", "excerpt": "Backend Engineer",
-        }],
+        evidence=[
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": "/resume/content/work_history",
+                "excerpt": "Backend Engineer",
+            }
+        ],
     )
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [invalid]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [invalid]}))
+                )
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     fields = _event_fields(diagnostic_logger)
@@ -699,9 +1053,17 @@ async def _legacy_test_worker_emits_finding_pointer_failure_metadata_without_loc
     invalid = _finding(locator=f"/resume/content/{sentinel}/foo")
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [invalid]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [invalid]}))
+                )
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert len(diagnostic_logger.events) == 2
@@ -714,7 +1076,14 @@ async def _legacy_test_worker_emits_finding_pointer_failure_metadata_without_loc
     assert fields["pointer_depth"] == 4
     assert fields["failing_segment_position"] == 2
     assert fields["container_kind"] == "object"
-    rendered = str((diagnostic_logger.events, review.failure_message, store.data[review.task_id], review.findings))
+    rendered = str(
+        (
+            diagnostic_logger.events,
+            review.failure_message,
+            store.data[review.task_id],
+            review.findings,
+        )
+    )
     assert sentinel not in rendered
     assert f"/resume/content/{sentinel}/foo" not in rendered
     assert "Built APIs" not in rendered
@@ -742,14 +1111,29 @@ async def _legacy_test_worker_emits_evidence_pointer_failure_metadata(
     review = _review(package, review_id=f"evidence-pointer-{failure_kind}")
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
-    invalid = _finding(evidence=[{
-        "role": "target", "document": "resume", "locator": locator, "excerpt": "Built APIs",
-    }])
+    invalid = _finding(
+        evidence=[
+            {
+                "role": "target",
+                "document": "resume",
+                "locator": locator,
+                "excerpt": "Built APIs",
+            }
+        ]
+    )
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [invalid]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [invalid]}))
+                )
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert len(diagnostic_logger.events) == 2 if failure_kind != "traversal_type_mismatch" else 1
@@ -774,9 +1158,13 @@ async def test_worker_classifies_completion_persistence_failure(monkeypatch: Mon
     session = _WorkerSession(review, package, fail_completion_commit=True)
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store, session=session)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store, session=session
+    )
     await _run_worker(review)
 
     assert diagnostic_logger.events == [("document_review.diagnostic_persistence_failed", {})]
@@ -795,9 +1183,13 @@ async def test_worker_classifies_task_completion_failure(monkeypatch: MonkeyPatc
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings": []}'))]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     fields = _event_fields(diagnostic_logger)
@@ -807,7 +1199,9 @@ async def test_worker_classifies_task_completion_failure(monkeypatch: MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_worker_uses_worker_unknown_for_pre_provider_failures(monkeypatch: MonkeyPatch) -> None:
+async def test_worker_uses_worker_unknown_for_pre_provider_failures(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="pre-provider")
     store = _MemoryTaskStore()
@@ -818,58 +1212,102 @@ async def test_worker_uses_worker_unknown_for_pre_provider_failures(monkeypatch:
         raise RuntimeError("SECRET_PRE_PROVIDER_SENTINEL")
 
     monkeypatch.setattr(document_review.DocumentReviewService, "_validate_package", fail_validation)
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=object(), store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=object(), store=store
+    )
     await _run_worker(review)
 
     fields = _event_fields(diagnostic_logger)
     assert fields["stage"] == "worker_unknown"
     assert fields["exception_class"] == "RuntimeError"
-    assert "SECRET_" not in str((diagnostic_logger.events, review.failure_message, store.data[review.task_id]))
+    assert "SECRET_" not in str(
+        (diagnostic_logger.events, review.failure_message, store.data[review.task_id])
+    )
 
 
 @pytest.mark.asyncio
-async def _legacy_test_worker_valid_response_completes_without_diagnostic_event(monkeypatch: MonkeyPatch) -> None:
+async def _legacy_test_worker_valid_response_completes_without_diagnostic_event(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="success")
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [_finding()]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [_finding()]}))
+                )
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert diagnostic_logger.events == []
     assert review.state == "completed"
     assert review.findings == [_finding()]
     assert store.data[review.task_id] == {
-        "user_id": 1, "status": "done", "message": "Document review completed", "review_id": review.id,
+        "user_id": 1,
+        "status": "done",
+        "message": "Document review completed",
+        "review_id": review.id,
     }
 
 
 @pytest.mark.asyncio
-async def _legacy_test_worker_completes_with_current_shape_string_leaf_locators(monkeypatch: MonkeyPatch) -> None:
+async def _legacy_test_worker_completes_with_current_shape_string_leaf_locators(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _current_shape_worker_package()
     review = _review(package, review_id="current-shape-success")
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
     findings = [
         {
-            "id": "job-match", "document": "resume", "category": "job_document_mismatch", "severity": "suggestion",
-            "excerpt": "Built API services", "locator": "/resume/content/canonical_sections/0/items/0/text",
+            "id": "job-match",
+            "document": "resume",
+            "category": "job_document_mismatch",
+            "severity": "suggestion",
+            "excerpt": "Built API services",
+            "locator": "/resume/content/canonical_sections/0/items/0/text",
             "rationale": "Make the Python experience easier to find.",
             "evidence": [
-                {"role": "requirement", "document": "job", "locator": "/job/description", "excerpt": "Requires Python"},
-                {"role": "target", "document": "resume", "locator": "/resume/content/canonical_sections/0/items/0/text", "excerpt": "Built API services"},
+                {
+                    "role": "requirement",
+                    "document": "job",
+                    "locator": "/job/description",
+                    "excerpt": "Requires Python",
+                },
+                {
+                    "role": "target",
+                    "document": "resume",
+                    "locator": "/resume/content/canonical_sections/0/items/0/text",
+                    "excerpt": "Built API services",
+                },
             ],
             "proposed_action": "Clarify the relevant experience.",
         },
         {
-            "id": "highlight", "document": "resume", "category": "clarity", "severity": "suggestion",
-            "excerpt": "Automated deployment checks", "locator": "/resume/content/work_history/0/tailored_highlights/0",
+            "id": "highlight",
+            "document": "resume",
+            "category": "clarity",
+            "severity": "suggestion",
+            "excerpt": "Automated deployment checks",
+            "locator": "/resume/content/work_history/0/tailored_highlights/0",
             "rationale": "State the outcome more clearly.",
-            "evidence": [{"role": "target", "document": "resume", "locator": "/resume/content/work_history/0/tailored_highlights/0", "excerpt": "Automated deployment checks"}],
+            "evidence": [
+                {
+                    "role": "target",
+                    "document": "resume",
+                    "locator": "/resume/content/work_history/0/tailored_highlights/0",
+                    "excerpt": "Automated deployment checks",
+                }
+            ],
             "proposed_action": "Add a concrete outcome if verified.",
         },
     ]
@@ -879,9 +1317,15 @@ async def _legacy_test_worker_completes_with_current_shape_string_leaf_locators(
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         nonlocal calls
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": findings})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": findings})))
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert diagnostic_logger.events == []
@@ -890,8 +1334,11 @@ async def _legacy_test_worker_completes_with_current_shape_string_leaf_locators(
     assert store.data[review.task_id]["status"] == "done"
     assert calls == 1
     assert review.diagnostic_summary == {
-        "diagnostic_version": "document-review-diagnostic-v1", "review_id": review.id,
-        "task_id": review.task_id, "outcome": "completed", "generation_count": 1,
+        "diagnostic_version": "document-review-diagnostic-v1",
+        "review_id": review.id,
+        "task_id": review.task_id,
+        "outcome": "completed",
+        "generation_count": 1,
         "completed_on_generation": 1,
     }
 
@@ -930,7 +1377,9 @@ def _legacy_test_corrective_messages_include_only_safe_feedback() -> None:
     ],
 )
 def _legacy_test_corrective_regeneration_eligibility_is_closed(
-    reason: str, pointer_failure_kind: str | None, expected: bool,
+    reason: str,
+    pointer_failure_kind: str | None,
+    expected: bool,
 ) -> None:
     metadata: dict[str, object] | None = (
         {"pointer_failure_kind": pointer_failure_kind} if pointer_failure_kind else None
@@ -940,13 +1389,17 @@ def _legacy_test_corrective_regeneration_eligibility_is_closed(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pointer", [
-    "/resume/content/missing",
-    "/resume/content/nested/not-an-index",
-    "/resume/content/nested/9",
-])
+@pytest.mark.parametrize(
+    "pointer",
+    [
+        "/resume/content/missing",
+        "/resume/content/nested/not-an-index",
+        "/resume/content/nested/9",
+    ],
+)
 async def _legacy_test_worker_corrects_allowlisted_pointer_failures_once(
-    monkeypatch: MonkeyPatch, pointer: str,
+    monkeypatch: MonkeyPatch,
+    pointer: str,
 ) -> None:
     package = _worker_package()
     review = _review(package, review_id=f"correct-{pointer.rsplit('/', 1)[-1]}")
@@ -958,15 +1411,21 @@ async def _legacy_test_worker_corrects_allowlisted_pointer_failures_once(
     async def provider(**kwargs: object) -> tuple[Any, str]:
         calls.append(kwargs)
         payload = {"findings": [invalid]} if len(calls) == 1 else {"findings": [_finding()]}
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     original_hash = package.content_sha256
     original_content = json.dumps(package.content, sort_keys=True)
     await _run_worker(review)
 
     assert len(calls) == 2
-    assert cast(list[object], calls[0]["messages"])[-1] == cast(list[object], calls[1]["messages"])[-1]
+    assert (
+        cast(list[object], calls[0]["messages"])[-1] == cast(list[object], calls[1]["messages"])[-1]
+    )
     assert review.id == f"correct-{pointer.rsplit('/', 1)[-1]}"
     assert review.task_id in store.data
     assert len(store.data) == 1
@@ -979,14 +1438,19 @@ async def _legacy_test_worker_corrects_allowlisted_pointer_failures_once(
     assert fields["generation_attempt"] == 1
     assert fields["corrective_regeneration"] is True
     assert review.diagnostic_summary == {
-        "diagnostic_version": "document-review-diagnostic-v1", "review_id": review.id,
-        "task_id": review.task_id, "outcome": "completed", "generation_count": 2,
+        "diagnostic_version": "document-review-diagnostic-v1",
+        "review_id": review.id,
+        "task_id": review.task_id,
+        "outcome": "completed",
+        "generation_count": 2,
         "completed_on_generation": 2,
     }
 
 
 @pytest.mark.asyncio
-async def _legacy_test_worker_stops_after_second_eligible_pointer_failure(monkeypatch: MonkeyPatch) -> None:
+async def _legacy_test_worker_stops_after_second_eligible_pointer_failure(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="two-only")
     store = _MemoryTaskStore()
@@ -999,14 +1463,25 @@ async def _legacy_test_worker_stops_after_second_eligible_pointer_failure(monkey
         if calls == 3:
             raise AssertionError("third generation attempted")
         invalid = _finding(locator="/resume/content/missing")
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [invalid]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [invalid]}))
+                )
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
     assert calls == 2
     assert review.state == "failed"
     assert diagnostic_logger.events[-1][1]["generation_attempt"] == 2
-    assert len(cast(list[object], cast(dict[str, object], review.diagnostic_summary)["generations"])) == 2
+    assert (
+        len(cast(list[object], cast(dict[str, object], review.diagnostic_summary)["generations"]))
+        == 2
+    )
 
 
 @pytest.mark.asyncio
@@ -1030,9 +1505,15 @@ async def _legacy_test_worker_second_provider_failure_is_terminal_safe_and_disti
     async def provider(**kwargs: object) -> tuple[Any, str]:
         calls.append(kwargs)
         if len(calls) == 1:
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-                content=json.dumps({"findings": [first]}),
-            ))]), "fake-model"
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps({"findings": [first]}),
+                        )
+                    )
+                ]
+            ), "fake-model"
         if len(calls) == 2:
             raise LLMUnavailableError(
                 "SECRET_PROVIDER_ERROR_BODY",
@@ -1043,7 +1524,9 @@ async def _legacy_test_worker_second_provider_failure_is_terminal_safe_and_disti
             )
         raise AssertionError("third generation attempted")
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert len(calls) == 2
@@ -1054,15 +1537,43 @@ async def _legacy_test_worker_second_provider_failure_is_terminal_safe_and_disti
     assert fields["stage"] == "provider_call"
     assert fields["generation_attempt"] == 2
     assert fields["attempt_count"] == 3
-    rendered = str((calls[1]["messages"], diagnostic_logger.events, review.failure_message, store.data, review.diagnostic_summary))
-    for sentinel in (rejected_locator, rejected_excerpt, rejected_finding, "SECRET_PROVIDER_ERROR_BODY"):
+    rendered = str(
+        (
+            calls[1]["messages"],
+            diagnostic_logger.events,
+            review.failure_message,
+            store.data,
+            review.diagnostic_summary,
+        )
+    )
+    for sentinel in (
+        rejected_locator,
+        rejected_excerpt,
+        rejected_finding,
+        "SECRET_PROVIDER_ERROR_BODY",
+    ):
         assert sentinel not in rendered
     assert review.diagnostic_summary == {
-        "diagnostic_version": "document-review-diagnostic-v1", "review_id": review.id,
-        "task_id": review.task_id, "outcome": "failed",
+        "diagnostic_version": "document-review-diagnostic-v1",
+        "review_id": review.id,
+        "task_id": review.task_id,
+        "outcome": "failed",
         "generations": [
-            {"generation_attempt": 1, "stage": "evidence_validation", "reason": "invalid_pointer", "pointer_failure_kind": "missing_key", "document": "resume", "locator_role": "finding"},
-            {"generation_attempt": 2, "stage": "provider_call", "provider_failure_category": "rate_limit", "provider_attempt_count": 3, "providers_exhausted": True},
+            {
+                "generation_attempt": 1,
+                "stage": "evidence_validation",
+                "reason": "invalid_pointer",
+                "pointer_failure_kind": "missing_key",
+                "document": "resume",
+                "locator_role": "finding",
+            },
+            {
+                "generation_attempt": 2,
+                "stage": "provider_call",
+                "provider_failure_category": "rate_limit",
+                "provider_attempt_count": 3,
+                "providers_exhausted": True,
+            },
         ],
     }
 
@@ -1083,12 +1594,18 @@ async def _legacy_test_worker_second_malformed_json_is_terminal_without_raw_resp
         calls += 1
         if calls == 1:
             payload = {"findings": [_finding(locator="/resume/content/missing")]}
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ), "fake-model"
         if calls == 2:
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=malformed))]), "fake-model"
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=malformed))]
+            ), "fake-model"
         raise AssertionError("third generation attempted")
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert calls == 2
@@ -1098,7 +1615,9 @@ async def _legacy_test_worker_second_malformed_json_is_terminal_without_raw_resp
     fields = diagnostic_logger.events[-1][1]
     assert fields["stage"] == "response_json_parse"
     assert fields["generation_attempt"] == 2
-    assert malformed not in str((diagnostic_logger.events, review.failure_message, store.data, review.findings))
+    assert malformed not in str(
+        (diagnostic_logger.events, review.failure_message, store.data, review.findings)
+    )
 
 
 @pytest.mark.asyncio
@@ -1117,14 +1636,24 @@ async def _legacy_test_worker_second_schema_failure_is_terminal_without_raw_resp
         calls += 1
         if calls == 1:
             payload = {"findings": [_finding(locator="/resume/content/missing")]}
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+            ), "fake-model"
         if calls == 2:
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-                content=json.dumps(schema_invalid),
-            ))]), "fake-model"
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(schema_invalid),
+                        )
+                    )
+                ]
+            ), "fake-model"
         raise AssertionError("third generation attempted")
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert calls == 2
@@ -1134,13 +1663,16 @@ async def _legacy_test_worker_second_schema_failure_is_terminal_without_raw_resp
     assert fields["stage"] == "response_schema_validation"
     assert fields["generation_attempt"] == 2
     assert isinstance(fields["validation_error_count"], int)
-    assert "SECRET_SECOND_SCHEMA_RESPONSE" not in str((diagnostic_logger.events, review.failure_message, store.data, review.findings))
+    assert "SECRET_SECOND_SCHEMA_RESPONSE" not in str(
+        (diagnostic_logger.events, review.failure_message, store.data, review.findings)
+    )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("locator", ["resume/content/summary", "/resume/content/summary/extra"])
 async def _legacy_test_worker_does_not_correct_noneligible_pointer_failures(
-    monkeypatch: MonkeyPatch, locator: str,
+    monkeypatch: MonkeyPatch,
+    locator: str,
 ) -> None:
     package = _worker_package()
     review = _review(package, review_id="noneligible")
@@ -1152,7 +1684,13 @@ async def _legacy_test_worker_does_not_correct_noneligible_pointer_failures(
         nonlocal calls
         calls += 1
         invalid = _finding(locator=locator)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [invalid]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [invalid]}))
+                )
+            ]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -1165,17 +1703,31 @@ async def _legacy_test_worker_does_not_correct_noneligible_pointer_failures(
 
 def test_durable_diagnostic_builder_is_closed_and_historical_null_is_valid() -> None:
     summary = document_review._generation_summary(
-        generation_attempt=1, stage="evidence_validation", reason="invalid_pointer",
+        generation_attempt=1,
+        stage="evidence_validation",
+        reason="invalid_pointer",
         structural_metadata={
-            "pointer_failure_kind": "missing_key", "document": "resume", "locator_role": "finding",
-            "locator": "SECRET_RAW_LOCATOR", "excerpt": "SECRET_EXCERPT", "unknown": "SECRET_DYNAMIC",
+            "pointer_failure_kind": "missing_key",
+            "document": "resume",
+            "locator_role": "finding",
+            "locator": "SECRET_RAW_LOCATOR",
+            "excerpt": "SECRET_EXCERPT",
+            "unknown": "SECRET_DYNAMIC",
         },
-        provider_failure_category="rate_limit", provider_attempt_count=2, providers_exhausted=True,
+        provider_failure_category="rate_limit",
+        provider_attempt_count=2,
+        providers_exhausted=True,
     )
     assert summary == {
-        "generation_attempt": 1, "stage": "evidence_validation", "reason": "invalid_pointer",
-        "pointer_failure_kind": "missing_key", "document": "resume", "locator_role": "finding",
-        "provider_failure_category": "rate_limit", "provider_attempt_count": 2, "providers_exhausted": True,
+        "generation_attempt": 1,
+        "stage": "evidence_validation",
+        "reason": "invalid_pointer",
+        "pointer_failure_kind": "missing_key",
+        "document": "resume",
+        "locator_role": "finding",
+        "provider_failure_category": "rate_limit",
+        "provider_attempt_count": 2,
+        "providers_exhausted": True,
     }
     assert "SECRET_" not in json.dumps(summary)
     review = _review(_worker_package())
@@ -1184,7 +1736,9 @@ def test_durable_diagnostic_builder_is_closed_and_historical_null_is_valid() -> 
 
 
 @pytest.mark.asyncio
-async def _legacy_test_second_generation_uses_remaining_shared_budget(monkeypatch: MonkeyPatch) -> None:
+async def _legacy_test_second_generation_uses_remaining_shared_budget(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="shared-budget")
     store = _MemoryTaskStore()
@@ -1196,7 +1750,9 @@ async def _legacy_test_second_generation_uses_remaining_shared_budget(monkeypatc
         timeouts.append(cast(float, kwargs["timeout"]))
         invalid = _finding(locator="/resume/content/missing")
         payload = {"findings": [invalid]} if len(timeouts) == 1 else {"findings": [_finding()]}
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     monkeypatch.setattr(document_review, "monotonic", lambda: next(time_values))
@@ -1223,7 +1779,9 @@ async def _legacy_test_worker_does_not_invoke_second_generation_after_shared_dea
         if calls > 1:
             raise AssertionError("second generation invoked after deadline exhaustion")
         payload = {"findings": [_finding(locator="/resume/content/missing")]}
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     monkeypatch.setattr(document_review, "monotonic", lambda: next(time_values))
@@ -1257,7 +1815,9 @@ async def _legacy_test_worker_does_not_invoke_second_generation_after_shared_dea
     ],
 )
 async def _legacy_test_worker_does_not_regenerate_for_closed_eligibility_failures(
-    monkeypatch: MonkeyPatch, reason: str, pointer_failure_kind: str | None,
+    monkeypatch: MonkeyPatch,
+    reason: str,
+    pointer_failure_kind: str | None,
 ) -> None:
     package = _worker_package()
     review = _review(package, review_id=f"closed-{reason}-{pointer_failure_kind}")
@@ -1265,7 +1825,9 @@ async def _legacy_test_worker_does_not_regenerate_for_closed_eligibility_failure
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
     calls = 0
 
-    def reject_with_closed_failure(_parsed: object, _package: dict[str, object]) -> list[dict[str, object]]:
+    def reject_with_closed_failure(
+        _parsed: object, _package: dict[str, object]
+    ) -> list[dict[str, object]]:
         metadata: dict[str, object] | None = (
             {"pointer_failure_kind": pointer_failure_kind} if pointer_failure_kind else None
         )
@@ -1276,32 +1838,54 @@ async def _legacy_test_worker_does_not_regenerate_for_closed_eligibility_failure
         calls += 1
         if calls > 1:
             raise AssertionError("unexpected corrective generation")
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-            content=json.dumps({"findings": []}),
-        ))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps({"findings": []}),
+                    )
+                )
+            ]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
-    monkeypatch.setattr(document_review, "_validate_structured_findings", reject_with_closed_failure)
+    monkeypatch.setattr(
+        document_review, "_validate_structured_findings", reject_with_closed_failure
+    )
     await _run_worker(review)
 
     assert calls == 1
     assert review.state == "failed"
 
 
-def _provider_finding(*, evidence_ids: list[str], category: str = "repetition") -> dict[str, object]:
+def _provider_finding(
+    *, evidence_ids: list[str], category: str = "repetition"
+) -> dict[str, object]:
     finding: dict[str, object] = {
-        "id": "v4-finding", "category": category, "severity": "suggestion",
+        "id": "v4-finding",
+        "category": category,
+        "severity": "suggestion",
         "rationale": "Repeated wording",
         "proposed_action": "Vary the wording",
     }
     if category in {"unsupported_claim", "repetition", "clarity", "keyword_stuffing"}:
         finding["target_evidence_id"] = evidence_ids[0]
     elif category == "cross_document_mismatch":
-        finding["resume_evidence_id"] = next(evidence_id for evidence_id in evidence_ids if evidence_id.startswith("resume-"))
-        finding["cover_letter_evidence_id"] = next(evidence_id for evidence_id in evidence_ids if evidence_id.startswith("cover-"))
+        finding["resume_evidence_id"] = next(
+            evidence_id for evidence_id in evidence_ids if evidence_id.startswith("resume-")
+        )
+        finding["cover_letter_evidence_id"] = next(
+            evidence_id for evidence_id in evidence_ids if evidence_id.startswith("cover-")
+        )
     else:
-        finding["job_evidence_id"] = next(evidence_id for evidence_id in evidence_ids if evidence_id.startswith("job-"))
-        finding["target_evidence_id"] = next(evidence_id for evidence_id in evidence_ids if evidence_id.startswith(("resume-", "cover-")))
+        finding["job_evidence_id"] = next(
+            evidence_id for evidence_id in evidence_ids if evidence_id.startswith("job-")
+        )
+        finding["target_evidence_id"] = next(
+            evidence_id
+            for evidence_id in evidence_ids
+            if evidence_id.startswith(("resume-", "cover-"))
+        )
     return finding
 
 
@@ -1318,7 +1902,9 @@ def test_v6_prompt_uses_id_only_evidence_contract() -> None:
     catalog, projection = document_review._build_evidence_catalog_and_projection(_package())
     prompt = review_messages(projection=projection)[0]["content"]
 
-    assert catalog and "evidence_id" in prompt and "Select only evidence IDs visibly present" in prompt
+    assert (
+        catalog and "evidence_id" in prompt and "Select only evidence IDs visibly present" in prompt
+    )
     assert "LOCATOR CONTRACT" not in prompt and "Representative current package paths" not in prompt
     assert "locator" in prompt  # It explicitly prohibits provider-owned locators.
     assert "Do not assign roles and do not return document, locator, excerpt" in prompt
@@ -1328,7 +1914,12 @@ def test_v10_prompt_has_category_specific_evidence_slots() -> None:
     prompt = review_messages(projection={})[0]["content"]
 
     assert REVIEW_POLICY_VERSION == "application-document-review-v10"
-    for slot in ("target_evidence_id", "resume_evidence_id", "cover_letter_evidence_id", "job_evidence_id"):
+    for slot in (
+        "target_evidence_id",
+        "resume_evidence_id",
+        "cover_letter_evidence_id",
+        "job_evidence_id",
+    ):
         assert slot in prompt
     for namespace in ("resume-e...", "cover-e...", "job-e..."):
         assert namespace in prompt
@@ -1343,19 +1934,41 @@ def test_v4_catalog_projection_is_deterministic_and_escapes_pointers() -> None:
         "manual_questions": [{"answer": "must not appear"}],
     }
     first_catalog, projection = document_review._build_evidence_catalog_and_projection(package)
-    second_catalog, second_projection = document_review._build_evidence_catalog_and_projection(package)
+    second_catalog, second_projection = document_review._build_evidence_catalog_and_projection(
+        package
+    )
 
-    assert list(first_catalog) == ["cover-e0001", "job-e0001", "job-e0002", "job-e0003", "resume-e0001"]
+    assert list(first_catalog) == [
+        "cover-e0001",
+        "job-e0001",
+        "job-e0002",
+        "job-e0003",
+        "resume-e0001",
+    ]
     assert first_catalog == second_catalog and projection == second_projection
     assert first_catalog["job-e0001"].locator == "/job/a~1b/0"
     assert first_catalog["job-e0002"].locator == "/job/a~1b/5/a~0b"
     assert first_catalog["job-e0003"].text == first_catalog["resume-e0001"].text == "z"
     assert "manual_questions" not in projection
-    assert projection["job"] == {"a/b": [{"evidence_id": "job-e0001", "text": "first"}, "", None, True, 7, {"a~b": {"evidence_id": "job-e0002", "text": "last"}}], "z": {"evidence_id": "job-e0003", "text": "z"}}
+    assert projection["job"] == {
+        "a/b": [
+            {"evidence_id": "job-e0001", "text": "first"},
+            "",
+            None,
+            True,
+            7,
+            {"a~b": {"evidence_id": "job-e0002", "text": "last"}},
+        ],
+        "z": {"evidence_id": "job-e0003", "text": "z"},
+    }
 
 
 def test_v4_ids_expand_beyond_four_digits() -> None:
-    package: dict[str, object] = {"job": {"leaves": [str(index) for index in range(10_000)]}, "resume": {}, "cover_letter": {}}
+    package: dict[str, object] = {
+        "job": {"leaves": [str(index) for index in range(10_000)]},
+        "resume": {},
+        "cover_letter": {},
+    }
     catalog, _projection = document_review._build_evidence_catalog_and_projection(package)
     assert list(catalog)[0] == "job-e0001"
     assert list(catalog)[-1] == "job-e10000"
@@ -1364,14 +1977,37 @@ def test_v4_ids_expand_beyond_four_digits() -> None:
 @pytest.mark.parametrize(
     ("category", "evidence", "document", "locator"),
     [
-        ("repetition", [("target", "/resume/content/summary")], "resume", "/resume/content/summary"),
-        ("cross_document_mismatch", [("target", "/resume/content/summary"), ("comparison", "/cover_letter/content")], "resume", "/resume/content/summary"),
-        ("job_document_mismatch", [("requirement", "/job/description"), ("target", "/resume/content/summary")], "resume", "/resume/content/summary"),
-        ("omitted_verified_evidence", [("requirement", "/job/description"), ("target", "/cover_letter/content")], "cover_letter", "/cover_letter/content"),
+        (
+            "repetition",
+            [("target", "/resume/content/summary")],
+            "resume",
+            "/resume/content/summary",
+        ),
+        (
+            "cross_document_mismatch",
+            [("target", "/resume/content/summary"), ("comparison", "/cover_letter/content")],
+            "resume",
+            "/resume/content/summary",
+        ),
+        (
+            "job_document_mismatch",
+            [("requirement", "/job/description"), ("target", "/resume/content/summary")],
+            "resume",
+            "/resume/content/summary",
+        ),
+        (
+            "omitted_verified_evidence",
+            [("requirement", "/job/description"), ("target", "/cover_letter/content")],
+            "cover_letter",
+            "/cover_letter/content",
+        ),
     ],
 )
 def test_v4_canonicalizes_target_and_role_matrix(
-    category: str, evidence: list[tuple[str, str]], document: str, locator: str,
+    category: str,
+    evidence: list[tuple[str, str]],
+    document: str,
+    locator: str,
 ) -> None:
     package = _package()
     catalog, _projection = document_review._build_evidence_catalog_and_projection(package)
@@ -1379,10 +2015,14 @@ def test_v4_canonicalizes_target_and_role_matrix(
         category=category,
         evidence_ids=[_evidence_id(package, path) for _role, path in evidence],
     )
-    result = document_review._canonicalize_provider_review(_provider_response([provider]), catalog)[0]
+    result = document_review._canonicalize_provider_review(_provider_response([provider]), catalog)[
+        0
+    ]
     assert result["document"] == document and result["locator"] == locator
     assert result["excerpt"] == catalog[_evidence_id(package, locator)].text
-    assert all("evidence_id" not in item for item in cast(list[dict[str, object]], result["evidence"]))
+    assert all(
+        "evidence_id" not in item for item in cast(list[dict[str, object]], result["evidence"])
+    )
 
 
 @pytest.mark.parametrize(
@@ -1405,7 +2045,9 @@ def test_v6_rejects_disallowed_document_with_safe_context() -> None:
         category="job_document_mismatch",
         evidence_ids=[_evidence_id(package, "/resume/content/summary")],
     )
-    with pytest.raises(document_review._EvidenceValidationError, match="missing_required_evidence") as exc_info:
+    with pytest.raises(
+        document_review._EvidenceValidationError, match="missing_required_evidence"
+    ) as exc_info:
         document_review._canonicalize_provider_review(_provider_response([provider]), catalog)
     assert exc_info.value.structural_metadata == {
         "category": "job_document_mismatch",
@@ -1425,7 +2067,14 @@ def test_v6_document_feedback_is_structural_and_content_free() -> None:
 
     for value in ("cross_document_mismatch", "job", "resume", "cover_letter"):
         assert value in feedback
-    for sentinel in ("SECRET_EVIDENCE_ID", "SECRET_SOURCE_TEXT", "SECRET_LOCATOR", "SECRET_EXCERPT", "SECRET_RATIONALE", "SECRET_ACTION"):
+    for sentinel in (
+        "SECRET_EVIDENCE_ID",
+        "SECRET_SOURCE_TEXT",
+        "SECRET_LOCATOR",
+        "SECRET_EXCERPT",
+        "SECRET_RATIONALE",
+        "SECRET_ACTION",
+    ):
         assert sentinel not in feedback
 
 
@@ -1433,16 +2082,53 @@ def test_v6_document_feedback_is_structural_and_content_free() -> None:
 @pytest.mark.parametrize(
     ("category", "invalid_locators", "expected_required", "expected_actual"),
     [
-        ("unsupported_claim", ["/job/description"], "exactly one evidence item from resume OR cover_letter", "job"),
-        ("repetition", ["/job/description"], "exactly one evidence item from resume OR cover_letter", "job"),
-        ("clarity", ["/job/description"], "exactly one evidence item from resume OR cover_letter", "job"),
-        ("keyword_stuffing", ["/job/description"], "exactly one evidence item from resume OR cover_letter", "job"),
-        ("cross_document_mismatch", ["/resume/content/summary", "/resume/content/nested/0"], "exactly one resume evidence item AND exactly one cover_letter evidence item", "resume + resume"),
-        ("job_document_mismatch", ["/resume/content/summary", "/cover_letter/content"], "exactly one job evidence item AND exactly one evidence item from resume OR cover_letter", "cover_letter + resume"),
-        ("omitted_verified_evidence", ["/resume/content/summary", "/cover_letter/content"], "exactly one job evidence item AND exactly one evidence item from resume OR cover_letter", "cover_letter + resume"),
+        (
+            "unsupported_claim",
+            ["/job/description"],
+            "exactly one evidence item from resume OR cover_letter",
+            "job",
+        ),
+        (
+            "repetition",
+            ["/job/description"],
+            "exactly one evidence item from resume OR cover_letter",
+            "job",
+        ),
+        (
+            "clarity",
+            ["/job/description"],
+            "exactly one evidence item from resume OR cover_letter",
+            "job",
+        ),
+        (
+            "keyword_stuffing",
+            ["/job/description"],
+            "exactly one evidence item from resume OR cover_letter",
+            "job",
+        ),
+        (
+            "cross_document_mismatch",
+            ["/resume/content/summary", "/resume/content/nested/0"],
+            "exactly one resume evidence item AND exactly one cover_letter evidence item",
+            "resume + resume",
+        ),
+        (
+            "job_document_mismatch",
+            ["/resume/content/summary", "/cover_letter/content"],
+            "exactly one job evidence item AND exactly one evidence item from resume OR cover_letter",
+            "cover_letter + resume",
+        ),
+        (
+            "omitted_verified_evidence",
+            ["/resume/content/summary", "/cover_letter/content"],
+            "exactly one job evidence item AND exactly one evidence item from resume OR cover_letter",
+            "cover_letter + resume",
+        ),
     ],
 )
-@pytest.mark.skip(reason="V10 structurally blocks these provider compositions; prompt feedback remains covered directly")
+@pytest.mark.skip(
+    reason="V10 structurally blocks these provider compositions; prompt feedback remains covered directly"
+)
 async def test_v9_worker_evidence_correction_preserves_category_composition_and_is_content_safe(
     monkeypatch: MonkeyPatch,
     category: str,
@@ -1456,10 +2142,13 @@ async def test_v9_worker_evidence_correction_preserves_category_composition_and_
         "description": "SECRET_SOURCE_TEXT_SENTINEL",
         "SECRET_LOCATOR_SENTINEL": "SECRET_SOURCE_TEXT_SENTINEL",
     }
-    content["resume"] = {"content": {
-        "summary": "SECRET_EXCERPT_SENTINEL",
-        "nested": ["SECRET_SOURCE_TEXT_SENTINEL"],
-    }, "provenance": {"source_revision_sha256": "a"}}
+    content["resume"] = {
+        "content": {
+            "summary": "SECRET_EXCERPT_SENTINEL",
+            "nested": ["SECRET_SOURCE_TEXT_SENTINEL"],
+        },
+        "provenance": {"source_revision_sha256": "a"},
+    }
     content["cover_letter"] = {"content": "SECRET_SOURCE_TEXT_SENTINEL"}
     encoded = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     package.content_sha256 = hashlib.sha256(encoded.encode()).hexdigest()
@@ -1473,12 +2162,16 @@ async def test_v9_worker_evidence_correction_preserves_category_composition_and_
         valid_ids.insert(0, _evidence_id(package.content, "/job/description"))
     invalid_ids = [_evidence_id(package.content, locator) for locator in invalid_locators]
     responses = [
-        {"findings": [{
-            **_provider_finding(category=category, evidence_ids=invalid_ids),
-            "id": "SECRET_RAW_PROVIDER_SENTINEL",
-            "rationale": "SECRET_RATIONALE_SENTINEL",
-            "proposed_action": "SECRET_ACTION_SENTINEL",
-        }]},
+        {
+            "findings": [
+                {
+                    **_provider_finding(category=category, evidence_ids=invalid_ids),
+                    "id": "SECRET_RAW_PROVIDER_SENTINEL",
+                    "rationale": "SECRET_RATIONALE_SENTINEL",
+                    "proposed_action": "SECRET_ACTION_SENTINEL",
+                }
+            ]
+        },
         {"findings": [_provider_finding(category=category, evidence_ids=valid_ids)]},
     ]
     calls = 0
@@ -1490,37 +2183,64 @@ async def test_v9_worker_evidence_correction_preserves_category_composition_and_
         if calls == 2:
             feedback = cast(list[dict[str, str]], kwargs["messages"])[1]["content"]
             assert f"Category: {category}." in feedback
-            assert f"Required evidence count: exactly {1 if category in {'unsupported_claim', 'repetition', 'clarity', 'keyword_stuffing'} else 2} evidence item" in feedback
+            assert (
+                f"Required evidence count: exactly {1 if category in {'unsupported_claim', 'repetition', 'clarity', 'keyword_stuffing'} else 2} evidence item"
+                in feedback
+            )
             assert expected_required in feedback
             assert f"Actual selected document composition: {expected_actual}." in feedback
             assert "Regenerate the COMPLETE response." in feedback
-            assert "Choose only visible evidence IDs from the required document groups above." in feedback
-            assert "Replace the invalid document composition; do not reuse that invalid composition." in feedback
+            assert (
+                "Choose only visible evidence IDs from the required document groups above."
+                in feedback
+            )
+            assert (
+                "Replace the invalid document composition; do not reuse that invalid composition."
+                in feedback
+            )
             assert "cover_letter or job or resume" not in feedback
-            for sentinel in ("SECRET_EVIDENCE_ID", "SECRET_LOCATOR", "SECRET_EXCERPT", "SECRET_SOURCE_TEXT", "SECRET_RATIONALE", "SECRET_ACTION", "SECRET_RAW_PROVIDER"):
+            for sentinel in (
+                "SECRET_EVIDENCE_ID",
+                "SECRET_LOCATOR",
+                "SECRET_EXCERPT",
+                "SECRET_SOURCE_TEXT",
+                "SECRET_RATIONALE",
+                "SECRET_ACTION",
+                "SECRET_RAW_PROVIDER",
+            ):
                 assert sentinel not in feedback
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(response)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(response)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
     assert calls == 2 and review.state == "completed"
 
 
-@pytest.mark.parametrize("category", ["unsupported_claim", "repetition", "clarity", "keyword_stuffing"])
+@pytest.mark.parametrize(
+    "category", ["unsupported_claim", "repetition", "clarity", "keyword_stuffing"]
+)
 @pytest.mark.parametrize("locator", ["/resume/content/summary", "/cover_letter/content"])
-def test_v5_single_document_categories_accept_resume_or_cover_letter(category: str, locator: str) -> None:
+def test_v5_single_document_categories_accept_resume_or_cover_letter(
+    category: str, locator: str
+) -> None:
     package = _package()
     catalog, _projection = document_review._build_evidence_catalog_and_projection(package)
     provider = _provider_finding(
         category=category,
         evidence_ids=[_evidence_id(package, locator)],
     )
-    result = document_review._canonicalize_provider_review(_provider_response([provider]), catalog)[0]
+    result = document_review._canonicalize_provider_review(_provider_response([provider]), catalog)[
+        0
+    ]
     assert result["document"] in {"resume", "cover_letter"}
 
 
 @pytest.mark.asyncio
-async def test_v4_worker_reconstructs_canonical_findings_in_one_call(monkeypatch: MonkeyPatch) -> None:
+async def test_v4_worker_reconstructs_canonical_findings_in_one_call(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v4-success")
     store = _MemoryTaskStore()
@@ -1531,7 +2251,17 @@ async def test_v4_worker_reconstructs_canonical_findings_in_one_call(monkeypatch
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         nonlocal calls
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [_provider_finding(evidence_ids=[target_id])]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {"findings": [_provider_finding(evidence_ids=[target_id])]}
+                        )
+                    )
+                )
+            ]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -1561,7 +2291,9 @@ async def test_v4_worker_corrects_once_then_stops(monkeypatch: MonkeyPatch) -> N
         if calls == 2:
             feedback = cast(list[dict[str, str]], kwargs["messages"])[1]["content"]
             assert "invalid_evidence_id" in feedback and "e9999" not in feedback
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(item)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(item)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -1572,7 +2304,9 @@ async def test_v4_worker_corrects_once_then_stops(monkeypatch: MonkeyPatch) -> N
 
 @pytest.mark.asyncio
 @pytest.mark.skip(reason="V10 structurally blocks the provider mismatch before semantic correction")
-async def test_v5_worker_regenerates_after_role_document_mismatch_without_leaking_content(monkeypatch: MonkeyPatch) -> None:
+async def test_v5_worker_regenerates_after_role_document_mismatch_without_leaking_content(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v5-role-mismatch-success")
     store = _MemoryTaskStore()
@@ -1580,12 +2314,28 @@ async def test_v5_worker_regenerates_after_role_document_mismatch_without_leakin
     requirement_id = _evidence_id(package.content, "/job/description")
     resume_id = _evidence_id(package.content, "/resume/content/summary")
     responses = [
-        {"findings": [_provider_finding(category="job_document_mismatch", evidence_ids=[
-            _evidence_id(package.content, "/cover_letter/content"), resume_id,
-        ])]},
-        {"findings": [_provider_finding(category="job_document_mismatch", evidence_ids=[
-            requirement_id, resume_id,
-        ])]},
+        {
+            "findings": [
+                _provider_finding(
+                    category="job_document_mismatch",
+                    evidence_ids=[
+                        _evidence_id(package.content, "/cover_letter/content"),
+                        resume_id,
+                    ],
+                )
+            ]
+        },
+        {
+            "findings": [
+                _provider_finding(
+                    category="job_document_mismatch",
+                    evidence_ids=[
+                        requirement_id,
+                        resume_id,
+                    ],
+                )
+            ]
+        },
     ]
     calls = 0
 
@@ -1598,9 +2348,13 @@ async def test_v5_worker_regenerates_after_role_document_mismatch_without_leakin
             for value in ("job_document_mismatch", "job", "resume", "cover_letter"):
                 assert value in feedback
             assert resume_id not in feedback and "Built APIs" not in feedback
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert calls == 2 and review.state == "completed"
@@ -1615,15 +2369,25 @@ async def test_v5_worker_regenerates_after_role_document_mismatch_without_leakin
 
 @pytest.mark.asyncio
 @pytest.mark.skip(reason="V10 structurally blocks the provider mismatch before semantic correction")
-async def test_v5_worker_stops_after_second_role_document_mismatch(monkeypatch: MonkeyPatch) -> None:
+async def test_v5_worker_stops_after_second_role_document_mismatch(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v5-role-mismatch-terminal")
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
     resume_id = _evidence_id(package.content, "/resume/content/summary")
-    invalid = {"findings": [_provider_finding(category="job_document_mismatch", evidence_ids=[
-        _evidence_id(package.content, "/cover_letter/content"), resume_id,
-    ])]}
+    invalid = {
+        "findings": [
+            _provider_finding(
+                category="job_document_mismatch",
+                evidence_ids=[
+                    _evidence_id(package.content, "/cover_letter/content"),
+                    resume_id,
+                ],
+            )
+        ]
+    }
     calls = 0
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
@@ -1631,7 +2395,9 @@ async def test_v5_worker_stops_after_second_role_document_mismatch(monkeypatch: 
         calls += 1
         if calls > 2:
             raise AssertionError("third generation attempted")
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(invalid)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(invalid)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -1642,7 +2408,10 @@ async def test_v5_worker_stops_after_second_role_document_mismatch(monkeypatch: 
 def _precedence_package() -> dict[str, object]:
     return {
         "job": {"title": "Engineer", "description": "Requires Python"},
-        "resume": {"content": {"summary": "Built APIs", "nested": ["Led delivery"]}, "provenance": {"source_revision_sha256": "a"}},
+        "resume": {
+            "content": {"summary": "Built APIs", "nested": ["Led delivery"]},
+            "provenance": {"source_revision_sha256": "a"},
+        },
         "cover_letter": {"content": "Built APIs for this role", "closing": "Thank you"},
     }
 
@@ -1658,10 +2427,15 @@ def test_v6_provider_schema_is_id_only_and_bounded() -> None:
     from app.domain.applications.schemas import ProviderDocumentReviewResponseV7
 
     valid = {"findings": [_provider_payload("repetition", ["e0001"])]}
-    assert ProviderDocumentReviewResponseV7.model_validate(valid).findings[0].evidence_ids == ["e0001"]
+    assert ProviderDocumentReviewResponseV7.model_validate(valid).findings[0].evidence_ids == [
+        "e0001"
+    ]
     for field, value in (
         ("evidence", [{"role": "target", "evidence_id": "e0001"}]),
-        ("role", "target"), ("document", "resume"), ("locator", "/resume/content"), ("excerpt", "Built APIs"),
+        ("role", "target"),
+        ("document", "resume"),
+        ("locator", "/resume/content"),
+        ("excerpt", "Built APIs"),
     ):
         invalid = _provider_payload("repetition", ["e0001"])
         invalid[field] = value
@@ -1669,7 +2443,9 @@ def test_v6_provider_schema_is_id_only_and_bounded() -> None:
             ProviderDocumentReviewResponseV7.model_validate({"findings": [invalid]})
     for ids in ([], [""], ["e" * 33], ["e0001", "e0002", "e0003"]):
         with pytest.raises(ValidationError):
-            ProviderDocumentReviewResponseV7.model_validate({"findings": [_provider_payload("repetition", ids)]})
+            ProviderDocumentReviewResponseV7.model_validate(
+                {"findings": [_provider_payload("repetition", ids)]}
+            )
 
 
 @pytest.mark.skip(reason="Replaced by V10 provider-boundary coverage")
@@ -1689,22 +2465,39 @@ def test_v7_normalizes_schema_issues_without_provider_content() -> None:
 
     from app.domain.applications.schemas import ProviderDocumentReviewResponseV10
 
-    malformed = {"findings": [{
-        "id": "f1", "category": "INVALID_CATEGORY_SENTINEL", "severity": "invalid",
-        "rationale": "SECRET_RATIONALE_SENTINEL", "evidence_ids": "SECRET_EVIDENCE_ID_SENTINEL",
-        "proposed_action": "SECRET_ACTION_SENTINEL", "LOCATOR_SENTINEL": "SECRET_EXCERPT_SENTINEL",
-    }]}
+    malformed = {
+        "findings": [
+            {
+                "id": "f1",
+                "category": "INVALID_CATEGORY_SENTINEL",
+                "severity": "invalid",
+                "rationale": "SECRET_RATIONALE_SENTINEL",
+                "evidence_ids": "SECRET_EVIDENCE_ID_SENTINEL",
+                "proposed_action": "SECRET_ACTION_SENTINEL",
+                "LOCATOR_SENTINEL": "SECRET_EXCERPT_SENTINEL",
+            }
+        ]
+    }
     with pytest.raises(ValidationError) as exc_info:
         ProviderDocumentReviewResponseV10.model_validate(malformed)
     issues = document_review._normalize_schema_validation_issues(exc_info.value)
     assert {tuple(issue.items()) for issue in issues} == {
-        (("schema_issue_type", "extra_forbidden_field"), ("field_path", "findings.*.<unknown_field>")),
+        (
+            ("schema_issue_type", "extra_forbidden_field"),
+            ("field_path", "findings.*.<unknown_field>"),
+        ),
         (("schema_issue_type", "invalid_field_type"), ("field_path", "findings.*.evidence_ids")),
         (("schema_issue_type", "invalid_literal"), ("field_path", "findings.*.category")),
         (("schema_issue_type", "invalid_literal"), ("field_path", "findings.*.severity")),
     }
     feedback = schema_corrective_review_messages(projection=_package(), issues=issues)[1]["content"]
-    for sentinel in ("SECRET_EVIDENCE_ID_SENTINEL", "SECRET_RATIONALE_SENTINEL", "SECRET_ACTION_SENTINEL", "LOCATOR_SENTINEL", "SECRET_EXCERPT_SENTINEL"):
+    for sentinel in (
+        "SECRET_EVIDENCE_ID_SENTINEL",
+        "SECRET_RATIONALE_SENTINEL",
+        "SECRET_ACTION_SENTINEL",
+        "LOCATOR_SENTINEL",
+        "SECRET_EXCERPT_SENTINEL",
+    ):
         assert sentinel not in feedback
 
 
@@ -1714,11 +2507,27 @@ def test_v7_schema_issue_normalization_covers_bounds_shapes_deduplication_and_ca
 
     from app.domain.applications.schemas import ProviderDocumentReviewResponseV10
 
-    malformed = {"findings": [
-        {"id": "", "category": "repetition", "severity": "suggestion", "rationale": "x", "evidence_ids": ["e0001"], "proposed_action": "x"},
-        {"id": "x" * 65, "category": "repetition", "severity": "suggestion", "rationale": "x", "evidence_ids": ["e0001"], "proposed_action": "x"},
-        [],
-    ]}
+    malformed = {
+        "findings": [
+            {
+                "id": "",
+                "category": "repetition",
+                "severity": "suggestion",
+                "rationale": "x",
+                "evidence_ids": ["e0001"],
+                "proposed_action": "x",
+            },
+            {
+                "id": "x" * 65,
+                "category": "repetition",
+                "severity": "suggestion",
+                "rationale": "x",
+                "evidence_ids": ["e0001"],
+                "proposed_action": "x",
+            },
+            [],
+        ]
+    }
     with pytest.raises(ValidationError) as exc_info:
         ProviderDocumentReviewResponseV10.model_validate(malformed)
     issues = document_review._normalize_schema_validation_issues(exc_info.value)
@@ -1728,26 +2537,44 @@ def test_v7_schema_issue_normalization_covers_bounds_shapes_deduplication_and_ca
         (("schema_issue_type", "invalid_object_shape"), ("field_path", "findings.*")),
     }
 
-    cap_error = ValidationError.from_exception_data("ProviderDocumentReviewResponseV7", [
-        {"type": "missing", "loc": ("findings", 0, field), "input": None}
-        for field in ("id", "category", "severity", "rationale", "evidence_ids", "proposed_action", "evidence", "role", "document", "locator")
-    ])
+    cap_error = ValidationError.from_exception_data(
+        "ProviderDocumentReviewResponseV7",
+        [
+            {"type": "missing", "loc": ("findings", 0, field), "input": None}
+            for field in (
+                "id",
+                "category",
+                "severity",
+                "rationale",
+                "evidence_ids",
+                "proposed_action",
+                "evidence",
+                "role",
+                "document",
+                "locator",
+            )
+        ],
+    )
     capped = document_review._normalize_schema_validation_issues(cap_error)
     assert len(capped) == 8
-    assert capped == tuple(sorted(capped, key=lambda issue: (issue["schema_issue_type"], issue["field_path"])))
+    assert capped == tuple(
+        sorted(capped, key=lambda issue: (issue["schema_issue_type"], issue["field_path"]))
+    )
     assert document_review._normalize_schema_validation_issues(cap_error) == capped
 
 
 def _schema_failure_events(logger: _DiagnosticLogger) -> list[dict[str, object]]:
     return [
-        fields for event, fields in logger.events
+        fields
+        for event, fields in logger.events
         if event == "document_review_schema_validation_failed"
     ]
 
 
 def _canonical_failure_events(logger: _DiagnosticLogger) -> list[dict[str, object]]:
     return [
-        fields for event, fields in logger.events
+        fields
+        for event, fields in logger.events
         if event == "document_review_canonical_validation_failed"
     ]
 
@@ -1765,10 +2592,15 @@ def test_v10_provider_rejects_legacy_evidence_at_the_provider_boundary() -> None
 
 
 @pytest.mark.asyncio
-async def test_v8_worker_canonicalizes_a_full_long_source_leaf_in_one_generation(monkeypatch: MonkeyPatch) -> None:
+async def test_v8_worker_canonicalizes_a_full_long_source_leaf_in_one_generation(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     source_leaf = "L" * 3_001
-    package.content["resume"] = {"content": {"summary": source_leaf}, "provenance": {"source_revision_sha256": "a"}}
+    package.content["resume"] = {
+        "content": {"summary": source_leaf},
+        "provenance": {"source_revision_sha256": "a"},
+    }
     encoded = json.dumps(package.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     package.content_sha256 = hashlib.sha256(encoded.encode()).hexdigest()
     review = _review(package, review_id="v8-long-leaf")
@@ -1780,7 +2612,17 @@ async def test_v8_worker_canonicalizes_a_full_long_source_leaf_in_one_generation
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         nonlocal calls
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [_provider_finding(evidence_ids=[target_id])]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {"findings": [_provider_finding(evidence_ids=[target_id])]}
+                        )
+                    )
+                )
+            ]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -1793,12 +2635,22 @@ async def test_v8_worker_canonicalizes_a_full_long_source_leaf_in_one_generation
 
 
 @pytest.mark.asyncio
-async def test_v8_worker_canonicalizes_the_largest_valid_serialized_package_leaf(monkeypatch: MonkeyPatch) -> None:
+async def test_v8_worker_canonicalizes_the_largest_valid_serialized_package_leaf(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
-    package.content["resume"] = {"content": {"summary": ""}, "provenance": {"source_revision_sha256": "a"}}
-    empty_encoded = json.dumps(package.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    package.content["resume"] = {
+        "content": {"summary": ""},
+        "provenance": {"source_revision_sha256": "a"},
+    }
+    empty_encoded = json.dumps(
+        package.content, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     source_leaf = "B" * (MAX_REVIEW_INPUT_CHARS - len(empty_encoded))
-    package.content["resume"] = {"content": {"summary": source_leaf}, "provenance": {"source_revision_sha256": "a"}}
+    package.content["resume"] = {
+        "content": {"summary": source_leaf},
+        "provenance": {"source_revision_sha256": "a"},
+    }
     encoded = json.dumps(package.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     assert len(encoded) == MAX_REVIEW_INPUT_CHARS
     package.content_sha256 = hashlib.sha256(encoded.encode()).hexdigest()
@@ -1808,7 +2660,17 @@ async def test_v8_worker_canonicalizes_the_largest_valid_serialized_package_leaf
     target_id = _evidence_id(package.content, "/resume/content/summary")
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [_provider_finding(evidence_ids=[target_id])]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {"findings": [_provider_finding(evidence_ids=[target_id])]}
+                        )
+                    )
+                )
+            ]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -1822,10 +2684,15 @@ class _ForcedCanonicalFinding(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_v8_canonical_pydantic_failure_is_terminal_and_content_safe(monkeypatch: MonkeyPatch) -> None:
+async def test_v8_canonical_pydantic_failure_is_terminal_and_content_safe(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     source = "SECRET_SOURCE_SENTINEL"
-    package.content["resume"] = {"content": {"summary": source}, "provenance": {"source_revision_sha256": "a"}}
+    package.content["resume"] = {
+        "content": {"summary": source},
+        "provenance": {"source_revision_sha256": "a"},
+    }
     encoded = json.dumps(package.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     package.content_sha256 = hashlib.sha256(encoded.encode()).hexdigest()
     review = _review(package, review_id="v8-canonical-gen1")
@@ -1837,30 +2704,65 @@ async def test_v8_canonical_pydantic_failure_is_terminal_and_content_safe(monkey
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         nonlocal calls
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [{**_provider_finding(evidence_ids=[target_id]), "rationale": "SECRET_RATIONALE_SENTINEL", "proposed_action": "SECRET_ACTION_SENTINEL"}]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "findings": [
+                                    {
+                                        **_provider_finding(evidence_ids=[target_id]),
+                                        "rationale": "SECRET_RATIONALE_SENTINEL",
+                                        "proposed_action": "SECRET_ACTION_SENTINEL",
+                                    }
+                                ]
+                            }
+                        )
+                    )
+                )
+            ]
+        ), "fake-model"
 
     monkeypatch.setattr(document_review, "DocumentReviewFinding", _ForcedCanonicalFinding)
-    logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     assert calls == 1 and review.state == "failed"
     assert _schema_failure_events(logger) == []
-    assert _canonical_failure_events(logger) == [{"generation": 1, "exception_class": "ValidationError", "validation_error_count": 1}]
+    assert _canonical_failure_events(logger) == [
+        {"generation": 1, "exception_class": "ValidationError", "validation_error_count": 1}
+    ]
     assert review.diagnostic_summary is not None
-    assert review.diagnostic_summary["generations"] == [{"generation_attempt": 1, "stage": "canonical_validation"}]
+    assert review.diagnostic_summary["generations"] == [
+        {"generation_attempt": 1, "stage": "canonical_validation"}
+    ]
     rendered = json.dumps((logger.events, review.diagnostic_summary), sort_keys=True)
-    for sentinel in (source, target_id, "SECRET_RATIONALE_SENTINEL", "SECRET_ACTION_SENTINEL", "/resume/content/summary"):
+    for sentinel in (
+        source,
+        target_id,
+        "SECRET_RATIONALE_SENTINEL",
+        "SECRET_ACTION_SENTINEL",
+        "/resume/content/summary",
+    ):
         assert sentinel not in rendered
 
 
 @pytest.mark.asyncio
-async def test_v8_canonical_failure_after_eligible_evidence_correction_never_calls_gen3(monkeypatch: MonkeyPatch) -> None:
+async def test_v8_canonical_failure_after_eligible_evidence_correction_never_calls_gen3(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v8-canonical-gen2")
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
     target_id = _evidence_id(package.content, "/resume/content/summary")
-    responses = [{"findings": [_provider_finding(evidence_ids=["resume-e9999"])]}, {"findings": [_provider_finding(evidence_ids=[target_id])]}]
+    responses = [
+        {"findings": [_provider_finding(evidence_ids=["resume-e9999"])]},
+        {"findings": [_provider_finding(evidence_ids=[target_id])]},
+    ]
     calls = 0
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
@@ -1869,18 +2771,26 @@ async def test_v8_canonical_failure_after_eligible_evidence_correction_never_cal
             raise AssertionError("third generation attempted")
         payload = responses[calls]
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
     monkeypatch.setattr(document_review, "DocumentReviewFinding", _ForcedCanonicalFinding)
-    logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
     assert calls == 2 and review.state == "failed"
     assert _schema_failure_events(logger) == []
-    assert _canonical_failure_events(logger) == [{"generation": 2, "exception_class": "ValidationError", "validation_error_count": 1}]
+    assert _canonical_failure_events(logger) == [
+        {"generation": 2, "exception_class": "ValidationError", "validation_error_count": 1}
+    ]
 
 
 @pytest.mark.asyncio
-async def test_v8_duplicate_finding_id_is_a_terminal_non_pydantic_canonical_failure(monkeypatch: MonkeyPatch) -> None:
+async def test_v8_duplicate_finding_id_is_a_terminal_non_pydantic_canonical_failure(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v8-canonical-invariant")
     store = _MemoryTaskStore()
@@ -1889,13 +2799,23 @@ async def test_v8_duplicate_finding_id_is_a_terminal_non_pydantic_canonical_fail
     finding = _provider_finding(evidence_ids=[target_id])
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [finding, finding]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [finding, finding]}))
+                )
+            ]
+        ), "fake-model"
 
-    logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
     assert review.state == "failed"
     assert _schema_failure_events(logger) == []
-    assert _canonical_failure_events(logger) == [{"generation": 1, "exception_class": "_SchemaValidationError", "validation_error_count": 0}]
+    assert _canonical_failure_events(logger) == [
+        {"generation": 1, "exception_class": "_SchemaValidationError", "validation_error_count": 0}
+    ]
 
 
 @pytest.mark.asyncio
@@ -1909,15 +2829,19 @@ async def test_v8_worker_logs_one_safe_gen1_schema_failure_event(monkeypatch: Mo
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
     target_id = _evidence_id(package.content, "/resume/content/summary")
-    malformed = {"findings": [{
-        "id": "",
-        "category": "INVALID_CATEGORY_SENTINEL",
-        "severity": "invalid",
-        "rationale": "SECRET_RATIONALE_SENTINEL",
-        "evidence_ids": ["SECRET_EVIDENCE_ID_SENTINEL"],
-        "proposed_action": "",
-        "secret_customer_value_ABC123": "SECRET_SOURCE_TEXT_SENTINEL",
-    }]}
+    malformed = {
+        "findings": [
+            {
+                "id": "",
+                "category": "INVALID_CATEGORY_SENTINEL",
+                "severity": "invalid",
+                "rationale": "SECRET_RATIONALE_SENTINEL",
+                "evidence_ids": ["SECRET_EVIDENCE_ID_SENTINEL"],
+                "proposed_action": "",
+                "secret_customer_value_ABC123": "SECRET_SOURCE_TEXT_SENTINEL",
+            }
+        ]
+    }
     with pytest.raises(ValidationError) as exc_info:
         ProviderDocumentReviewResponseV10.model_validate(malformed)
     expected_issues = document_review._normalize_schema_validation_issues(exc_info.value)
@@ -1926,9 +2850,13 @@ async def test_v8_worker_logs_one_safe_gen1_schema_failure_event(monkeypatch: Mo
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         payload = responses.pop(0)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     events = _schema_failure_events(diagnostic_logger)
@@ -1941,8 +2869,11 @@ async def test_v8_worker_logs_one_safe_gen1_schema_failure_event(monkeypatch: Mo
     }
     rendered = json.dumps(events, sort_keys=True)
     for sentinel in (
-        "SECRET_EVIDENCE_ID_SENTINEL", "SECRET_RATIONALE_SENTINEL", "SECRET_SOURCE_TEXT_SENTINEL",
-        "INVALID_CATEGORY_SENTINEL", "secret_customer_value_ABC123",
+        "SECRET_EVIDENCE_ID_SENTINEL",
+        "SECRET_RATIONALE_SENTINEL",
+        "SECRET_SOURCE_TEXT_SENTINEL",
+        "INVALID_CATEGORY_SENTINEL",
+        "secret_customer_value_ABC123",
     ):
         assert sentinel not in rendered
     assert "findings.*" in rendered
@@ -1950,7 +2881,9 @@ async def test_v8_worker_logs_one_safe_gen1_schema_failure_event(monkeypatch: Mo
 
 
 @pytest.mark.asyncio
-async def test_v7_worker_logs_safe_schema_events_for_both_generations(monkeypatch: MonkeyPatch) -> None:
+async def test_v7_worker_logs_safe_schema_events_for_both_generations(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v7-schema-log-gen2")
     store = _MemoryTaskStore()
@@ -1963,15 +2896,22 @@ async def test_v7_worker_logs_safe_schema_events_for_both_generations(monkeypatc
         if calls > 2:
             raise AssertionError("third generation attempted")
         payload: dict[str, object] = {"findings": [{"id": ""}]} if calls == 1 else {}
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     events = _schema_failure_events(diagnostic_logger)
     assert calls == 2
     assert [event["generation"] for event in events] == [1, 2]
-    assert all(set(event) == {"generation", "validation_error_count", "normalized_schema_issues"} for event in events)
+    assert all(
+        set(event) == {"generation", "validation_error_count", "normalized_schema_issues"}
+        for event in events
+    )
     assert all(isinstance(event["validation_error_count"], int) for event in events)
     assert review.state == "failed"
     rendered_diagnostic = json.dumps(review.diagnostic_summary, sort_keys=True)
@@ -1982,34 +2922,49 @@ async def test_v7_worker_logs_safe_schema_events_for_both_generations(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_v7_schema_failure_event_uses_deduplicated_sorted_capped_issues(monkeypatch: MonkeyPatch) -> None:
+async def test_v7_schema_failure_event_uses_deduplicated_sorted_capped_issues(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v7-schema-log-normalized")
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
-    valid = _provider_finding(evidence_ids=[_evidence_id(package.content, "/resume/content/summary")])
-    malformed = {"findings": [
-        {}, {},
-        {**valid, "id": ""},
-        {**valid, "id": "x" * 65},
-        {**valid, "id": 1},
-        {**valid, "secret_customer_value_ABC123": "SECRET_EXTRA_VALUE_SENTINEL"},
-    ]}
+    valid = _provider_finding(
+        evidence_ids=[_evidence_id(package.content, "/resume/content/summary")]
+    )
+    malformed = {
+        "findings": [
+            {},
+            {},
+            {**valid, "id": ""},
+            {**valid, "id": "x" * 65},
+            {**valid, "id": 1},
+            {**valid, "secret_customer_value_ABC123": "SECRET_EXTRA_VALUE_SENTINEL"},
+        ]
+    }
     responses = [malformed, {"findings": [valid]}]
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
         payload = responses.pop(0)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     events = _schema_failure_events(diagnostic_logger)
     assert len(events) == 1
     issues = cast(tuple[dict[str, str], ...], events[0]["normalized_schema_issues"])
     assert 1 <= len(issues) <= 8
-    assert issues == tuple(sorted(issues, key=lambda issue: (issue["schema_issue_type"], issue["field_path"])))
-    assert len({(issue["schema_issue_type"], issue["field_path"]) for issue in issues}) == len(issues)
+    assert issues == tuple(
+        sorted(issues, key=lambda issue: (issue["schema_issue_type"], issue["field_path"]))
+    )
+    assert len({(issue["schema_issue_type"], issue["field_path"]) for issue in issues}) == len(
+        issues
+    )
     assert "findings.*.<unknown_field>" in {issue["field_path"] for issue in issues}
     assert "secret_customer_value_ABC123" not in json.dumps(events, sort_keys=True)
 
@@ -2025,15 +2980,69 @@ def test_v7_public_response_schema_excludes_observability_metadata() -> None:
     ("first", "feedback_text"),
     [
         ({}, "missing_required_field: findings"),
-        ({"findings": [{"id": "f1", "category": "repetition", "severity": "suggestion", "rationale": "x", "evidence": [{"evidence_id": "SECRET_EVIDENCE_ID_SENTINEL"}], "proposed_action": "x"}]}, "extra_forbidden_field: findings.*.evidence"),
-        ({"findings": [{"id": "f1", "category": "repetition", "severity": "suggestion", "rationale": "x", "proposed_action": "x"}]}, "missing_required_field: findings.*.target_evidence_id"),
-        ({"findings": [{**_provider_finding(evidence_ids=["resume-e0001"]), "role": "target", "document": "resume"}]}, "extra_forbidden_field: findings.*.document"),
-        ({"findings": [{**_provider_finding(evidence_ids=["resume-e0001"]), "category": "invalid"}]}, "invalid_field_type: findings.*"),
-        ({"findings": [{**_provider_finding(evidence_ids=["resume-e0001"]), "evidence_ids": "wrong"}]}, "extra_forbidden_field: findings.*.evidence_ids"),
+        (
+            {
+                "findings": [
+                    {
+                        "id": "f1",
+                        "category": "repetition",
+                        "severity": "suggestion",
+                        "rationale": "x",
+                        "evidence": [{"evidence_id": "SECRET_EVIDENCE_ID_SENTINEL"}],
+                        "proposed_action": "x",
+                    }
+                ]
+            },
+            "extra_forbidden_field: findings.*.evidence",
+        ),
+        (
+            {
+                "findings": [
+                    {
+                        "id": "f1",
+                        "category": "repetition",
+                        "severity": "suggestion",
+                        "rationale": "x",
+                        "proposed_action": "x",
+                    }
+                ]
+            },
+            "missing_required_field: findings.*.target_evidence_id",
+        ),
+        (
+            {
+                "findings": [
+                    {
+                        **_provider_finding(evidence_ids=["resume-e0001"]),
+                        "role": "target",
+                        "document": "resume",
+                    }
+                ]
+            },
+            "extra_forbidden_field: findings.*.document",
+        ),
+        (
+            {
+                "findings": [
+                    {**_provider_finding(evidence_ids=["resume-e0001"]), "category": "invalid"}
+                ]
+            },
+            "invalid_field_type: findings.*",
+        ),
+        (
+            {
+                "findings": [
+                    {**_provider_finding(evidence_ids=["resume-e0001"]), "evidence_ids": "wrong"}
+                ]
+            },
+            "extra_forbidden_field: findings.*.evidence_ids",
+        ),
     ],
 )
 async def test_v8_worker_corrects_schema_once_then_completes(
-    monkeypatch: MonkeyPatch, first: dict[str, object], feedback_text: str,
+    monkeypatch: MonkeyPatch,
+    first: dict[str, object],
+    feedback_text: str,
 ) -> None:
     package = _worker_package()
     review = _review(package, review_id="v7-schema-correction")
@@ -2049,7 +3058,9 @@ async def test_v8_worker_corrects_schema_once_then_completes(
         calls += 1
         if calls == 2:
             assert feedback_text in cast(list[dict[str, str]], kwargs["messages"])[1]["content"]
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -2067,9 +3078,12 @@ async def test_v10_worker_corrects_invalid_evidence_id_namespace_then_completes(
     resume_id = _evidence_id(package.content, "/resume/content/summary")
     cover_letter_id = _evidence_id(package.content, "/cover_letter/content")
     invalid = {
-        "id": "namespace-correction", "category": "cross_document_mismatch",
-        "severity": "suggestion", "rationale": "Documents conflict",
-        "resume_evidence_id": resume_id, "cover_letter_evidence_id": resume_id,
+        "id": "namespace-correction",
+        "category": "cross_document_mismatch",
+        "severity": "suggestion",
+        "rationale": "Documents conflict",
+        "resume_evidence_id": resume_id,
+        "cover_letter_evidence_id": resume_id,
         "proposed_action": "Align the documents",
     }
     valid = {
@@ -2086,12 +3100,28 @@ async def test_v10_worker_corrects_invalid_evidence_id_namespace_then_completes(
             feedback = cast(list[dict[str, str]], kwargs["messages"])[1]["content"]
             assert "previous JSON did not match the required response schema" in feedback
             assert "invalid_evidence_id_namespace: findings.*.cover_letter_evidence_id" in feedback
-            for forbidden in (resume_id, "Documents conflict", "Align the documents", "^", "regex", "pattern", "input"):
+            for forbidden in (
+                resume_id,
+                "Documents conflict",
+                "Align the documents",
+                "^",
+                "regex",
+                "pattern",
+                "input",
+            ):
                 assert forbidden not in feedback
         payload = invalid if len(calls) == 1 else valid
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"findings": [payload]})))]), "fake-model"
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"findings": [payload]}))
+                )
+            ]
+        ), "fake-model"
 
-    diagnostic_logger = _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
+    diagnostic_logger = _install_worker(
+        monkeypatch, review=review, package=package, provider=provider, store=store
+    )
     await _run_worker(review)
 
     schema_events = _schema_failure_events(diagnostic_logger)
@@ -2099,29 +3129,41 @@ async def test_v10_worker_corrects_invalid_evidence_id_namespace_then_completes(
     assert review.state == "completed"
     assert store.data[review.task_id]["status"] == "done"
     assert review.diagnostic_summary == {
-        "diagnostic_version": "document-review-diagnostic-v1", "review_id": review.id,
-        "task_id": review.task_id, "outcome": "completed", "generation_count": 2,
+        "diagnostic_version": "document-review-diagnostic-v1",
+        "review_id": review.id,
+        "task_id": review.task_id,
+        "outcome": "completed",
+        "generation_count": 2,
         "completed_on_generation": 2,
     }
-    assert schema_events == [{
-        "generation": 1,
-        "validation_error_count": 1,
-        "normalized_schema_issues": ({
-            "schema_issue_type": "invalid_evidence_id_namespace",
-            "field_path": "findings.*.cover_letter_evidence_id",
-        },),
-    }]
+    assert schema_events == [
+        {
+            "generation": 1,
+            "validation_error_count": 1,
+            "normalized_schema_issues": (
+                {
+                    "schema_issue_type": "invalid_evidence_id_namespace",
+                    "field_path": "findings.*.cover_letter_evidence_id",
+                },
+            ),
+        }
+    ]
     assert _canonical_failure_events(diagnostic_logger) == []
     assert review.findings[0]["document"] == "resume"
     assert review.findings[0]["locator"] == "/resume/content/summary"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("second", [
-    {}, {"findings": [_provider_finding(evidence_ids=["resume-e9999"])]},
-])
+@pytest.mark.parametrize(
+    "second",
+    [
+        {},
+        {"findings": [_provider_finding(evidence_ids=["resume-e9999"])]},
+    ],
+)
 async def test_v7_schema_first_never_permits_a_third_generation(
-    monkeypatch: MonkeyPatch, second: dict[str, object],
+    monkeypatch: MonkeyPatch,
+    second: dict[str, object],
 ) -> None:
     package = _worker_package()
     review = _review(package, review_id="v7-global-cap")
@@ -2135,7 +3177,9 @@ async def test_v7_schema_first_never_permits_a_third_generation(
             raise AssertionError("third generation attempted")
         payload = [{}, second][calls]
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -2143,7 +3187,9 @@ async def test_v7_schema_first_never_permits_a_third_generation(
 
 
 @pytest.mark.asyncio
-async def test_v7_evidence_first_schema_second_never_permits_a_third_generation(monkeypatch: MonkeyPatch) -> None:
+async def test_v7_evidence_first_schema_second_never_permits_a_third_generation(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v7-evidence-schema-cap")
     store = _MemoryTaskStore()
@@ -2156,7 +3202,9 @@ async def test_v7_evidence_first_schema_second_never_permits_a_third_generation(
             raise AssertionError("third generation attempted")
         payload = [{"findings": [_provider_finding(evidence_ids=["resume-e9999"])]}, {}][calls]
         calls += 1
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)
@@ -2170,20 +3218,51 @@ async def test_v7_evidence_first_schema_second_never_permits_a_third_generation(
         ("repetition", ["/cover_letter/content"], ["target"], "/cover_letter/content"),
         ("clarity", ["/resume/content/summary"], ["target"], "/resume/content/summary"),
         ("keyword_stuffing", ["/cover_letter/content"], ["target"], "/cover_letter/content"),
-        ("cross_document_mismatch", ["/resume/content/summary", "/cover_letter/content"], ["comparison", "target"], "/resume/content/summary"),
-        ("job_document_mismatch", ["/job/description", "/resume/content/summary"], ["requirement", "target"], "/resume/content/summary"),
-        ("job_document_mismatch", ["/job/description", "/cover_letter/content"], ["requirement", "target"], "/cover_letter/content"),
-        ("omitted_verified_evidence", ["/job/description", "/resume/content/summary"], ["requirement", "target"], "/resume/content/summary"),
-        ("omitted_verified_evidence", ["/job/description", "/cover_letter/content"], ["requirement", "target"], "/cover_letter/content"),
+        (
+            "cross_document_mismatch",
+            ["/resume/content/summary", "/cover_letter/content"],
+            ["comparison", "target"],
+            "/resume/content/summary",
+        ),
+        (
+            "job_document_mismatch",
+            ["/job/description", "/resume/content/summary"],
+            ["requirement", "target"],
+            "/resume/content/summary",
+        ),
+        (
+            "job_document_mismatch",
+            ["/job/description", "/cover_letter/content"],
+            ["requirement", "target"],
+            "/cover_letter/content",
+        ),
+        (
+            "omitted_verified_evidence",
+            ["/job/description", "/resume/content/summary"],
+            ["requirement", "target"],
+            "/resume/content/summary",
+        ),
+        (
+            "omitted_verified_evidence",
+            ["/job/description", "/cover_letter/content"],
+            ["requirement", "target"],
+            "/cover_letter/content",
+        ),
     ],
 )
 def test_v6_category_contract_is_server_derived_and_test_local(
-    category: str, locators: list[str], expected_roles: list[str], target_locator: str,
+    category: str,
+    locators: list[str],
+    expected_roles: list[str],
+    target_locator: str,
 ) -> None:
     package = _precedence_package()
     catalog, _projection = document_review._build_evidence_catalog_and_projection(package)
     result = document_review._canonicalize_provider_review(
-        _provider_response([_provider_payload(category, [_evidence_id(package, locator) for locator in locators])]), catalog,
+        _provider_response(
+            [_provider_payload(category, [_evidence_id(package, locator) for locator in locators])]
+        ),
+        catalog,
     )[0]
     evidence = cast(list[dict[str, object]], result["evidence"])
     assert [item["role"] for item in evidence] == expected_roles
@@ -2194,27 +3273,62 @@ def test_v6_category_contract_is_server_derived_and_test_local(
 @pytest.mark.parametrize(
     ("category", "locators", "reason"),
     [
-        ("job_document_mismatch", ["/resume/content/summary", "/cover_letter/content"], "duplicate_evidence_role"),
-        ("job_document_mismatch", ["/resume/content/summary", "/resume/content/nested/0"], "duplicate_evidence_role"),
+        (
+            "job_document_mismatch",
+            ["/resume/content/summary", "/cover_letter/content"],
+            "duplicate_evidence_role",
+        ),
+        (
+            "job_document_mismatch",
+            ["/resume/content/summary", "/resume/content/nested/0"],
+            "duplicate_evidence_role",
+        ),
         ("job_document_mismatch", ["/job/title", "/job/description"], "duplicate_evidence_role"),
         ("job_document_mismatch", ["/resume/content/summary"], "missing_required_evidence"),
-        ("cross_document_mismatch", ["/resume/content/summary", "/resume/content/nested/0"], "duplicate_evidence_role"),
-        ("cross_document_mismatch", ["/cover_letter/content", "/cover_letter/closing"], "duplicate_evidence_role"),
-        ("cross_document_mismatch", ["/job/description", "/resume/content/summary"], "invalid_evidence_document"),
+        (
+            "cross_document_mismatch",
+            ["/resume/content/summary", "/resume/content/nested/0"],
+            "duplicate_evidence_role",
+        ),
+        (
+            "cross_document_mismatch",
+            ["/cover_letter/content", "/cover_letter/closing"],
+            "duplicate_evidence_role",
+        ),
+        (
+            "cross_document_mismatch",
+            ["/job/description", "/resume/content/summary"],
+            "invalid_evidence_document",
+        ),
         ("cross_document_mismatch", ["/resume/content/summary"], "missing_required_evidence"),
         ("repetition", ["/job/description"], "invalid_evidence_document"),
-        ("repetition", ["/resume/content/summary", "/cover_letter/content"], "duplicate_evidence_role"),
+        (
+            "repetition",
+            ["/resume/content/summary", "/cover_letter/content"],
+            "duplicate_evidence_role",
+        ),
     ],
 )
-@pytest.mark.skip(reason="V10 structurally rejects invalid slot compositions before semantic validation")
+@pytest.mark.skip(
+    reason="V10 structurally rejects invalid slot compositions before semantic validation"
+)
 def test_v6_failure_precedence_is_explicit_and_independent(
-    category: str, locators: list[str], reason: str,
+    category: str,
+    locators: list[str],
+    reason: str,
 ) -> None:
     package = _precedence_package()
     catalog, _projection = document_review._build_evidence_catalog_and_projection(package)
     with pytest.raises(document_review._EvidenceValidationError, match=reason):
         document_review._canonicalize_provider_review(
-            _provider_response([_provider_payload(category, [_evidence_id(package, locator) for locator in locators])]), catalog,
+            _provider_response(
+                [
+                    _provider_payload(
+                        category, [_evidence_id(package, locator) for locator in locators]
+                    )
+                ]
+            ),
+            catalog,
         )
 
 
@@ -2225,30 +3339,71 @@ def test_v6_duplicate_id_precedes_document_and_role_validation() -> None:
     repeated = _evidence_id(package, "/job/description")
     with pytest.raises(document_review._EvidenceValidationError, match="duplicate_evidence_id"):
         document_review._canonicalize_provider_review(
-            _provider_response([_provider_payload("repetition", [repeated, repeated])]), catalog,
+            _provider_response([_provider_payload("repetition", [repeated, repeated])]),
+            catalog,
         )
 
 
 def test_v6_job_target_derivation_is_order_independent() -> None:
     package = _precedence_package()
     catalog, _projection = document_review._build_evidence_catalog_and_projection(package)
-    ids = [_evidence_id(package, "/job/description"), _evidence_id(package, "/resume/content/summary")]
-    first = document_review._canonicalize_provider_review(_provider_response([_provider_payload("job_document_mismatch", ids)]), catalog)
-    second = document_review._canonicalize_provider_review(_provider_response([_provider_payload("job_document_mismatch", list(reversed(ids)))]), catalog)
+    ids = [
+        _evidence_id(package, "/job/description"),
+        _evidence_id(package, "/resume/content/summary"),
+    ]
+    first = document_review._canonicalize_provider_review(
+        _provider_response([_provider_payload("job_document_mismatch", ids)]), catalog
+    )
+    second = document_review._canonicalize_provider_review(
+        _provider_response([_provider_payload("job_document_mismatch", list(reversed(ids)))]),
+        catalog,
+    )
     assert first == second
 
 
 @pytest.mark.parametrize(
     ("payload", "path"),
     [
-        ({"category": "cross_document_mismatch", "resume_evidence_id": "resume-e0001", "cover_letter_evidence_id": "resume-e0001"}, "findings.*.cover_letter_evidence_id"),
-        ({"category": "job_document_mismatch", "job_evidence_id": "resume-e0001", "target_evidence_id": "resume-e0001"}, "findings.*.job_evidence_id"),
-        ({"category": "job_document_mismatch", "job_evidence_id": "job-e0001", "target_evidence_id": "job-e0001"}, "findings.*.target_evidence_id"),
-        ({"category": "clarity", "target_evidence_id": "job-e0001"}, "findings.*.target_evidence_id"),
+        (
+            {
+                "category": "cross_document_mismatch",
+                "resume_evidence_id": "resume-e0001",
+                "cover_letter_evidence_id": "resume-e0001",
+            },
+            "findings.*.cover_letter_evidence_id",
+        ),
+        (
+            {
+                "category": "job_document_mismatch",
+                "job_evidence_id": "resume-e0001",
+                "target_evidence_id": "resume-e0001",
+            },
+            "findings.*.job_evidence_id",
+        ),
+        (
+            {
+                "category": "job_document_mismatch",
+                "job_evidence_id": "job-e0001",
+                "target_evidence_id": "job-e0001",
+            },
+            "findings.*.target_evidence_id",
+        ),
+        (
+            {"category": "clarity", "target_evidence_id": "job-e0001"},
+            "findings.*.target_evidence_id",
+        ),
     ],
 )
-def test_v10_provider_schema_structurally_rejects_wrong_document_slots(payload: dict[str, str], path: str) -> None:
-    finding = {"id": "f1", "severity": "suggestion", "rationale": "x", "proposed_action": "x", **payload}
+def test_v10_provider_schema_structurally_rejects_wrong_document_slots(
+    payload: dict[str, str], path: str
+) -> None:
+    finding = {
+        "id": "f1",
+        "severity": "suggestion",
+        "rationale": "x",
+        "proposed_action": "x",
+        **payload,
+    }
     with pytest.raises(ValidationError) as exc_info:
         ProviderDocumentReviewResponseV10.model_validate({"findings": [finding]})
     issues = document_review._normalize_schema_validation_issues(exc_info.value)
@@ -2256,20 +3411,29 @@ def test_v10_provider_schema_structurally_rejects_wrong_document_slots(payload: 
         (("schema_issue_type", "invalid_evidence_id_namespace"), ("field_path", path)),
     }
     rendered = json.dumps(issues)
-    assert all(value not in rendered for value in ("resume-e0001", "job-e0001", "^", "pattern", "input"))
+    assert all(
+        value not in rendered for value in ("resume-e0001", "job-e0001", "^", "pattern", "input")
+    )
 
 
 def test_v10_provider_schema_rejects_legacy_evidence_ids_without_conversion() -> None:
     payload = {
-        "id": "f1", "category": "clarity", "severity": "suggestion", "rationale": "x",
-        "evidence_ids": ["resume-e0001"], "proposed_action": "x",
+        "id": "f1",
+        "category": "clarity",
+        "severity": "suggestion",
+        "rationale": "x",
+        "evidence_ids": ["resume-e0001"],
+        "proposed_action": "x",
     }
     with pytest.raises(ValidationError) as exc_info:
         ProviderDocumentReviewResponseV10.model_validate({"findings": [payload]})
     issues = document_review._normalize_schema_validation_issues(exc_info.value)
     assert {tuple(issue.items()) for issue in issues} == {
         (("schema_issue_type", "extra_forbidden_field"), ("field_path", "findings.*.evidence_ids")),
-        (("schema_issue_type", "missing_required_field"), ("field_path", "findings.*.target_evidence_id")),
+        (
+            ("schema_issue_type", "missing_required_field"),
+            ("field_path", "findings.*.target_evidence_id"),
+        ),
     }
 
 
@@ -2280,18 +3444,31 @@ def test_v10_provider_schema_rejects_legacy_evidence_ids_without_conversion() ->
         ("clarity", ["/cover_letter/content"], "cover_letter"),
         ("cross_document_mismatch", ["/resume/content/summary", "/cover_letter/content"], "resume"),
         ("job_document_mismatch", ["/job/description", "/resume/content/summary"], "resume"),
-        ("omitted_verified_evidence", ["/job/description", "/cover_letter/content"], "cover_letter"),
+        (
+            "omitted_verified_evidence",
+            ["/job/description", "/cover_letter/content"],
+            "cover_letter",
+        ),
     ],
 )
 def test_v10_canonicalizes_valid_document_slot_compositions(
-    category: str, locators: list[str], expected_document: str,
+    category: str,
+    locators: list[str],
+    expected_document: str,
 ) -> None:
     package = _precedence_package()
     catalog, _projection = document_review._build_evidence_catalog_and_projection(package)
-    finding = _provider_finding(category=category, evidence_ids=[_evidence_id(package, locator) for locator in locators])
-    result = document_review._canonicalize_provider_review(_provider_response([finding]), catalog)[0]
+    finding = _provider_finding(
+        category=category, evidence_ids=[_evidence_id(package, locator) for locator in locators]
+    )
+    result = document_review._canonicalize_provider_review(_provider_response([finding]), catalog)[
+        0
+    ]
     assert result["document"] == expected_document
-    assert all(key not in json.dumps(result) for key in ("job-e", "resume-e", "cover-e", "target_evidence_id", "job_evidence_id"))
+    assert all(
+        key not in json.dumps(result)
+        for key in ("job-e", "resume-e", "cover-e", "target_evidence_id", "job_evidence_id")
+    )
 
 
 def test_v10_unknown_qualified_id_reaches_catalog_validation() -> None:
@@ -2302,12 +3479,25 @@ def test_v10_unknown_qualified_id_reaches_catalog_validation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v10_schema_namespace_failure_corrects_once_then_stops(monkeypatch: MonkeyPatch) -> None:
+async def test_v10_schema_namespace_failure_corrects_once_then_stops(
+    monkeypatch: MonkeyPatch,
+) -> None:
     package = _worker_package()
     review = _review(package, review_id="v10-namespace-cap")
     store = _MemoryTaskStore()
     store.data[review.task_id] = {"user_id": 1, "status": "queued"}
-    invalid = {"findings": [{"id": "f1", "category": "clarity", "severity": "suggestion", "rationale": "x", "target_evidence_id": "job-e0001", "proposed_action": "x"}]}
+    invalid = {
+        "findings": [
+            {
+                "id": "f1",
+                "category": "clarity",
+                "severity": "suggestion",
+                "rationale": "x",
+                "target_evidence_id": "job-e0001",
+                "proposed_action": "x",
+            }
+        ]
+    }
     calls = 0
 
     async def provider(**_kwargs: object) -> tuple[Any, str]:
@@ -2315,7 +3505,9 @@ async def test_v10_schema_namespace_failure_corrects_once_then_stops(monkeypatch
         calls += 1
         if calls > 2:
             raise AssertionError("third generation attempted")
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(invalid)))]), "fake-model"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(invalid)))]
+        ), "fake-model"
 
     _install_worker(monkeypatch, review=review, package=package, provider=provider, store=store)
     await _run_worker(review)

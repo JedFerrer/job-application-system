@@ -24,6 +24,7 @@ def _alembic_config() -> Config:
 
 
 @pytest.mark.migration
+@pytest.mark.migration_start(_PRE_PURGE_REVISION)
 def test_migration_backfills_existing_expired_rows_once() -> None:
     """Upgrade 0023 -> 0024 gives old expired rows a fresh 90-day clock."""
     config = _alembic_config()
@@ -31,7 +32,9 @@ def test_migration_backfills_existing_expired_rows_once() -> None:
     before_upgrade = datetime.now(UTC)
 
     try:
-        command.downgrade(config, _PRE_PURGE_REVISION)
+        with engine.connect() as connection:
+            revision = connection.execute(text("SELECT version_num FROM alembic_version"))
+            assert revision.scalar_one() == _PRE_PURGE_REVISION
         with engine.begin() as connection:
             connection.execute(text("TRUNCATE TABLE jobs, users RESTART IDENTITY CASCADE"))
             connection.execute(
@@ -61,6 +64,4 @@ def test_migration_backfills_existing_expired_rows_once() -> None:
         assert rows[1].expired_at is None
     finally:
         command.upgrade(config, "head")
-        with engine.begin() as connection:
-            connection.execute(text("TRUNCATE TABLE jobs, users RESTART IDENTITY CASCADE"))
         engine.dispose()

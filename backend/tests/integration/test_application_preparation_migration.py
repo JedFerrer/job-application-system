@@ -95,12 +95,16 @@ def test_0039_upgrade_schema_fk_behavior_and_downgrade() -> None:
             assert preparation_fks["cover_letters"] == "SET NULL"
             checks = inspector.get_check_constraints("application_preparations")
             assert any("cover_letter_mode" in str(check.get("sqltext")) for check in checks)
-            preserved = connection.execute(
-                text(
-                    "SELECT id, user_id, job_id, status, notes FROM applications WHERE id = :id"
-                ),
-                {"id": application_id},
-            ).mappings().one()
+            preserved = (
+                connection.execute(
+                    text(
+                        "SELECT id, user_id, job_id, status, notes FROM applications WHERE id = :id"
+                    ),
+                    {"id": application_id},
+                )
+                .mappings()
+                .one()
+            )
             assert dict(preserved) == {
                 "id": application_id,
                 "user_id": user_id,
@@ -108,8 +112,16 @@ def test_0039_upgrade_schema_fk_behavior_and_downgrade() -> None:
                 "status": "saved",
                 "notes": "Created under 0038",
             }
-            assert connection.execute(text("SELECT count(*) FROM application_preparations")).scalar_one() == 0
-            assert connection.execute(text("SELECT count(*) FROM application_packages")).scalar_one() == 0
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM application_preparations")
+                ).scalar_one()
+                == 0
+            )
+            assert (
+                connection.execute(text("SELECT count(*) FROM application_packages")).scalar_one()
+                == 0
+            )
 
         with engine.begin() as connection:
             extra_application_ids = []
@@ -185,21 +197,38 @@ def test_0039_upgrade_schema_fk_behavior_and_downgrade() -> None:
                     "(application_id, cover_letter_mode, cover_letter_id, approved_package_id) "
                     "VALUES (:application_id, 'selected', :letter_id, :package_id)"
                 ),
-                {"application_id": application_id, "letter_id": letter_id, "package_id": package_id},
+                {
+                    "application_id": application_id,
+                    "letter_id": letter_id,
+                    "package_id": package_id,
+                },
             )
             connection.execute(text("DELETE FROM cover_letters WHERE id = :id"), {"id": letter_id})
-            assert connection.execute(
-                text("SELECT cover_letter_id FROM application_packages WHERE id = :id"),
-                {"id": package_id},
-            ).scalar_one() is None
-            assert connection.execute(
-                text("SELECT cover_letter_id FROM application_preparations WHERE application_id = :id"),
-                {"id": application_id},
-            ).scalar_one() is None
-            assert connection.execute(
-                text("SELECT cover_letter_mode FROM application_preparations WHERE application_id = :id"),
-                {"id": application_id},
-            ).scalar_one() == "selected"
+            assert (
+                connection.execute(
+                    text("SELECT cover_letter_id FROM application_packages WHERE id = :id"),
+                    {"id": package_id},
+                ).scalar_one()
+                is None
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT cover_letter_id FROM application_preparations WHERE application_id = :id"
+                    ),
+                    {"id": application_id},
+                ).scalar_one()
+                is None
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT cover_letter_mode FROM application_preparations WHERE application_id = :id"
+                    ),
+                    {"id": application_id},
+                ).scalar_one()
+                == "selected"
+            )
             resume_id = connection.execute(
                 text(
                     "INSERT INTO resumes (user_id, filename, raw_text, is_active, lifecycle_status) "
@@ -252,23 +281,44 @@ def test_0039_upgrade_schema_fk_behavior_and_downgrade() -> None:
                 ),
                 {"draft_id": draft_id, "application_id": application_id},
             )
-            connection.execute(text("DELETE FROM tailored_resume_drafts WHERE id = :id"), {"id": draft_id})
-            assert connection.execute(
-                text("SELECT resume_draft_id FROM application_packages WHERE id = :id"),
-                {"id": package_id},
-            ).scalar_one() is None
-            assert connection.execute(
-                text("SELECT resume_draft_id FROM application_preparations WHERE application_id = :id"),
-                {"id": application_id},
-            ).scalar_one() is None
-            connection.execute(text("DELETE FROM applications WHERE id = :id"), {"id": application_id})
-            assert connection.execute(
-                text("SELECT count(*) FROM application_packages WHERE id = :id"), {"id": package_id}
-            ).scalar_one() == 0
-            assert connection.execute(
-                text("SELECT count(*) FROM application_preparations WHERE application_id = :id"),
-                {"id": application_id},
-            ).scalar_one() == 0
+            connection.execute(
+                text("DELETE FROM tailored_resume_drafts WHERE id = :id"), {"id": draft_id}
+            )
+            assert (
+                connection.execute(
+                    text("SELECT resume_draft_id FROM application_packages WHERE id = :id"),
+                    {"id": package_id},
+                ).scalar_one()
+                is None
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT resume_draft_id FROM application_preparations WHERE application_id = :id"
+                    ),
+                    {"id": application_id},
+                ).scalar_one()
+                is None
+            )
+            connection.execute(
+                text("DELETE FROM applications WHERE id = :id"), {"id": application_id}
+            )
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM application_packages WHERE id = :id"),
+                    {"id": package_id},
+                ).scalar_one()
+                == 0
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT count(*) FROM application_preparations WHERE application_id = :id"
+                    ),
+                    {"id": application_id},
+                ).scalar_one()
+                == 0
+            )
 
         command.downgrade(config, _PREVIOUS)
         with engine.connect() as connection:

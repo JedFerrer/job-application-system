@@ -25,6 +25,7 @@ def _alembic_config() -> Config:
 
 
 @pytest.mark.migration
+@pytest.mark.migration_start(_PRE_PROVENANCE_REVISION)
 def test_provenance_migration_is_nullable_non_backfilled_and_reversible() -> None:
     """0028 -> 0029 adds only a nullable JSONB column and can be downgraded."""
     config = _alembic_config()
@@ -77,21 +78,25 @@ def test_provenance_migration_is_nullable_non_backfilled_and_reversible() -> Non
             ).all()
             assert indexes == []
 
-            assert connection.execute(
-                text(
-                    "SELECT import_provenance FROM resumes WHERE filename = :filename"
-                ),
-                {"filename": filename},
-            ).scalar_one() is None
+            assert (
+                connection.execute(
+                    text("SELECT import_provenance FROM resumes WHERE filename = :filename"),
+                    {"filename": filename},
+                ).scalar_one()
+                is None
+            )
 
         command.downgrade(config, _PRE_PROVENANCE_REVISION)
         with engine.connect() as connection:
-            assert connection.execute(
-                text(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_name = 'resumes' AND column_name = 'import_provenance'"
-                )
-            ).first() is None
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'resumes' AND column_name = 'import_provenance'"
+                    )
+                ).first()
+                is None
+            )
     finally:
         command.upgrade(config, "head")
         with engine.begin() as connection:

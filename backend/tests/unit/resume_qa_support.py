@@ -116,9 +116,7 @@ def assert_surface_matches_expected(surface: str, expected: dict[str, Any] | Non
     for token, expected_count in counts.items():
         actual = count_normalized(surface, token)
         if actual != expected_count:
-            raise AssertionError(
-                f"semantic token count {actual} != {expected_count}: {token!r}"
-            )
+            raise AssertionError(f"semantic token count {actual} != {expected_count}: {token!r}")
     for fragment in payload["orphan_fragments"]:
         if count_normalized(surface, str(fragment)) != 1:
             raise AssertionError(
@@ -345,6 +343,7 @@ def source_backed_wrap_content(
         work_history=work_history,
         canonical_sections=_canonical_sections(source),
         tailoring_snapshot_version="full-context-v1",
+        review_evidence_version="review-evidence-v1",
         summary_evidence_ids=[],
         skill_order_source_ids=[],
         source_resume_id=source_row.resume_id,

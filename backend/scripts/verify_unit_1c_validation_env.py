@@ -34,8 +34,7 @@ def _validated_database_url(name: str, host: str, database: str) -> str:
     return value
 
 
-def _schema_snapshot(cursor: psycopg.Cursor[Any], cluster_id: str,
-                     database: str) -> dict[str, Any]:
+def _schema_snapshot(cursor: psycopg.Cursor[Any], cluster_id: str, database: str) -> dict[str, Any]:
     cursor.execute("SELECT version_num FROM public.alembic_version ORDER BY version_num")
     revisions = [row[0] for row in cursor.fetchall()]
     cursor.execute("""
@@ -78,9 +77,13 @@ def _schema_snapshot(cursor: psycopg.Cursor[Any], cluster_id: str,
     """)
     indexes = cursor.fetchall()
     return {
-        "cluster_id": cluster_id, "database": database, "revisions": revisions,
-        "relations": relations, "columns": columns,
-        "constraints": constraints, "indexes": indexes,
+        "cluster_id": cluster_id,
+        "database": database,
+        "revisions": revisions,
+        "relations": relations,
+        "columns": columns,
+        "constraints": constraints,
+        "indexes": indexes,
     }
 
 

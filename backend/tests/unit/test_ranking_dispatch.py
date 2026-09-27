@@ -6,6 +6,8 @@ import pytest
 
 from app.domain.matching.ranking_dispatch import RankingDispatcher
 
+pytestmark = pytest.mark.unit
+
 
 class FakeRedis:
     def __init__(self) -> None:
@@ -130,9 +132,16 @@ async def test_profile_dispatch_failure_marks_task_failed_and_clears_debounce(
         await dispatcher.schedule_profile_refresh(7)
 
     assert RankingDispatcher.profile_key(7) not in redis.values
-    assert store.updates == [("task-1", {
-        "status": "failed", "message": "Could not queue ranking", "error": "Queue unavailable",
-    })]
+    assert store.updates == [
+        (
+            "task-1",
+            {
+                "status": "failed",
+                "message": "Could not queue ranking",
+                "error": "Queue unavailable",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

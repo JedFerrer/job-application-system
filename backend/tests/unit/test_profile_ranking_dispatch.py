@@ -9,6 +9,8 @@ from app.api.v1.resume import approve_resume_import, update_profile
 from app.domain.resume.schemas import ParsedProfile, ProfileResponse, ProfileUpdate
 from app.models.user import User
 
+pytestmark = pytest.mark.unit
+
 
 class FakeDb:
     def __init__(self, events: list[str]) -> None:
@@ -36,9 +38,7 @@ class FakeImportApprovalService:
     def __init__(self, changed: bool = True) -> None:
         self.changed = changed
 
-    async def approve_import_draft(
-        self, *, user_id: int, resume_id: int
-    ) -> ProfileResponse:
+    async def approve_import_draft(self, *, user_id: int, resume_id: int) -> ProfileResponse:
         del user_id, resume_id
         return ProfileResponse(
             profile_id=1,

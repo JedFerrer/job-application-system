@@ -6,10 +6,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import get_current_user
 from app.api.v1 import dashboard as dashboard_module
 from app.core.lifespan import register_exception_handlers
 from app.domain.dashboard.search_readiness import SearchReadinessResponse
+from app.infrastructure.database import get_db
 from app.models.user import User
 
 pytestmark = pytest.mark.unit
@@ -21,6 +22,7 @@ def _app(*, user: User | None = None) -> FastAPI:
     app.include_router(dashboard_module.router)
     app.dependency_overrides[get_db] = lambda: object()
     if user is not None:
+
         async def current_user() -> User:
             return user
 
@@ -102,7 +104,5 @@ def test_inconsistent_repository_state_returns_generic_availability_error(
     )
 
     assert response.status_code == 503
-    assert response.json() == {
-        "detail": "Search readiness is temporarily unavailable."
-    }
+    assert response.json() == {"detail": "Search readiness is temporarily unavailable."}
     assert "private invariant detail" not in response.text
