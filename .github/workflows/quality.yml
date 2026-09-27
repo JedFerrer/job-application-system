@@ -2,7 +2,7 @@ name: Quality
 
 on:
   push:
-    branches: [main]
+    branches: [main, chore/public-release-readiness]
   pull_request:
 
 permissions:
