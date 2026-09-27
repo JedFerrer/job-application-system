@@ -1,4 +1,5 @@
 import { DashboardNav } from "@/components/nav/dashboard-nav";
+import { MobileDashboardNav } from "@/components/nav/mobile-dashboard-nav";
 import { AuthGuard } from "@/components/auth/auth-guard";
 
 export default function DashboardLayout({
@@ -8,7 +9,8 @@ export default function DashboardLayout({
 }) {
   return (
     <AuthGuard>
-      <div className="flex min-h-screen">
+      <div className="flex min-h-screen flex-col md:flex-row">
+        <MobileDashboardNav />
         <aside className="sticky top-0 hidden h-screen w-60 shrink-0 border-r bg-sidebar-background md:flex md:flex-col">
           <div className="flex h-14 shrink-0 items-center border-b px-5">
             <span className="text-sm font-semibold tracking-tight">

@@ -49,7 +49,7 @@ Select checks by affected area. Verified commands are:
 | Backend | `cd backend && uv run ruff check .`; `cd backend && uv run mypy app tests` | No service required; caches may be written. |
 | Backend tests | `cd backend && uv run pytest tests/unit/ -v`; `cd backend && uv run pytest` | Use the isolated test DB; the test guard refuses the application DB. |
 | Backend containers | `cd backend && docker compose run --rm test` | Use for isolated Docker-backed migration/integration checks. |
-| Frontend | `cd frontend && npm test`; `cd frontend && npx tsc --noEmit`; `cd frontend && npm run build` | No frontend lint script exists; build writes `.next`. |
+| Frontend | `cd frontend && npm test`; `cd frontend && npm run lint`; `cd frontend && npx tsc --noEmit`; `cd frontend && npm run build` | Lint may report warnings while exiting successfully; build writes `.next`. |
 | Extension | `cd extension && npm test`; `cd extension && npm run build` | Build writes `dist`; the declared lint command is currently unreliable because ESLint setup is absent. |
 | Browser automation | None | Playwright is not wired; use the separate Browser QA stage. |
 

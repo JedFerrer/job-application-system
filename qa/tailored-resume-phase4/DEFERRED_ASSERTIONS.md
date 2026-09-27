@@ -1,5 +1,9 @@
 # Phase 4 deferred items (after Phase 3 integration)
 
+Historical engineering record. The local job IDs, browser session, and
+worktree state below are not reproducible portfolio fixtures or current QA
+instructions. PUBLIC.4 evaluation must use committed synthetic data.
+
 Integrated against `f8c4e01 fix(export): render tailored work history from canonical blocks`.
 
 ## Resolved by Phase 3 / Phase 4

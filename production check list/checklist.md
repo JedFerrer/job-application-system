@@ -1,3 +1,11 @@
+# Archived capacity notes
+
+These are historical design estimates and possible future improvements, not
+load-test evidence, a production readiness checklist, or a claim that this
+repository supports 1,000 users. Some implementation details may have changed
+since these notes were written. Verify each claim against current code before
+using it for engineering decisions.
+
 The design can support 1,000 users conceptually, but the current implementation should not run a full refresh for all 1,000 users concurrently on one worker.
 
 ### Cost profile

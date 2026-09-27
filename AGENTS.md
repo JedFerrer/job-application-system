@@ -58,8 +58,8 @@ commands supported by the repository's real configuration:
   coverage requires the isolated test database; use
   `cd backend && docker compose run --rm test` when container-backed migration
   and integration confidence is required. Never point tests at `job_app`.
-- Frontend: `cd frontend && npm test`, `cd frontend && npx tsc --noEmit`, and
-  `cd frontend && npm run build` as affected. There is no frontend lint script.
+- Frontend: `cd frontend && npm test`, `cd frontend && npm run lint`,
+  `cd frontend && npx tsc --noEmit`, and `cd frontend && npm run build` as affected.
 - Extension: `cd extension && npm test` and `cd extension && npm run build` as
   affected. The declared lint command is currently unreliable because its
   ESLint setup is not present; do not claim it passed. Browser E2E automation

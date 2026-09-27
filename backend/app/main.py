@@ -57,10 +57,7 @@ def _is_local_origin(hostname: str) -> bool:
     except ValueError:
         return False
     return (
-        address.is_loopback
-        or address.is_private
-        or address.is_link_local
-        or address.is_unspecified
+        address.is_loopback or address.is_private or address.is_link_local or address.is_unspecified
     )
 
 
@@ -118,6 +115,9 @@ def validate_startup_settings(settings: Settings) -> None:
     Raises ``RuntimeError`` for misconfigured production settings.
     Logs warnings for detectable but non-fatal misconfigurations.
     """
+    # Evaluate the guarded property at startup so an invalid synthetic request
+    # cannot silently fall back to real providers.
+    _ = settings.portfolio_synthetic_providers_enabled
     is_default_secret = settings.jwt_secret.get_secret_value() == _INSECURE_JWT_SECRET
     if settings.requires_public_security and is_default_secret:
         raise RuntimeError(
@@ -130,9 +130,7 @@ def validate_startup_settings(settings: Settings) -> None:
         settings.requires_public_security
         and len(settings.jwt_secret.get_secret_value()) < _MIN_PUBLIC_JWT_SECRET_LENGTH
     ):
-        raise RuntimeError(
-            "JWT_SECRET must be at least 32 characters in staging and production."
-        )
+        raise RuntimeError("JWT_SECRET must be at least 32 characters in staging and production.")
 
     if settings.requires_public_security and not settings.refresh_cookie_secure:
         raise RuntimeError(

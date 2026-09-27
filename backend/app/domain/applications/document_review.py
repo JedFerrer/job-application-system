@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.domain.applications.preparation import ApplicationPreparationService
 from app.domain.applications.review_contract import REVIEW_CATEGORY_CONTRACTS
@@ -48,6 +49,7 @@ from app.infrastructure.llm_client import (
     llm_chat_completion,
 )
 from app.infrastructure.llm_utils import strip_code_fences
+from app.infrastructure.portfolio_synthetic_provider import synthetic_document_review
 from app.infrastructure.redis_client import get_redis
 from app.infrastructure.task_store import TaskStore
 from app.models.application import Application
@@ -74,18 +76,35 @@ _STAGE_CORRECTIVE_REGENERATION = "corrective_regeneration"
 _DIAGNOSTIC_VERSION = "document-review-diagnostic-v1"
 _MAX_DIAGNOSTIC_GENERATIONS = 2
 _CORRECTIVE_POINTER_FAILURE_KINDS = {
-    "missing_key", "invalid_array_index", "array_index_out_of_range",
+    "missing_key",
+    "invalid_array_index",
+    "array_index_out_of_range",
 }
 _CORRECTIVE_V6_EVIDENCE_REASONS = {
-    "invalid_evidence_id", "duplicate_evidence_id", "invalid_evidence_document",
-    "duplicate_evidence_role", "missing_required_evidence",
+    "invalid_evidence_id",
+    "duplicate_evidence_id",
+    "invalid_evidence_document",
+    "duplicate_evidence_role",
+    "missing_required_evidence",
 }
 _EVIDENCE_ROOTS = ("cover_letter", "job", "resume")
 _MAX_NORMALIZED_SCHEMA_ISSUES = 8
 _KNOWN_PROVIDER_FIELD_NAMES = {
-    "id", "category", "severity", "rationale", "evidence_ids", "proposed_action",
-    "target_evidence_id", "resume_evidence_id", "cover_letter_evidence_id", "job_evidence_id",
-    "evidence", "role", "document", "locator", "excerpt",
+    "id",
+    "category",
+    "severity",
+    "rationale",
+    "evidence_ids",
+    "proposed_action",
+    "target_evidence_id",
+    "resume_evidence_id",
+    "cover_letter_evidence_id",
+    "job_evidence_id",
+    "evidence",
+    "role",
+    "document",
+    "locator",
+    "excerpt",
 }
 _SCHEMA_ISSUE_TYPES = {
     "missing": "missing_required_field",
@@ -100,11 +119,18 @@ _SCHEMA_ISSUE_TYPES = {
     "string_pattern_mismatch": "invalid_evidence_id_namespace",
 }
 _PROVIDER_UNION_BRANCHES = {
-    "unsupported_claim", "cross_document_mismatch", "job_document_mismatch",
-    "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing",
+    "unsupported_claim",
+    "cross_document_mismatch",
+    "job_document_mismatch",
+    "omitted_verified_evidence",
+    "repetition",
+    "clarity",
+    "keyword_stuffing",
 }
 _PROVIDER_EVIDENCE_ID_PREFIXES = {
-    "job": "job", "resume": "resume", "cover_letter": "cover",
+    "job": "job",
+    "resume": "resume",
+    "cover_letter": "cover",
 }
 
 _PointerFailureKind = Literal[
@@ -143,7 +169,9 @@ class _SchemaValidationError(ValueError):
 class _EvidenceValidationError(ValueError):
     """An existing evidence-contract rejection with a content-free reason code."""
 
-    def __init__(self, reason: str, *, structural_metadata: dict[str, object] | None = None) -> None:
+    def __init__(
+        self, reason: str, *, structural_metadata: dict[str, object] | None = None
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.structural_metadata = structural_metadata
@@ -201,7 +229,10 @@ def _normalize_schema_validation_issues(exc: ValidationError) -> tuple[dict[str,
 
 
 def _log_schema_validation_failure(
-    *, generation: int, exc: ValidationError, normalized_schema_issues: tuple[dict[str, str], ...],
+    *,
+    generation: int,
+    exc: ValidationError,
+    normalized_schema_issues: tuple[dict[str, str], ...],
 ) -> None:
     """Emit only the allowlisted structural detail for a provider schema rejection."""
     logger.warning(
@@ -259,34 +290,55 @@ class DocumentReviewService:
         self._session = session
 
     async def start(
-        self, *, user_id: int, application_id: int, package_id: int, idempotency_key: str,
-        rerun: bool, task_store: TaskStore,
+        self,
+        *,
+        user_id: int,
+        application_id: int,
+        package_id: int,
+        idempotency_key: str,
+        rerun: bool,
+        task_store: TaskStore,
     ) -> DocumentReviewResponse | DocumentReviewQueuedResponse:
-        package = await self._current_owned_package(user_id=user_id, application_id=application_id, package_id=package_id)
+        package = await self._current_owned_package(
+            user_id=user_id, application_id=application_id, package_id=package_id
+        )
         await self._validate_package(package)
-        existing = await self._session.scalar(select(ApplicationDocumentReview).where(
-            ApplicationDocumentReview.user_id == user_id,
-            ApplicationDocumentReview.package_id == package.id,
-            ApplicationDocumentReview.idempotency_key == idempotency_key,
-        ))
+        existing = await self._session.scalar(
+            select(ApplicationDocumentReview).where(
+                ApplicationDocumentReview.user_id == user_id,
+                ApplicationDocumentReview.package_id == package.id,
+                ApplicationDocumentReview.idempotency_key == idempotency_key,
+            )
+        )
         if existing is not None:
             if existing.package_content_sha256 != package.content_sha256:
-                raise ReviewConflictError("Idempotency key was already used for different review content")
+                raise ReviewConflictError(
+                    "Idempotency key was already used for different review content"
+                )
             if existing.state in {"queued", "running"}:
-                return DocumentReviewQueuedResponse(task_id=existing.task_id, review_id=existing.id, state=existing.state, existing=True)
+                return DocumentReviewQueuedResponse(
+                    task_id=existing.task_id,
+                    review_id=existing.id,
+                    state=existing.state,
+                    existing=True,
+                )
             return await self._response(existing)
-        active = await self._active(
-            user_id=user_id, application_id=application_id, package=package
-        )
+        active = await self._active(user_id=user_id, application_id=application_id, package=package)
         if active is not None:
-            return DocumentReviewQueuedResponse(task_id=active.task_id, review_id=active.id, state=active.state, existing=True)
+            return DocumentReviewQueuedResponse(
+                task_id=active.task_id, review_id=active.id, state=active.state, existing=True
+            )
         cached = await self._cached(user_id=user_id, package=package)
         if cached is not None and not rerun:
             return await self._response(cached)
         review = ApplicationDocumentReview(
-            user_id=user_id, application_id=application_id, package_id=package.id,
-            package_content_sha256=package.content_sha256, review_policy_version=REVIEW_POLICY_VERSION,
-            idempotency_key=idempotency_key, task_id=str(uuid4()),
+            user_id=user_id,
+            application_id=application_id,
+            package_id=package.id,
+            package_content_sha256=package.content_sha256,
+            review_policy_version=REVIEW_POLICY_VERSION,
+            idempotency_key=idempotency_key,
+            task_id=str(uuid4()),
         )
         try:
             async with self._session.begin_nested():
@@ -309,16 +361,30 @@ class DocumentReviewService:
         await task_store.update(task_id, message="Document review queued", review_id=review.id)
         return DocumentReviewQueuedResponse(task_id=task_id, review_id=review.id, state="queued")
 
-    async def get(self, *, user_id: int, application_id: int, package_id: int, review_id: str) -> DocumentReviewResponse:
-        review = await self._session.scalar(select(ApplicationDocumentReview).where(
-            ApplicationDocumentReview.id == review_id, ApplicationDocumentReview.user_id == user_id,
-            ApplicationDocumentReview.application_id == application_id, ApplicationDocumentReview.package_id == package_id,
-        ))
+    async def get(
+        self, *, user_id: int, application_id: int, package_id: int, review_id: str
+    ) -> DocumentReviewResponse:
+        review = await self._session.scalar(
+            select(ApplicationDocumentReview).where(
+                ApplicationDocumentReview.id == review_id,
+                ApplicationDocumentReview.user_id == user_id,
+                ApplicationDocumentReview.application_id == application_id,
+                ApplicationDocumentReview.package_id == package_id,
+            )
+        )
         if review is None:
             raise ReviewNotFoundError
         return await self._response(review)
 
-    async def acknowledge(self, *, user_id: int, application_id: int, package_id: int, review_id: str, payload: ReviewAcknowledgmentRequest) -> DocumentReviewResponse:
+    async def acknowledge(
+        self,
+        *,
+        user_id: int,
+        application_id: int,
+        package_id: int,
+        review_id: str,
+        payload: ReviewAcknowledgmentRequest,
+    ) -> DocumentReviewResponse:
         review = await self._review_owned(user_id, application_id, package_id, review_id)
         if review.package_content_sha256 != payload.package_content_sha256:
             raise ReviewConflictError("Review no longer matches this package")
@@ -326,96 +392,160 @@ class DocumentReviewService:
         for item in payload.acknowledgments:
             if item.finding_id not in valid_ids:
                 raise ReviewNotFoundError
-            row = await self._session.scalar(select(ApplicationReviewAcknowledgment).where(
-                ApplicationReviewAcknowledgment.review_id == review.id,
-                ApplicationReviewAcknowledgment.finding_id == item.finding_id,
-            ))
+            row = await self._session.scalar(
+                select(ApplicationReviewAcknowledgment).where(
+                    ApplicationReviewAcknowledgment.review_id == review.id,
+                    ApplicationReviewAcknowledgment.finding_id == item.finding_id,
+                )
+            )
             if row is None:
-                self._session.add(ApplicationReviewAcknowledgment(
-                    review_id=review.id, package_id=review.package_id,
-                    finding_id=item.finding_id, disposition=item.disposition,
-                ))
+                self._session.add(
+                    ApplicationReviewAcknowledgment(
+                        review_id=review.id,
+                        package_id=review.package_id,
+                        finding_id=item.finding_id,
+                        disposition=item.disposition,
+                    )
+                )
             else:
                 row.disposition = item.disposition
         await self._session.flush()
         return await self._response(review)
 
-    async def current(self, *, user_id: int, package: ApplicationPackage | None) -> ApplicationDocumentReview | None:
+    async def current(
+        self, *, user_id: int, package: ApplicationPackage | None
+    ) -> ApplicationDocumentReview | None:
         if package is None:
             return None
         return await self._cached(user_id=user_id, package=package)
 
-    async def _cached(self, *, user_id: int, package: ApplicationPackage) -> ApplicationDocumentReview | None:
+    async def _cached(
+        self, *, user_id: int, package: ApplicationPackage
+    ) -> ApplicationDocumentReview | None:
         latest = await self._latest_matching_review(user_id=user_id, package=package)
         return latest if latest is not None and latest.state == "completed" else None
 
     async def _latest_matching_review(
         self, *, user_id: int, package: ApplicationPackage
     ) -> ApplicationDocumentReview | None:
-        return cast(ApplicationDocumentReview | None, await self._session.scalar(select(ApplicationDocumentReview).where(
-            ApplicationDocumentReview.user_id == user_id,
-            ApplicationDocumentReview.package_id == package.id,
-            ApplicationDocumentReview.package_content_sha256 == package.content_sha256,
-            ApplicationDocumentReview.review_policy_version == REVIEW_POLICY_VERSION,
-        ).order_by(ApplicationDocumentReview.created_at.desc(), ApplicationDocumentReview.id.desc())))
+        return cast(
+            ApplicationDocumentReview | None,
+            await self._session.scalar(
+                select(ApplicationDocumentReview)
+                .where(
+                    ApplicationDocumentReview.user_id == user_id,
+                    ApplicationDocumentReview.package_id == package.id,
+                    ApplicationDocumentReview.package_content_sha256 == package.content_sha256,
+                    ApplicationDocumentReview.review_policy_version == REVIEW_POLICY_VERSION,
+                )
+                .order_by(
+                    ApplicationDocumentReview.created_at.desc(), ApplicationDocumentReview.id.desc()
+                )
+            ),
+        )
 
     async def _active(
         self, *, user_id: int, application_id: int, package: ApplicationPackage
     ) -> ApplicationDocumentReview | None:
-        return cast(ApplicationDocumentReview | None, await self._session.scalar(
-            select(ApplicationDocumentReview).where(
-                ApplicationDocumentReview.user_id == user_id,
-                ApplicationDocumentReview.application_id == application_id,
-                ApplicationDocumentReview.package_id == package.id,
-                ApplicationDocumentReview.package_content_sha256 == package.content_sha256,
-                ApplicationDocumentReview.review_policy_version == REVIEW_POLICY_VERSION,
-                ApplicationDocumentReview.state.in_(("queued", "running")),
-            )
-        ))
+        return cast(
+            ApplicationDocumentReview | None,
+            await self._session.scalar(
+                select(ApplicationDocumentReview).where(
+                    ApplicationDocumentReview.user_id == user_id,
+                    ApplicationDocumentReview.application_id == application_id,
+                    ApplicationDocumentReview.package_id == package.id,
+                    ApplicationDocumentReview.package_content_sha256 == package.content_sha256,
+                    ApplicationDocumentReview.review_policy_version == REVIEW_POLICY_VERSION,
+                    ApplicationDocumentReview.state.in_(("queued", "running")),
+                )
+            ),
+        )
 
-    async def _owned_package(self, *, user_id: int, application_id: int, package_id: int) -> ApplicationPackage:
-        package = await self._session.scalar(select(ApplicationPackage).join(Application).where(
-            ApplicationPackage.id == package_id, ApplicationPackage.application_id == application_id,
-            Application.user_id == user_id,
-        ))
+    async def _owned_package(
+        self, *, user_id: int, application_id: int, package_id: int
+    ) -> ApplicationPackage:
+        package = await self._session.scalar(
+            select(ApplicationPackage)
+            .join(Application)
+            .where(
+                ApplicationPackage.id == package_id,
+                ApplicationPackage.application_id == application_id,
+                Application.user_id == user_id,
+            )
+        )
         if package is None:
             raise ReviewNotFoundError
         return package
 
-    async def _review_owned(self, user_id: int, application_id: int, package_id: int, review_id: str) -> ApplicationDocumentReview:
-        review = await self._session.scalar(select(ApplicationDocumentReview).where(
-            ApplicationDocumentReview.id == review_id, ApplicationDocumentReview.user_id == user_id,
-            ApplicationDocumentReview.application_id == application_id, ApplicationDocumentReview.package_id == package_id,
-        ))
+    async def _review_owned(
+        self, user_id: int, application_id: int, package_id: int, review_id: str
+    ) -> ApplicationDocumentReview:
+        review = await self._session.scalar(
+            select(ApplicationDocumentReview).where(
+                ApplicationDocumentReview.id == review_id,
+                ApplicationDocumentReview.user_id == user_id,
+                ApplicationDocumentReview.application_id == application_id,
+                ApplicationDocumentReview.package_id == package_id,
+            )
+        )
         if review is None:
             raise ReviewNotFoundError
         return review
 
     async def _validate_package(self, package: ApplicationPackage) -> None:
-        encoded = json.dumps(package.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        encoded = json.dumps(
+            package.content, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         if hashlib.sha256(encoded.encode()).hexdigest() != package.content_sha256:
             raise ReviewConflictError("Package content is no longer internally consistent")
         if len(encoded) > MAX_REVIEW_INPUT_CHARS:
-            raise ReviewConflictError("Package is too large to review; reduce selected material first")
+            raise ReviewConflictError(
+                "Package is too large to review; reduce selected material first"
+            )
         resume = package.content.get("resume") if isinstance(package.content, dict) else None
-        if not isinstance(resume, dict) or not isinstance(resume.get("content"), dict) or not isinstance(resume.get("provenance"), dict):
+        if (
+            not isinstance(resume, dict)
+            or not isinstance(resume.get("content"), dict)
+            or not isinstance(resume.get("provenance"), dict)
+        ):
             raise ReviewConflictError("Package lacks validated source-backed resume evidence")
 
     async def _response(self, review: ApplicationDocumentReview) -> DocumentReviewResponse:
-        acknowledgments = list((await self._session.execute(select(ApplicationReviewAcknowledgment).where(
-            ApplicationReviewAcknowledgment.review_id == review.id
-        ))).scalars().all())
+        acknowledgments = list(
+            (
+                await self._session.execute(
+                    select(ApplicationReviewAcknowledgment).where(
+                        ApplicationReviewAcknowledgment.review_id == review.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         return DocumentReviewResponse(
-            id=review.id, application_id=review.application_id, package_id=review.package_id,
+            id=review.id,
+            application_id=review.application_id,
+            package_id=review.package_id,
             package_content_sha256=review.package_content_sha256,
-            review_policy_version=review.review_policy_version, state=review.state, outcome=review.outcome,
+            review_policy_version=review.review_policy_version,
+            state=review.state,
+            outcome=review.outcome,
             findings=[DocumentReviewFinding.model_validate(item) for item in review.findings],
-            failure_code=review.failure_code, created_at=review.created_at, completed_at=review.completed_at,
-            acknowledgments=[ReviewAcknowledgmentItem(finding_id=row.finding_id, disposition=row.disposition) for row in acknowledgments],
+            failure_code=review.failure_code,
+            created_at=review.created_at,
+            completed_at=review.completed_at,
+            acknowledgments=[
+                ReviewAcknowledgmentItem(finding_id=row.finding_id, disposition=row.disposition)
+                for row in acknowledgments
+            ],
         )
 
-    async def _current_owned_package(self, *, user_id: int, application_id: int, package_id: int) -> ApplicationPackage:
-        package = await self._owned_package(user_id=user_id, application_id=application_id, package_id=package_id)
+    async def _current_owned_package(
+        self, *, user_id: int, application_id: int, package_id: int
+    ) -> ApplicationPackage:
+        package = await self._owned_package(
+            user_id=user_id, application_id=application_id, package_id=package_id
+        )
         preparation = await self._session.get(ApplicationPreparation, application_id)
         projected = await ApplicationPreparationService(session=self._session).get(
             user_id=user_id, application_id=application_id
@@ -436,21 +566,33 @@ async def run_document_review_background(*, task_id: str, review_id: str, user_i
     generation_summaries: list[dict[str, object]] = []
     try:
         async with async_session_factory() as session:
-            review = await session.scalar(select(ApplicationDocumentReview).where(
-                ApplicationDocumentReview.id == review_id, ApplicationDocumentReview.user_id == user_id,
-            ).with_for_update())
+            review = await session.scalar(
+                select(ApplicationDocumentReview)
+                .where(
+                    ApplicationDocumentReview.id == review_id,
+                    ApplicationDocumentReview.user_id == user_id,
+                )
+                .with_for_update()
+            )
             if review is None or review.state != "queued":
-                await store.update(task_id, status="failed", message="Document review is unavailable")
+                await store.update(
+                    task_id, status="failed", message="Document review is unavailable"
+                )
                 return
-            review.state = "running"; review.started_at = datetime.now(UTC)
+            review.state = "running"
+            review.started_at = datetime.now(UTC)
             await session.commit()
-            await store.update(task_id, status="running", message="Reviewing documents", review_id=review_id)
+            await store.update(
+                task_id, status="running", message="Reviewing documents", review_id=review_id
+            )
             package = await session.get(ApplicationPackage, review.package_id)
             if package is None:
                 raise ReviewConflictError("Package is unavailable")
             service = DocumentReviewService(session)
             await service._validate_package(package)
-            evidence_catalog, provider_projection = _build_evidence_catalog_and_projection(package.content)
+            evidence_catalog, provider_projection = _build_evidence_catalog_and_projection(
+                package.content
+            )
             try:
                 async with asyncio.timeout(_REVIEW_TIMEOUT_SECONDS):
                     deadline = monotonic() + _REVIEW_TIMEOUT_SECONDS
@@ -465,14 +607,20 @@ async def run_document_review_background(*, task_id: str, review_id: str, user_i
                             if "schema_issues" in corrective_metadata:
                                 messages = schema_corrective_review_messages(
                                     projection=provider_projection,
-                                    issues=cast(tuple[dict[str, str], ...], corrective_metadata["schema_issues"]),
+                                    issues=cast(
+                                        tuple[dict[str, str], ...],
+                                        corrective_metadata["schema_issues"],
+                                    ),
                                 )
                             else:
                                 messages = corrective_review_messages(
                                     projection=provider_projection,
                                     reason=cast(str, corrective_metadata["reason"]),
                                     category=cast(str | None, corrective_metadata.get("category")),
-                                    actual_documents=cast(tuple[str, ...] | None, corrective_metadata.get("actual_documents")),
+                                    actual_documents=cast(
+                                        tuple[str, ...] | None,
+                                        corrective_metadata.get("actual_documents"),
+                                    ),
                                 )
                         else:
                             remaining = deadline - monotonic()
@@ -480,62 +628,132 @@ async def run_document_review_background(*, task_id: str, review_id: str, user_i
                                 raise TimeoutError
                             messages = review_messages(projection=provider_projection)
                         try:
-                            response, model = await llm_chat_completion(
-                                messages=messages, json_mode=True, temperature=0.1,
-                                timeout=min(60.0, remaining),
-                            )
+                            if get_settings().portfolio_synthetic_providers_enabled:
+                                response, model = await synthetic_document_review()
+                            else:
+                                response, model = await llm_chat_completion(
+                                    messages=messages,
+                                    json_mode=True,
+                                    temperature=0.1,
+                                    timeout=min(60.0, remaining),
+                                )
                         except APIStatusError as exc:
                             category = classify_provider_failure(exc)
                             if category not in {"auth_error", "other_http_error"}:
                                 raise
                             _record_failure_diagnostic(
-                                review=review, task_id=task_id, stage=_STAGE_PROVIDER_CALL, exc=exc,
-                                provider_failure_category=category, generation_attempt=generation_attempt,
+                                review=review,
+                                task_id=task_id,
+                                stage=_STAGE_PROVIDER_CALL,
+                                exc=exc,
+                                provider_failure_category=category,
+                                generation_attempt=generation_attempt,
                                 corrective_regeneration=generation_attempt == 2,
                             )
                             diagnostic_emitted = True
-                            _append_generation_summary(generation_summaries, _generation_summary(
-                                generation_attempt=generation_attempt, stage=_STAGE_PROVIDER_CALL,
-                                provider_failure_category=category,
-                            ))
-                            await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(
-                                review, task_id, generation_summaries,
-                            ))
-                            await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                            _append_generation_summary(
+                                generation_summaries,
+                                _generation_summary(
+                                    generation_attempt=generation_attempt,
+                                    stage=_STAGE_PROVIDER_CALL,
+                                    provider_failure_category=category,
+                                ),
+                            )
+                            await _fail(
+                                session,
+                                review,
+                                "unavailable",
+                                "Review unavailable",
+                                diagnostic_summary=_failure_diagnostic(
+                                    review,
+                                    task_id,
+                                    generation_summaries,
+                                ),
+                            )
+                            await store.update(
+                                task_id,
+                                status="failed",
+                                message="Review unavailable",
+                                review_id=review_id,
+                            )
                             return
                         structural_metadata = _response_structural_metadata(response)
                         try:
                             raw = response.choices[0].message.content or ""
                         except (AttributeError, IndexError, KeyError, TypeError) as exc:
                             _record_failure_diagnostic(
-                                review=review, task_id=task_id, stage=_STAGE_PROVIDER_RESPONSE_EXTRACTION,
-                                exc=exc, structural_metadata=structural_metadata, generation_attempt=generation_attempt,
+                                review=review,
+                                task_id=task_id,
+                                stage=_STAGE_PROVIDER_RESPONSE_EXTRACTION,
+                                exc=exc,
+                                structural_metadata=structural_metadata,
+                                generation_attempt=generation_attempt,
                                 corrective_regeneration=generation_attempt == 2,
                             )
                             diagnostic_emitted = True
-                            _append_generation_summary(generation_summaries, _generation_summary(
-                                generation_attempt=generation_attempt, stage=_STAGE_PROVIDER_RESPONSE_EXTRACTION,
-                            ))
-                            await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries))
-                            await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                            _append_generation_summary(
+                                generation_summaries,
+                                _generation_summary(
+                                    generation_attempt=generation_attempt,
+                                    stage=_STAGE_PROVIDER_RESPONSE_EXTRACTION,
+                                ),
+                            )
+                            await _fail(
+                                session,
+                                review,
+                                "unavailable",
+                                "Review unavailable",
+                                diagnostic_summary=_failure_diagnostic(
+                                    review, task_id, generation_summaries
+                                ),
+                            )
+                            await store.update(
+                                task_id,
+                                status="failed",
+                                message="Review unavailable",
+                                review_id=review_id,
+                            )
                             return
                         try:
                             parsed = json.loads(strip_code_fences(raw))
                         except (json.JSONDecodeError, TypeError) as exc:
                             _record_failure_diagnostic(
-                                review=review, task_id=task_id, stage=_STAGE_RESPONSE_JSON_PARSE,
-                                exc=exc, structural_metadata=structural_metadata, generation_attempt=generation_attempt,
+                                review=review,
+                                task_id=task_id,
+                                stage=_STAGE_RESPONSE_JSON_PARSE,
+                                exc=exc,
+                                structural_metadata=structural_metadata,
+                                generation_attempt=generation_attempt,
                                 corrective_regeneration=generation_attempt == 2,
                             )
                             diagnostic_emitted = True
-                            _append_generation_summary(generation_summaries, _generation_summary(
-                                generation_attempt=generation_attempt, stage=_STAGE_RESPONSE_JSON_PARSE,
-                            ))
-                            await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries))
-                            await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                            _append_generation_summary(
+                                generation_summaries,
+                                _generation_summary(
+                                    generation_attempt=generation_attempt,
+                                    stage=_STAGE_RESPONSE_JSON_PARSE,
+                                ),
+                            )
+                            await _fail(
+                                session,
+                                review,
+                                "unavailable",
+                                "Review unavailable",
+                                diagnostic_summary=_failure_diagnostic(
+                                    review, task_id, generation_summaries
+                                ),
+                            )
+                            await store.update(
+                                task_id,
+                                status="failed",
+                                message="Review unavailable",
+                                review_id=review_id,
+                            )
                             return
                         try:
-                            provider_response = ProviderDocumentReviewResponseV10.model_validate(parsed)
+                            provider_response = ProviderDocumentReviewResponseV10.model_validate(
+                                parsed
+                            )
                         except ValidationError as exc:
                             normalized_schema_issues = _normalize_schema_validation_issues(exc)
                             _log_schema_validation_failure(
@@ -547,42 +765,93 @@ async def run_document_review_background(*, task_id: str, review_id: str, user_i
                                 corrective_metadata = {
                                     "schema_issues": normalized_schema_issues,
                                 }
-                                _append_generation_summary(generation_summaries, _generation_summary(
-                                    generation_attempt=generation_attempt,
-                                    stage=_STAGE_RESPONSE_SCHEMA_VALIDATION,
-                                ))
-                                await _persist_corrective_diagnostic(session, review, task_id, generation_summaries)
+                                _append_generation_summary(
+                                    generation_summaries,
+                                    _generation_summary(
+                                        generation_attempt=generation_attempt,
+                                        stage=_STAGE_RESPONSE_SCHEMA_VALIDATION,
+                                    ),
+                                )
+                                await _persist_corrective_diagnostic(
+                                    session, review, task_id, generation_summaries
+                                )
                                 continue
                             _record_failure_diagnostic(
-                                review=review, task_id=task_id, stage=_STAGE_RESPONSE_SCHEMA_VALIDATION,
-                                exc=exc, generation_attempt=generation_attempt,
+                                review=review,
+                                task_id=task_id,
+                                stage=_STAGE_RESPONSE_SCHEMA_VALIDATION,
+                                exc=exc,
+                                generation_attempt=generation_attempt,
                                 corrective_regeneration=True,
                             )
                             diagnostic_emitted = True
-                            _append_generation_summary(generation_summaries, _generation_summary(
-                                generation_attempt=generation_attempt, stage=_STAGE_RESPONSE_SCHEMA_VALIDATION,
-                            ))
-                            await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries))
-                            await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                            _append_generation_summary(
+                                generation_summaries,
+                                _generation_summary(
+                                    generation_attempt=generation_attempt,
+                                    stage=_STAGE_RESPONSE_SCHEMA_VALIDATION,
+                                ),
+                            )
+                            await _fail(
+                                session,
+                                review,
+                                "unavailable",
+                                "Review unavailable",
+                                diagnostic_summary=_failure_diagnostic(
+                                    review, task_id, generation_summaries
+                                ),
+                            )
+                            await store.update(
+                                task_id,
+                                status="failed",
+                                message="Review unavailable",
+                                review_id=review_id,
+                            )
                             return
                         try:
-                            findings = _canonicalize_provider_review(provider_response, evidence_catalog)
+                            findings = _canonicalize_provider_review(
+                                provider_response, evidence_catalog
+                            )
                         except (ValidationError, _SchemaValidationError) as exc:
-                            _log_canonical_validation_failure(generation=generation_attempt, exc=exc)
+                            _log_canonical_validation_failure(
+                                generation=generation_attempt, exc=exc
+                            )
                             _record_failure_diagnostic(
-                                review=review, task_id=task_id, stage=_STAGE_CANONICAL_VALIDATION,
-                                exc=exc, generation_attempt=generation_attempt,
+                                review=review,
+                                task_id=task_id,
+                                stage=_STAGE_CANONICAL_VALIDATION,
+                                exc=exc,
+                                generation_attempt=generation_attempt,
                                 corrective_regeneration=generation_attempt == 2,
                             )
                             diagnostic_emitted = True
-                            _append_generation_summary(generation_summaries, _generation_summary(
-                                generation_attempt=generation_attempt, stage=_STAGE_CANONICAL_VALIDATION,
-                            ))
-                            await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries))
-                            await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                            _append_generation_summary(
+                                generation_summaries,
+                                _generation_summary(
+                                    generation_attempt=generation_attempt,
+                                    stage=_STAGE_CANONICAL_VALIDATION,
+                                ),
+                            )
+                            await _fail(
+                                session,
+                                review,
+                                "unavailable",
+                                "Review unavailable",
+                                diagnostic_summary=_failure_diagnostic(
+                                    review, task_id, generation_summaries
+                                ),
+                            )
+                            await store.update(
+                                task_id,
+                                status="failed",
+                                message="Review unavailable",
+                                review_id=review_id,
+                            )
                             return
                         except _EvidenceValidationError as exc:
-                            if generation_attempt == 1 and _is_corrective_regeneration_eligible(exc):
+                            if generation_attempt == 1 and _is_corrective_regeneration_eligible(
+                                exc
+                            ):
                                 metadata = exc.structural_metadata or {}
                                 corrective_metadata = {
                                     "reason": exc.reason,
@@ -590,35 +859,78 @@ async def run_document_review_background(*, task_id: str, review_id: str, user_i
                                     "actual_documents": metadata.get("actual_documents"),
                                 }
                                 _record_failure_diagnostic(
-                                    review=review, task_id=task_id, stage=_STAGE_CORRECTIVE_REGENERATION,
-                                    exc=exc, evidence_reason=exc.reason,
-                                    generation_attempt=generation_attempt, corrective_regeneration=True,
+                                    review=review,
+                                    task_id=task_id,
+                                    stage=_STAGE_CORRECTIVE_REGENERATION,
+                                    exc=exc,
+                                    evidence_reason=exc.reason,
+                                    generation_attempt=generation_attempt,
+                                    corrective_regeneration=True,
                                 )
-                                _append_generation_summary(generation_summaries, _generation_summary(
-                                    generation_attempt=generation_attempt, stage=_STAGE_EVIDENCE_VALIDATION,
-                                    reason=exc.reason,
-                                ))
-                                await _persist_corrective_diagnostic(session, review, task_id, generation_summaries)
+                                _append_generation_summary(
+                                    generation_summaries,
+                                    _generation_summary(
+                                        generation_attempt=generation_attempt,
+                                        stage=_STAGE_EVIDENCE_VALIDATION,
+                                        reason=exc.reason,
+                                    ),
+                                )
+                                await _persist_corrective_diagnostic(
+                                    session, review, task_id, generation_summaries
+                                )
                                 continue
                             _record_failure_diagnostic(
-                                review=review, task_id=task_id, stage=_STAGE_EVIDENCE_VALIDATION,
-                                exc=exc, evidence_reason=exc.reason, structural_metadata=exc.structural_metadata,
-                                generation_attempt=generation_attempt, corrective_regeneration=generation_attempt == 2,
+                                review=review,
+                                task_id=task_id,
+                                stage=_STAGE_EVIDENCE_VALIDATION,
+                                exc=exc,
+                                evidence_reason=exc.reason,
+                                structural_metadata=exc.structural_metadata,
+                                generation_attempt=generation_attempt,
+                                corrective_regeneration=generation_attempt == 2,
                             )
                             diagnostic_emitted = True
-                            _append_generation_summary(generation_summaries, _generation_summary(
-                                generation_attempt=generation_attempt, stage=_STAGE_EVIDENCE_VALIDATION,
-                                reason=exc.reason, structural_metadata=exc.structural_metadata,
-                            ))
-                            await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries))
-                            await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                            _append_generation_summary(
+                                generation_summaries,
+                                _generation_summary(
+                                    generation_attempt=generation_attempt,
+                                    stage=_STAGE_EVIDENCE_VALIDATION,
+                                    reason=exc.reason,
+                                    structural_metadata=exc.structural_metadata,
+                                ),
+                            )
+                            await _fail(
+                                session,
+                                review,
+                                "unavailable",
+                                "Review unavailable",
+                                diagnostic_summary=_failure_diagnostic(
+                                    review, task_id, generation_summaries
+                                ),
+                            )
+                            await store.update(
+                                task_id,
+                                status="failed",
+                                message="Review unavailable",
+                                review_id=review_id,
+                            )
                             return
                         break
             except TimeoutError:
-                await _fail(session, review, "timeout", "Review timed out", diagnostic_summary=_failure_diagnostic(
-                    review, task_id, generation_summaries,
-                ))
-                await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                await _fail(
+                    session,
+                    review,
+                    "timeout",
+                    "Review timed out",
+                    diagnostic_summary=_failure_diagnostic(
+                        review,
+                        task_id,
+                        generation_summaries,
+                    ),
+                )
+                await store.update(
+                    task_id, status="failed", message="Review unavailable", review_id=review_id
+                )
                 return
             except LLMUnavailableError as exc:
                 _record_failure_diagnostic(
@@ -635,35 +947,68 @@ async def run_document_review_background(*, task_id: str, review_id: str, user_i
                     corrective_regeneration=generation_attempt == 2,
                 )
                 diagnostic_emitted = True
-                _append_generation_summary(generation_summaries, _generation_summary(
-                    generation_attempt=generation_attempt, stage=_STAGE_PROVIDER_CALL,
-                    provider_failure_category=exc.provider_failure_category,
-                    provider_attempt_count=exc.attempt_count, providers_exhausted=exc.providers_exhausted,
-                ))
-                await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries))
-                await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                _append_generation_summary(
+                    generation_summaries,
+                    _generation_summary(
+                        generation_attempt=generation_attempt,
+                        stage=_STAGE_PROVIDER_CALL,
+                        provider_failure_category=exc.provider_failure_category,
+                        provider_attempt_count=exc.attempt_count,
+                        providers_exhausted=exc.providers_exhausted,
+                    ),
+                )
+                await _fail(
+                    session,
+                    review,
+                    "unavailable",
+                    "Review unavailable",
+                    diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries),
+                )
+                await store.update(
+                    task_id, status="failed", message="Review unavailable", review_id=review_id
+                )
                 return
             try:
                 await session.refresh(review, with_for_update=True)
                 if review.state != "running":
                     return
-                review.state = "completed"; review.outcome = "attention_needed" if findings else "no_findings"
-                review.findings = findings; review.model_name = model; review.prompt_version = REVIEW_POLICY_VERSION; review.completed_at = datetime.now(UTC)
+                review.state = "completed"
+                review.outcome = "attention_needed" if findings else "no_findings"
+                review.findings = findings
+                review.model_name = model
+                review.prompt_version = REVIEW_POLICY_VERSION
+                review.completed_at = datetime.now(UTC)
                 review.diagnostic_summary = _success_diagnostic(review, task_id, generation_attempt)
                 await _commit_with_diagnostic_fallback(session, review, terminal_state="completed")
             except Exception as exc:
                 _record_failure_diagnostic(
-                    review=review, task_id=task_id, stage=_STAGE_COMPLETION_PERSISTENCE, exc=exc,
+                    review=review,
+                    task_id=task_id,
+                    stage=_STAGE_COMPLETION_PERSISTENCE,
+                    exc=exc,
                 )
                 diagnostic_emitted = True
-                await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries))
-                await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                await _fail(
+                    session,
+                    review,
+                    "unavailable",
+                    "Review unavailable",
+                    diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries),
+                )
+                await store.update(
+                    task_id, status="failed", message="Review unavailable", review_id=review_id
+                )
                 return
             try:
-                await store.update(task_id, status="done", message="Document review completed", review_id=review_id)
+                await store.update(
+                    task_id, status="done", message="Document review completed", review_id=review_id
+                )
             except Exception as exc:
                 _record_failure_diagnostic(
-                    review=review, task_id=task_id, stage=_STAGE_TASK_COMPLETION, exc=exc,
+                    review=review,
+                    task_id=task_id,
+                    stage=_STAGE_TASK_COMPLETION,
+                    exc=exc,
                 )
                 diagnostic_emitted = True
                 return
@@ -671,29 +1016,48 @@ async def run_document_review_background(*, task_id: str, review_id: str, user_i
         # Never include package or provider response in logs/task data.
         if not diagnostic_emitted:
             _record_failure_diagnostic(
-                review_id=review_id, task_id=task_id, stage=_STAGE_WORKER_UNKNOWN, exc=exc,
+                review_id=review_id,
+                task_id=task_id,
+                stage=_STAGE_WORKER_UNKNOWN,
+                exc=exc,
             )
         async with async_session_factory() as session:
             review = await session.get(ApplicationDocumentReview, review_id)
             if review is not None and review.state in {"queued", "running"}:
-                await _fail(session, review, "unavailable", "Review unavailable", diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries))
-        await store.update(task_id, status="failed", message="Review unavailable", review_id=review_id)
+                await _fail(
+                    session,
+                    review,
+                    "unavailable",
+                    "Review unavailable",
+                    diagnostic_summary=_failure_diagnostic(review, task_id, generation_summaries),
+                )
+        await store.update(
+            task_id, status="failed", message="Review unavailable", review_id=review_id
+        )
 
 
 async def _fail(
-    session: AsyncSession, review: ApplicationDocumentReview, code: str, message: str,
-    *, diagnostic_summary: dict[str, object] | None = None,
+    session: AsyncSession,
+    review: ApplicationDocumentReview,
+    code: str,
+    message: str,
+    *,
+    diagnostic_summary: dict[str, object] | None = None,
 ) -> None:
     if review.state not in {"queued", "running"}:
         return
-    review.state = "failed"; review.outcome = "insufficient_evidence"; review.failure_code = code
-    review.failure_message = message; review.completed_at = datetime.now(UTC)
+    review.state = "failed"
+    review.outcome = "insufficient_evidence"
+    review.failure_code = code
+    review.failure_message = message
+    review.completed_at = datetime.now(UTC)
     review.diagnostic_summary = diagnostic_summary
     await _commit_with_diagnostic_fallback(session, review, terminal_state="failed")
 
 
 def _append_generation_summary(
-    summaries: list[dict[str, object]], summary: dict[str, object],
+    summaries: list[dict[str, object]],
+    summary: dict[str, object],
 ) -> None:
     """Keep durable state aligned to the worker's fixed two-generation loop."""
     if len(summaries) < _MAX_DIAGNOSTIC_GENERATIONS:
@@ -701,9 +1065,13 @@ def _append_generation_summary(
 
 
 def _generation_summary(
-    *, generation_attempt: int, stage: str, reason: str | None = None,
+    *,
+    generation_attempt: int,
+    stage: str,
+    reason: str | None = None,
     structural_metadata: dict[str, object] | None = None,
-    provider_failure_category: str | None = None, provider_attempt_count: int | None = None,
+    provider_failure_category: str | None = None,
+    provider_attempt_count: int | None = None,
     providers_exhausted: bool | None = None,
 ) -> dict[str, object]:
     """Build the closed durable contract without copying logger metadata."""
@@ -728,7 +1096,9 @@ def _generation_summary(
 
 
 def _failure_diagnostic(
-    review: ApplicationDocumentReview, task_id: str, summaries: list[dict[str, object]],
+    review: ApplicationDocumentReview,
+    task_id: str,
+    summaries: list[dict[str, object]],
 ) -> dict[str, object]:
     return {
         "diagnostic_version": _DIAGNOSTIC_VERSION,
@@ -740,7 +1110,9 @@ def _failure_diagnostic(
 
 
 def _success_diagnostic(
-    review: ApplicationDocumentReview, task_id: str, generation_attempt: int,
+    review: ApplicationDocumentReview,
+    task_id: str,
+    generation_attempt: int,
 ) -> dict[str, object]:
     return {
         "diagnostic_version": _DIAGNOSTIC_VERSION,
@@ -753,7 +1125,9 @@ def _success_diagnostic(
 
 
 async def _persist_corrective_diagnostic(
-    session: AsyncSession, review: ApplicationDocumentReview, task_id: str,
+    session: AsyncSession,
+    review: ApplicationDocumentReview,
+    task_id: str,
     summaries: list[dict[str, object]],
 ) -> None:
     """Checkpoint only the first eligible correction before generation two."""
@@ -774,12 +1148,19 @@ async def _persist_corrective_diagnostic(
 
 
 async def _commit_with_diagnostic_fallback(
-    session: AsyncSession, review: ApplicationDocumentReview, *, terminal_state: Literal["completed", "failed"],
+    session: AsyncSession,
+    review: ApplicationDocumentReview,
+    *,
+    terminal_state: Literal["completed", "failed"],
 ) -> None:
     """Keep an internal diagnostic-write problem from changing a review result."""
     if terminal_state == "completed":
         completed_values = (
-            review.outcome, review.findings, review.model_name, review.prompt_version, review.completed_at,
+            review.outcome,
+            review.findings,
+            review.model_name,
+            review.prompt_version,
+            review.completed_at,
         )
         failed_values: tuple[str | None, str | None, datetime | None] | None = None
     else:
@@ -796,26 +1177,41 @@ async def _commit_with_diagnostic_fallback(
         assert completed_values is not None
         outcome, findings, model_name, prompt_version, completed_at = completed_values
         await session.refresh(review, with_for_update=True)
-        review.state = "completed"; review.outcome = outcome; review.findings = findings
-        review.model_name = model_name; review.prompt_version = prompt_version; review.completed_at = completed_at
+        review.state = "completed"
+        review.outcome = outcome
+        review.findings = findings
+        review.model_name = model_name
+        review.prompt_version = prompt_version
+        review.completed_at = completed_at
     else:
         assert failed_values is not None
         failure_code, failure_message, completed_at = failed_values
         await session.refresh(review, with_for_update=True)
-        review.state = "failed"; review.outcome = "insufficient_evidence"
-        review.failure_code = failure_code; review.failure_message = failure_message; review.completed_at = completed_at
+        review.state = "failed"
+        review.outcome = "insufficient_evidence"
+        review.failure_code = failure_code
+        review.failure_message = failure_message
+        review.completed_at = completed_at
     review.diagnostic_summary = None
     await session.commit()
 
 
 def _record_failure_diagnostic(
-    *, review: ApplicationDocumentReview | None = None, review_id: str | None = None,
-    task_id: str, stage: str, exc: BaseException, evidence_reason: str | None = None,
+    *,
+    review: ApplicationDocumentReview | None = None,
+    review_id: str | None = None,
+    task_id: str,
+    stage: str,
+    exc: BaseException,
+    evidence_reason: str | None = None,
     structural_metadata: dict[str, object] | None = None,
-    provider_failure_category: str | None = None, providers_exhausted: bool | None = None,
-    attempt_count: int | None = None, attempted_provider_names: tuple[str, ...] | None = None,
+    provider_failure_category: str | None = None,
+    providers_exhausted: bool | None = None,
+    attempt_count: int | None = None,
+    attempted_provider_names: tuple[str, ...] | None = None,
     attempt_categories: tuple[str, ...] | None = None,
-    generation_attempt: int | None = None, corrective_regeneration: bool | None = None,
+    generation_attempt: int | None = None,
+    corrective_regeneration: bool | None = None,
 ) -> None:
     """Log only fixed diagnostic fields; never render exception or provider content."""
     fields: dict[str, object] = {
@@ -884,25 +1280,34 @@ def _build_evidence_catalog_and_projection(
     catalog: dict[str, _EvidenceCatalogEntry] = {}
     next_id = {document: 1 for document in _EVIDENCE_ROOTS}
 
-    def walk(value: object, *, document: Literal["job", "resume", "cover_letter"], locator: str) -> object:
+    def walk(
+        value: object, *, document: Literal["job", "resume", "cover_letter"], locator: str
+    ) -> object:
         if isinstance(value, str):
             if not value:
                 return value
             evidence_id = f"{_PROVIDER_EVIDENCE_ID_PREFIXES[document]}-e{next_id[document]:04d}"
             next_id[document] += 1
             catalog[evidence_id] = _EvidenceCatalogEntry(
-                evidence_id=evidence_id, document=document, locator=locator, text=value,
+                evidence_id=evidence_id,
+                document=document,
+                locator=locator,
+                text=value,
             )
             return {"evidence_id": evidence_id, "text": value}
         if isinstance(value, list):
-            return [walk(item, document=document, locator=f"{locator}/{index}") for index, item in enumerate(value)]
+            return [
+                walk(item, document=document, locator=f"{locator}/{index}")
+                for index, item in enumerate(value)
+            ]
         if isinstance(value, dict):
             projection: dict[str, object] = {}
             for key in sorted(value):
                 if not isinstance(key, str):
                     raise ValueError("review package contains a non-string object key")
                 projection[key] = walk(
-                    value[key], document=document,
+                    value[key],
+                    document=document,
                     locator=f"{locator}/{_escape_json_pointer_segment(key)}",
                 )
             return projection
@@ -912,12 +1317,17 @@ def _build_evidence_catalog_and_projection(
     for root in _EVIDENCE_ROOTS:
         value = package.get(root)
         if value is not None:
-            projection[root] = walk(value, document=cast(Literal["job", "resume", "cover_letter"], root), locator=f"/{root}")
+            projection[root] = walk(
+                value,
+                document=cast(Literal["job", "resume", "cover_letter"], root),
+                locator=f"/{root}",
+            )
     return catalog, projection
 
 
 def _canonicalize_provider_review(
-    provider_response: ProviderDocumentReviewResponseV10, catalog: dict[str, _EvidenceCatalogEntry],
+    provider_response: ProviderDocumentReviewResponseV10,
+    catalog: dict[str, _EvidenceCatalogEntry],
 ) -> list[dict[str, object]]:
     """Resolve an already-validated v8 provider response into canonical models."""
     findings: list[dict[str, object]] = []
@@ -931,7 +1341,8 @@ def _canonicalize_provider_review(
 
 
 def _canonicalize_provider_finding(
-    finding: ProviderFindingV10, catalog: dict[str, _EvidenceCatalogEntry],
+    finding: ProviderFindingV10,
+    catalog: dict[str, _EvidenceCatalogEntry],
 ) -> DocumentReviewFinding:
     contract = REVIEW_CATEGORY_CONTRACTS[finding.category]
     selections = _provider_evidence_selections(finding)
@@ -993,11 +1404,20 @@ def _canonicalize_provider_finding(
         raise _EvidenceValidationError("missing_required_evidence")
     target = target_entries[0]
     return DocumentReviewFinding(
-        id=finding.id, document=target.document, category=finding.category,
-        severity=finding.severity, excerpt=target.text, locator=target.locator,
+        id=finding.id,
+        document=target.document,
+        category=finding.category,
+        severity=finding.severity,
+        excerpt=target.text,
+        locator=target.locator,
         rationale=finding.rationale,
         evidence=[
-            {"role": role, "document": entry.document, "locator": entry.locator, "excerpt": entry.text}
+            {
+                "role": role,
+                "document": entry.document,
+                "locator": entry.locator,
+                "excerpt": entry.text,
+            }
             for role, entry in derived
         ],
         proposed_action=finding.proposed_action,
@@ -1023,14 +1443,14 @@ def _provider_evidence_selections(
     raise _SchemaValidationError("unsupported_provider_finding_shape")
 
 
-
-
 def _validate_findings(raw: str, package: dict[str, object]) -> list[dict[str, object]]:
     parsed = json.loads(strip_code_fences(raw))
     return _validate_structured_findings(parsed, package)
 
 
-def _validate_structured_findings(parsed: object, package: dict[str, object]) -> list[dict[str, object]]:
+def _validate_structured_findings(
+    parsed: object, package: dict[str, object]
+) -> list[dict[str, object]]:
     entries = parsed.get("findings") if isinstance(parsed, dict) else None
     if not isinstance(entries, list) or len(entries) > MAX_FINDINGS:
         raise _SchemaValidationError("invalid_finding_shape")
@@ -1149,17 +1569,27 @@ def _resolve_json_pointer(value: object, pointer: str) -> _JsonPointerResolution
             current = current[part]
         elif isinstance(current, list):
             if not part.isdigit():
-                return _JsonPointerResolution(None, "invalid_array_index", len(parts), position, "array")
+                return _JsonPointerResolution(
+                    None, "invalid_array_index", len(parts), position, "array"
+                )
             try:
                 index = int(part)
             except ValueError:
-                return _JsonPointerResolution(None, "unknown_pointer_failure", len(parts), position, "array")
+                return _JsonPointerResolution(
+                    None, "unknown_pointer_failure", len(parts), position, "array"
+                )
             if index >= len(current):
-                return _JsonPointerResolution(None, "array_index_out_of_range", len(parts), position, "array")
+                return _JsonPointerResolution(
+                    None, "array_index_out_of_range", len(parts), position, "array"
+                )
             current = current[index]
         else:
             return _JsonPointerResolution(
-                None, "traversal_type_mismatch", len(parts), position, _container_kind(current),
+                None,
+                "traversal_type_mismatch",
+                len(parts),
+                position,
+                _container_kind(current),
             )
     if current is None:
         return _JsonPointerResolution(None, "resolved_null", len(parts), None, "null")

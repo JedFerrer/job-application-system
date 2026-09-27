@@ -106,6 +106,8 @@ class Settings(BaseSettings):
     # Unit 1A Browser QA fixtures are deliberately inert unless this explicit
     # opt-in is paired with the isolated test database guard below.
     qa_unit_1a_browser_enabled: bool = False
+    # Explicit offline portfolio provider, only for the isolated test database.
+    portfolio_synthetic_providers: bool = False
 
     # --- Embeddings ---
     embedding_model: str = "text-embedding-3-small"
@@ -192,6 +194,17 @@ class Settings(BaseSettings):
             and self.environment == "test"
             and database_name == "job_app_test"
         )
+
+    @property
+    def portfolio_synthetic_providers_enabled(self) -> bool:
+        if not self.portfolio_synthetic_providers:
+            return False
+        database_name = urlsplit(self.database_url).path.rstrip("/").rsplit("/", 1)[-1]
+        if self.environment != "test" or database_name != "public_app_test":
+            raise RuntimeError(
+                "PORTFOLIO_SYNTHETIC_PROVIDERS requires test environment and public_app_test"
+            )
+        return True
 
     def _api_key_for(self, provider: str) -> str:
         keys = {

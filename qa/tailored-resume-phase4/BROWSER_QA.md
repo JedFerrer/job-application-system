@@ -1,5 +1,9 @@
 # Tailored-resume Phase 4 Browser QA
 
+Historical QA checklist. Its numeric job IDs and local account state were
+specific to an earlier development database and are not committed portfolio
+fixtures. Do not use this checklist as the PUBLIC.4 offline evaluation path.
+
 Do **not** run this checklist until Phase 3 is integrated. This document is the
 executable integration script for final Browser QA.
 
@@ -15,7 +19,7 @@ signed-in local account.
 | Auth | Signed-in dashboard session |
 | Viewport A | Desktop ≥ 1280×800 |
 | Viewport B | Mobile 390×844 after the desktop pass for Scenarios 1–3 |
-| Job 6781 | Live local job id. **Not a repo fixture.** The job must be visible at `/jobs/6781`. If it is missing, restore it from the local database used in prior QA; do not invent a substitute and still call it 6781. |
+| Job 6781 | Historical local job id, **not a repo fixture**. If unavailable, mark this historical scenario blocked; do not load another person's database or relabel a different job. |
 | Affected resume | The previously failing source resume, or the sanitized wrap fixture at `backend/tests/fixtures/tailored_resume_qa/malformed_wrap_two_role.txt` imported as a `.txt`/DOCX if the original file is unavailable |
 | Strong-match job | A second visible job whose description emphasizes backend/platform/API work. Prior QA screenshots used `/jobs/4888` when present; if that id is gone, pick another strong-overlap job and record its id |
 | Export files | Save PDF/DOCX to a scratch folder outside git |
