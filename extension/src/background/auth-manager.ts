@@ -1,7 +1,7 @@
 // ── Extension Auth Manager ─────────────────────────────────────────────────
 // Handles pairing code exchange, token storage, session state, and logout.
 
-import { apiRequest, storeTokens, clearExtensionSession, loadTokens, isAuthenticated } from "./api-client";
+import { apiRequest, storeTokens, clearExtensionSession, loadTokens } from "./api-client";
 import { STORAGE_KEYS } from "../shared/constants";
 
 export interface SessionState {

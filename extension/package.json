@@ -9,20 +9,24 @@
     "build": "tsc && vite build && vite build --config vite.content.config.ts && node -e \"const fs=require('fs');fs.copyFileSync('dist-content/content.js','dist/content.js');fs.rmSync('dist-content',{recursive:true,force:true});fs.copyFileSync('manifest.json','dist/manifest.json')\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/ --ext .ts,.tsx"
+    "lint": "eslint src/"
   },
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/chrome": "^0.0.280",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "eslint": "^9.39.5",
+    "globals": "^16.5.0",
+    "jsdom": "^25.0.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.1",
     "vite": "^6.0.0",
-    "vitest": "^2.1.0",
-    "jsdom": "^25.0.0"
+    "vitest": "^2.1.0"
   }
 }

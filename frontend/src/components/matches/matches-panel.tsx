@@ -102,7 +102,6 @@ export function MatchesPanel() {
       }
       sessionStorage.removeItem("matches-list-state");
     } catch { /* ignore corrupted state */ }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only; guarded by scrollRestoredRef
   }, []);
 
   // Refs keep the latest query state readable inside the observer callback
@@ -166,7 +165,7 @@ export function MatchesPanel() {
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const setRankingTask = (taskId: string | null) => {
     setRankTaskId(taskId);
@@ -212,7 +211,7 @@ export function MatchesPanel() {
       return;
     }
     setRankingTask(null);
-  }, [rankTaskId, rankTaskQuery.error]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rankTaskId, rankTaskQuery.error]);
 
   useEffect(() => {
     const task = rankTaskQuery.data;
@@ -469,7 +468,7 @@ export function MatchesPanel() {
                 <Sparkles className="h-10 w-10 text-amber-400" />
                 <p>
                   No matches yet. Make sure you have an active profile and ingested
-                  jobs, then click "Refresh Match Rankings".
+                  jobs, then click &quot;Refresh Match Rankings&quot;.
                 </p>
               </CardContent>
             </Card>

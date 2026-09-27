@@ -875,7 +875,7 @@ export interface ApplicationAttempt {
 }
 
 export type SubmissionMaterialChoice = "used_selected_package" | "used_other_material" | "materials_unknown";
-export interface ApplicationSubmissionArtifactSummary extends ArtifactSummary {}
+export type ApplicationSubmissionArtifactSummary = ArtifactSummary;
 export interface ApplicationSubmissionSummary {
   id: number;
   application_id: number;
@@ -890,7 +890,7 @@ export interface ApplicationSubmissionSummary {
   note: string | null;
   created_at: string;
 }
-export interface ApplicationSubmissionDetail extends ApplicationSubmissionSummary {}
+export type ApplicationSubmissionDetail = ApplicationSubmissionSummary;
 export interface ApplicationSubmissionPage { items: ApplicationSubmissionSummary[]; next_cursor: string | null; }
 export interface ApplicationSubmissionConfirmation {
   material_choice: SubmissionMaterialChoice;

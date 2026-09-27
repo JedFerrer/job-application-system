@@ -182,7 +182,7 @@ describe("Dashboard Today section", () => {
       isLoading: false,
       isError: false,
     };
-    reactQueryMocks.useQuery.mockImplementation((options: any) => {
+    reactQueryMocks.useQuery.mockImplementation((options: { queryKey: unknown; queryFn: () => unknown }) => {
       queryCalls.push({
         queryKey: options.queryKey,
         queryFn: options.queryFn,

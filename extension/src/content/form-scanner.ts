@@ -43,7 +43,7 @@ export function scanForm(): DetectedField[] {
     radioGroups.get(name)!.push(radio);
   }
 
-  for (const [name, group] of radioGroups) {
+  for (const group of radioGroups.values()) {
     const firstRadio = group[0];
     if (!firstRadio) continue;
     const field = buildDetectedField(firstRadio);

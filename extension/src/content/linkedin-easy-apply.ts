@@ -5,10 +5,8 @@
 
 import type { DetectedField } from "../shared/types";
 import { sendMessage } from "../shared/messages";
-import { scanForm } from "./form-scanner";
 import { fillField } from "./form-filler";
 import {
-  SAFE_CONFIDENCE_THRESHOLD,
   SENSITIVE_LABEL_PATTERNS,
   NEVER_FILL_INPUT_TYPES,
 } from "../shared/constants";
@@ -16,12 +14,6 @@ import {
 // LinkedIn Easy Apply modal selectors
 const EASY_APPLY_MODAL_SELECTOR =
   ".jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-modal], #artdeco-modal-outlet";
-const EASY_APPLY_NEXT_BUTTON = "button[aria-label='Next'], button[aria-label='Continue to next step']";
-const EASY_APPLY_REVIEW_BUTTON = "button[aria-label='Review'], button[aria-label='Review your application']";
-const EASY_APPLY_SUBMIT_BUTTON = "button[aria-label='Submit application'], button[aria-label='Submit']";
-const EASY_APPLY_DISMISS_BUTTON = "button[aria-label='Dismiss'], button[aria-label='Close']";
-
-let easyApplyObserver: MutationObserver | null = null;
 let easyApplySteps: DetectedField[][] = [];
 let currentStepIndex = 0;
 
@@ -44,7 +36,6 @@ export function initLinkedInEasyApply(): void {
     subtree: true,
   });
 
-  easyApplyObserver = observer;
 
   // Also check immediately in case modal is already open
   const existingModal = document.querySelector(EASY_APPLY_MODAL_SELECTOR);

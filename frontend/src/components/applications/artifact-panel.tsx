@@ -82,7 +82,7 @@ function ArtifactRow({ applicationId, item, refresh }: { applicationId: number; 
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<"download" | "retry" | "delete" | null>(null);
   const [message, setMessage] = useState("");
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const mountedRow = useRef(true);
   useEffect(() => { mountedRow.current = true; return () => { mountedRow.current = false; }; }, []);
   const detail = useQuery({

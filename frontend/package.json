@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start --port 3000",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "eslint src tests *.config.{ts,mjs}"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -27,7 +28,7 @@
     "docx": "^9.7.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.475.0",
-    "next": "^16.2.4",
+    "next": "16.3.6",
     "next-themes": "^0.4.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -44,6 +45,8 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.3",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "16.3.6",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4.2.2",
     "typescript": "^5.9.3",

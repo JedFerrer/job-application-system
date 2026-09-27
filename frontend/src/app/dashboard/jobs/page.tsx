@@ -6,7 +6,7 @@ export default function JobsPage() {
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>
         <p className="text-sm text-muted-foreground">
-          Ingest postings from job boards and browse what's in the feed.
+          Ingest postings from job boards and browse what&apos;s in the feed.
         </p>
       </header>
       <JobsPanel />

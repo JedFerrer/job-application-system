@@ -47,7 +47,6 @@ export function ImportedJobsPanel() {
       }
       sessionStorage.removeItem("imported-jobs-state");
     } catch { /* ignore corrupted state */ }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only; guarded by scrollRestoredRef
   }, []);
 
   const hasNextPageRef = useRef(false);

@@ -4,7 +4,6 @@
 import type { ExtractedJob } from "../shared/types";
 import { normalizeCompany, normalizeTitle } from "../shared/validators";
 import type { RawJobDetection } from "./job-detector";
-import { getTextContent } from "./dom-utils";
 
 /**
  * Extract and normalize job fields from a raw detection.

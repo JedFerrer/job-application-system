@@ -30,7 +30,7 @@ export default function ForgotPasswordPage() {
         <CardHeader>
           <CardTitle>Forgot password</CardTitle>
           <CardDescription>
-            Enter your email and we'll generate a password reset link.
+            Enter your email and we&apos;ll generate a password reset link.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">

@@ -539,9 +539,9 @@ describe("ApplicationsPanel CRM polish", () => {
   });
 
   it("lazily loads and renders recent manual activity", async () => {
-    let resolveActivity: (value: any) => void = () => {};
+    let resolveActivity: (value: unknown) => void = () => {};
 
-    const activityPromise = new Promise<any>((resolve) => {
+    const activityPromise = new Promise<unknown>((resolve) => {
       resolveActivity = resolve;
     });
 

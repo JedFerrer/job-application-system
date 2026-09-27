@@ -5,7 +5,6 @@
 //   3. DOM heuristics (title/company/location/description patterns)
 //   4. URL heuristics (already filtered by content script init)
 
-import type { ExtractedJob } from "../shared/types";
 import { detectAtsType } from "../shared/validators";
 import { getTextContent } from "./dom-utils";
 

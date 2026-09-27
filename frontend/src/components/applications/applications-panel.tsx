@@ -669,12 +669,6 @@ function ApplicationRow({
     }
   }, [isWorkspaceOwner]);
 
-  useEffect(() => {
-    if (openNextAction && isWorkspaceOwner && nextActionMode === null) {
-      startNewNextAction();
-    }
-  }, [openNextAction, isWorkspaceOwner, nextActionMode]);
-
   const hasNextAction = Boolean(
     app.next_action_type ||
       app.next_action_note ||
@@ -709,6 +703,12 @@ function ApplicationRow({
     setDraft(emptyNextActionDraft());
     setNextActionMode("new");
   };
+
+  useEffect(() => {
+    if (openNextAction && isWorkspaceOwner && nextActionMode === null) {
+      startNewNextAction();
+    }
+  }, [openNextAction, isWorkspaceOwner, nextActionMode]);
 
   const saveNextAction = async () => {
     try {
