@@ -500,11 +500,12 @@ def test_parser_timeout_terminates_and_reaps_child(tmp_path: Path) -> None:
     if os.name == "nt":
         from ctypes import wintypes
 
-        process = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(marker.read_text()))
+        kernel32 = vars(ctypes)["windll"].kernel32
+        process = kernel32.OpenProcess(0x1000, False, int(marker.read_text()))
         if process:
             status = wintypes.DWORD()
-            assert ctypes.windll.kernel32.GetExitCodeProcess(process, ctypes.byref(status))
-            ctypes.windll.kernel32.CloseHandle(process)
+            assert kernel32.GetExitCodeProcess(process, ctypes.byref(status))
+            kernel32.CloseHandle(process)
             assert status.value != 259
     else:
         with pytest.raises(ProcessLookupError):
