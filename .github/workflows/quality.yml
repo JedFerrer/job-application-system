@@ -37,6 +37,13 @@ jobs:
           else
             uv run python scripts/select_public_format.py --check
           fi
+      - name: Ensure local main ref for public test provenance
+        run: |
+          if ! git show-ref --verify --quiet refs/heads/main; then
+            git fetch --no-tags origin refs/heads/main:refs/heads/main
+          fi
+          git rev-parse --verify 'refs/heads/main^{commit}'
+          git rev-parse refs/heads/main
       - run: uv run python scripts/run_public_tests.py
 
   frontend:
