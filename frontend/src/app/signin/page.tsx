@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -16,22 +16,28 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
+import { SessionUnavailable } from "@/components/auth/session-unavailable";
 import { useAuth } from "@/context/auth-context";
 import { ApiError } from "@/lib/api";
 
 export default function SignInPage() {
   const router = useRouter();
-  const { login, loginWithGoogle } = useAuth();
+  const { login, loginWithGoogle, status } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.replace("/dashboard");
+    }
+  }, [router, status]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setSubmitting(true);
     try {
       await login(email.trim(), password);
-      router.replace("/dashboard");
     } catch (error) {
       const message =
         error instanceof ApiError
@@ -47,7 +53,6 @@ export default function SignInPage() {
     setSubmitting(true);
     try {
       await loginWithGoogle(idToken);
-      router.replace("/dashboard");
     } catch (error) {
       const message =
         error instanceof ApiError
@@ -57,6 +62,16 @@ export default function SignInPage() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (status === "unavailable") return <SessionUnavailable />;
+
+  if (status !== "unauthenticated") {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
   }
 
   return (

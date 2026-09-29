@@ -9,9 +9,8 @@
  * and we get a fresh access token + user, restoring the session without a
  * visible re-login.
  *
- * It also registers the global "auth expired" handler so that when a refresh
- * ultimately fails (cookie missing/expired/revoked) the app redirects to the
- * sign-in page exactly once.
+ * A 401 from refresh ends the session. Transport and server failures leave the
+ * cookie in place and require a deliberate retry before showing private data.
  */
 
 import {
@@ -20,20 +19,20 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   authApi,
+  isExpiredRefresh,
   refreshAccessToken,
   setAccessToken,
-  setAuthExpiredHandler,
+  setRefreshFailureHandler,
 } from "@/lib/api";
 import type { AuthUser, TokenResponse } from "@/lib/types";
 
-type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "unavailable";
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -42,6 +41,7 @@ interface AuthContextValue {
   register: (email: string, name: string, password: string) => Promise<void>;
   loginWithGoogle: (idToken: string) => Promise<void>;
   logout: () => Promise<void>;
+  retrySession: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -51,7 +51,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [status, setStatus] = useState<AuthStatus>("loading");
-  const bootstrapped = useRef(false);
 
   const applySession = useCallback((res: TokenResponse) => {
     setAccessToken(res.access_token);
@@ -66,14 +65,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryClient.clear();
   }, [queryClient]);
 
-  // Silent re-auth on mount (and global expiry handler). Runs once.
-  useEffect(() => {
-    if (bootstrapped.current) return;
-    bootstrapped.current = true;
+  const markUnavailable = useCallback(() => {
+    setAccessToken(null);
+    setUser(null);
+    queryClient.clear();
+    setStatus("unavailable");
+  }, [queryClient]);
 
-    setAuthExpiredHandler(() => {
-      clearSession();
-      router.replace("/signin");
+  const retrySession = useCallback(async () => {
+    setStatus("loading");
+    try {
+      applySession(await refreshAccessToken());
+    } catch (error) {
+      if (isExpiredRefresh(error)) clearSession();
+      else markUnavailable();
+    }
+  }, [applySession, clearSession, markUnavailable]);
+
+  // Silent re-auth on mount (and global expiry handler). Each effect setup must
+  // handle the result, including React's development cleanup/setup replay.
+  useEffect(() => {
+    setRefreshFailureHandler((failure) => {
+      if (failure === "expired") {
+        clearSession();
+        router.replace("/signin");
+      } else {
+        markUnavailable();
+      }
     });
 
     let cancelled = false;
@@ -81,20 +99,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const res = await refreshAccessToken();
         if (!cancelled) applySession(res);
-      } catch {
+      } catch (error) {
         if (!cancelled) {
-          setAccessToken(null);
-          setUser(null);
-          setStatus("unauthenticated");
+          if (isExpiredRefresh(error)) clearSession();
+          else markUnavailable();
         }
       }
     })();
 
     return () => {
       cancelled = true;
-      setAuthExpiredHandler(null);
+      setRefreshFailureHandler(null);
     };
-  }, [applySession, clearSession, router]);
+  }, [applySession, clearSession, markUnavailable, router]);
 
   const login = useCallback(
     async (email: string, password: string) => {
@@ -130,8 +147,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearSession, router]);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, status, login, register, loginWithGoogle, logout }),
-    [user, status, login, register, loginWithGoogle, logout],
+    () => ({ user, status, login, register, loginWithGoogle, logout, retrySession }),
+    [user, status, login, register, loginWithGoogle, logout, retrySession],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

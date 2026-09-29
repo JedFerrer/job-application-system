@@ -638,7 +638,7 @@ describe("ApplicationListResponse shape", () => {
 
 // ── Profile empty-state contract (smoke) ─────────────────────────────────
 
-import { refreshAccessToken, resumeApi, ApiError, setAccessToken } from "../src/lib/api";
+import { refreshAccessToken, resumeApi, ApiError, getAccessToken, setAccessToken, setRefreshFailureHandler } from "../src/lib/api";
 import { validateProfileUrl } from "../src/lib/validators";
 
 describe("validateProfileUrl", () => {
@@ -697,6 +697,7 @@ describe("shared refresh coordinator", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     setAccessToken(null);
+    setRefreshFailureHandler(null);
   });
 
   it("shares one refresh request and lets a protected retry use its result", async () => {
@@ -734,6 +735,48 @@ describe("shared refresh coordinator", () => {
     vi.stubGlobal("fetch", fetchMock);
     await expect(Promise.all([refreshAccessToken(), refreshAccessToken()])).rejects.toThrow(ApiError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["server error", { ok: false, status: 502, json: async () => ({ detail: "Backend unavailable" }) }],
+    ["network error", new Error("Network error")],
+  ])("reports an unavailable session after a protected 401 and %s during refresh", async (_name, refreshResult) => {
+    const onFailure = vi.fn();
+    setRefreshFailureHandler(onFailure);
+    setAccessToken("expired-access");
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/backend/auth/refresh") {
+        return refreshResult instanceof Error
+          ? Promise.reject(refreshResult)
+          : Promise.resolve(refreshResult);
+      }
+      return Promise.resolve({ ok: false, status: 401, json: async () => ({ detail: "expired" }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(resumeApi.getProfile()).rejects.toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(getAccessToken()).toBeNull();
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith("unavailable");
+
+    await expect(resumeApi.getProfile()).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/backend/auth/refresh")).toHaveLength(1);
+  });
+
+  it("reports an expired session only when refresh returns 401", async () => {
+    const onFailure = vi.fn();
+    setRefreshFailureHandler(onFailure);
+    setAccessToken("expired-access");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ detail: "Invalid or expired token" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(resumeApi.getProfile()).rejects.toMatchObject({ status: 401 });
+    expect(getAccessToken()).toBeNull();
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith("expired");
   });
 });
 

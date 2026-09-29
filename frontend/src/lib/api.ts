@@ -72,7 +72,8 @@ export const API_URL = "/api/backend";
 // browser sends automatically. On a full page reload the in-memory token is
 // lost, so the session provider silently calls `/auth/refresh` on mount.
 let accessToken: string | null = null;
-let onAuthExpired: (() => void) | null = null;
+export type RefreshFailure = "expired" | "unavailable";
+let onRefreshFailure: ((failure: RefreshFailure) => void) | null = null;
 
 export function setAccessToken(token: string | null): void {
   accessToken = token;
@@ -82,9 +83,15 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
-/** Register a callback fired when refresh fails (session truly expired). */
-export function setAuthExpiredHandler(handler: (() => void) | null): void {
-  onAuthExpired = handler;
+/** Only a refresh 401 proves that the browser session has expired. */
+export function isExpiredRefresh(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
+export function setRefreshFailureHandler(
+  handler: ((failure: RefreshFailure) => void) | null,
+): void {
+  onRefreshFailure = handler;
 }
 
 /** Render a FastAPI/pydantic error payload into a human-readable string. */
@@ -161,12 +168,15 @@ async function apiResponse(
   });
 
   // Transparent single-shot refresh on an expired access token.
-  if (response.status === 401 && !skipAuth && !_retried) {
-    const refreshed = await tryRefresh();
-    if (refreshed) {
-      return apiResponse(path, { ...options, _retried: true });
+  if (response.status === 401 && !skipAuth && !_retried && accessToken) {
+    try {
+      await refreshAccessToken();
+    } catch (error) {
+      setAccessToken(null);
+      onRefreshFailure?.(isExpiredRefresh(error) ? "expired" : "unavailable");
+      throw error;
     }
-    onAuthExpired?.();
+    return apiResponse(path, { ...options, _retried: true });
   }
 
   if (!response.ok) {
@@ -225,16 +235,6 @@ export function refreshAccessToken(): Promise<TokenResponse> {
     refreshInFlight = null;
   });
   return refreshInFlight;
-}
-
-/** Attempt a silent refresh. Returns true on success. De-duped across calls. */
-function tryRefresh(): Promise<boolean> {
-  return refreshAccessToken()
-    .then(() => true)
-    .catch(() => {
-      setAccessToken(null);
-      return false;
-    });
 }
 
 // ---- Resume -----------------------------------------------------------------

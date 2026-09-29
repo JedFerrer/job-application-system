@@ -8,10 +8,28 @@ export const maxDuration = 120;
 const BACKEND_URL =
   process.env.BACKEND_INTERNAL_URL ?? "http://localhost:8000";
 
+const SAFE_ERROR_NAMES = new Set(["TypeError", "AbortError", "TimeoutError"]);
+const SAFE_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+function safeDiagnostic(value: unknown, allowed: Set<string>): string | undefined {
+  return typeof value === "string" && allowed.has(value) ? value : undefined;
+}
+
 async function proxy(req: NextRequest, path: string[]) {
   const targetPath = path.join("/");
   const search = req.nextUrl.search;
   const url = `${BACKEND_URL}/api/v1/${targetPath}${search}`;
+  const isRefresh = targetPath === "auth/refresh";
+  const startedAt = Date.now();
 
   const headers = new Headers(req.headers);
   headers.delete("host");
@@ -37,6 +55,22 @@ async function proxy(req: NextRequest, path: string[]) {
     // "TypeError: Cannot set property message ... which has only a getter"
     const isTimeout =
       err instanceof DOMException && err.name === "TimeoutError";
+    if (isRefresh) {
+      const cause = err instanceof Error ? err.cause : undefined;
+      console.warn("Auth refresh proxy request failed", {
+        elapsedMs: Date.now() - startedAt,
+        errorName: safeDiagnostic(
+          err instanceof Error ? err.name : undefined,
+          SAFE_ERROR_NAMES,
+        ),
+        errorCode: safeDiagnostic(
+          cause && typeof cause === "object" && "code" in cause
+            ? cause.code
+            : undefined,
+          SAFE_ERROR_CODES,
+        ),
+      });
+    }
     return new NextResponse(
       JSON.stringify({
         detail: isTimeout
@@ -48,6 +82,13 @@ async function proxy(req: NextRequest, path: string[]) {
         headers: { "Content-Type": "application/json" },
       },
     );
+  }
+
+  if (isRefresh && !response.ok) {
+    console.warn("Auth refresh proxy returned an error", {
+      elapsedMs: Date.now() - startedAt,
+      status: response.status,
+    });
   }
 
   const resHeaders = new Headers(response.headers);

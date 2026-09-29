@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/auth-context";
 import { API_URL, setAccessToken as setApiToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { SessionUnavailable } from "@/components/auth/session-unavailable";
 import {
   Card,
   CardContent,
@@ -93,7 +94,9 @@ export default function ExtensionConnectPage() {
     }
   }, [pairingCode]);
 
-  if (status === "loading") {
+  if (status === "unavailable") return <SessionUnavailable />;
+
+  if (status !== "authenticated") {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <p className="text-sm text-muted-foreground">Loading…</p>
