@@ -9,6 +9,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import {
+  ArrowRight,
   BookmarkX,
   Check,
   FileText,
@@ -525,20 +526,20 @@ export function ApplicationsPanel({
         <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-                <table className="w-full table-auto text-sm md:table-fixed">
+                <table className="w-full table-auto text-sm lg:table-fixed">
                   <colgroup>
-                    <col className="md:w-[46%]" />
+                    <col className="lg:w-[46%]" />
                     <col />
-                    <col className="md:w-[132px]" />
+                    <col className="lg:w-[230px]" />
                   </colgroup>
-                  <thead className="hidden md:table-header-group">
+                  <thead className="hidden lg:table-header-group">
                     <tr className="border-b text-left text-muted-foreground">
                     <th className="px-4 py-3 font-medium">Application</th>
                     <th className="px-4 py-3 font-medium">Next action</th>
                     <th className="px-4 py-3 pr-6 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="block w-full space-y-3 md:table-row-group md:space-y-0">
+                <tbody className="block w-full space-y-3 lg:table-row-group lg:space-y-0">
                   {filteredItems.map((app) => (
                     <ApplicationRow
                       key={app.id}
@@ -803,16 +804,13 @@ function ApplicationRow({
 
   return (
     <>
-      <tr className="block w-full rounded-lg border bg-card p-3 transition-colors hover:bg-muted/20 md:table-row md:rounded-none md:border-0 md:border-b md:border-border/70 md:p-0 md:last:border-b-0">
-        <td className="block w-full px-0 py-2 md:table-cell md:px-4 md:py-2.5 md:pr-10">
+      <tr className="block w-full rounded-lg border bg-card p-3 transition-colors hover:bg-muted/20 lg:table-row lg:rounded-none lg:border-0 lg:border-b lg:border-border/70 lg:p-0 lg:last:border-b-0">
+        <td className="block w-full min-w-0 p-0 lg:table-cell lg:px-4 lg:py-2.5 lg:pr-10">
           <div className="flex items-start gap-3">
             <CompanyLogo company={app.company} logoUrl={app.company_logo} />
             <div className="min-w-0">
-              <Link href={`/jobs/${app.job_id}`} className="font-medium hover:underline">
+              <Link href={`/jobs/${app.job_id}`} className="block break-words font-medium hover:underline">
                 {app.job_title}
-              </Link>
-              <Link href={`/applications/${app.id}`} className="mt-1 inline-block text-xs font-medium text-primary hover:underline">
-                {app.status === "saved" ? "Prepare application" : "View application"}
               </Link>
               <p className="mt-1 text-xs text-muted-foreground">
                 {app.company ?? "Company not listed"}
@@ -823,8 +821,8 @@ function ApplicationRow({
             </div>
           </div>
         </td>
-        <td className="block w-full px-0 py-2 md:table-cell md:px-4 md:py-2.5">
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground md:hidden">
+        <td className={`${hasNextAction ? "block w-full min-w-0 px-0 pb-0 pt-3" : "hidden"} lg:table-cell lg:px-4 lg:py-2.5`}>
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground lg:hidden">
             Next action
           </p>
           <div className="min-w-0 space-y-1.5">
@@ -874,51 +872,45 @@ function ApplicationRow({
             )}
           </div>
         </td>
-        <td className="block w-full px-0 py-2 text-left md:table-cell md:px-4 md:py-2.5 md:pr-6 md:text-right md:align-top">
-          <div className="flex flex-wrap items-center justify-between gap-2 md:justify-end">
-            {app.next_action_completed_at ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={startNewNextAction}
-                className="h-8 gap-1.5"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add next action
-              </Button>
-            ) : hasNextAction ? (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={completeNextAction}
-                className="h-8 gap-1.5"
-              >
-                <Check className="h-3.5 w-3.5" />
-                Complete
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={startEditing}
-                className="h-8 gap-1.5"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Set action
-              </Button>
-            )}
+        <td className="mt-3 block w-full min-w-0 border-t border-border/70 px-0 pb-0 pt-3 text-left lg:table-cell lg:mt-0 lg:border-t-0 lg:px-4 lg:py-2.5 lg:pr-6 lg:text-right lg:align-top">
+          <div className="flex w-full flex-col gap-2 lg:items-end">
+            {!hasNextAction && <span className="text-xs text-muted-foreground lg:hidden">No next action</span>}
+            <div className="flex w-full items-center justify-end gap-1 lg:gap-2">
+            <Button asChild size="sm" variant="outline" className="h-10 shrink-0 whitespace-nowrap px-2 text-[11px] lg:h-8 lg:px-2.5 lg:text-xs">
+              <Link href={`/applications/${app.id}`}>
+                {app.status === "saved" ? "Prepare application" : "View application"}
+                <ArrowRight aria-hidden="true" />
+              </Link>
+            </Button>
           <DropdownMenu modal={false} onOpenChange={(open) => { if (!open) setStatusMenuOpen(false); }}>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
                 aria-label={`More actions for ${app.job_title}`}
-                className="shrink-0"
+                className="h-10 w-10 shrink-0 lg:h-9 lg:w-9"
               >
                 <MoreHorizontal className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {app.next_action_completed_at ? (
+                <DropdownMenuItem onSelect={startNewNextAction}>
+                  <Plus className="h-4 w-4" />
+                  Add next action
+                </DropdownMenuItem>
+              ) : hasNextAction ? (
+                <DropdownMenuItem onSelect={completeNextAction}>
+                  <Check className="h-4 w-4" />
+                  Complete next action
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={startEditing}>
+                  <Plus className="h-4 w-4" />
+                  Set action
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
               {hasNextAction && (
                 <>
                   <DropdownMenuItem onSelect={startEditing}>
@@ -1001,6 +993,7 @@ function ApplicationRow({
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+            </div>
           </div>
         </td>
       </tr>
@@ -1025,7 +1018,7 @@ function ApplicationRow({
                   <Badge variant="secondary">Completed</Badge>
                 )}
               </div>
-              <div className="grid gap-3 md:grid-cols-[180px_1fr_160px]">
+              <div className="grid gap-3 lg:grid-cols-[180px_1fr_160px]">
                 <label className="flex flex-col gap-1 text-xs font-medium">
                   Type
                   <select

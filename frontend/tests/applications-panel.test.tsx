@@ -312,6 +312,10 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(appliedRow.querySelector('img[alt="Beta logo"]')).toBeDefined();
     expect(appliedRow.className).toContain("w-full");
     expect(container.querySelector("table")?.className).toContain("table-auto");
+    const prepareLink = savedRow.querySelector('a[href="/applications/42"]');
+    expect(prepareLink?.textContent).toContain("Prepare application");
+    expect(prepareLink?.querySelector("svg")).toBeTruthy();
+    expect(prepareLink?.className).toContain("whitespace-nowrap");
   });
 
   it("shows completed details and creates a fresh active next action", async () => {
@@ -324,10 +328,8 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(container.textContent).toContain(
       formatNextActionDateLabel("2026-07-13"),
     );
-    expect(container.textContent).toContain("Add next action");
-
     await act(async () => {
-      findButton(container, "Add next action").click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Senior Backend Engineer"), "Add next action");
       await Promise.resolve();
     });
 
@@ -371,7 +373,7 @@ describe("ApplicationsPanel CRM polish", () => {
     await renderPanel();
 
     await act(async () => {
-      findButton(container, "Complete").click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Complete next action");
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -404,6 +406,12 @@ describe("ApplicationsPanel CRM polish", () => {
       next_action_due_date: null,
       next_action_completed_at: null,
     });
+
+    await act(async () => {
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Set action");
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Keep it short, truthful, and current.");
   });
 
   it("opens, saves, cancels, and clears general application notes", async () => {
@@ -716,7 +724,7 @@ describe("ApplicationsPanel CRM polish", () => {
     expect(container.textContent).toContain("No manual activity yet.");
 
     await act(async () => {
-      findButton(container, "Complete").click();
+      await clickRowMenuItem(container, findRowByJobTitle(container, "Platform Engineer"), "Complete next action");
       await Promise.resolve();
       await Promise.resolve();
     });

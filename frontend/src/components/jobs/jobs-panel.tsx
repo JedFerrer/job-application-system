@@ -345,7 +345,7 @@ export function JobsPanel() {
   return (
     <div className="flex flex-col gap-6">
       <Unit1AQaControls />
-      <SourceRunSummary results={sourceResults} />
+      {sourceResults.length > 0 && <SourceRunSummary results={sourceResults} />}
       <section className="flex flex-col gap-3">
         {/* ── Full-width search bar ─────────────────────────── */}
         <div className="flex gap-2 py-3 border-y border-border">
