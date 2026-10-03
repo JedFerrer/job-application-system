@@ -14,7 +14,12 @@ import pytest
 from fastapi import BackgroundTasks, FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event, func, select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.pool import NullPool
 
 from app.api.deps import get_current_user, get_task_store
@@ -22,7 +27,12 @@ from app.api.v1 import applications as applications_module
 from app.core.config import get_settings
 from app.domain.applications.artifact_lifecycle import ArtifactLifecycleService
 from app.domain.applications import artifact_lifecycle as lifecycle_module
-from app.domain.applications.artifacts import ArtifactFailureCategory, ArtifactValidationError, ArtifactValidationReport, VALIDATION_POLICY_VERSION
+from app.domain.applications.artifacts import (
+    ArtifactFailureCategory,
+    ArtifactValidationError,
+    ArtifactValidationReport,
+    VALIDATION_POLICY_VERSION,
+)
 from app.infrastructure.database import get_db
 from app.infrastructure.task_store import TaskStore
 from app.models.application_artifact import ApplicationArtifact
@@ -73,21 +83,28 @@ async def seed_package(session: AsyncSession) -> tuple[int, int]:
     }
     encoded = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     package = ApplicationPackage(
-        application_id=application.id, revision=1, content=content,
+        application_id=application.id,
+        revision=1,
+        content=content,
         content_sha256=hashlib.sha256(encoded.encode()).hexdigest(),
-        schema_version="application-package-v1", idempotency_key="artifact-test",
+        schema_version="application-package-v1",
+        idempotency_key="artifact-test",
     )
     session.add(package)
     await session.commit()
     return application.id, package.id
 
 
-def make_app(engine: AsyncEngine, store: FakeTaskStore, user_id: int = 1, fail_commit: bool = False) -> FastAPI:
+def make_app(
+    engine: AsyncEngine, store: FakeTaskStore, user_id: int = 1, fail_commit: bool = False
+) -> FastAPI:
     class FailingCommitSession(AsyncSession):
         async def commit(self) -> None:
             raise RuntimeError("synthetic database commit failure")
 
-    factory = async_sessionmaker(engine, class_=FailingCommitSession if fail_commit else AsyncSession, expire_on_commit=False)
+    factory = async_sessionmaker(
+        engine, class_=FailingCommitSession if fail_commit else AsyncSession, expire_on_commit=False
+    )
 
     async def db_dependency() -> Any:
         async with factory() as session:
@@ -120,7 +137,9 @@ def upload_args(content: bytes = PDF) -> dict[str, Any]:
     }
 
 
-async def test_upload_commit_duplicate_detail_download_and_delete(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_upload_commit_duplicate_detail_download_and_delete(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
@@ -137,7 +156,9 @@ async def test_upload_commit_duplicate_detail_download_and_delete(engine: AsyncE
             observed.append(artifact_id)
 
     monkeypatch.setattr(applications_module, "run_artifact_validation_background", worker)
-    async with AsyncClient(transport=ASGITransport(app=make_app(engine, store)), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(engine, store)), base_url="http://test"
+    ) as client:
         first = await client.post(upload_path(application_id, package_id), **upload_args())
         assert first.status_code == 202, first.text
         artifact_id = first.json()["artifact"]["id"]
@@ -155,7 +176,9 @@ async def test_upload_commit_duplicate_detail_download_and_delete(engine: AsyncE
         workspace_response = await client.get(f"/applications/{application_id}/workspace")
         assert workspace_response.status_code == 200
         assert workspace_response.json()["package_history"][0]["artifacts"][0]["id"] == artifact_id
-        downloaded = await client.get(f"/applications/{application_id}/artifacts/{artifact_id}/download")
+        downloaded = await client.get(
+            f"/applications/{application_id}/artifacts/{artifact_id}/download"
+        )
         assert downloaded.status_code == 200
         assert downloaded.content == PDF
         assert downloaded.headers["cache-control"] == "private, no-store"
@@ -164,12 +187,18 @@ async def test_upload_commit_duplicate_detail_download_and_delete(engine: AsyncE
         assert ".." not in downloaded.headers["content-disposition"]
         assert "\r" not in downloaded.headers["content-disposition"]
         assert "\n" not in downloaded.headers["content-disposition"]
-        assert (await client.delete(f"/applications/{application_id}/artifacts/{artifact_id}")).status_code == 409
+        assert (
+            await client.delete(f"/applications/{application_id}/artifacts/{artifact_id}")
+        ).status_code == 409
     async with factory() as session:
         row = await session.get(ApplicationArtifact, artifact_id)
         assert row is not None
         assert row.content == PDF
-        assert hashlib.sha256(downloaded.content).hexdigest() == row.sha256 == hashlib.sha256(PDF).hexdigest()
+        assert (
+            hashlib.sha256(downloaded.content).hexdigest()
+            == row.sha256
+            == hashlib.sha256(PDF).hexdigest()
+        )
         assert await session.scalar(select(func.count()).select_from(ApplicationArtifact)) == 1
     assert observed == [artifact_id]
     assert len(store.created) == 1
@@ -178,28 +207,48 @@ async def test_upload_commit_duplicate_detail_download_and_delete(engine: AsyncE
         assert row is not None
         row.validation_state = "validating"
         await session.commit()
-    async with AsyncClient(transport=ASGITransport(app=make_app(engine, store)), base_url="http://test") as client:
-        assert (await client.delete(f"/applications/{application_id}/artifacts/{artifact_id}")).status_code == 409
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(engine, store)), base_url="http://test"
+    ) as client:
+        assert (
+            await client.delete(f"/applications/{application_id}/artifacts/{artifact_id}")
+        ).status_code == 409
     async with factory() as session:
         row = await session.get(ApplicationArtifact, artifact_id)
         assert row is not None
         row.validation_state = "validated"
-        session.add(ApplicationDocumentReview(
-            user_id=1, application_id=application_id, package_id=package_id,
-            package_content_sha256="a" * 64, review_policy_version="test",
-            idempotency_key="review-test", task_id="review-test", state="completed",
-            outcome="no_findings", findings=[],
-        ))
+        session.add(
+            ApplicationDocumentReview(
+                user_id=1,
+                application_id=application_id,
+                package_id=package_id,
+                package_content_sha256="a" * 64,
+                review_policy_version="test",
+                idempotency_key="review-test",
+                task_id="review-test",
+                state="completed",
+                outcome="no_findings",
+                findings=[],
+            )
+        )
         await session.commit()
-    async with AsyncClient(transport=ASGITransport(app=make_app(engine, store)), base_url="http://test") as client:
-        assert (await client.delete(f"/applications/{application_id}/artifacts/{artifact_id}")).status_code == 204
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(engine, store)), base_url="http://test"
+    ) as client:
+        assert (
+            await client.delete(f"/applications/{application_id}/artifacts/{artifact_id}")
+        ).status_code == 204
     async with factory() as session:
         assert await session.get(ApplicationArtifact, artifact_id) is None
         assert await session.get(ApplicationPackage, package_id) is not None
-        assert await session.scalar(select(func.count()).select_from(ApplicationDocumentReview)) == 1
+        assert (
+            await session.scalar(select(func.count()).select_from(ApplicationDocumentReview)) == 1
+        )
 
 
-async def test_concurrent_identical_uploads_admit_one_task(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_concurrent_identical_uploads_admit_one_task(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
@@ -230,9 +279,20 @@ async def test_concurrent_identical_uploads_admit_one_task(engine: AsyncEngine, 
                 await session.rollback()
                 raise
 
-    def observe_b_lock(_connection: object, _cursor: object, statement: str, _parameters: object, _context: object, _executemany: bool) -> None:
+    def observe_b_lock(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
         query = statement.casefold()
-        if asyncio.current_task() is second_task and "for update" in query and "from applications" in query:
+        if (
+            asyncio.current_task() is second_task
+            and "for update" in query
+            and "from applications" in query
+        ):
             b_lock_attempted.set()
 
     original_add_task = BackgroundTasks.add_task
@@ -252,9 +312,13 @@ async def test_concurrent_identical_uploads_admit_one_task(engine: AsyncEngine, 
     event.listen(engine.sync_engine, "before_cursor_execute", observe_b_lock)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            first_task = asyncio.create_task(client.post(upload_path(application_id, package_id), **upload_args()))
+            first_task = asyncio.create_task(
+                client.post(upload_path(application_id, package_id), **upload_args())
+            )
             await asyncio.wait_for(a_at_commit.wait(), 5)
-            second_task = asyncio.create_task(client.post(upload_path(application_id, package_id), **upload_args()))
+            second_task = asyncio.create_task(
+                client.post(upload_path(application_id, package_id), **upload_args())
+            )
             await asyncio.wait_for(b_lock_attempted.wait(), 5)
             assert not second_task.done()  # B issued the lock query while A still owns the lock.
             with pytest.raises(asyncio.TimeoutError):
@@ -284,7 +348,9 @@ async def test_concurrent_identical_uploads_admit_one_task(engine: AsyncEngine, 
         assert await session.scalar(select(func.sum(ApplicationArtifact.byte_length))) == len(PDF)
 
 
-async def test_owned_privacy_preflight_and_retry(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_owned_privacy_preflight_and_retry(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
@@ -294,31 +360,62 @@ async def test_owned_privacy_preflight_and_retry(engine: AsyncEngine, monkeypatc
         return None
 
     monkeypatch.setattr(applications_module, "run_artifact_validation_background", worker)
-    async with AsyncClient(transport=ASGITransport(app=make_app(engine, store)), base_url="http://test") as client:
-        assert (await client.post(upload_path(application_id, package_id), **upload_args(b"x"))).status_code == 415
-        assert (await client.post(upload_path(application_id, package_id), **upload_args(b""))).status_code == 422
-        assert (await client.post(
-            upload_path(application_id, package_id),
-            data={"document_type": "resume", "format": "docx", "exporter_version": "v1"},
-            files={"file": ("x.docx", b"PK\x03\x04bad", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
-        )).status_code == 422
-        assert (await client.post(upload_path(application_id, package_id), **upload_args(b"%PDF-" + b"x" * (5 * 1024 * 1024)))).status_code == 413
-        assert (await client.post(
-            upload_path(application_id, package_id),
-            data={"document_type": "wrong", "format": "pdf", "exporter_version": "v1"},
-            files={"file": ("x.pdf", PDF, "application/pdf")},
-        )).status_code == 415
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(engine, store)), base_url="http://test"
+    ) as client:
+        assert (
+            await client.post(upload_path(application_id, package_id), **upload_args(b"x"))
+        ).status_code == 415
+        assert (
+            await client.post(upload_path(application_id, package_id), **upload_args(b""))
+        ).status_code == 422
+        assert (
+            await client.post(
+                upload_path(application_id, package_id),
+                data={"document_type": "resume", "format": "docx", "exporter_version": "v1"},
+                files={
+                    "file": (
+                        "x.docx",
+                        b"PK\x03\x04bad",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+            )
+        ).status_code == 422
+        assert (
+            await client.post(
+                upload_path(application_id, package_id),
+                **upload_args(b"%PDF-" + b"x" * (5 * 1024 * 1024)),
+            )
+        ).status_code == 413
+        assert (
+            await client.post(
+                upload_path(application_id, package_id),
+                data={"document_type": "wrong", "format": "pdf", "exporter_version": "v1"},
+                files={"file": ("x.pdf", PDF, "application/pdf")},
+            )
+        ).status_code == 415
         created = await client.post(upload_path(application_id, package_id), **upload_args())
         assert created.status_code == 202
         artifact_id = created.json()["artifact"]["id"]
-        assert (await client.post(f"/applications/{application_id}/artifacts/{artifact_id}/retry")).status_code == 409
-        assert (await client.get(f"/applications/{application_id + 1}/artifacts/{artifact_id}")).status_code == 404
-        assert (await client.get(f"/applications/{application_id + 1}/artifacts/{artifact_id}/download")).status_code == 404
+        assert (
+            await client.post(f"/applications/{application_id}/artifacts/{artifact_id}/retry")
+        ).status_code == 409
+        assert (
+            await client.get(f"/applications/{application_id + 1}/artifacts/{artifact_id}")
+        ).status_code == 404
+        assert (
+            await client.get(f"/applications/{application_id + 1}/artifacts/{artifact_id}/download")
+        ).status_code == 404
         store.data.clear()
-        detail_without_task = await client.get(f"/applications/{application_id}/artifacts/{artifact_id}")
+        detail_without_task = await client.get(
+            f"/applications/{application_id}/artifacts/{artifact_id}"
+        )
         assert detail_without_task.status_code == 200
         assert detail_without_task.json()["validation_state"] == "queued"
-    async with AsyncClient(transport=ASGITransport(app=make_app(engine, store, user_id=2)), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(engine, store, user_id=2)), base_url="http://test"
+    ) as client:
         paths = [
             ("post", upload_path(application_id, package_id), upload_args()),
             ("get", f"/applications/{application_id}/artifacts/{artifact_id}", {}),
@@ -333,14 +430,24 @@ async def test_owned_privacy_preflight_and_retry(engine: AsyncEngine, monkeypatc
         assert row is not None
         row.validation_state = "failed"
         row.failure_category = "content_mismatch"
-        row.validation_report = {"policy_version": VALIDATION_POLICY_VERSION, "format": "pdf", "state": "failed", "checks": [], "failure_category": "content_mismatch"}
+        row.validation_report = {
+            "policy_version": VALIDATION_POLICY_VERSION,
+            "format": "pdf",
+            "state": "failed",
+            "checks": [],
+            "failure_category": "content_mismatch",
+        }
         await session.commit()
-    async with AsyncClient(transport=ASGITransport(app=make_app(engine, store)), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(engine, store)), base_url="http://test"
+    ) as client:
         duplicate = await client.post(upload_path(application_id, package_id), **upload_args())
         assert duplicate.status_code == 200
         assert duplicate.json()["artifact"]["validation_state"] == "failed"
         assert len(store.created) == 1
-        failed_download = await client.get(f"/applications/{application_id}/artifacts/{artifact_id}/download")
+        failed_download = await client.get(
+            f"/applications/{application_id}/artifacts/{artifact_id}/download"
+        )
         assert failed_download.status_code == 200
         assert failed_download.content == PDF
         retried = await client.post(f"/applications/{application_id}/artifacts/{artifact_id}/retry")
@@ -355,7 +462,9 @@ async def test_owned_privacy_preflight_and_retry(engine: AsyncEngine, monkeypatc
         assert row.failure_category is None
 
 
-async def test_task_admission_failure_rolls_back_upload(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_task_admission_failure_rolls_back_upload(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
@@ -370,7 +479,9 @@ async def test_task_admission_failure_rolls_back_upload(engine: AsyncEngine, mon
         scheduled.append(artifact_id)
 
     monkeypatch.setattr(applications_module, "run_artifact_validation_background", worker)
-    async with AsyncClient(transport=ASGITransport(app=make_app(engine, FailingTaskStore())), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(engine, FailingTaskStore())), base_url="http://test"
+    ) as client:
         failed = await client.post(upload_path(application_id, package_id), **upload_args())
         assert failed.status_code == 503
     async with factory() as session:
@@ -384,27 +495,45 @@ async def test_application_quota_returns_413_without_new_task(engine: AsyncEngin
         application_id, package_id = await seed_package(session)
         for index in range(5):
             content = b"%PDF-" + bytes([index]) * (5 * 1024 * 1024 - 5)
-            session.add(ApplicationArtifact(
-                user_id=1, application_id=application_id, package_id=package_id,
-                document_type="resume", format="pdf", filename="resume.pdf",
-                content_type="application/pdf", byte_length=len(content),
-                sha256=hashlib.sha256(content).hexdigest(), exporter_version="v1",
-                expected_text_sha256="a" * 64, validation_policy_version=VALIDATION_POLICY_VERSION,
-                validation_state="validated", validation_report={}, content=content,
-            ))
+            session.add(
+                ApplicationArtifact(
+                    user_id=1,
+                    application_id=application_id,
+                    package_id=package_id,
+                    document_type="resume",
+                    format="pdf",
+                    filename="resume.pdf",
+                    content_type="application/pdf",
+                    byte_length=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    exporter_version="v1",
+                    expected_text_sha256="a" * 64,
+                    validation_policy_version=VALIDATION_POLICY_VERSION,
+                    validation_state="validated",
+                    validation_report={},
+                    content=content,
+                )
+            )
         await session.commit()
     store = FakeTaskStore()
-    async with AsyncClient(transport=ASGITransport(app=make_app(engine, store)), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(engine, store)), base_url="http://test"
+    ) as client:
         response = await client.post(upload_path(application_id, package_id), **upload_args())
         assert response.status_code == 413
         assert response.json()["detail"] == "quota_exceeded"
     async with factory() as session:
         assert await session.scalar(select(func.count()).select_from(ApplicationArtifact)) == 5
-        assert await session.scalar(select(func.sum(ApplicationArtifact.byte_length))) == 25 * 1024 * 1024
+        assert (
+            await session.scalar(select(func.sum(ApplicationArtifact.byte_length)))
+            == 25 * 1024 * 1024
+        )
     assert store.created == []
 
 
-async def test_database_commit_failure_does_not_schedule_worker(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_database_commit_failure_does_not_schedule_worker(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
@@ -416,7 +545,9 @@ async def test_database_commit_failure_does_not_schedule_worker(engine: AsyncEng
 
     monkeypatch.setattr(applications_module, "run_artifact_validation_background", worker)
     async with AsyncClient(
-        transport=ASGITransport(app=make_app(engine, store, fail_commit=True), raise_app_exceptions=False),
+        transport=ASGITransport(
+            app=make_app(engine, store, fail_commit=True), raise_app_exceptions=False
+        ),
         base_url="http://test",
     ) as client:
         failed = await client.post(upload_path(application_id, package_id), **upload_args())
@@ -433,9 +564,15 @@ async def test_0043_style_failed_artifact_can_retry(engine: AsyncEngine) -> None
         application_id, package_id = await seed_package(session)
         store = FakeTaskStore()
         result, _ = await ArtifactLifecycleService(session).create(
-            user_id=1, application_id=application_id, package_id=package_id,
-            document_type="resume", format="pdf", filename="resume.pdf", content=PDF,
-            exporter_version="browser-v1", task_store=store,
+            user_id=1,
+            application_id=application_id,
+            package_id=package_id,
+            document_type="resume",
+            format="pdf",
+            filename="resume.pdf",
+            content=PDF,
+            exporter_version="browser-v1",
+            task_store=store,
         )
         await session.commit()
         row = await session.get(ApplicationArtifact, result.artifact.id)
@@ -446,7 +583,9 @@ async def test_0043_style_failed_artifact_can_retry(engine: AsyncEngine) -> None
         await session.commit()
     async with factory() as session:
         retried, attempt = await ArtifactLifecycleService(session).retry(
-            user_id=1, application_id=application_id, artifact_id=result.artifact.id,
+            user_id=1,
+            application_id=application_id,
+            artifact_id=result.artifact.id,
             task_store=store,
         )
         await session.commit()
@@ -454,16 +593,24 @@ async def test_0043_style_failed_artifact_can_retry(engine: AsyncEngine) -> None
         assert retried.artifact.task_id is not None
 
 
-async def test_worker_fences_old_attempt_and_persists_current_report(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_worker_fences_old_attempt_and_persists_current_report(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
         service = ArtifactLifecycleService(session)
         store = FakeTaskStore()
         result, created = await service.create(
-            user_id=1, application_id=application_id, package_id=package_id,
-            document_type="resume", format="pdf", filename="resume.pdf", content=PDF,
-            exporter_version="browser-v1", task_store=store,
+            user_id=1,
+            application_id=application_id,
+            package_id=package_id,
+            document_type="resume",
+            format="pdf",
+            filename="resume.pdf",
+            content=PDF,
+            exporter_version="browser-v1",
+            task_store=store,
         )
         assert created
         await session.commit()
@@ -478,14 +625,24 @@ async def test_worker_fences_old_attempt_and_persists_current_report(engine: Asy
     def delayed_validator(**_kwargs: Any) -> ArtifactValidationReport:
         loop.call_soon_threadsafe(started.set)
         blocking_finish.wait(5)
-        return ArtifactValidationReport(policy_version=VALIDATION_POLICY_VERSION, format="pdf", state="failed", checks=[], failure_category="content_mismatch")
+        return ArtifactValidationReport(
+            policy_version=VALIDATION_POLICY_VERSION,
+            format="pdf",
+            state="failed",
+            checks=[],
+            failure_category="content_mismatch",
+        )
 
     loop = asyncio.get_running_loop()
     blocking_finish = threading.Event()
     monkeypatch.setattr(lifecycle_module, "validate_in_isolated_process", delayed_validator)
-    first_worker = asyncio.create_task(lifecycle_module.run_artifact_validation_background(
-        artifact_id=artifact_id, task_id=first_task, validation_attempt=1,
-    ))
+    first_worker = asyncio.create_task(
+        lifecycle_module.run_artifact_validation_background(
+            artifact_id=artifact_id,
+            task_id=first_task,
+            validation_attempt=1,
+        )
+    )
     await asyncio.wait_for(started.wait(), 5)
     async with factory() as session:
         row = await session.get(ApplicationArtifact, artifact_id)
@@ -495,7 +652,10 @@ async def test_worker_fences_old_attempt_and_persists_current_report(engine: Asy
         await session.commit()
     async with factory() as session:
         retried, attempt = await ArtifactLifecycleService(session).retry(
-            user_id=1, application_id=application_id, artifact_id=artifact_id, task_store=store,
+            user_id=1,
+            application_id=application_id,
+            artifact_id=artifact_id,
+            task_store=store,
         )
         assert attempt == 2
         await session.commit()
@@ -503,7 +663,12 @@ async def test_worker_fences_old_attempt_and_persists_current_report(engine: Asy
         row = await session.get(ApplicationArtifact, artifact_id)
         assert row is not None
         row.validation_state = "validated"
-        row.validation_report = {"policy_version": VALIDATION_POLICY_VERSION, "format": "pdf", "state": "validated", "checks": []}
+        row.validation_report = {
+            "policy_version": VALIDATION_POLICY_VERSION,
+            "format": "pdf",
+            "state": "validated",
+            "checks": [],
+        }
         await session.commit()
     blocking_finish.set()
     await asyncio.wait_for(first_worker, 5)
@@ -516,15 +681,23 @@ async def test_worker_fences_old_attempt_and_persists_current_report(engine: Asy
         assert row.validation_report["state"] == "validated"
 
 
-async def test_worker_releases_connection_while_parser_waits(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_worker_releases_connection_while_parser_waits(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
         store = FakeTaskStore()
         result, _ = await ArtifactLifecycleService(session).create(
-            user_id=1, application_id=application_id, package_id=package_id,
-            document_type="resume", format="pdf", filename="resume.pdf", content=PDF,
-            exporter_version="browser-v1", task_store=store,
+            user_id=1,
+            application_id=application_id,
+            package_id=package_id,
+            document_type="resume",
+            format="pdf",
+            filename="resume.pdf",
+            content=PDF,
+            exporter_version="browser-v1",
+            task_store=store,
         )
         await session.commit()
         artifact_id = result.artifact.id
@@ -552,12 +725,18 @@ async def test_worker_releases_connection_while_parser_waits(engine: AsyncEngine
         assert isinstance(kwargs["expected"], str)
         loop.call_soon_threadsafe(started.set)
         assert release.wait(5)
-        return ArtifactValidationReport(policy_version=VALIDATION_POLICY_VERSION, format="pdf", state="validated", checks=[])
+        return ArtifactValidationReport(
+            policy_version=VALIDATION_POLICY_VERSION, format="pdf", state="validated", checks=[]
+        )
 
     monkeypatch.setattr(lifecycle_module, "validate_in_isolated_process", paused_parser)
-    worker_task = asyncio.create_task(lifecycle_module.run_artifact_validation_background(
-        artifact_id=artifact_id, task_id=task_id, validation_attempt=1,
-    ))
+    worker_task = asyncio.create_task(
+        lifecycle_module.run_artifact_validation_background(
+            artifact_id=artifact_id,
+            task_id=task_id,
+            validation_attempt=1,
+        )
+    )
     try:
         await asyncio.wait_for(started.wait(), 5)
         assert checked_out == set()  # Claim and snapshot sessions returned their connections.
@@ -574,15 +753,23 @@ async def test_worker_releases_connection_while_parser_waits(engine: AsyncEngine
         assert row is not None and row.validation_state == "validated"
 
 
-async def test_worker_terminal_save_failure_keeps_database_authoritative(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_worker_terminal_save_failure_keeps_database_authoritative(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
         store = FakeTaskStore()
         result, _ = await ArtifactLifecycleService(session).create(
-            user_id=1, application_id=application_id, package_id=package_id,
-            document_type="resume", format="pdf", filename="resume.pdf", content=PDF,
-            exporter_version="browser-v1", task_store=store,
+            user_id=1,
+            application_id=application_id,
+            package_id=package_id,
+            document_type="resume",
+            format="pdf",
+            filename="resume.pdf",
+            content=PDF,
+            exporter_version="browser-v1",
+            task_store=store,
         )
         await session.commit()
         artifact_id = result.artifact.id
@@ -591,23 +778,41 @@ async def test_worker_terminal_save_failure_keeps_database_authoritative(engine:
 
     class TerminalFailSession(AsyncSession):
         async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
-            if str(statement).startswith("UPDATE application_artifacts") and "validation_report" in str(statement):
+            if str(statement).startswith(
+                "UPDATE application_artifacts"
+            ) and "validation_report" in str(statement):
                 raise RuntimeError("synthetic terminal persistence failure")
             return await super().execute(statement, *args, **kwargs)
 
-    monkeypatch.setattr(lifecycle_module, "async_session_factory", async_sessionmaker(engine, class_=TerminalFailSession, expire_on_commit=False))
+    monkeypatch.setattr(
+        lifecycle_module,
+        "async_session_factory",
+        async_sessionmaker(engine, class_=TerminalFailSession, expire_on_commit=False),
+    )
     monkeypatch.setattr(lifecycle_module, "get_redis", lambda: object())
     monkeypatch.setattr(lifecycle_module, "TaskStore", lambda _redis: store)
-    monkeypatch.setattr(lifecycle_module, "validate_in_isolated_process", lambda **_kwargs: ArtifactValidationReport(
-        policy_version=VALIDATION_POLICY_VERSION, format="pdf", state="validated", checks=[],
-    ))
-    await lifecycle_module.run_artifact_validation_background(artifact_id=artifact_id, task_id=task_id, validation_attempt=1)
+    monkeypatch.setattr(
+        lifecycle_module,
+        "validate_in_isolated_process",
+        lambda **_kwargs: ArtifactValidationReport(
+            policy_version=VALIDATION_POLICY_VERSION,
+            format="pdf",
+            state="validated",
+            checks=[],
+        ),
+    )
+    await lifecycle_module.run_artifact_validation_background(
+        artifact_id=artifact_id, task_id=task_id, validation_attempt=1
+    )
     async with factory() as session:
         row = await session.get(ApplicationArtifact, artifact_id)
         assert row is not None and row.validation_state == "validating"
         assert row.validation_report == {}
     assert store.data[task_id]["status"] == "failed"
-    assert store.data[task_id]["message"] == "Artifact result could not be saved; check artifact status before retrying"
+    assert (
+        store.data[task_id]["message"]
+        == "Artifact result could not be saved; check artifact status before retrying"
+    )
 
 
 async def test_package_summary_query_excludes_artifact_content(engine: AsyncEngine) -> None:
@@ -616,23 +821,38 @@ async def test_package_summary_query_excludes_artifact_content(engine: AsyncEngi
         application_id, package_id = await seed_package(session)
         store = FakeTaskStore()
         await ArtifactLifecycleService(session).create(
-            user_id=1, application_id=application_id, package_id=package_id,
-            document_type="resume", format="pdf", filename="resume.pdf", content=PDF,
-            exporter_version="browser-v1", task_store=store,
+            user_id=1,
+            application_id=application_id,
+            package_id=package_id,
+            document_type="resume",
+            format="pdf",
+            filename="resume.pdf",
+            content=PDF,
+            exporter_version="browser-v1",
+            task_store=store,
         )
         await session.commit()
     from app.domain.applications.repository import ApplicationRepository
 
     statements: list[str] = []
 
-    def inspect_summary_sql(_connection: object, _cursor: object, statement: str, _parameters: object, _context: object, _executemany: bool) -> None:
+    def inspect_summary_sql(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
         if "FROM application_artifacts" in statement:
             statements.append(statement)
 
     event.listen(engine.sync_engine, "before_cursor_execute", inspect_summary_sql)
     try:
         async with factory() as session:
-            rows = await ApplicationRepository(session).artifacts_for_packages(user_id=1, package_ids={package_id})
+            rows = await ApplicationRepository(session).artifacts_for_packages(
+                user_id=1, package_ids={package_id}
+            )
             assert rows[package_id][0].byte_length == len(PDF)
             assert "content" in rows[package_id][0].__mapper__.attrs
             assert "content" not in rows[package_id][0].__dict__
@@ -642,21 +862,36 @@ async def test_package_summary_query_excludes_artifact_content(engine: AsyncEngi
     assert "application_artifacts.content" not in statements[0]
 
 
-@pytest.mark.parametrize("initial_state,age_seconds,expected", [
-    ("queued", 30, False), ("queued", 61, True),
-    ("validating", 30, False), ("validating", 61, True),
-    ("failed", 0, True), ("unavailable", 0, True),
-    ("validated", 61, False), ("warning", 61, False),
-])
-async def test_retry_eligibility(engine: AsyncEngine, initial_state: str, age_seconds: int, expected: bool) -> None:
+@pytest.mark.parametrize(
+    "initial_state,age_seconds,expected",
+    [
+        ("queued", 30, False),
+        ("queued", 61, True),
+        ("validating", 30, False),
+        ("validating", 61, True),
+        ("failed", 0, True),
+        ("unavailable", 0, True),
+        ("validated", 61, False),
+        ("warning", 61, False),
+    ],
+)
+async def test_retry_eligibility(
+    engine: AsyncEngine, initial_state: str, age_seconds: int, expected: bool
+) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
         store = FakeTaskStore()
         result, _ = await ArtifactLifecycleService(session).create(
-            user_id=1, application_id=application_id, package_id=package_id,
-            document_type="resume", format="pdf", filename="resume.pdf", content=PDF,
-            exporter_version="browser-v1", task_store=store,
+            user_id=1,
+            application_id=application_id,
+            package_id=package_id,
+            document_type="resume",
+            format="pdf",
+            filename="resume.pdf",
+            content=PDF,
+            exporter_version="browser-v1",
+            task_store=store,
         )
         await session.commit()
         artifact_id = result.artifact.id
@@ -669,7 +904,9 @@ async def test_retry_eligibility(engine: AsyncEngine, initial_state: str, age_se
     async with factory() as session:
         service = ArtifactLifecycleService(session)
         if expected:
-            retried, attempt = await service.retry(user_id=1, application_id=application_id, artifact_id=artifact_id, task_store=store)
+            retried, attempt = await service.retry(
+                user_id=1, application_id=application_id, artifact_id=artifact_id, task_store=store
+            )
             await session.commit()
             assert attempt == 2
             assert retried.artifact.validation_state == "queued"
@@ -677,29 +914,48 @@ async def test_retry_eligibility(engine: AsyncEngine, initial_state: str, age_se
             assert len(store.created) == 2
         else:
             from app.domain.applications.artifact_lifecycle import ArtifactConflictError
+
             with pytest.raises(ArtifactConflictError):
-                await service.retry(user_id=1, application_id=application_id, artifact_id=artifact_id, task_store=store)
+                await service.retry(
+                    user_id=1,
+                    application_id=application_id,
+                    artifact_id=artifact_id,
+                    task_store=store,
+                )
 
 
-@pytest.mark.parametrize("outcome,state,category", [
-    ("validated", "validated", None),
-    ("warning", "warning", None),
-    ("parser_timeout", "failed", "parser_timeout"),
-    ("parser_unavailable", "unavailable", "parser_unavailable"),
-    ("content_mismatch", "failed", "content_mismatch"),
-    ("unexpected", "unavailable", "parser_unavailable"),
-])
+@pytest.mark.parametrize(
+    "outcome,state,category",
+    [
+        ("validated", "validated", None),
+        ("warning", "warning", None),
+        ("parser_timeout", "failed", "parser_timeout"),
+        ("parser_unavailable", "unavailable", "parser_unavailable"),
+        ("content_mismatch", "failed", "content_mismatch"),
+        ("unexpected", "unavailable", "parser_unavailable"),
+    ],
+)
 async def test_worker_terminal_outcomes(
-    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, outcome: str, state: str, category: str | None,
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    state: str,
+    category: str | None,
 ) -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         application_id, package_id = await seed_package(session)
         store = FakeTaskStore()
         result, _ = await ArtifactLifecycleService(session).create(
-            user_id=1, application_id=application_id, package_id=package_id,
-            document_type="resume", format="pdf", filename="resume.pdf", content=PDF,
-            exporter_version="browser-v1", task_store=store,
+            user_id=1,
+            application_id=application_id,
+            package_id=package_id,
+            document_type="resume",
+            format="pdf",
+            filename="resume.pdf",
+            content=PDF,
+            exporter_version="browser-v1",
+            task_store=store,
         )
         await session.commit()
         artifact_id = result.artifact.id
@@ -716,13 +972,17 @@ async def test_worker_terminal_outcomes(
         if outcome in {"parser_timeout", "parser_unavailable", "content_mismatch"}:
             raise ArtifactValidationError(ArtifactFailureCategory(outcome))
         return ArtifactValidationReport(
-            policy_version=VALIDATION_POLICY_VERSION, format="pdf", state=outcome,
+            policy_version=VALIDATION_POLICY_VERSION,
+            format="pdf",
+            state=outcome,
             checks=[],
         )
 
     monkeypatch.setattr(lifecycle_module, "validate_in_isolated_process", validator)
     await lifecycle_module.run_artifact_validation_background(
-        artifact_id=artifact_id, task_id=task_id, validation_attempt=1,
+        artifact_id=artifact_id,
+        task_id=task_id,
+        validation_attempt=1,
     )
     async with factory() as session:
         row = await session.get(ApplicationArtifact, artifact_id)
@@ -732,4 +992,6 @@ async def test_worker_terminal_outcomes(
         assert row.validation_report["state"] == state
         assert "SECRET" not in str(row.validation_report)
         assert row.validation_state_changed_at >= row.created_at
-    assert store.data[task_id]["status"] == ("done" if state in {"validated", "warning"} else "failed")
+    assert store.data[task_id]["status"] == (
+        "done" if state in {"validated", "warning"} else "failed"
+    )

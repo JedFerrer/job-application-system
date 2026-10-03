@@ -14,7 +14,9 @@ def main() -> int:
         request = json.loads(sys.stdin.buffer.read())
         report = _validation_worker(
             base64.b64decode(request["content"], validate=True),
-            request["format"], request["expected"], request["document_type"],
+            request["format"],
+            request["expected"],
+            request["document_type"],
         )
         sys.stdout.write(json.dumps({"report": report}, separators=(",", ":")))
         return 0

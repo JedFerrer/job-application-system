@@ -612,10 +612,10 @@ class ApplicationPreparationService:
         return cast(
             ApplicationPackage | None,
             await self._session.scalar(
-            select(ApplicationPackage).where(
-                ApplicationPackage.application_id == application_id,
-                ApplicationPackage.idempotency_key == key,
-            )
+                select(ApplicationPackage).where(
+                    ApplicationPackage.application_id == application_id,
+                    ApplicationPackage.idempotency_key == key,
+                )
             ),
         )
 
@@ -625,10 +625,10 @@ class ApplicationPreparationService:
         return cast(
             ApplicationPackage | None,
             await self._session.scalar(
-            select(ApplicationPackage).where(
-                ApplicationPackage.application_id == application_id,
-                ApplicationPackage.content_sha256 == content_hash,
-            )
+                select(ApplicationPackage).where(
+                    ApplicationPackage.application_id == application_id,
+                    ApplicationPackage.content_sha256 == content_hash,
+                )
             ),
         )
 
@@ -652,17 +652,30 @@ class ApplicationPreparationService:
             raise ApplicationJobNotActionableError()
 
     async def _package_response(self, package: ApplicationPackage) -> ApplicationPackageResponse:
-        artifacts = list((await self._session.scalars(
-            select(ApplicationArtifact).options(load_only(
-                ApplicationArtifact.id, ApplicationArtifact.package_id,
-                ApplicationArtifact.document_type, ApplicationArtifact.format,
-                ApplicationArtifact.filename, ApplicationArtifact.byte_length,
-                ApplicationArtifact.sha256, ApplicationArtifact.validation_state,
-                ApplicationArtifact.failure_category, ApplicationArtifact.created_at,
-                raiseload=True,
-            )).where(ApplicationArtifact.package_id == package.id)
-            .order_by(ApplicationArtifact.created_at.desc(), ApplicationArtifact.id.desc())
-        )).all())
+        artifacts = list(
+            (
+                await self._session.scalars(
+                    select(ApplicationArtifact)
+                    .options(
+                        load_only(
+                            ApplicationArtifact.id,
+                            ApplicationArtifact.package_id,
+                            ApplicationArtifact.document_type,
+                            ApplicationArtifact.format,
+                            ApplicationArtifact.filename,
+                            ApplicationArtifact.byte_length,
+                            ApplicationArtifact.sha256,
+                            ApplicationArtifact.validation_state,
+                            ApplicationArtifact.failure_category,
+                            ApplicationArtifact.created_at,
+                            raiseload=True,
+                        )
+                    )
+                    .where(ApplicationArtifact.package_id == package.id)
+                    .order_by(ApplicationArtifact.created_at.desc(), ApplicationArtifact.id.desc())
+                )
+            ).all()
+        )
         return ApplicationPackageResponse(
             id=package.id,
             application_id=package.application_id,

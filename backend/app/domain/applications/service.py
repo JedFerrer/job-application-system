@@ -63,7 +63,9 @@ NEXT_ACTION_FIELDS = (
 def _timeline_item(event: ApplicationEvent) -> TimelineEventItem:
     event_type = str(event.event_type)
     metadata = getattr(event, "metadata_", {}) or {}
-    stored_submission_id = metadata.get("submission_id") if event_type == "submission_confirmed" else None
+    stored_submission_id = (
+        metadata.get("submission_id") if event_type == "submission_confirmed" else None
+    )
     submission_id = (
         stored_submission_id
         if isinstance(stored_submission_id, int)
@@ -73,7 +75,8 @@ def _timeline_item(event: ApplicationEvent) -> TimelineEventItem:
     )
     count_keys = {"attempted", "filled", "skipped", "failed", "field_count"}
     counts = {
-        key: value for key, value in metadata.items()
+        key: value
+        for key, value in metadata.items()
         if key in count_keys and isinstance(value, int)
     }
     summary_map = {
@@ -86,16 +89,25 @@ def _timeline_item(event: ApplicationEvent) -> TimelineEventItem:
         "submission_confirmed": "Submitted material explicitly confirmed",
     }
     return TimelineEventItem(
-        id=str(event.id), type=event_type, occurred_at=event.created_at,
+        id=str(event.id),
+        type=event_type,
+        occurred_at=event.created_at,
         source="extension" if getattr(event, "attempt_id", None) else "application",
         summary=summary_map.get(event_type, "Application activity recorded"),
         submission_id=submission_id,
         counts=counts or None,
         progress=(
-            event_type if event_type in {
-                "opened", "form_detected", "autofill_completed",
-                "submission_unconfirmed", "confirmation_detected", "cancelled",
-            } else None
+            event_type
+            if event_type
+            in {
+                "opened",
+                "form_detected",
+                "autofill_completed",
+                "submission_unconfirmed",
+                "confirmation_detected",
+                "cancelled",
+            }
+            else None
         ),
     )
 
@@ -230,7 +242,11 @@ class ApplicationService:
         )
 
     async def timeline(
-        self, *, user_id: int, application_id: int, limit: int = 25,
+        self,
+        *,
+        user_id: int,
+        application_id: int,
+        limit: int = 25,
         cursor: str | None = None,
     ) -> ApplicationTimelinePage:
         application = await self._repo.get(user_id=user_id, application_id=application_id)
@@ -245,8 +261,10 @@ class ApplicationService:
             except (ValueError, UnicodeDecodeError):
                 raise ValueError("Invalid timeline cursor") from None
         events = await self._repo.list_timeline_events(
-            user_id=user_id, application_id=application_id,
-            limit=limit + 1, cursor=boundary,
+            user_id=user_id,
+            application_id=application_id,
+            limit=limit + 1,
+            cursor=boundary,
         )
         has_more = len(events) > limit
         events = events[:limit]
@@ -276,10 +294,14 @@ class ApplicationService:
             user_id=user_id, application_id=application.id, limit=10
         )
         current = reviewable if preparation.state in {"needs_review", "ready"} else None
-        current_review = await self._repo.current_document_review(user_id=user_id, package=current, policy_version=REVIEW_POLICY_VERSION)
+        current_review = await self._repo.current_document_review(
+            user_id=user_id, package=current, policy_version=REVIEW_POLICY_VERSION
+        )
         artifact_rows = await self._repo.artifacts_for_packages(
             user_id=user_id,
-            package_ids={package.id for package in history} | ({approved.id} if approved is not None else set()) | ({current.id} if current is not None else set()),
+            package_ids={package.id for package in history}
+            | ({approved.id} if approved is not None else set())
+            | ({current.id} if current is not None else set()),
         )
         live = job is not None and job.status == "active"
         job_context = WorkspaceJobContext(
@@ -298,41 +320,83 @@ class ApplicationService:
             job=job_context,
             match_summary=(
                 WorkspaceMatchSummary(
-                    vector_score=match.vector_score, llm_score=match.llm_score,
-                    confidence=match.confidence, matched_skills=match.matched_skills or [],
+                    vector_score=match.vector_score,
+                    llm_score=match.llm_score,
+                    confidence=match.confidence,
+                    matched_skills=match.matched_skills or [],
                     missing_keywords=match.missing_keywords or [],
-                ) if match is not None else None
+                )
+                if match is not None
+                else None
             ),
             preparation=preparation,
             selected_resume=(
-                WorkspaceDocumentMetadata(id=resume.id, label=resume.job_title,
-                    updated_at=resume.updated_at, current=preparation.resume_current)
-                if resume is not None else None
+                WorkspaceDocumentMetadata(
+                    id=resume.id,
+                    label=resume.job_title,
+                    updated_at=resume.updated_at,
+                    current=preparation.resume_current,
+                )
+                if resume is not None
+                else None
             ),
             selected_cover_letter=(
-                WorkspaceDocumentMetadata(id=letter.id, label=letter.tone,
-                    updated_at=letter.updated_at, is_edited=letter.is_edited,
-                    current=preparation.cover_letter_current)
-                if letter is not None else None
+                WorkspaceDocumentMetadata(
+                    id=letter.id,
+                    label=letter.tone,
+                    updated_at=letter.updated_at,
+                    is_edited=letter.is_edited,
+                    current=preparation.cover_letter_current,
+                )
+                if letter is not None
+                else None
             ),
-            approved_package=self._package_response(approved, artifact_rows) if approved is not None else None,
-            current_reviewable_package=self._package_response(current, artifact_rows) if current is not None else None,
-            package_history=[ApplicationPackageHistoryItem(
-                id=package.id, revision=package.revision, content_sha256=package.content_sha256,
-                created_at=package.created_at,
-                is_approved=package.id == preparation.approved_package_id,
-                artifacts=[artifact_summary(row) for row in artifact_rows.get(package.id, [])],
-            ) for package in history],
+            approved_package=self._package_response(approved, artifact_rows)
+            if approved is not None
+            else None,
+            current_reviewable_package=self._package_response(current, artifact_rows)
+            if current is not None
+            else None,
+            package_history=[
+                ApplicationPackageHistoryItem(
+                    id=package.id,
+                    revision=package.revision,
+                    content_sha256=package.content_sha256,
+                    created_at=package.created_at,
+                    is_approved=package.id == preparation.approved_package_id,
+                    artifacts=[artifact_summary(row) for row in artifact_rows.get(package.id, [])],
+                )
+                for package in history
+            ],
             activity=activity,
-            current_document_review=(DocumentReviewSummary(id=current_review.id, task_id=current_review.task_id, package_id=current_review.package_id, package_content_sha256=current_review.package_content_sha256, review_policy_version=current_review.review_policy_version, state=current_review.state, outcome=current_review.outcome, failure_code=current_review.failure_code) if current_review is not None else None),
+            current_document_review=(
+                DocumentReviewSummary(
+                    id=current_review.id,
+                    task_id=current_review.task_id,
+                    package_id=current_review.package_id,
+                    package_content_sha256=current_review.package_content_sha256,
+                    review_policy_version=current_review.review_policy_version,
+                    state=current_review.state,
+                    outcome=current_review.outcome,
+                    failure_code=current_review.failure_code,
+                )
+                if current_review is not None
+                else None
+            ),
         )
 
     @staticmethod
-    def _package_response(package: ApplicationPackage, artifact_rows: dict[int, list[ApplicationArtifact]]) -> ApplicationPackageResponse:
+    def _package_response(
+        package: ApplicationPackage, artifact_rows: dict[int, list[ApplicationArtifact]]
+    ) -> ApplicationPackageResponse:
         return ApplicationPackageResponse(
-            id=package.id, application_id=package.application_id, revision=package.revision,
-            content=package.content, content_sha256=package.content_sha256,
-            schema_version=package.schema_version, created_at=package.created_at,
+            id=package.id,
+            application_id=package.application_id,
+            revision=package.revision,
+            content=package.content,
+            content_sha256=package.content_sha256,
+            schema_version=package.schema_version,
+            created_at=package.created_at,
             artifacts=[artifact_summary(row) for row in artifact_rows.get(package.id, [])],
         )
 

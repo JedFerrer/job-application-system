@@ -7,7 +7,18 @@ from datetime import date
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 
 from app.api.deps import (
     ApplicationAttemptServiceDep,
@@ -48,10 +59,27 @@ from app.domain.applications.schemas import (
     SubmissionResponse,
 )
 from app.domain.applications.submissions import SubmissionConflictError, SubmissionNotFoundError
-from app.domain.applications.document_review import ReviewConflictError, ReviewNotFoundError, run_document_review_background
-from app.domain.applications.artifact_lifecycle import ArtifactConflictError, ArtifactNotFoundError, ArtifactTaskAdmissionError, run_artifact_validation_background
-from app.domain.applications.artifacts import MAX_ARTIFACT_BYTES, ArtifactFailureCategory, ArtifactValidationError, canonical_filename
-from app.domain.interview.application_schemas import ApplicationInterviewRequest, ApplicationInterviewResponse
+from app.domain.applications.document_review import (
+    ReviewConflictError,
+    ReviewNotFoundError,
+    run_document_review_background,
+)
+from app.domain.applications.artifact_lifecycle import (
+    ArtifactConflictError,
+    ArtifactNotFoundError,
+    ArtifactTaskAdmissionError,
+    run_artifact_validation_background,
+)
+from app.domain.applications.artifacts import (
+    MAX_ARTIFACT_BYTES,
+    ArtifactFailureCategory,
+    ArtifactValidationError,
+    canonical_filename,
+)
+from app.domain.interview.application_schemas import (
+    ApplicationInterviewRequest,
+    ApplicationInterviewResponse,
+)
 from app.domain.interview.application_service import (
     ApplicationInterviewContextInvalidError,
     ApplicationInterviewNotFoundError,
@@ -63,12 +91,16 @@ router = APIRouter(prefix="/applications", tags=["applications"])
 
 @router.post("/{application_id}/interview-prep", response_model=ApplicationInterviewResponse)
 async def generate_application_interview_prep(
-    application_id: int, payload: ApplicationInterviewRequest,
-    current_user: CurrentUser, db: DbSession,
+    application_id: int,
+    payload: ApplicationInterviewRequest,
+    current_user: CurrentUser,
+    db: DbSession,
 ) -> ApplicationInterviewResponse:
     try:
         return await ApplicationInterviewService(db).get_or_generate(
-            user_id=current_user.id, application_id=application_id, request=payload,
+            user_id=current_user.id,
+            application_id=application_id,
+            request=payload,
         )
     except ApplicationInterviewNotFoundError:
         raise HTTPException(status_code=404, detail="Application context not found") from None
@@ -77,23 +109,37 @@ async def generate_application_interview_prep(
 
 
 def _artifact_http_error(exc: ArtifactValidationError) -> HTTPException:
-    if exc.category in {ArtifactFailureCategory.SIZE_EXCEEDED, ArtifactFailureCategory.QUOTA_EXCEEDED}:
+    if exc.category in {
+        ArtifactFailureCategory.SIZE_EXCEEDED,
+        ArtifactFailureCategory.QUOTA_EXCEEDED,
+    }:
         return HTTPException(status_code=413, detail=exc.category.value)
     if exc.category == ArtifactFailureCategory.UNSUPPORTED_TYPE:
         return HTTPException(status_code=415, detail=exc.category.value)
     return HTTPException(status_code=422, detail=exc.category.value)
 
 
-@router.post("/{application_id}/packages/{package_id}/artifacts", response_model=ArtifactUploadResponse)
+@router.post(
+    "/{application_id}/packages/{package_id}/artifacts", response_model=ArtifactUploadResponse
+)
 async def upload_application_artifact(
-    application_id: int, package_id: int, current_user: CurrentUser,
-    service: ArtifactLifecycleServiceDep, task_store: TaskStoreDep, db: DbSession,
-    background_tasks: BackgroundTasks, response: Response,
-    file: UploadFile = File(...), document_type: str = Form(...), format: str = Form(...),
+    application_id: int,
+    package_id: int,
+    current_user: CurrentUser,
+    service: ArtifactLifecycleServiceDep,
+    task_store: TaskStoreDep,
+    db: DbSession,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    file: UploadFile = File(...),
+    document_type: str = Form(...),
+    format: str = Form(...),
     exporter_version: str = Form(..., min_length=1, max_length=64),
 ) -> ArtifactUploadResponse:
     try:
-        await service.owned_package(user_id=current_user.id, application_id=application_id, package_id=package_id)
+        await service.owned_package(
+            user_id=current_user.id, application_id=application_id, package_id=package_id
+        )
         if document_type not in {"resume", "cover_letter"} or format not in {"pdf", "docx"}:
             raise HTTPException(status_code=415, detail="unsupported_type")
         content = bytearray()
@@ -107,17 +153,25 @@ async def upload_application_artifact(
         if not content:
             raise HTTPException(status_code=422, detail="empty_file")
         result, created = await service.create(
-            user_id=current_user.id, application_id=application_id, package_id=package_id,
-            document_type=document_type, format=format, filename=file.filename or document_type,
-            content=bytes(content), exporter_version=exporter_version, task_store=task_store,
+            user_id=current_user.id,
+            application_id=application_id,
+            package_id=package_id,
+            document_type=document_type,
+            format=format,
+            filename=file.filename or document_type,
+            content=bytes(content),
+            exporter_version=exporter_version,
+            task_store=task_store,
         )
         if created:
             await db.commit()
             artifact = result.artifact
             assert artifact.task_id is not None
             background_tasks.add_task(
-                run_artifact_validation_background, artifact_id=artifact.id,
-                task_id=artifact.task_id, validation_attempt=1,
+                run_artifact_validation_background,
+                artifact_id=artifact.id,
+                task_id=artifact.task_id,
+                validation_attempt=1,
             )
             response.status_code = status.HTTP_202_ACCEPTED
         else:
@@ -129,7 +183,9 @@ async def upload_application_artifact(
         raise _artifact_http_error(exc) from None
     except ArtifactTaskAdmissionError:
         await db.rollback()
-        raise HTTPException(status_code=503, detail="Artifact validation temporarily unavailable") from None
+        raise HTTPException(
+            status_code=503, detail="Artifact validation temporarily unavailable"
+        ) from None
     except HTTPException:
         raise
     except Exception:
@@ -141,25 +197,36 @@ async def upload_application_artifact(
 
 @router.get("/{application_id}/artifacts/{artifact_id}", response_model=ArtifactDetail)
 async def get_application_artifact(
-    application_id: int, artifact_id: int, current_user: CurrentUser, service: ArtifactLifecycleServiceDep,
+    application_id: int,
+    artifact_id: int,
+    current_user: CurrentUser,
+    service: ArtifactLifecycleServiceDep,
 ) -> ArtifactDetail:
     try:
-        return await service.detail(user_id=current_user.id, application_id=application_id, artifact_id=artifact_id)
+        return await service.detail(
+            user_id=current_user.id, application_id=application_id, artifact_id=artifact_id
+        )
     except ArtifactNotFoundError:
         raise HTTPException(status_code=404, detail="Artifact not found") from None
 
 
 @router.get("/{application_id}/artifacts/{artifact_id}/download")
 async def download_application_artifact(
-    application_id: int, artifact_id: int, current_user: CurrentUser, service: ArtifactLifecycleServiceDep,
+    application_id: int,
+    artifact_id: int,
+    current_user: CurrentUser,
+    service: ArtifactLifecycleServiceDep,
 ) -> Response:
     try:
-        row = await service.owned_artifact(user_id=current_user.id, application_id=application_id, artifact_id=artifact_id)
+        row = await service.owned_artifact(
+            user_id=current_user.id, application_id=application_id, artifact_id=artifact_id
+        )
     except ArtifactNotFoundError:
         raise HTTPException(status_code=404, detail="Artifact not found") from None
     filename = canonical_filename(row.filename, row.document_type, row.format)  # type: ignore[arg-type]
     return Response(
-        content=row.content, media_type=row.content_type,
+        content=row.content,
+        media_type=row.content_type,
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "private, no-store",
@@ -168,18 +235,32 @@ async def download_application_artifact(
     )
 
 
-@router.post("/{application_id}/artifacts/{artifact_id}/retry", response_model=ArtifactUploadResponse, status_code=202)
+@router.post(
+    "/{application_id}/artifacts/{artifact_id}/retry",
+    response_model=ArtifactUploadResponse,
+    status_code=202,
+)
 async def retry_application_artifact(
-    application_id: int, artifact_id: int, current_user: CurrentUser,
-    service: ArtifactLifecycleServiceDep, task_store: TaskStoreDep, db: DbSession,
+    application_id: int,
+    artifact_id: int,
+    current_user: CurrentUser,
+    service: ArtifactLifecycleServiceDep,
+    task_store: TaskStoreDep,
+    db: DbSession,
     background_tasks: BackgroundTasks,
 ) -> ArtifactUploadResponse:
     try:
-        result, attempt = await service.retry(user_id=current_user.id, application_id=application_id, artifact_id=artifact_id, task_store=task_store)
+        result, attempt = await service.retry(
+            user_id=current_user.id,
+            application_id=application_id,
+            artifact_id=artifact_id,
+            task_store=task_store,
+        )
         await db.commit()
         assert result.artifact.task_id is not None
         background_tasks.add_task(
-            run_artifact_validation_background, artifact_id=artifact_id,
+            run_artifact_validation_background,
+            artifact_id=artifact_id,
             task_id=result.artifact.task_id,
             validation_attempt=attempt,
         )
@@ -190,7 +271,9 @@ async def retry_application_artifact(
         raise HTTPException(status_code=409, detail="Artifact is not eligible for retry") from None
     except ArtifactTaskAdmissionError:
         await db.rollback()
-        raise HTTPException(status_code=503, detail="Artifact validation temporarily unavailable") from None
+        raise HTTPException(
+            status_code=503, detail="Artifact validation temporarily unavailable"
+        ) from None
     except Exception:
         await db.rollback()
         raise
@@ -198,31 +281,61 @@ async def retry_application_artifact(
 
 @router.delete("/{application_id}/artifacts/{artifact_id}", status_code=204)
 async def delete_application_artifact(
-    application_id: int, artifact_id: int, current_user: CurrentUser,
-    service: ArtifactLifecycleServiceDep, db: DbSession,
+    application_id: int,
+    artifact_id: int,
+    current_user: CurrentUser,
+    service: ArtifactLifecycleServiceDep,
+    db: DbSession,
 ) -> Response:
     try:
-        await service.delete(user_id=current_user.id, application_id=application_id, artifact_id=artifact_id)
+        await service.delete(
+            user_id=current_user.id, application_id=application_id, artifact_id=artifact_id
+        )
         await db.commit()
         return Response(status_code=204)
     except ArtifactNotFoundError:
         raise HTTPException(status_code=404, detail="Artifact not found") from None
     except ArtifactConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc) or "Artifact is still validating") from None
+        raise HTTPException(
+            status_code=409, detail=str(exc) or "Artifact is still validating"
+        ) from None
 
 
 @router.get("/tasks/{task_id}")
-async def get_application_task(task_id: str, current_user: CurrentUser, task_store: TaskStoreDep) -> dict[str, Any]:
+async def get_application_task(
+    task_id: str, current_user: CurrentUser, task_store: TaskStoreDep
+) -> dict[str, Any]:
     task = await task_store.get(task_id)
     if task is None or task.get("user_id") != current_user.id:
         raise HTTPException(status_code=404, detail="Task not found or expired")
     return task
 
 
-@router.post("/{application_id}/packages/{package_id}/reviews", response_model=DocumentReviewResponse | DocumentReviewQueuedResponse)
-async def create_document_review(application_id: int, package_id: int, payload: DocumentReviewRequest, current_user: CurrentUser, service: DocumentReviewServiceDep, task_store: TaskStoreDep, db: DbSession, background_tasks: BackgroundTasks, response: Response, idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, max_length=128)) -> DocumentReviewResponse | DocumentReviewQueuedResponse:
+@router.post(
+    "/{application_id}/packages/{package_id}/reviews",
+    response_model=DocumentReviewResponse | DocumentReviewQueuedResponse,
+)
+async def create_document_review(
+    application_id: int,
+    package_id: int,
+    payload: DocumentReviewRequest,
+    current_user: CurrentUser,
+    service: DocumentReviewServiceDep,
+    task_store: TaskStoreDep,
+    db: DbSession,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, max_length=128),
+) -> DocumentReviewResponse | DocumentReviewQueuedResponse:
     try:
-        result = await service.start(user_id=current_user.id, application_id=application_id, package_id=package_id, idempotency_key=idempotency_key, rerun=payload.rerun, task_store=task_store)
+        result = await service.start(
+            user_id=current_user.id,
+            application_id=application_id,
+            package_id=package_id,
+            idempotency_key=idempotency_key,
+            rerun=payload.rerun,
+            task_store=task_store,
+        )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="Package not found") from None
     except ReviewConflictError as exc:
@@ -231,22 +344,57 @@ async def create_document_review(application_id: int, package_id: int, payload: 
         response.status_code = status.HTTP_202_ACCEPTED
         if not result.existing:
             await db.commit()
-            background_tasks.add_task(run_document_review_background, task_id=result.task_id, review_id=result.review_id, user_id=current_user.id)
+            background_tasks.add_task(
+                run_document_review_background,
+                task_id=result.task_id,
+                review_id=result.review_id,
+                user_id=current_user.id,
+            )
     return result
 
 
-@router.get("/{application_id}/packages/{package_id}/reviews/{review_id}", response_model=DocumentReviewResponse)
-async def get_document_review(application_id: int, package_id: int, review_id: str, current_user: CurrentUser, service: DocumentReviewServiceDep) -> DocumentReviewResponse:
+@router.get(
+    "/{application_id}/packages/{package_id}/reviews/{review_id}",
+    response_model=DocumentReviewResponse,
+)
+async def get_document_review(
+    application_id: int,
+    package_id: int,
+    review_id: str,
+    current_user: CurrentUser,
+    service: DocumentReviewServiceDep,
+) -> DocumentReviewResponse:
     try:
-        return await service.get(user_id=current_user.id, application_id=application_id, package_id=package_id, review_id=review_id)
+        return await service.get(
+            user_id=current_user.id,
+            application_id=application_id,
+            package_id=package_id,
+            review_id=review_id,
+        )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="Review not found") from None
 
 
-@router.post("/{application_id}/packages/{package_id}/reviews/{review_id}/acknowledgments", response_model=DocumentReviewResponse)
-async def acknowledge_document_review(application_id: int, package_id: int, review_id: str, payload: ReviewAcknowledgmentRequest, current_user: CurrentUser, service: DocumentReviewServiceDep) -> DocumentReviewResponse:
+@router.post(
+    "/{application_id}/packages/{package_id}/reviews/{review_id}/acknowledgments",
+    response_model=DocumentReviewResponse,
+)
+async def acknowledge_document_review(
+    application_id: int,
+    package_id: int,
+    review_id: str,
+    payload: ReviewAcknowledgmentRequest,
+    current_user: CurrentUser,
+    service: DocumentReviewServiceDep,
+) -> DocumentReviewResponse:
     try:
-        return await service.acknowledge(user_id=current_user.id, application_id=application_id, package_id=package_id, review_id=review_id, payload=payload)
+        return await service.acknowledge(
+            user_id=current_user.id,
+            application_id=application_id,
+            package_id=package_id,
+            review_id=review_id,
+            payload=payload,
+        )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="Review not found") from None
     except ReviewConflictError as exc:
@@ -262,25 +410,34 @@ async def get_application_timeline(
     limit: int = Query(default=25, ge=1, le=100),
 ) -> ApplicationTimelinePage:
     return await service.timeline(
-        user_id=current_user.id, application_id=application_id,
-        limit=limit, cursor=cursor,
+        user_id=current_user.id,
+        application_id=application_id,
+        limit=limit,
+        cursor=cursor,
     )
 
 
 @router.post("/{application_id}/submissions", response_model=SubmissionResponse)
 async def confirm_application_submission(
-    application_id: int, payload: SubmissionConfirmRequest,
-    current_user: CurrentUser, service: SubmissionServiceDep, response: Response,
+    application_id: int,
+    payload: SubmissionConfirmRequest,
+    current_user: CurrentUser,
+    service: SubmissionServiceDep,
+    response: Response,
     db: DbSession,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ) -> SubmissionResponse:
     idempotency_key = idempotency_key.strip()
     if not 1 <= len(idempotency_key) <= 128:
-        raise HTTPException(status_code=422, detail="Idempotency-Key must contain 1 to 128 characters")
+        raise HTTPException(
+            status_code=422, detail="Idempotency-Key must contain 1 to 128 characters"
+        )
     try:
         result, created = await service.confirm(
-            user_id=current_user.id, application_id=application_id,
-            request=payload, idempotency_key=idempotency_key,
+            user_id=current_user.id,
+            application_id=application_id,
+            request=payload,
+            idempotency_key=idempotency_key,
         )
         await db.commit()
     except SubmissionNotFoundError:
@@ -293,14 +450,18 @@ async def confirm_application_submission(
 
 @router.get("/{application_id}/submissions", response_model=SubmissionListResponse)
 async def list_application_submissions(
-    application_id: int, current_user: CurrentUser, service: SubmissionServiceDep,
+    application_id: int,
+    current_user: CurrentUser,
+    service: SubmissionServiceDep,
     cursor: str | None = None,
     limit: int = Query(default=25, ge=1, le=100),
 ) -> SubmissionListResponse:
     try:
         return await service.list_submissions(
-            user_id=current_user.id, application_id=application_id,
-            cursor=cursor, limit=limit,
+            user_id=current_user.id,
+            application_id=application_id,
+            cursor=cursor,
+            limit=limit,
         )
     except SubmissionNotFoundError:
         raise HTTPException(status_code=404, detail="Application not found") from None
@@ -310,12 +471,15 @@ async def list_application_submissions(
 
 @router.get("/{application_id}/submissions/{submission_id}", response_model=SubmissionResponse)
 async def get_application_submission(
-    application_id: int, submission_id: int,
-    current_user: CurrentUser, service: SubmissionServiceDep,
+    application_id: int,
+    submission_id: int,
+    current_user: CurrentUser,
+    service: SubmissionServiceDep,
 ) -> SubmissionResponse:
     try:
         return await service.detail(
-            user_id=current_user.id, application_id=application_id,
+            user_id=current_user.id,
+            application_id=application_id,
             submission_id=submission_id,
         )
     except SubmissionNotFoundError:
@@ -324,12 +488,16 @@ async def get_application_submission(
 
 @router.delete("/{application_id}/submissions/{submission_id}", status_code=204)
 async def delete_application_submission(
-    application_id: int, submission_id: int,
-    current_user: CurrentUser, service: SubmissionServiceDep, db: DbSession,
+    application_id: int,
+    submission_id: int,
+    current_user: CurrentUser,
+    service: SubmissionServiceDep,
+    db: DbSession,
 ) -> Response:
     try:
         await service.delete(
-            user_id=current_user.id, application_id=application_id,
+            user_id=current_user.id,
+            application_id=application_id,
             submission_id=submission_id,
         )
         await db.commit()
@@ -339,7 +507,8 @@ async def delete_application_submission(
 
 
 @router.post(
-    "/{application_id}/attempts", response_model=AttemptResponse,
+    "/{application_id}/attempts",
+    response_model=AttemptResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_application_attempt(

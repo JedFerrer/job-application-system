@@ -35,7 +35,10 @@ class ApplicationSubmission(Base):
         UniqueConstraint("attempt_id", name="uq_application_submission_attempt"),
         Index(
             "ix_application_submission_history",
-            "user_id", "application_id", "created_at", "id",
+            "user_id",
+            "application_id",
+            "created_at",
+            "id",
         ),
     )
 

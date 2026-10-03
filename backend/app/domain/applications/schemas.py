@@ -240,7 +240,9 @@ class ArtifactSummary(BaseModel):
     filename: str
     byte_length: int
     sha256: str
-    validation_state: Literal["queued", "validating", "validated", "warning", "failed", "unavailable"]
+    validation_state: Literal[
+        "queued", "validating", "validated", "warning", "failed", "unavailable"
+    ]
     failure_category: str | None
     created_at: datetime
 
@@ -280,7 +282,15 @@ ReviewDisposition = Literal["keep_wording", "will_revise"]
 class DocumentReviewFinding(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     document: Literal["resume", "cover_letter"]
-    category: Literal["unsupported_claim", "cross_document_mismatch", "job_document_mismatch", "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing"]
+    category: Literal[
+        "unsupported_claim",
+        "cross_document_mismatch",
+        "job_document_mismatch",
+        "omitted_verified_evidence",
+        "repetition",
+        "clarity",
+        "keyword_stuffing",
+    ]
     severity: Literal["concern", "suggestion"]
     excerpt: str = Field(min_length=1, max_length=100_000)
     locator: str = Field(min_length=1, max_length=512)
@@ -301,10 +311,20 @@ class ProviderFindingV6(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=64)
-    category: Literal["unsupported_claim", "cross_document_mismatch", "job_document_mismatch", "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing"]
+    category: Literal[
+        "unsupported_claim",
+        "cross_document_mismatch",
+        "job_document_mismatch",
+        "omitted_verified_evidence",
+        "repetition",
+        "clarity",
+        "keyword_stuffing",
+    ]
     severity: Literal["concern", "suggestion"]
     rationale: str = Field(min_length=1, max_length=2_000)
-    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(min_length=1, max_length=2)
+    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
+        min_length=1, max_length=2
+    )
     proposed_action: str = Field(min_length=1, max_length=2_000)
 
 
@@ -313,10 +333,20 @@ class ProviderFindingV7(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=64)
-    category: Literal["unsupported_claim", "cross_document_mismatch", "job_document_mismatch", "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing"]
+    category: Literal[
+        "unsupported_claim",
+        "cross_document_mismatch",
+        "job_document_mismatch",
+        "omitted_verified_evidence",
+        "repetition",
+        "clarity",
+        "keyword_stuffing",
+    ]
     severity: Literal["concern", "suggestion"]
     rationale: str = Field(min_length=1, max_length=2_000)
-    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(min_length=1, max_length=2)
+    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
+        min_length=1, max_length=2
+    )
     proposed_action: str = Field(min_length=1, max_length=2_000)
 
 
@@ -336,10 +366,20 @@ class ProviderFindingV8(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=64)
-    category: Literal["unsupported_claim", "cross_document_mismatch", "job_document_mismatch", "omitted_verified_evidence", "repetition", "clarity", "keyword_stuffing"]
+    category: Literal[
+        "unsupported_claim",
+        "cross_document_mismatch",
+        "job_document_mismatch",
+        "omitted_verified_evidence",
+        "repetition",
+        "clarity",
+        "keyword_stuffing",
+    ]
     severity: Literal["concern", "suggestion"]
     rationale: str = Field(min_length=1, max_length=2_000)
-    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(min_length=1, max_length=2)
+    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
+        min_length=1, max_length=2
+    )
     proposed_action: str = Field(min_length=1, max_length=2_000)
 
 
@@ -366,19 +406,27 @@ class _ProviderFindingV10Base(BaseModel):
 
 class ProviderSingleTargetFindingV10(_ProviderFindingV10Base):
     category: Literal["unsupported_claim", "repetition", "clarity", "keyword_stuffing"]
-    target_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^(?:resume|cover)-e[0-9]{4,}$")]
+    target_evidence_id: Annotated[
+        str, Field(min_length=1, max_length=32, pattern=r"^(?:resume|cover)-e[0-9]{4,}$")
+    ]
 
 
 class ProviderCrossDocumentFindingV10(_ProviderFindingV10Base):
     category: Literal["cross_document_mismatch"]
-    resume_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^resume-e[0-9]{4,}$")]
-    cover_letter_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^cover-e[0-9]{4,}$")]
+    resume_evidence_id: Annotated[
+        str, Field(min_length=1, max_length=32, pattern=r"^resume-e[0-9]{4,}$")
+    ]
+    cover_letter_evidence_id: Annotated[
+        str, Field(min_length=1, max_length=32, pattern=r"^cover-e[0-9]{4,}$")
+    ]
 
 
 class ProviderJobTargetFindingV10(_ProviderFindingV10Base):
     category: Literal["job_document_mismatch", "omitted_verified_evidence"]
     job_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^job-e[0-9]{4,}$")]
-    target_evidence_id: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^(?:resume|cover)-e[0-9]{4,}$")]
+    target_evidence_id: Annotated[
+        str, Field(min_length=1, max_length=32, pattern=r"^(?:resume|cover)-e[0-9]{4,}$")
+    ]
 
 
 type ProviderFindingV10 = Annotated[

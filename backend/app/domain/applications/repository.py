@@ -28,23 +28,41 @@ class ApplicationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def artifacts_for_packages(self, *, user_id: int, package_ids: set[int]) -> dict[int, list[ApplicationArtifact]]:
+    async def artifacts_for_packages(
+        self, *, user_id: int, package_ids: set[int]
+    ) -> dict[int, list[ApplicationArtifact]]:
         if not package_ids:
             return {}
-        rows = list((await self._session.scalars(
-            select(ApplicationArtifact).options(load_only(
-                ApplicationArtifact.id, ApplicationArtifact.package_id,
-                ApplicationArtifact.document_type, ApplicationArtifact.format,
-                ApplicationArtifact.filename, ApplicationArtifact.byte_length,
-                ApplicationArtifact.sha256, ApplicationArtifact.validation_state,
-                ApplicationArtifact.failure_category, ApplicationArtifact.created_at,
-                raiseload=True,
-            )).where(
-                ApplicationArtifact.user_id == user_id,
-                ApplicationArtifact.package_id.in_(package_ids),
-            ).order_by(ApplicationArtifact.created_at.desc(), ApplicationArtifact.id.desc())
-        )).all())
-        result: dict[int, list[ApplicationArtifact]] = {package_id: [] for package_id in package_ids}
+        rows = list(
+            (
+                await self._session.scalars(
+                    select(ApplicationArtifact)
+                    .options(
+                        load_only(
+                            ApplicationArtifact.id,
+                            ApplicationArtifact.package_id,
+                            ApplicationArtifact.document_type,
+                            ApplicationArtifact.format,
+                            ApplicationArtifact.filename,
+                            ApplicationArtifact.byte_length,
+                            ApplicationArtifact.sha256,
+                            ApplicationArtifact.validation_state,
+                            ApplicationArtifact.failure_category,
+                            ApplicationArtifact.created_at,
+                            raiseload=True,
+                        )
+                    )
+                    .where(
+                        ApplicationArtifact.user_id == user_id,
+                        ApplicationArtifact.package_id.in_(package_ids),
+                    )
+                    .order_by(ApplicationArtifact.created_at.desc(), ApplicationArtifact.id.desc())
+                )
+            ).all()
+        )
+        result: dict[int, list[ApplicationArtifact]] = {
+            package_id: [] for package_id in package_ids
+        }
         for row in rows:
             result[row.package_id].append(row)
         return result
@@ -92,9 +110,20 @@ class ApplicationRepository:
 
     async def workspace_rows(
         self, *, user_id: int, application_id: int, history_limit: int = 10
-    ) -> tuple[Application, Job | None, ApplicationPreparation | None, UserJobMatch | None,
-                TailoredResumeDraft | None, CoverLetter | None, ApplicationPackage | None,
-                ApplicationPackage | None, list[ApplicationPackage]] | None:
+    ) -> (
+        tuple[
+            Application,
+            Job | None,
+            ApplicationPreparation | None,
+            UserJobMatch | None,
+            TailoredResumeDraft | None,
+            CoverLetter | None,
+            ApplicationPackage | None,
+            ApplicationPackage | None,
+            list[ApplicationPackage],
+        ]
+        | None
+    ):
         """Load bounded owned workspace records without feed-visibility filtering."""
         row = (
             await self._session.execute(
@@ -148,24 +177,39 @@ class ApplicationRepository:
                     )
                 )
         history = list(
-            (await self._session.execute(
-                select(ApplicationPackage)
-                .where(ApplicationPackage.application_id == application.id)
-                .order_by(ApplicationPackage.created_at.desc(), ApplicationPackage.id.desc())
-                .limit(history_limit)
-            )).scalars().all()
+            (
+                await self._session.execute(
+                    select(ApplicationPackage)
+                    .where(ApplicationPackage.application_id == application.id)
+                    .order_by(ApplicationPackage.created_at.desc(), ApplicationPackage.id.desc())
+                    .limit(history_limit)
+                )
+            )
+            .scalars()
+            .all()
         )
         return application, job, preparation, match, resume, letter, approved, reviewable, history
 
-    async def current_document_review(self, *, user_id: int, package: ApplicationPackage | None, policy_version: str) -> ApplicationDocumentReview | None:
+    async def current_document_review(
+        self, *, user_id: int, package: ApplicationPackage | None, policy_version: str
+    ) -> ApplicationDocumentReview | None:
         if package is None:
             return None
-        return cast(ApplicationDocumentReview | None, await self._session.scalar(select(ApplicationDocumentReview).where(
-            ApplicationDocumentReview.user_id == user_id,
-            ApplicationDocumentReview.package_id == package.id,
-            ApplicationDocumentReview.package_content_sha256 == package.content_sha256,
-            ApplicationDocumentReview.review_policy_version == policy_version,
-        ).order_by(ApplicationDocumentReview.created_at.desc(), ApplicationDocumentReview.id.desc())))
+        return cast(
+            ApplicationDocumentReview | None,
+            await self._session.scalar(
+                select(ApplicationDocumentReview)
+                .where(
+                    ApplicationDocumentReview.user_id == user_id,
+                    ApplicationDocumentReview.package_id == package.id,
+                    ApplicationDocumentReview.package_content_sha256 == package.content_sha256,
+                    ApplicationDocumentReview.review_policy_version == policy_version,
+                )
+                .order_by(
+                    ApplicationDocumentReview.created_at.desc(), ApplicationDocumentReview.id.desc()
+                )
+            ),
+        )
 
     async def delete(self, *, application: Application) -> None:
         await self._session.execute(delete(Application).where(Application.id == application.id))
@@ -214,7 +258,11 @@ class ApplicationRepository:
         return list(result.scalars().all())
 
     async def list_timeline_events(
-        self, *, user_id: int, application_id: int, limit: int,
+        self,
+        *,
+        user_id: int,
+        application_id: int,
+        limit: int,
         cursor: tuple[datetime, str] | None = None,
     ) -> list[ApplicationEvent]:
         filters: list[Any] = [
@@ -222,13 +270,12 @@ class ApplicationRepository:
             ApplicationEvent.application_id == application_id,
         ]
         if cursor is not None:
-            filters.append(
-                tuple_(ApplicationEvent.created_at, ApplicationEvent.id) < cursor
-            )
+            filters.append(tuple_(ApplicationEvent.created_at, ApplicationEvent.id) < cursor)
         result = await self._session.execute(
-            select(ApplicationEvent).where(*filters).order_by(
-                ApplicationEvent.created_at.desc(), ApplicationEvent.id.desc()
-            ).limit(limit)
+            select(ApplicationEvent)
+            .where(*filters)
+            .order_by(ApplicationEvent.created_at.desc(), ApplicationEvent.id.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
