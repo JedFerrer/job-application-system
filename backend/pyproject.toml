@@ -23,7 +23,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "structlog>=25.1",
     "argon2-cffi>=23.1",
-    "pyjwt>=2.10",
+    "pyjwt>=2.15.1",
     "google-auth[requests]>=2.38",
     "html2text>=2025",
 ]
@@ -33,7 +33,7 @@ dependencies = [
 # Install with: pip install -e ".[scraping]" once on a platform with wheels.
 [project.optional-dependencies]
 scraping = [
-    "python-jobspy>=1.1.80",
+    "python-jobspy>=1.2.0",
 ]
 
 [tool.uv]

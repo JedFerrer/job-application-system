@@ -12,16 +12,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ && rm -
 # uv for fast, reproducible installs
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-COPY pyproject.toml ./
-RUN uv pip install --system --no-cache ".[scraping]"
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
 
-# Install dev deps in a separate layer so production builds can skip them
+COPY pyproject.toml uv.lock ./
+
+# Install the locked graph first to preserve caching when application code changes.
 ARG INSTALL_DEV=false
 RUN if [ "$INSTALL_DEV" = "true" ]; then \
-      uv pip install --system --no-cache pytest pytest-asyncio pytest-cov ruff mypy; \
+      uv sync --locked --no-cache --extra scraping --group dev --no-editable --no-install-project; \
+    else \
+      uv sync --locked --no-cache --extra scraping --no-dev --no-editable --no-install-project; \
     fi
 
 COPY . .
+
+# Install the application non-editably into the same locked environment.
+RUN if [ "$INSTALL_DEV" = "true" ]; then \
+      uv sync --locked --no-cache --extra scraping --group dev --no-editable; \
+    else \
+      uv sync --locked --no-cache --extra scraping --no-dev --no-editable; \
+    fi
 
 EXPOSE 8000
 
