@@ -63,13 +63,13 @@ describe("application interview context", () => {
     await vi.waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
     await act(async () => dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
-    expect(document.activeElement).toBe(trigger);
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
 
     await act(async () => trigger.click());
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
     await act(async () => button("Close")?.click());
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
-    expect(document.activeElement).toBe(trigger);
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("uses the only confirmed package and displays source, cached result, and evidence", async () => {
