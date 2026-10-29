@@ -107,7 +107,12 @@ describe("ProfilePanel imported resume drafts", () => {
   };
 
   const openReview = async () => {
-    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Review draft"))?.click());
+    const reviewButton = await vi.waitFor(() => {
+      const button = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Review draft"));
+      expect(button).toBeDefined();
+      return button!;
+    });
+    await act(async () => reviewButton.click());
     await vi.waitFor(() => expect(container.textContent).toContain("Draft Ada"));
   };
 
