@@ -1,187 +1,238 @@
 # Job application workspace
 
-A source-visible portfolio project for organizing a job search. It combines a
-FastAPI API, a Next.js dashboard, and a Chrome extension. Jobs, candidate
-material, preparation decisions, and submission history belong to an account.
-This is an engineering project, not a deployed job service.
+A job-search CRM connecting saved jobs, candidate documents, application
+preparation, submission history, and interview preparation. It combines a
+FastAPI backend, a Next.js dashboard, and an optional Chrome extension.
 
-## What it demonstrates
+This is a source-visible portfolio engineering project, not a deployed job
+service. [RIGHTS.md](RIGHTS.md) permits unmodified local portfolio evaluation;
+the repository does not grant an open-source license. Development instructions
+apply to contributors with permission to modify the project.
 
-- Email/password registration and sign-in, session refresh, logout, and
-  password reset. Google ID-token sign-in is optional.
-- Job capture and import, duplicate identity handling, freshness and expiry,
-  archived jobs, matching, and on-demand fit explanations.
-- An application workspace to choose saved resume and cover-letter material,
-  record manual questions, freeze a reviewable package, run advisory document
-  review, and explicitly approve a package.
-- Retained PDF/DOCX artifacts and downloads, submission confirmation with
-  material provenance, timeline history, and interview preparation grounded in
-  a historical package or explicit current-profile fallback.
-- A Manifest V3 extension for supported job-page capture, account pairing, and
-  safe autofill preview/action. It never submits applications automatically.
+## Start here
 
-The user separately confirms an actual submission and the materials used.
-Generated or reviewed documents do not imply submission.
+| Your goal | Guide |
+| --- | --- |
+| Understand the system | [Architecture](#architecture) and [repository structure](#repository-structure) |
+| Evaluate with invented data | [Isolated portfolio walkthrough](#isolated-portfolio-walkthrough) |
+| Run or work on the API and workers | [Backend README](backend/README.md) |
+| Run or work on the dashboard | [Frontend README](frontend/README.md) |
+| Build, install, and pair the extension | [Extension README](extension/README.md) |
+
+## What it does
+
+- Account registration, sign-in, session refresh, logout, and password reset;
+  optional Google ID-token sign-in.
+- Job capture/import, duplicate identity handling, freshness and expiry,
+  archiving, matching, and on-demand fit explanations.
+- Application preparation: select resume and cover-letter material, record
+  manual questions, freeze a package, run advisory document review, and
+  explicitly approve a package.
+- Retained PDF/DOCX artifacts, material provenance, submission history, and
+  interview preparation using a historical package or explicit current-profile
+  fallback.
+- Extension job capture, account pairing, and safe autofill preview/action.
+  It never submits applications automatically.
+
+Package snapshots are immutable and document review is advisory. Generated or
+reviewed documents do not imply submission: the user separately confirms the
+actual submission and materials used.
 
 ## Architecture
 
-| Part | Responsibility |
+```mermaid
+flowchart LR
+    Browser[Dashboard browser] --> Web[Next.js dashboard]
+    Web --> Proxy["Next.js /api/backend/* proxy"]
+    Proxy --> API[FastAPI]
+    Extension[Chrome extension] -->|Direct API requests| API
+    API --> DB[(PostgreSQL + pgvector)]
+    API <--> Redis[(Redis)]
+    Redis <--> Workers[Celery workers and scheduler]
+    Workers --> DB
+    API --> Providers[Optional AI and job providers]
+    Workers --> Providers
+```
+
+The dashboard uses same-origin requests through Next.js, which forwards them
+to FastAPI's `/api/v1/*` routes. The extension calls FastAPI directly. Routes
+enforce authentication and ownership; domain services hold business rules;
+repositories handle persistence. Redis supports task state and Celery work,
+including ingestion, ranking, and maintenance.
+
+Browser refresh credentials use httpOnly cookies. Extension pairing creates a
+separate revocable session with access and refresh tokens. Neither session
+model grants access to another account's data.
+
+### Tech stack
+
+| Area | Technology and role |
 | --- | --- |
-| Next.js 16, React 19, TypeScript | Dashboard and account UI; `/api/backend/*` proxies browser requests to FastAPI. |
-| FastAPI, Python 3.13+ | Auth, owned jobs, matching, application preparation, package, review, artifact, and history APIs. Services hold domain rules; repositories handle persistence. |
-| PostgreSQL 17 with pgvector | Account, job, application, and artifact metadata, plus vector matching; Alembic migrations. |
-| Redis and Celery | Task state and background ingestion, ranking, maintenance, and document work. |
-| Chrome Manifest V3 extension | Job capture, extension session pairing, form mapping, and safe fill. |
+| Dashboard | Next.js 16, React 19, TypeScript, Tailwind CSS 4, TanStack Query; account UI and API proxy |
+| Backend | Python 3.13, FastAPI, Pydantic, SQLAlchemy, Alembic; APIs, domain rules, persistence, migrations |
+| Data and tasks | PostgreSQL 17 with pgvector, Redis 7.4, Celery |
+| Extension | Chrome Manifest V3, React 19, TypeScript, Vite; popup, service worker, content scripts |
+| Tooling | Node.js 22, npm lockfiles, `uv` lockfile, Docker Compose v2 |
+| Quality | pytest, Vitest, Ruff, mypy, ESLint, TypeScript checks, GitHub Actions |
 
-Package snapshots are immutable. Document review is advisory and cannot change
-a package. Optional AI providers handle generation and analysis; the isolated
-synthetic provider below covers document review and historical interview prep
-only.
+Dependency specifications and lockfiles define exact versions. Use Python
+**3.13** to match Docker and CI; the broader metadata constraint does not
+guarantee binary dependency compatibility with newer Python versions.
 
-## Prerequisites and environment
-
-Install Docker with Compose v2, Node.js 22, Python 3.13+, and `uv`. The
-frontend and extension have committed lockfiles; use `npm ci`. The backend has
-a committed `uv` lockfile. The guarded backend test runner needs a local Docker
-engine.
-
-Copy `backend/.env.example` to `backend/.env` and `frontend/.env.example` to
-`frontend/.env.local`. Edit only the local copies, using invented identities
-and obvious placeholders. For basic development, use the example's local
-PostgreSQL/Redis URLs, `ENVIRONMENT=development`, a unique local JWT secret,
-and the localhost origin. Set `BACKEND_INTERNAL_URL=http://localhost:8000` in
-the frontend environment. Never commit environment files.
-
-| Category | Settings |
-| --- | --- |
-| Basic local | `ENVIRONMENT`, `DATABASE_URL`, `REDIS_URL`, `ALLOWED_ORIGINS`, `JWT_SECRET`, `BACKEND_INTERNAL_URL`. |
-| Optional AI | `LLM_PROVIDER`, `LLM_MODEL`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, embedding settings. Leave keys blank for offline checks. |
-| Optional job source | `JSEARCH_API_KEY`, `ENABLE_JSEARCH`, source/search settings. Do not run external scraping during offline evaluation. |
-| Optional sign-in and email | `GOOGLE_CLIENT_ID` and matching `NEXT_PUBLIC_GOOGLE_CLIENT_ID`; password reset defaults to local console delivery. Resend settings are for an intentional email integration test. |
-| Isolated QA | `PORTFOLIO_SYNTHETIC_PROVIDERS` defaults off and requires `ENVIRONMENT=test` plus the `public_app_test` database name. Other `qa_*` flags are guarded internal tests. |
-| Public deployment | Strong JWT secret, secure refresh cookies, HTTPS origins, and verified proxy settings. Deployment is outside this evaluation permission. |
-
-## Run locally
-
-From `backend/`, run `uv sync --dev` if dependencies are missing, then
-`docker compose up -d`. The API container applies Alembic migrations on
-startup. This default Compose stack uses persistent `job_app` for ordinary
-development. **Never run destructive tests against it.** The API is at
-`http://localhost:8000`.
-
-From `frontend/`, run `npm ci` and `npm run dev`, then open
-`http://localhost:3000`. Register a local account with an invented identity.
-Without external AI keys, basic account and CRM surfaces remain available;
-provider-backed generation and matching can report unavailable providers.
-
-The extension is optional for the core dashboard. From `extension/`, run
-`npm ci` and `npm run build`, then load `extension/dist` as an unpacked Chrome
-extension. Pair it only with a local synthetic account and use an invented
-local job page for capture. Do not fill or submit a real third-party form.
-
-## Offline portfolio evaluation status
-
-The `portfolio_synthetic_provider` returns deterministic, no-network
-responses for **document review** and **application interview preparation**.
-Its review has no fabricated findings; its interview questions cite source
-locators without sending source text to an AI service. Normal development and
-production startup never select it. Request data cannot activate it. An
-explicit opt-in is refused outside `ENVIRONMENT=test` and the isolated
-`public_app_test` database name. The ordinary auth and ownership checks remain.
-
-The disposable test runner verifies fresh PostgreSQL and Redis resources and
-cleans only resources whose ownership it can prove. The browser harness reuses
-those checks for a local synthetic walkthrough. It refuses inherited database
-and Compose overrides, verifies PostgreSQL cluster identity before migrations
-or seeding, and binds its API and dashboard to loopback only. Do not set the
-synthetic flag on `job_app` or an existing `job_app_test`.
-
-From **`backend/`**, after installing the documented backend and frontend
-dependencies, run:
+## Repository structure
 
 ```text
+.
+├── README.md                    # System overview and onboarding navigation
+├── backend/                     # FastAPI, workers, migrations, tests
+│   ├── app/                     # Runtime Python application
+│   ├── migrations/              # Alembic schema revisions
+│   ├── scripts/                 # Guarded test and evaluation runners
+│   └── tests/                   # Unit/integration tests and fixtures
+├── frontend/                    # Next.js dashboard
+│   ├── src/                     # Routes, components, contexts, utilities
+│   ├── public/                  # Static assets, including export fonts
+│   └── tests/                   # Vitest and artifact interoperability tests
+├── extension/                   # Chrome extension and build configuration
+│   ├── src/                     # Popup, worker, content scripts, shared policy
+│   └── tests/                   # Unit tests and unwired E2E specifications
+├── .github/workflows/           # CI quality workflow
+├── AGENTS.md                    # Canonical development contract
+├── docs/development-workflow.md # Development and review lifecycle
+└── RIGHTS.md                    # Evaluation permission and restrictions
+```
+
+Component guides explain internal directories and where changes belong.
+Generated dependencies/build output, local environments, and ignored
+`.local-dev/` notes are not prerequisites supplied by a clone.
+
+## Local development overview
+
+Install Git, Docker with Compose v2 and a running local engine, Node.js 22,
+Python 3.13, and `uv`. Components manage dependencies separately; there is no
+root-level installation command.
+
+1. Follow the [backend setup](backend/README.md#setup-and-start): configure
+   its environment, install locked host dependencies, and start the
+   API/database/Redis/worker stack.
+2. Follow the [frontend setup](frontend/README.md#setup-and-start): configure
+   its backend URL, install dependencies, and start the dashboard.
+3. Open the dashboard and register an account with an invented identity.
+4. Optionally follow the [extension setup](extension/README.md#build-and-install)
+   to build, load, and pair it with that local account.
+
+| Service | Default development address |
+| --- | --- |
+| Dashboard | `http://localhost:3000` |
+| API | `http://localhost:8000/api/v1` |
+| Interactive API docs | `http://localhost:8000/docs` |
+| Basic health | `http://localhost:8000/api/v1/health` |
+| PostgreSQL / Redis | Local ports `5432` / `6379`, published by backend Compose |
+
+Normal Compose persists development data in `job_app`. **Never run destructive
+tests against it.** This topology publishes ports without loopback-only
+bindings; use a trusted local machine and do not expose it as a public service.
+
+Basic account and CRM surfaces are available without external AI credentials.
+Provider-backed generation and matching can report unavailable providers.
+Environment examples explain optional AI, job-source, Google sign-in, and
+email settings. Keep local environment files out of Git and leave external
+credentials blank for offline checks.
+
+## Isolated portfolio walkthrough
+
+Use the guarded harness for synthetic evaluation instead of the persistent
+development database. Its frontend launcher currently invokes `next.cmd`, so
+this walkthrough targets **Windows**; macOS/Linux support for the harness is
+not established. The ordinary component setup instructions are separate.
+
+Prerequisites: a local Docker engine, locked backend host dependencies, and
+installed frontend dependencies from the component guides. The harness builds
+an isolated backend test image and starts a separate dashboard. It refuses
+inherited database/Compose overrides and `DOCKER_HOST`/`DOCKER_CONTEXT` settings;
+inspect the guard report instead of bypassing it.
+
+From `backend/`, run:
+
+```sh
 uv run --no-sync python scripts/run_portfolio_browser.py start
 ```
 
-Wait for `READY http://127.0.0.1:18201`. Sign in there with the disposable
-account `evaluator@example.com` and password `PortfolioEval2026!`. The harness
-seeds Jordan Example's invented profile, a saved synthetic resume, and the
-fictional Orbit Workshop job. It does not seed an application, package, review,
-artifact, submission history, or interview questions. In the browser, open the
-job, choose **Save & prepare**, acknowledge fit, select the saved resume, mark
-the cover letter not needed, review and approve the package, run document
-review, generate a resume artifact, record a **synthetic internal history entry**,
-and prepare interview questions from that history. No external employer
-application is submitted. The Chrome extension is optional for this core path.
+Wait for `READY http://127.0.0.1:18201`. Sign in with disposable fixture account
+`evaluator@example.com` and password `PortfolioEval2026!`. These are invented
+local credentials, not a hosted account. The harness seeds Jordan Example's
+profile, a saved synthetic resume, and a fictional Orbit Workshop job. It does
+not seed the application or subsequent package/history.
 
-In a second terminal in **`backend/`**, stop the exact active run using the ID
-printed by `start`:
+Open the job, choose **Save & prepare**, acknowledge fit, select the saved
+resume, mark the cover letter not needed, review and approve the package, run
+document review, generate a resume artifact, record a **synthetic internal
+history entry**, and prepare interview questions from that history. No employer
+application is submitted. The optional extension's default localhost profile
+does not target the harness ports.
 
-```text
+The synthetic provider supplies deterministic, no-network responses only for
+**document review** and **application interview preparation**. It does not
+replace all AI features. Activation requires explicit opt-in,
+`ENVIRONMENT=test`, and the isolated `public_app_test` database. Request data
+cannot activate it. Never enable it on `job_app` or an existing test DB.
+
+In a second terminal in `backend/`, replace `RUN_ID` with the exact ID printed
+by the active harness:
+
+```sh
 uv run --no-sync python scripts/run_portfolio_browser.py stop RUN_ID
 ```
 
-The owning process checks the API container, database, Redis, network, volumes,
-and frontend process before removing only its own resources. If ownership or
-cleanup verification fails, inspect the reported resources instead of running
-an unguarded Compose teardown.
+The harness verifies Docker ownership and PostgreSQL identity before
+migrations/seeding, binds application ports to loopback, and cleans only
+resources it can prove it owns. If cleanup verification fails, inspect its
+report; do not substitute unguarded volume deletion.
 
 ## Tests and quality checks
 
-Run each command from the named directory. Database-backed backend tests are
-guarded and must use the disposable runner. It checks the local Docker
-context, Compose topology, resource identities, database names, and cleanup
-ownership before destructive fixtures run. It refuses inherited database and
-Compose overrides.
+| Component | Checks and prerequisites |
+| --- | --- |
+| [Backend checks](backend/README.md#tests-and-quality-checks) | Ruff, mypy, selected formatting, isolated smoke/full pytest runner; DB coverage needs Docker |
+| [Frontend checks](frontend/README.md#tests-and-quality-checks) | Vitest, ESLint, TypeScript, Next.js build; artifact interoperability also needs `backend/.venv` |
+| [Extension checks](extension/README.md#tests-and-quality-checks) | Vitest, ESLint, TypeScript, complete Vite build |
 
-```text
-backend: uv run ruff check .
-backend: uv run mypy app tests
-backend: uv run python scripts/select_public_format.py --mode release --check
-backend: uv run python scripts/run_public_tests.py --smoke
-backend: uv run python scripts/run_public_tests.py
+[GitHub Actions](.github/workflows/quality.yml) defines CI commands. Browser E2E
+automation is not wired. Unit/integration checks do not replace manual
+desktop/mobile or extension Browser QA.
 
-frontend: npm ci
-frontend: npm test
-frontend: npm run lint
-frontend: npx tsc --noEmit
-frontend: npm run build
+## Workflow and support
 
-extension: npm ci
-extension: npm test
-extension: npx tsc --noEmit
-extension: npm run lint
-extension: npm run build
-```
+Read [AGENTS.md](AGENTS.md) and the
+[development workflow](docs/development-workflow.md) before authorized changes.
+They define research, planning, approval, implementation, validation, independent
+review, and explicit commit authorization.
 
-The format command checks selected changed backend Python files against the
-repository audit baseline. Frontend lint runs with `npm run lint` and may
-report warnings while exiting successfully. Extension lint is declared but its
-ESLint setup is currently unreliable; do not treat it as
-passing until verified. Browser E2E automation is not wired. Manual
-desktop/mobile and extension Browser QA are separate evidence, not a result of
-the commands above.
+For ordinary questions or reproducible bugs, use the repository Issues tab.
+Include the component, runtime versions, command, expected/actual behavior,
+and sanitized output. Do not post credentials, personal resumes, cookies, or
+account data. Modification permissions remain subject to [RIGHTS.md](RIGHTS.md).
 
-## Security, rights, and current limits
+## Security, rights, and verification limits
 
-Account data is scoped by authenticated user ID. Browser refresh tokens are
-httpOnly cookies; extension sessions use short-lived access tokens and
-revocable refresh tokens. Autofill excludes passwords, files, hidden fields,
-and unsafe fields without an approved mapping. Use synthetic data for
-evaluation. Do not commit screenshots, cookies, tokens, or local test state.
+Use invented evaluation data. Account data is scoped by authenticated user ID.
+Autofill excludes passwords, files, hidden fields, and unsafe fields without
+an approved mapping. Do not commit tokens, local test state, or screenshots
+containing private data.
 
-The repository is not yet approved for publication. Hosted exposure review,
-hosted QA fixture-name classification, hosted CI on cleanup commits, and a
-fresh online Next.js security audit before visibility approval remain open.
-Five extension Vitest-chain findings are accepted for development only.
+Public repository visibility is separate from hosting approval. These guides
+do not establish production readiness or publication clearance. Earlier notes
+identified hosted exposure, fixture classification, and dependency security
+review concerns; their current resolution and vulnerability counts were not
+revalidated by this documentation change.
 
-[RIGHTS.md](RIGHTS.md) grants limited permission to download, configure,
-build, test, and run an **unmodified local copy** solely to evaluate this
-portfolio. **No open-source license is granted for this project.** Production,
-business, hosted, commercial, derivative, and general modification or
-redistribution uses require prior written permission. Third-party components
-and assets retain their own licenses, including
+Instructions were checked statically against tracked source, configuration,
+and available CI evidence. A fresh installation, startup walkthrough, and
+browser QA were not performed for this documentation update.
+
+[RIGHTS.md](RIGHTS.md) permits downloading, configuring, building, testing, and
+running an **unmodified local copy** solely for portfolio evaluation.
+**No open-source license is granted.** Production, business, hosted, commercial,
+derivative, general modification, and redistribution uses require prior written
+permission. Third-party components retain their own licenses, including
 [Noto Sans's SIL OFL notice](frontend/src/assets/fonts/LICENSE.txt).
-
-The repository workflow contract is in [AGENTS.md](AGENTS.md) and
-[docs/development-workflow.md](docs/development-workflow.md).

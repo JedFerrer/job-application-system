@@ -21,6 +21,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: "3.13"
       - run: uv sync --locked --dev
       - run: uv run ruff check .
       - run: uv run mypy app tests
@@ -56,6 +57,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: "3.13"
       - run: uv sync --locked --dev
         working-directory: backend
       - uses: actions/setup-node@v4

@@ -61,13 +61,13 @@ describe("submission history and timeline", () => {
     await vi.waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
     await act(async () => dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
-    expect(document.activeElement).toBe(trigger);
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
 
     await act(async () => trigger.click());
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
     await act(async () => button("Cancel")?.click());
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
-    expect(document.activeElement).toBe(trigger);
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("shows the legacy empty state from the server and confirms a package with zero files", async () => {

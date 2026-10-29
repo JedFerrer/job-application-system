@@ -54,6 +54,7 @@ nul
 /backend/docker-compose.override.yml
 
 # Local tooling artifacts
+/.local-dev/
 .agents/*
 !.agents/skills/
 .agents/skills/*
