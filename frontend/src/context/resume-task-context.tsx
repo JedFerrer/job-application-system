@@ -94,7 +94,7 @@ export function ResumeTaskProvider({ children }: { children: React.ReactNode }) 
 
     if (data.status === "failed") {
       toast.error(data.error || "Resume parsing failed", {
-        action: { label: "View résumé", onClick: () => router.push("/dashboard/resume") },
+        action: { label: "Upload résumé", onClick: () => router.push("/dashboard/settings/profile") },
         duration: 8000,
       });
       return;
@@ -107,9 +107,8 @@ export function ResumeTaskProvider({ children }: { children: React.ReactNode }) 
         ? "Saved as a draft awaiting review. Your active profile was not changed."
         : "Your profile has been updated.",
       action: {
-        label: isDraft ? "Review profile" : "View résumé",
-        onClick: () =>
-          router.push(isDraft ? "/dashboard/settings/profile" : "/dashboard/resume"),
+        label: "Review profile",
+        onClick: () => router.push("/dashboard/settings/profile"),
       },
       duration: 8000,
     });
