@@ -144,7 +144,7 @@ describe("resume task completion messaging", () => {
     expect(routerMocks.push).toHaveBeenCalledWith("/dashboard/settings/profile");
   });
 
-  it("keeps the active-import message and invalidates the profile", async () => {
+  it("routes first active imports to profile review and invalidates the profile", async () => {
     apiMocks.getTaskStatus.mockResolvedValueOnce({
       type: "resume_parse",
       status: "done",
@@ -172,10 +172,47 @@ describe("resume task completion messaging", () => {
 
     expect(toastMocks.success).toHaveBeenCalledWith(
       'Résumé parsed — "first.pdf"',
-      expect.objectContaining({ description: "Your profile has been updated." }),
+      expect.objectContaining({
+        description: "Your profile has been updated.",
+        action: expect.objectContaining({ label: "Review profile" }),
+      }),
     );
     expect(toastMocks.warning).not.toHaveBeenCalled();
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["profile"] });
+    const activeToast = toastMocks.success.mock.calls.at(-1)?.[1];
+    activeToast.action.onClick();
+    expect(routerMocks.push).toHaveBeenCalledExactlyOnceWith("/dashboard/settings/profile");
+  });
+
+  it("routes failed parsing back to the profile upload surface", async () => {
+    apiMocks.getTaskStatus.mockResolvedValueOnce({
+      type: "resume_parse",
+      status: "failed",
+      error: "Unable to parse this résumé",
+    });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ResumeTaskProvider><Harness /></ResumeTaskProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      (container.querySelector("button") as HTMLButtonElement).click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    expect(toastMocks.error).toHaveBeenCalledWith(
+      "Unable to parse this résumé",
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Upload résumé" }),
+      }),
+    );
+    const failureToast = toastMocks.error.mock.calls.at(-1)?.[1];
+    failureToast.action.onClick();
+    expect(routerMocks.push).toHaveBeenCalledExactlyOnceWith("/dashboard/settings/profile");
+    expect(toastMocks.success).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("resume_task_id")).toBeNull();
   });
 
   it("shows warning messaging without changing active import behavior", async () => {
