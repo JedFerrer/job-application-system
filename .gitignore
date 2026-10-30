@@ -39,9 +39,18 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
-# ── Docs (not tracked except the canonical workflow guide) ────────────────
+# ── Docs (public guides and selected demo images only) ────────────────────
 docs/*
 !docs/development-workflow.md
+!docs/user-guide.md
+!docs/images/
+docs/images/*
+!docs/images/01-dashboard.jpg
+!docs/images/02-matches.jpg
+!docs/images/03-applications.jpg
+!docs/images/04-resume-review.jpg
+!docs/images/05-job-analysis.jpg
+!docs/images/06-cover-letter.jpg
 
 feature-plan-improvements/
 

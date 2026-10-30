@@ -1,42 +1,75 @@
 # Job application workspace
 
-A job-search CRM connecting saved jobs, candidate documents, application
-preparation, submission history, and interview preparation. It combines a
-FastAPI backend, a Next.js dashboard, and an optional Chrome extension.
+A job-search CRM for people who want to keep their job search in one place.
+Save jobs, compare them with your resume, prepare application documents, and
+keep track of what you sent and what to do next.
 
-This is a source-visible portfolio engineering project, not a deployed job
-service. [RIGHTS.md](RIGHTS.md) permits unmodified local portfolio evaluation;
-the repository does not grant an open-source license. Development instructions
-apply to contributors with permission to modify the project.
+This portfolio project is under active development and is intended for local evaluation.
 
-## Start here
+![Dashboard showing the job feed, ranked matches, saved applications, and action center](docs/images/01-dashboard.jpg)
 
-| Your goal | Guide |
-| --- | --- |
-| Understand the system | [Architecture](#architecture) and [repository structure](#repository-structure) |
-| Evaluate with invented data | [Isolated portfolio walkthrough](#isolated-portfolio-walkthrough) |
-| Run or work on the API and workers | [Backend README](backend/README.md) |
-| Run or work on the dashboard | [Frontend README](frontend/README.md) |
-| Build, install, and pair the extension | [Extension README](extension/README.md) |
+*The dashboard brings your job search and next actions together.*
 
-## What it does
+Screenshots use the fictional `test@example.com` account and a fictional resume.
+Company names and job listings come from the job feed; they do not represent
+applications submitted by the demo account. Your counts and results will differ.
 
-- Account registration, sign-in, session refresh, logout, and password reset;
-  optional Google ID-token sign-in.
-- Job capture/import, duplicate identity handling, freshness and expiry,
-  archiving, matching, and on-demand fit explanations.
-- Application preparation: select resume and cover-letter material, record
-  manual questions, freeze a package, run advisory document review, and
-  explicitly approve a package.
-- Retained PDF/DOCX artifacts, material provenance, submission history, and
-  interview preparation using a historical package or explicit current-profile
-  fallback.
-- Extension job capture, account pairing, and safe autofill preview/action.
-  It never submits applications automatically.
+## How it works
 
-Package snapshots are immutable and document review is advisory. Generated or
-reviewed documents do not imply submission: the user separately confirms the
-actual submission and materials used.
+### 1. Upload your resume
+
+Create an account, then open **Settings → Profile** and choose a PDF or DOCX
+resume. Review the extracted experience and skills before using them. Set your
+target roles and locations under **Preferences**.
+
+### 2. Find jobs and review your matches
+
+Browse **Jobs**, search or filter the feed, and save jobs you want to consider.
+Open **Matches** to see jobs ranked against your profile and common skill gaps.
+
+![Ranked jobs with profile relevance scores, search filters, and common skill gaps](docs/images/02-matches.jpg)
+
+*Matches help you decide which jobs deserve a closer look. A score is not a hiring prediction.*
+
+Open a job to read the description, matched skills, and available AI fit review.
+Check the details yourself before deciding to apply.
+
+![Job details beside a profile relevance score, AI fit review, matched skills, and skill gaps](docs/images/05-job-analysis.jpg)
+
+*The job view explains where your profile fits and where evidence is missing.*
+
+### 3. Prepare and review your documents
+
+Choose **Save & prepare** on a job, or **Prepare application** for an already
+saved job. Acknowledge the fit context, select a tailored resume, and select a
+cover letter or mark it not needed. Review the package before approving it.
+
+![Tailored resume review showing source evidence, suggested wording, and missing requirements](docs/images/04-resume-review.jpg)
+
+*Review the suggested wording and source evidence before saving a tailored resume.*
+
+Cover letters use your active profile as their source. You can review the draft,
+save edits, and export a PDF or DOCX. See the
+[document preparation guide](docs/user-guide.md#4-prepare-your-documents) for the
+full sequence and a cover-letter example.
+
+### 4. Track applications and next steps
+
+Use **Applications** to manage saved jobs, status, notes, and next actions.
+After actually submitting an application, record which materials you used in
+**Submission history**. Saved packages and retained files let you look back at
+earlier versions and prepare for interviews.
+
+![Saved applications with preparation links and a document-review next action](docs/images/03-applications.jpg)
+
+*Keep each application and its next step together. Saving a job does not submit it.*
+
+**You stay in control of submission.** Document review provides suggestions;
+it does not approve or submit an application for you. Package snapshots keep
+the reviewed version unchanged. The optional Chrome extension can capture
+jobs and preview autofill actions, but it never submits applications automatically.
+
+For step-by-step instructions, read the [user guide](docs/user-guide.md).
 
 ## Architecture
 
@@ -107,6 +140,19 @@ Generated dependencies/build output, local environments, and ignored
 `.local-dev/` notes are not prerequisites supplied by a clone.
 
 ## Local development overview
+
+### Start here
+
+| Your goal | Guide |
+| --- | --- |
+| Use the dashboard | [User guide](docs/user-guide.md) |
+| Evaluate with invented data | [Isolated portfolio walkthrough](#isolated-portfolio-walkthrough) |
+| Run or work on the API and workers | [Backend README](backend/README.md) |
+| Run or work on the dashboard | [Frontend README](frontend/README.md) |
+| Build, install, and pair the extension | [Extension README](extension/README.md) |
+
+Development instructions apply to contributors with permission to modify the
+project. See [usage permissions](#security-rights-and-verification-limits).
 
 Install Git, Docker with Compose v2 and a running local engine, Node.js 22,
 Python 3.13, and `uv`. Components manage dependencies separately; there is no
@@ -215,6 +261,9 @@ account data. Modification permissions remain subject to [RIGHTS.md](RIGHTS.md).
 
 ## Security, rights, and verification limits
 
+This is a source-visible portfolio engineering project, not a deployed job
+service. Local evaluation does not establish production readiness.
+
 Use invented evaluation data. Account data is scoped by authenticated user ID.
 Autofill excludes passwords, files, hidden fields, and unsafe fields without
 an approved mapping. Do not commit tokens, local test state, or screenshots
@@ -226,9 +275,11 @@ identified hosted exposure, fixture classification, and dependency security
 review concerns; their current resolution and vulnerability counts were not
 revalidated by this documentation change.
 
-Instructions were checked statically against tracked source, configuration,
-and available CI evidence. A fresh installation, startup walkthrough, and
-browser QA were not performed for this documentation update.
+The user guide was checked against the tracked UI source. Cover-letter
+generation was also checked in the local demo account on October 30, 2026;
+one draft generated successfully. The screenshots show selected working
+surfaces, not a full test report. A fresh installation, complete user journey,
+and extension browser QA were not performed for this documentation update.
 
 [RIGHTS.md](RIGHTS.md) permits downloading, configuring, building, testing, and
 running an **unmodified local copy** solely for portfolio evaluation.
