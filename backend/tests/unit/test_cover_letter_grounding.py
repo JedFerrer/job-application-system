@@ -99,9 +99,7 @@ def test_evidence_sentence_with_valid_id_is_accepted() -> None:
         ),
     ],
 )
-def test_sentence_contract_rejects_unsafe_variants(
-    sentence: dict[str, object], match: str
-) -> None:
+def test_sentence_contract_rejects_unsafe_variants(sentence: dict[str, object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         _validate(
             _payload(
@@ -227,29 +225,53 @@ def _single_sentence(text: str, kind: str = "context") -> dict[str, object]:
     ("first_title", "second_title", "first_company", "second_company", "sentence", "accepted"),
     [
         (
-            "Senior Engineer", "Engineer", "Acme", "Beta",
-            "At Acme, as a Senior Engineer, I built Python APIs.", True,
+            "Senior Engineer",
+            "Engineer",
+            "Acme",
+            "Beta",
+            "At Acme, as a Senior Engineer, I built Python APIs.",
+            True,
         ),
         (
-            "Engineer", "Engineer", "Acme", "Beta",
-            "At Acme, as an Engineer, I built Python APIs.", True,
+            "Engineer",
+            "Engineer",
+            "Acme",
+            "Beta",
+            "At Acme, as an Engineer, I built Python APIs.",
+            True,
         ),
         (
-            "Backend Engineer", "Data Engineer", "Acme", "Acme",
-            "At Acme, as a Backend Engineer, I built Python APIs.", True,
+            "Backend Engineer",
+            "Data Engineer",
+            "Acme",
+            "Acme",
+            "At Acme, as a Backend Engineer, I built Python APIs.",
+            True,
         ),
         ("Engineer", "Engineer", "Acme", "Beta", "As an Engineer, I built Python APIs.", False),
         (
-            "Senior Engineer", "Engineer", "Acme", "Beta",
-            "At Beta, as a Senior Engineer, I built Python APIs.", False,
+            "Senior Engineer",
+            "Engineer",
+            "Acme",
+            "Beta",
+            "At Beta, as a Senior Engineer, I built Python APIs.",
+            False,
         ),
         (
-            "Senior Engineer", "Engineer", "Acme", "Beta",
-            "At Acme and Beta, I built Python APIs.", False,
+            "Senior Engineer",
+            "Engineer",
+            "Acme",
+            "Beta",
+            "At Acme and Beta, I built Python APIs.",
+            False,
         ),
         (
-            "Senior Engineer", "Engineer", "Acme", "Beta",
-            "As a Senior Engineer and Engineer, I built Python APIs.", False,
+            "Senior Engineer",
+            "Engineer",
+            "Acme",
+            "Beta",
+            "As a Senior Engineer and Engineer, I built Python APIs.",
+            False,
         ),
         ("Engineer", "Engineer", "Acme", "Beta", "I built Python APIs.", True),
     ],

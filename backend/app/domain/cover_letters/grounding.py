@@ -18,29 +18,119 @@ from app.domain.resume.truthfulness import (
 
 _PRESENTATION_TOKENS = frozenset(
     {
-        "a", "am", "an", "and", "apply", "applying", "background", "bring",
-        "candidate", "excited", "experience", "for", "have", "i", "i'm", "in",
-        "interest", "interested", "is", "it", "my", "offer", "opportunity", "our",
-        "role", "skills", "that", "the", "this", "to", "we", "with", "would",
+        "a",
+        "am",
+        "an",
+        "and",
+        "apply",
+        "applying",
+        "background",
+        "bring",
+        "candidate",
+        "excited",
+        "experience",
+        "for",
+        "have",
+        "i",
+        "i'm",
+        "in",
+        "interest",
+        "interested",
+        "is",
+        "it",
+        "my",
+        "offer",
+        "opportunity",
+        "our",
+        "role",
+        "skills",
+        "that",
+        "the",
+        "this",
+        "to",
+        "we",
+        "with",
+        "would",
     }
 )
 _CONTEXT_INTENT_TOKENS = frozenset(
     {
-        "apply", "application", "consider", "considering", "contribute", "contributing",
-        "conversation", "discuss", "discussion", "excited", "enthusiastic", "interest",
-        "interested", "join", "love", "opportunity", "position", "role", "thank", "thanks",
+        "apply",
+        "application",
+        "consider",
+        "considering",
+        "contribute",
+        "contributing",
+        "conversation",
+        "discuss",
+        "discussion",
+        "excited",
+        "enthusiastic",
+        "interest",
+        "interested",
+        "join",
+        "love",
+        "opportunity",
+        "position",
+        "role",
+        "thank",
+        "thanks",
         "welcome",
     }
 )
 _CONTEXT_FIXED_TOKENS = frozenset(
     {
-        "a", "about", "am", "an", "and", "application", "at", "can", "company", "consider",
-        "considering", "contribute", "contributing", "conversation", "discuss", "discussion",
-        "excited", "for", "forward", "how", "i", "i'm", "in", "interest", "interested", "is",
-        "it", "join", "learn", "look", "love", "my", "of", "on", "opportunity", "our",
-        "position", "role", "support", "team", "thank", "thanks", "the", "this", "to", "with",
+        "a",
+        "about",
+        "am",
+        "an",
+        "and",
+        "application",
+        "at",
+        "can",
+        "company",
+        "consider",
+        "considering",
+        "contribute",
+        "contributing",
+        "conversation",
+        "discuss",
+        "discussion",
+        "excited",
+        "for",
+        "forward",
+        "how",
+        "i",
+        "i'm",
+        "in",
+        "interest",
+        "interested",
+        "is",
+        "it",
+        "join",
+        "learn",
+        "look",
+        "love",
+        "my",
+        "of",
+        "on",
+        "opportunity",
+        "our",
+        "position",
+        "role",
+        "support",
+        "team",
+        "thank",
+        "thanks",
+        "the",
+        "this",
+        "to",
+        "with",
         "apply",
-        "welcome", "would", "you", "your",
+        "welcome",
+        "would",
+        "you",
+        "your",
     }
 )
 
@@ -87,9 +177,7 @@ def build_evidence_catalog(profile: ParsedProfile) -> dict[str, CoverLetterEvide
         catalog[f"l{index}"] = CoverLetterEvidence(f"l{index}", "credential", text)
     for index, education in enumerate(profile.education):
         text = " ".join(
-            value
-            for value in (education.degree, education.institution, education.year)
-            if value
+            value for value in (education.degree, education.institution, education.year) if value
         )
         if text:
             catalog[f"e{index}"] = CoverLetterEvidence(f"e{index}", "education", text)
@@ -138,9 +226,7 @@ def _role_mentions(text: str, catalog: dict[str, CoverLetterEvidence]) -> list[s
 
 def _application_context(text: str, job_title: str | None, company: str | None) -> str:
     """Mask complete supplied names only after narrow application-intent phrases."""
-    title_prefix = (
-        r"\b(?:apply|applying)\s+for\s+(?:the\s+)?|\binterested\s+in\s+(?:the\s+)?"
-    )
+    title_prefix = r"\b(?:apply|applying)\s+for\s+(?:the\s+)?|\binterested\s+in\s+(?:the\s+)?"
     company_prefix = (
         r"\bto\s+join\s+|\binterested\s+in\s+joining\s+|\b(?:apply|applying)\s+to\s+|"
         rf"(?:{title_prefix})(?:role|position|opportunity)\s+(?:at|with)\s+"
@@ -205,8 +291,7 @@ def _validate_evidence_sentence(
     mentioned_role_indices = set.intersection(*mentions) if mentions else set()
     cited_role_indices = {item.role_index for item in cited if item.category == "work_history"}
     if mentions and (
-        len(mentioned_role_indices) != 1
-        or mentioned_role_indices != cited_role_indices
+        len(mentioned_role_indices) != 1 or mentioned_role_indices != cited_role_indices
     ):
         raise ValueError("cross-role attribution")
 
@@ -234,7 +319,6 @@ def _validate_evidence_sentence(
     cited_protected = set(re.findall(r"\b[a-z]+\b", cited_text.casefold())) & _PROTECTED_CLAIMS
     if not protected.issubset(cited_protected):
         raise ValueError("unsupported responsibility claim")
-
 
 
 def validate_cover_letter_payload(
