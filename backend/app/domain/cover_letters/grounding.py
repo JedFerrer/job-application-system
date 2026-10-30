@@ -114,10 +114,57 @@ def evidence_bundle(catalog: dict[str, CoverLetterEvidence]) -> list[dict[str, o
     ]
 
 
-def _contains_phrase(text: str, phrase: str) -> bool:
-    if not phrase or len(phrase.strip()) < 3:
-        return False
-    return re.search(rf"(?<!\w){re.escape(phrase.strip())}(?!\w)", text, re.IGNORECASE) is not None
+def _role_mentions(text: str, catalog: dict[str, CoverLetterEvidence]) -> list[set[int]]:
+    """Resolve each name span, retaining the most specific overlapping label."""
+    mentions: list[set[int]] = []
+    for field in ("company", "title"):
+        spans: dict[tuple[int, int], set[int]] = {}
+        for item in catalog.values():
+            phrase = getattr(item, field)
+            if item.category != "work_history" or item.role_index is None or not phrase:
+                continue
+            for match in re.finditer(
+                rf"(?<!\w){re.escape(phrase.strip())}(?!\w)", text, re.IGNORECASE
+            ):
+                spans.setdefault(match.span(), set()).add(item.role_index)
+        retained: list[tuple[int, int]] = []
+        for start, end in sorted(spans, key=lambda span: span[0] - span[1]):
+            if any(start < other_end and other_start < end for other_start, other_end in retained):
+                continue
+            retained.append((start, end))
+            mentions.append(spans[(start, end)])
+    return mentions
+
+
+def _application_context(text: str, job_title: str | None, company: str | None) -> str:
+    """Mask complete supplied names only after narrow application-intent phrases."""
+    title_prefix = (
+        r"\b(?:apply|applying)\s+for\s+(?:the\s+)?|\binterested\s+in\s+(?:the\s+)?"
+    )
+    company_prefix = (
+        r"\bto\s+join\s+|\binterested\s+in\s+joining\s+|\b(?:apply|applying)\s+to\s+|"
+        rf"(?:{title_prefix})(?:role|position|opportunity)\s+(?:at|with)\s+"
+    )
+    if job_title and job_title.strip():
+        company_prefix += (
+            rf"|(?:{title_prefix}){re.escape(job_title.strip())}"
+            r"(?:\s+(?:role|position))?\s+(?:at|with)\s+"
+        )
+    patterns = (
+        (job_title, title_prefix),
+        (company, company_prefix),
+    )
+    spans: list[tuple[int, int]] = []
+    for name, prefix in patterns:
+        if not name or not name.strip():
+            continue
+        for match in re.finditer(
+            rf"(?:{prefix})(?P<name>{re.escape(name.strip())})(?!\w)", text, re.IGNORECASE
+        ):
+            spans.append(match.span("name"))
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + " " * (end - start) + text[end:]
+    return text
 
 
 def _validate_context(
@@ -126,18 +173,13 @@ def _validate_context(
     job_title: str | None,
     company: str | None,
 ) -> None:
+    text = _application_context(text, job_title, company)
     if numeric_claims(text) or extract_known_skills(text):
         raise ValueError("context sentence contains candidate factual signals")
     if set(re.findall(r"\b[a-z]+\b", text.casefold())) & _PROTECTED_CLAIMS:
         raise ValueError("context sentence contains protected responsibility language")
     tokens = set(re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*", text.casefold()))
-    dynamic_tokens = set(
-        token.casefold()
-        for value in (company, job_title)
-        if value
-        for token in re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*", value.casefold())
-    )
-    if not tokens.issubset(_CONTEXT_FIXED_TOKENS | dynamic_tokens):
+    if not tokens.issubset(_CONTEXT_FIXED_TOKENS):
         raise ValueError("context sentence is outside the allowed application language")
     if not tokens & _CONTEXT_INTENT_TOKENS:
         raise ValueError("context sentence lacks application intent")
@@ -159,17 +201,10 @@ def _validate_evidence_sentence(
     if not generated_skills.issubset(cited_skills):
         raise ValueError("unsupported skill or technology")
 
-    mentioned_role_indices = {
-        item.role_index
-        for item in catalog.values()
-        if item.category == "work_history"
-        and (
-            _contains_phrase(text, item.company or "")
-            or _contains_phrase(text, item.title or "")
-        )
-    }
+    mentions = _role_mentions(text, catalog)
+    mentioned_role_indices = set.intersection(*mentions) if mentions else set()
     cited_role_indices = {item.role_index for item in cited if item.category == "work_history"}
-    if mentioned_role_indices and (
+    if mentions and (
         len(mentioned_role_indices) != 1
         or mentioned_role_indices != cited_role_indices
     ):
